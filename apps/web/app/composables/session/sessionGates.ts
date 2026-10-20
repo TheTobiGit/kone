@@ -3,9 +3,11 @@ import type {
   ApprovalDecision,
   KoneAgentApi,
   SpawnedThread,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import { seedFromBridge } from "../useCompaction";
+import { sendable } from "~/utils/agentStore";
 import type {
   PendingApproval,
   PendingUserInput,
@@ -104,21 +106,38 @@ export function useSessionGates(deps: SessionGatesDeps) {
   }
 
   /** Answer the parked request directly; stale answers never send a message
-   *  or start a turn. The prompt hides while the answer travels and nothing
-   *  restores a copy of it: a failed send only stops hiding it, so whatever
-   *  the backend said meanwhile — resolved, aborted, the next question — is
-   *  what shows, and a question still waiting stays retryable. */
-  async function respondUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
+   *  or start a turn. `attachments` are files already uploaded for each
+   *  question's answer, keyed by question id. The prompt hides while the
+   *  answer travels and nothing restores a copy of it: a failed send only
+   *  stops hiding it, so whatever the backend said meanwhile — resolved,
+   *  aborted, the next question — is what shows, and a question still waiting
+   *  stays retryable. The answer's files belong to it only once the backend
+   *  takes it: a refused or stale answer hands them back, since a retry opens
+   *  a fresh dialog that will never send them. */
+  async function respondUserInput(
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ): Promise<void> {
     const api = bridge();
     if (!api) return;
     answeringUserInput.value = requestId;
+    let taken = false;
     try {
-      await api.respondUserInput(threadId.value, requestId, answers);
+      // The dialog builds both from reactive state, and the bridge refuses a
+      // proxy: they leave as plain copies.
+      const payload = attachments && sendable(attachments);
+      taken = (await api.respondUserInput(threadId.value, requestId, sendable(answers), payload)).owned;
       // Taken, or waiting nowhere any more (a stale answer): done either way.
       if (parkedUserInput.value?.requestId === requestId) parkedUserInput.value = null;
     } catch {
       // The backend never took the answers.
     } finally {
+      if (!taken) {
+        for (const file of Object.values(attachments ?? {}).flat()) {
+          void api.discardAttachment(threadId.value, file.id).catch(() => false);
+        }
+      }
       if (answeringUserInput.value === requestId) answeringUserInput.value = null;
     }
   }

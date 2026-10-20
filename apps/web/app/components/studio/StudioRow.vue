@@ -12,8 +12,10 @@ import type {
   ApprovalDecision,
   InteractionMode,
   ProviderKind,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import type { Project } from "~/composables/useProject";
 import type { WorkspaceChoice } from "~/utils/threadWorkspace";
 import type { StudioDestination } from "~/types/studio";
@@ -1382,14 +1384,20 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
   persistThreadSelection();
 });
 
-// Answer the agent's live question — hands the picked/typed answers back to the
-// adapter, which resolves the parked tool call and lets the turn continue.
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
-  void focusedThread.value?.respondUserInput(requestId, answers);
+// Answer the agent's live question — hands the picked/typed answers, and any
+// files uploaded for them, back to the adapter, which resolves the parked tool
+// call and lets the turn continue.
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+  owner?: UserInputOwner,
+) {
+  void (owner ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string) {
-  void focusedThread.value?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner) {
+  void (owner ?? focusedThread.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — hands the decision back to the adapter, which
 // resolves the parked provider request and lets the turn continue.
@@ -1626,6 +1634,9 @@ useStudioRowView(registryPath, () =>
             :approval="focusedPendingApproval"
             :approval-queue="focusedThread?.pendingApprovals.value"
             :suppressed="isOverview"
+            :upload="focusedThread?.uploadAttachment"
+            :discard="focusedThread?.discardAttachment"
+            :owner="focusedThread ?? undefined"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

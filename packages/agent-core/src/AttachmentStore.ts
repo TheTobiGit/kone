@@ -220,6 +220,36 @@ export class AttachmentStore {
     );
   }
 
+  /** Remove one attachment nobody will use — a removed answer chip, a question's
+   *  media once its dialog settled. Only its own thread's attachment is touched:
+   *  another thread's id is refused before anything is read or unlinked.
+   *  Best-effort unlink, like deleteThreadFiles: one retry, then the row is
+   *  dropped anyway so the file becomes orphan-eligible for
+   *  {@link sweepOrphans}. True when something was removed. */
+  async discard(id: string, threadId: string): Promise<boolean> {
+    const row = this.conv().getAttachment(id) ?? this.pending.get(id);
+    if (!row || row.threadId !== threadId) return false;
+    const dir = this.dir();
+    const abs = path.resolve(dir, row.relPath);
+    // Traversal guard: a row pointing outside the attachments dir is never
+    // unlinked, and stays as it is.
+    if (abs !== dir && !abs.startsWith(dir + path.sep)) return false;
+    let unlinked = false;
+    for (let attempt = 0; attempt < 2 && !unlinked; attempt++) {
+      try {
+        await unlink(abs);
+        unlinked = true;
+      } catch {
+        /* transient failure (locked, EMFILE…) — retry once, then give up */
+      }
+    }
+    // Even a file that would not unlink loses its row: the sweep owns it then,
+    // instead of a row claiming bytes nobody will ever read.
+    this.conv().forgetAttachment(id);
+    this.pending.delete(id);
+    return true;
+  }
+
   /** Startup sweep: delete files under the attachments dir that no registry
    *  row references — a crash between the temp-write and registerAttachment,
    *  a failed thread deletion, or a forgotten row all leave orphaned bytes.

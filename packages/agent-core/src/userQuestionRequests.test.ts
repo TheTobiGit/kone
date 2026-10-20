@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
-import type { RuntimeEvent } from "./types.js";
+import type { ChatAttachment, RuntimeEvent } from "./types.js";
 
 type Requested = Extract<RuntimeEvent, { type: "user-input.requested" }>;
 type Resolved = Extract<RuntimeEvent, { type: "user-input.resolved" }>;
@@ -38,7 +38,7 @@ describe("blocking Kone question calls", () => {
     expect(questions.respond("other-thread", id, { q0: "Blue" })).toBe(false);
     expect(settled).toBe(false);
     expect(questions.respond("t", id, { q0: "Blue" })).toBe(true);
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
     expect(questions.respond("t", id, { q0: "Green" })).toBe(false);
     expect(events.map((e) => e.type)).toEqual(["user-input.requested", "user-input.resolved"]);
   });
@@ -51,8 +51,8 @@ describe("blocking Kone question calls", () => {
     questions.respond("t", requested()[0]!.requestId, { q0: "Blue" });
     expect(requested()).toHaveLength(2);
     questions.respond("t", requested()[1]!.requestId, { q0: "Keep it simple" });
-    expect(await first).toEqual({ q0: "Blue" });
-    expect(await second).toEqual({ q0: "Keep it simple" });
+    expect(await first).toEqual({ answers: { q0: "Blue" } });
+    expect(await second).toEqual({ answers: { q0: "Keep it simple" } });
   });
 
   test("cancellation unblocks tools and never resurfaces a cancelled queued dialog", async () => {
@@ -62,22 +62,34 @@ describe("blocking Kone question calls", () => {
     questions.cancel("t", "unrelated-turn");
     expect(events).toHaveLength(1);
     questions.cancel("t", "turn");
-    expect(await first).toEqual({});
-    expect(await second).toEqual({});
+    expect(await first).toEqual({ answers: {} });
+    expect(await second).toEqual({ answers: {} });
     expect(requested()).toHaveLength(1);
     // Only the dialog that showed is announced resolved; the queued one never surfaced.
     expect(events.filter((e) => e.type === "user-input.resolved")).toHaveLength(1);
   });
 
-  test("MCP cancellation and session revocation clear the dialog", async () => {
+  test("answer attachments ride the resolved event and the tool's reply", async () => {
     const { questions, events, requested } = fixture();
+    const attachment: ChatAttachment = { type: "image", id: "att_1", name: "shot.png", mimeType: "image/png", sizeBytes: 3 };
+    const answer = questions.ask(request);
+    const id = requested()[0]!.requestId;
+    expect(questions.respond("t", id, {}, { q0: [attachment] })).toBe(true);
+    expect(await answer).toEqual({ answers: {}, attachments: { q0: [attachment] } });
+    expect(events.find((e) => e.type === "user-input.resolved")).toMatchObject({
+      answers: {},
+      attachments: { q0: [attachment] },
+    });
+  });
+
+  test("MCP cancellation and session revocation clear the dialog", async () => {    const { questions, events, requested } = fixture();
     const controller = new AbortController();
     const answer = questions.ask({ ...request, signal: controller.signal });
     const id = requested()[0]!.requestId;
     controller.abort();
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(questions.respond("t", id, { q0: "late" })).toBe(false);
-    expect(await questions.ask({ ...request, signal: controller.signal })).toEqual({});
+    expect(await questions.ask({ ...request, signal: controller.signal })).toEqual({ answers: {} });
     expect(events).toHaveLength(2);
   });
 });
@@ -104,8 +116,8 @@ describe("one question queue for Kone and provider asks", () => {
     expect(questions.respond("t", otherKoneId, { q0: "wrong thread" })).toBe(false);
     questions.respond("t", firstKoneId, { q0: "Blue" });
     questions.respond("other", otherKoneId, { q0: "Green" });
-    expect(await first).toEqual({ q0: "Blue" });
-    expect(await second).toEqual({ q0: "Green" });
+    expect(await first).toEqual({ answers: { q0: "Blue" } });
+    expect(await second).toEqual({ answers: { q0: "Green" } });
   });
 
   test("ending a thread cannot drop another thread's queued ask with the same ID", async () => {
@@ -118,11 +130,11 @@ describe("one question queue for Kone and provider asks", () => {
     const otherKoneId = requested()[1]!.requestId;
 
     questions.end("t", "turn");
-    expect(await first).toEqual({});
+    expect(await first).toEqual({ answers: {} });
     expect(requested()).toHaveLength(2);
     expect(questions.admit(providerResolved("shared"))).toBe(false);
     questions.respond("other", otherKoneId, { q0: "Green" });
-    expect(await second).toEqual({ q0: "Green" });
+    expect(await second).toEqual({ answers: { q0: "Green" } });
     expect(requested()[2]).toMatchObject({ threadId: "other", requestId: "shared" });
     expect(questions.admit({ ...providerResolved("shared"), threadId: "other" })).toBe(true);
   });
@@ -139,7 +151,7 @@ describe("one question queue for Kone and provider asks", () => {
     const koneId = requested()[1]!.requestId;
     expect(koneId.startsWith("question:")).toBe(true);
     expect(questions.respond("t", koneId, { q0: "Blue" })).toBe(true);
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
   });
 
   test("a provider's ask waits behind a Kone question; resolved while queued, it never surfaces", async () => {
@@ -152,7 +164,7 @@ describe("one question queue for Kone and provider asks", () => {
     expect(questions.admit(providerResolved("native-1"))).toBe(true);
     expect(events).toHaveLength(1);
     questions.respond("t", requested()[0]!.requestId, { q0: "Blue" });
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
     expect(requested().map((e) => e.requestId)).toEqual([requested()[0]!.requestId, "native-2"]);
     // A provider's ask is never answered here: its adapter owns the reply.
     expect(questions.respond("t", "native-2", { q0: "x" })).toBe(false);
@@ -164,7 +176,7 @@ describe("one question queue for Kone and provider asks", () => {
     const kone = questions.ask(request);
     questions.admit(providerAsk("native-next", "next-turn"));
     questions.cancel("t");
-    expect(await kone).toEqual({});
+    expect(await kone).toEqual({ answers: {} });
     expect(requested().map((e) => e.requestId)).toEqual(["native-1"]);
     questions.end("t", "turn");
     expect(requested().map((e) => e.requestId)).toEqual(["native-1", "native-next"]);

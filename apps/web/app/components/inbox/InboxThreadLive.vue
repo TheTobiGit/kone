@@ -31,7 +31,15 @@ import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { resolveBranchDrift } from "~/utils/branchDrift";
-import type { ApprovalDecision, ChatAttachment, GitRemote, SkillReference, UserInputAnswers } from "~/types/desktop";
+import type {
+  ApprovalDecision,
+  ChatAttachment,
+  GitRemote,
+  SkillReference,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+} from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import type { SessionSummary } from "~/types/session";
 import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 
@@ -110,14 +118,20 @@ const composerOpen = ref(false);
 const pendingUserInput = computed(() => session.value?.pendingUserInput.value ?? null);
 const pendingApproval = computed(() => session.value?.pendingApproval.value ?? null);
 
-// Answer the agent's live question — hands the picked answers back so the
-// parked tool call resolves and the turn continues.
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
-  void session.value?.respondUserInput(requestId, answers);
+// Answer the agent's live question — hands the picked answers, and any files
+// uploaded for them, back so the parked tool call resolves and the turn
+// continues.
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+  owner?: UserInputOwner,
+): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string): void {
-  void session.value?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — resolves the parked request and lets the
 // turn continue.
@@ -533,6 +547,9 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :user-input="pendingUserInput"
       :approval="pendingApproval"
       :approval-queue="session?.pendingApprovals.value"
+      :upload="session?.uploadAttachment"
+      :discard="session?.discardAttachment"
+            :owner="session ?? undefined"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
       @decide="onRespondApproval"

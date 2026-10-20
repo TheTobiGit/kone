@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -414,6 +414,18 @@ describe("AgentService recovery bookkeeping", () => {
     expect(pending[0].requestId).toBe("req-2");
   });
 
+  test("files on a fixed-choice provider question are refused, not dropped", async () => {
+    const base = { ...codexBase, threadId: "t-fixed-choice" };
+    codexEmit({ ...base, type: "user-input.requested" as const, requestId: "req-fixed", turnId: "turn-1",
+      questions: [{ id: "q", header: "Q", question: "Which one?", options: [{ label: "Beta" }], fixedChoice: true }] });
+    const file = { type: "file" as const, id: "att_fixed", name: "brief.pdf", mimeType: "application/pdf", sizeBytes: 5 };
+    await expect(service.respondToUserInput(base.threadId, "req-fixed", { q: "Beta" }, { q: [file] }))
+      .rejects.toThrow("only takes one of its options");
+    // The adapter answers it without files; its resolution clears the ask.
+    codexEmit({ ...base, type: "user-input.resolved" as const, requestId: "req-fixed", answers: { q: "Beta" } });
+    expect(service.pendingInteractions().find((p) => p.requestId === "req-fixed")).toBeUndefined();
+  });
+
   test("Kone questions park the live turn, recover after reload, and answer without sending", async () => {
     const base = { ...codexBase, threadId: "t-kone-question" };
     codexEmit({ ...base, type: "turn.started", turnId: "question-turn" });
@@ -424,7 +436,7 @@ describe("AgentService recovery bookkeeping", () => {
     if (!pending) throw new Error("missing recoverable question");
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: "user-input" });
     expect(await service.respondToUserInput(base.threadId, pending.requestId, { q0: "Blue" })).toEqual({ owned: true });
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: null });
     expect(FakeAdapter.sentTurns).toHaveLength(sentBefore);
@@ -438,9 +450,9 @@ describe("AgentService recovery bookkeeping", () => {
     const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn",
       questions: [{ id: "q0", header: "Question", question: "Which one?", options: [] }] });
     codexEmit({ ...base, type: "turn.aborted", turnId: "question-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
-    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({});
+    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({ answers: {} });
   });
 
   test("a provider's question and a Kone question on one thread show one at a time, and none is hidden", async () => {
@@ -466,7 +478,7 @@ describe("AgentService recovery bookkeeping", () => {
       questions: [{ id: "q", header: "Native", question: "Again?" }] });
     expect(parked().map((p) => p.requestId)).toEqual([kone[0]!.requestId]);
     codexEmit({ ...base, type: "turn.aborted", turnId: "overlap-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(parked()).toHaveLength(0);
     expect(shown()).toHaveLength(2);
     // The adapter's late word on the dropped ask still reaches listeners.
@@ -481,6 +493,44 @@ describe("AgentService recovery bookkeeping", () => {
       state: "stopped",
     });
     expect(service.pendingInteractions()).toHaveLength(0);
+  });
+});
+
+describe("AgentService answer attachments", () => {
+  test("a row whose file was unlinked is refused as no longer available", async () => {
+    const { getAttachmentStore, resetAttachmentStoreForTests } = await import("./AttachmentStore.js");
+    const { getConversationStore, resetConversationStoreForTests } = await import("./ConversationStore.js");
+    const attDir = mkdtempSync(path.join(tmpdir(), "kone-agentservice-att-"));
+    // Both singletons are process-wide: drop whatever an earlier suite opened
+    // before pointing them at this test's temp dir.
+    resetAttachmentStoreForTests();
+    resetConversationStoreForTests();
+    setUserDataDir(attDir);
+    try {
+      getConversationStore().ensureThread({ threadId: "t-gone", projectPath: "/tmp", provider: "codex" });
+      const store = getAttachmentStore();
+      const saved = await store.save({
+        threadId: "t-gone",
+        name: "shot.png",
+        mimeType: "image/png",
+        data: Buffer.from([1, 2, 3]).toString("base64"),
+      });
+      const abs = store.resolveAbsPath(saved.id);
+      if (!abs) throw new Error("attachment was not stored");
+      // The row still resolves by id; only the bytes are gone.
+      unlinkSync(abs);
+      await expect(
+        service.respondToUserInput("t-gone", "question:unlinked", { q0: "Here it is" }, { q0: [saved] }),
+      ).rejects.toThrow(`"${saved.name}" is no longer available`);
+    } finally {
+      resetAttachmentStoreForTests();
+      resetConversationStoreForTests();
+      // Later tests in this file may lazily open the real store; point it back
+      // at the file-level temp dir rather than this test's, which is about to
+      // disappear.
+      setUserDataDir(userDataDir);
+      rmSync(attDir, { recursive: true, force: true });
+    }
   });
 });
 

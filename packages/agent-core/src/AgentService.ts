@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
 import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
@@ -56,7 +57,7 @@ import {
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
 import { snoozeUntilReset } from "./limitState.js";
-import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -104,7 +105,8 @@ import { getThreadDispatcher } from "./dispatch.js";
 import { steeredBlockIds } from "@kone/protocol/steer-split";
 import type { GatewayHandle } from "./gateway/index.js";
 import { withViewBlock } from "./gateway/viewPreamble.js";
-import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
+import { UserQuestionRequests, type UserQuestionReply, type UserQuestionRequest } from "./userQuestionRequests.js";
+import { withAnswerAttachmentRefs } from "./userInputAttachments.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -135,6 +137,7 @@ import type {
   TurnSendOptions,
   TurnStartResult,
   UserInputAnswers,
+  UserInputAnswerAttachments,
   UserInputRespondResult,
   RuntimeItem,
   RuntimeItemKind,
@@ -3376,16 +3379,52 @@ export class AgentService {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
   ): Promise<UserInputRespondResult> {
-    if (requestId.startsWith("question:")) {
-      return { owned: this.userQuestions.respond(threadId, requestId, answers) };
+    if (attachments) {
+      // A fixed-choice question sends back an option and nothing else, so its
+      // files would be dropped without a word: refuse them instead.
+      const fixed = this.userQuestions.questionsOf(threadId, requestId)
+        ?.filter((question) => question.fixedChoice && attachments[question.id]?.length);
+      if (fixed?.length) {
+        throw new Error("This question only takes one of its options: files can't be sent with the answer.");
+      }
+      await this.checkAnswerAttachments(attachments);
     }
-    return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
+    if (requestId.startsWith("question:")) {
+      return { owned: this.userQuestions.respond(threadId, requestId, answers, attachments) };
+    }
+    // A provider's question protocol carries text only: its files reach the
+    // model as paths in the answer. The adapters stay untouched.
+    const store = getAttachmentStore();
+    const withFiles = withAnswerAttachmentRefs(answers, attachments, (id) => store.resolveAbsPath(id));
+    return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, withFiles);
+  }
+
+  /** Every file an answer names must still be on disk, and one answer may not
+   *  carry more than the dialog offers: a stale chip is the user's to remove,
+   *  not something to hand the agent as a dead path. A row alone is not enough
+   *  — the file behind it may have been unlinked since it was uploaded. */
+  private async checkAnswerAttachments(attachments: UserInputAnswerAttachments): Promise<void> {
+    const files = Object.values(attachments).flat();
+    if (files.length > MAX_USER_INPUT_ANSWER_ATTACHMENTS) {
+      throw new Error(
+        `An answer can carry at most ${MAX_USER_INPUT_ANSWER_ATTACHMENTS} files. Remove ${files.length - MAX_USER_INPUT_ANSWER_ATTACHMENTS} and try again.`,
+      );
+    }
+    const store = getAttachmentStore();
+    for (const file of files) {
+      const abs = store.resolveAbsPath(file.id);
+      const info = abs ? await stat(abs).catch(() => null) : null;
+      if (!info?.isFile()) {
+        throw new Error(`"${file.name}" is no longer available. Attach it again, then send your answer.`);
+      }
+    }
   }
 
   /** The gateway awaits this promise; answering resumes the tool call itself. */
-  async askUser(request: UserQuestionRequest): Promise<UserInputAnswers> {
-    if (this.activeTurns.get(request.threadId) !== request.turnId || request.signal?.aborted) return {};
+  async askUser(request: UserQuestionRequest): Promise<UserQuestionReply> {
+    if (this.activeTurns.get(request.threadId) !== request.turnId || request.signal?.aborted) return { answers: {} };
     return this.userQuestions.ask(request);
   }
 
