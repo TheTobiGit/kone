@@ -1633,6 +1633,7 @@ useStudioRowView(registryPath, () =>
             :approval-queue="focusedThread?.pendingApprovals.value"
             :suppressed="isOverview"
             :upload="focusedThread?.uploadAttachment"
+            :discard="focusedThread?.discardAttachment"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

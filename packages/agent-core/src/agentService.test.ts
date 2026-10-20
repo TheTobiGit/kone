@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -481,6 +481,44 @@ describe("AgentService recovery bookkeeping", () => {
       state: "stopped",
     });
     expect(service.pendingInteractions()).toHaveLength(0);
+  });
+});
+
+describe("AgentService answer attachments", () => {
+  test("a row whose file was unlinked is refused as no longer available", async () => {
+    const { getAttachmentStore, resetAttachmentStoreForTests } = await import("./AttachmentStore.js");
+    const { getConversationStore, resetConversationStoreForTests } = await import("./ConversationStore.js");
+    const attDir = mkdtempSync(path.join(tmpdir(), "kone-agentservice-att-"));
+    // Both singletons are process-wide: drop whatever an earlier suite opened
+    // before pointing them at this test's temp dir.
+    resetAttachmentStoreForTests();
+    resetConversationStoreForTests();
+    setUserDataDir(attDir);
+    try {
+      getConversationStore().ensureThread({ threadId: "t-gone", projectPath: "/tmp", provider: "codex" });
+      const store = getAttachmentStore();
+      const saved = await store.save({
+        threadId: "t-gone",
+        name: "shot.png",
+        mimeType: "image/png",
+        data: Buffer.from([1, 2, 3]).toString("base64"),
+      });
+      const abs = store.resolveAbsPath(saved.id);
+      if (!abs) throw new Error("attachment was not stored");
+      // The row still resolves by id; only the bytes are gone.
+      unlinkSync(abs);
+      await expect(
+        service.respondToUserInput("t-gone", "question:unlinked", { q0: "Here it is" }, { q0: [saved] }),
+      ).rejects.toThrow(`"${saved.name}" is no longer available`);
+    } finally {
+      resetAttachmentStoreForTests();
+      resetConversationStoreForTests();
+      // Later tests in this file may lazily open the real store; point it back
+      // at the file-level temp dir rather than this test's, which is about to
+      // disappear.
+      setUserDataDir(userDataDir);
+      rmSync(attDir, { recursive: true, force: true });
+    }
   });
 });
 

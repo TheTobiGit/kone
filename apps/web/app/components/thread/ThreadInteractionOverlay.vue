@@ -27,11 +27,15 @@ const props = withDefaults(
     /** The owning session's attachment uploader, so answer files can be
      *  stored before the answer is sent. Absent hides the attach affordances. */
     upload?: (file: File) => Promise<ChatAttachment>;
+    /** Forget an answer file the user removed or never sent. Same session as
+     *  `upload`; absent leaves those files to the startup sweep. */
+    discard?: (attachment: ChatAttachment) => Promise<void>;
   }>(),
   {
     approvalQueue: undefined,
     suppressed: false,
     upload: undefined,
+    discard: undefined,
   },
 );
 
@@ -58,6 +62,7 @@ const emit = defineEmits<{
     :request-id="props.userInput.requestId"
     :questions="props.userInput.questions"
     :upload="props.upload"
+    :discard="props.discard"
     @answer="
       (requestId, answers, attachments) => emit('answer', requestId, answers, attachments)
     "

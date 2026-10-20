@@ -231,3 +231,91 @@ test("an answer's files come back with paths, images as blocks, and count as an 
   expect(reply.content[2]).toEqual({ type: "image", data: Buffer.from([9, 8, 7]).toString("base64"), mimeType: "image/png" });
   expect(reply.content).toHaveLength(3);
 });
+
+test("a question's stored images and visual are discarded once the answer comes back", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const one = path.join(dir, "one.png");
+  const two = path.join(dir, "two.png");
+  await writeFile(one, Buffer.from([1]));
+  await writeFile(two, Buffer.from([2]));
+  const discarded: Array<[string, string]> = [];
+  const registry = createRegistry(createQuestionTools(async () => ({ answers: { q0: "First" } }), fakeOptions({
+    discardAttachment: async (id, threadId) => { discarded.push([id, threadId]); return true; },
+  })));
+  await registry.call(ctx, "ask_question", { questions: [
+    { question: "Which?", images: [one, two] },
+    { question: "Layout?", visual: { title: "Layouts", html: "<h1>Layouts</h1>", height: 200 } },
+  ] });
+  expect(discarded).toEqual([["att_1", "t"], ["att_2", "t"], ["att_3", "t"]]);
+});
+
+test("a declined or cancelled dialog discards the question's media too", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const file = path.join(dir, "shot.png");
+  await writeFile(file, Buffer.from([1]));
+
+  const declined: string[] = [];
+  const declinedRegistry = createRegistry(createQuestionTools(async () => ({ answers: {} }), fakeOptions({
+    discardAttachment: async (id) => { declined.push(id); return true; },
+  })));
+  await declinedRegistry.call(ctx, "ask_question", { questions: [{ question: "Which?", images: [file] }] });
+  expect(declined).toEqual(["att_1"]);
+
+  // A transport cancel settles the same way, with the same cleanup.
+  const cancelled: string[] = [];
+  const questions = new UserQuestionRequests(() => {});
+  const registry = createRegistry(createQuestionTools(
+    (request) => questions.ask(request),
+    fakeOptions({ discardAttachment: async (id) => { cancelled.push(id); return true; } }),
+  ));
+  const controller = new AbortController();
+  const result = registry.call(
+    { ...ctx, signal: controller.signal },
+    "ask_question",
+    { questions: [{ question: "Wait?", images: [file] }] },
+  );
+  controller.abort();
+  await result;
+  expect(cancelled).toEqual(["att_1"]);
+});
+
+test("the user's answer files are never discarded with the question's media", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const file = path.join(dir, "shot.png");
+  await writeFile(file, Buffer.from([1]));
+  const answerFile: ChatAttachment = { type: "file", id: "att_answer", name: "brief.pdf", mimeType: "application/pdf", sizeBytes: 5 };
+  const discarded: string[] = [];
+  const registry = createRegistry(createQuestionTools(async () => ({
+    answers: { q0: null },
+    attachments: { q0: [answerFile] },
+  }), fakeOptions({
+    resolveAttachmentPath: (id) => `/store/${id}.bin`,
+    readAttachmentBytes: async () => null,
+    discardAttachment: async (id) => { discarded.push(id); return true; },
+  })));
+  await registry.call(ctx, "ask_question", { questions: [{ question: "Which?", images: [file] }] });
+  expect(discarded).toEqual(["att_1"]);
+});
+
+test("a store failure partway through discards what was already saved", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const one = path.join(dir, "one.png");
+  const two = path.join(dir, "two.png");
+  await writeFile(one, Buffer.from([1]));
+  await writeFile(two, Buffer.from([2]));
+  const discarded: string[] = [];
+  const options = fakeOptions({ discardAttachment: async (id) => { discarded.push(id); return true; } });
+  const save = options.saveAttachment;
+  let saved = 0;
+  const registry = createRegistry(createQuestionTools(async () => ({ answers: {} }), {
+    ...options,
+    saveAttachment: async (upload) => {
+      saved += 1;
+      if (saved === 2) throw new Error("disk full");
+      return save(upload);
+    },
+  }));
+  const reply = await registry.call(ctx, "ask_question", { questions: [{ question: "Which?", images: [one, two] }] });
+  expect(reply.isError).toBe(true);
+  expect(discarded).toEqual(["att_1"]);
+});

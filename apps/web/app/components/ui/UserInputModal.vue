@@ -49,6 +49,9 @@ const props = defineProps<{
    *  metadata. Absent hides every attach affordance — a host with nowhere to
    *  put the bytes offers no button that would fail. */
   upload?: (file: File) => Promise<ChatAttachment>;
+  /** Forget an answer file the user removed, or one this dialog closes without
+   *  sending. Absent leaves those bytes to the startup sweep. */
+  discard?: (attachment: ChatAttachment) => Promise<void>;
 }>();
 
 const { cue } = useSound();
@@ -79,6 +82,23 @@ const uploading = reactive<Record<string, UploadingFile[]>>({});
 const uploadErrors = reactive<Record<string, string>>({});
 const dragTarget = ref<string | null>(null);
 let uploadSeq = 0;
+/** The dialog's outcome is decided — answered, cancelled or unmounted. A file
+ *  that lands after that belongs to nobody and goes back to the store. */
+let settled = false;
+
+/** Hand one stored answer file back. Fire-and-forget: the dialog is on its way
+ *  out, and an orphaned upload is only the sweep's problem. */
+function discardUpload(attachment: ChatAttachment): void {
+  void props.discard?.(attachment).catch(() => {});
+}
+
+/** Every answer file still sitting on the dialog goes back — cancel and unmount
+ *  both end with nothing of the user's left unattached. */
+function discardAnswerAttachments(): void {
+  for (const list of Object.values(attachments)) {
+    for (const attachment of list) discardUpload(attachment);
+  }
+}
 
 /** The hidden per-question file pickers, opened by each question's attach
  *  button so the button itself stays the one named control. */
@@ -146,6 +166,11 @@ function attachFiles(q: UserInputQuestion, files: Iterable<File>): void {
     void upload(file)
       .then((attachment) => {
         uploading[q.id] = (uploading[q.id] ?? []).filter((row) => row.key !== key);
+        // The dialog closed while this was in flight: nobody can send it now.
+        if (settled) {
+          discardUpload(attachment);
+          return;
+        }
         (attachments[q.id] ??= []).push(attachment);
       })
       .catch((error: Error) => {
@@ -195,7 +220,10 @@ function onDrop(q: UserInputQuestion, event: DragEvent): void {
 }
 
 function removeAttachment(q: UserInputQuestion, id: string): void {
-  attachments[q.id] = (attachments[q.id] ?? []).filter((att) => att.id !== id);
+  const list = attachments[q.id] ?? [];
+  const gone = list.find((att) => att.id === id);
+  attachments[q.id] = list.filter((att) => att.id !== id);
+  if (gone) discardUpload(gone);
 }
 
 // Clicking an agent image opens the shared image viewer over the dialog.
@@ -262,6 +290,9 @@ function submit(): void {
   const ready = answers.value;
   if (!ready || closing.value || uploadingAny.value) return;
   cue("press");
+  // Everything on the answer is handed over with it: the files are the agent's
+  // now, so the unmount must not discard them.
+  settled = true;
   close(() =>
     emit(
       "answer",
@@ -276,6 +307,8 @@ function submit(): void {
 // adapter treats as "declined" so the turn can carry on.
 function cancel(): void {
   if (closing.value) return;
+  settled = true;
+  discardAnswerAttachments();
   dismiss(() => emit("cancel", props.requestId));
 }
 
@@ -317,6 +350,12 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  // The dialog went away without an answer (the host unmounted it, or the
+  // request was withdrawn): whatever was uploaded for it is unreferenced.
+  if (!settled) {
+    settled = true;
+    discardAnswerAttachments();
+  }
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("resize", syncHeight);
   ro?.disconnect();

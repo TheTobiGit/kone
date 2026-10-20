@@ -3389,6 +3389,8 @@ export type KoneAgentApi = {
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
    *  ChatAttachment the composer then carries on its next turn. */
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
+  /** Forget an uploaded file that was never sent with an answer. */
+  discardAttachment: (threadId: string, attachmentId: string) => Promise<boolean>;
   /** Return the verified absolute path on disk for an attachment ID. */
   getAttachmentPath: (attachmentId: string) => Promise<string | null>;
   /** Reveal an attachment in the host's file manager (Finder / Explorer). */

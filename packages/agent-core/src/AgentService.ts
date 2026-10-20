@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
 import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
@@ -3380,7 +3381,7 @@ export class AgentService {
     answers: UserInputAnswers,
     attachments?: UserInputAnswerAttachments,
   ): Promise<UserInputRespondResult> {
-    if (attachments) this.checkAnswerAttachments(attachments);
+    if (attachments) await this.checkAnswerAttachments(attachments);
     if (requestId.startsWith("question:")) {
       return { owned: this.userQuestions.respond(threadId, requestId, answers, attachments) };
     }
@@ -3393,8 +3394,9 @@ export class AgentService {
 
   /** Every file an answer names must still be on disk, and one answer may not
    *  carry more than the dialog offers: a stale chip is the user's to remove,
-   *  not something to hand the agent as a dead path. */
-  private checkAnswerAttachments(attachments: UserInputAnswerAttachments): void {
+   *  not something to hand the agent as a dead path. A row alone is not enough
+   *  — the file behind it may have been unlinked since it was uploaded. */
+  private async checkAnswerAttachments(attachments: UserInputAnswerAttachments): Promise<void> {
     const files = Object.values(attachments).flat();
     if (files.length > MAX_USER_INPUT_ANSWER_ATTACHMENTS) {
       throw new Error(
@@ -3403,7 +3405,9 @@ export class AgentService {
     }
     const store = getAttachmentStore();
     for (const file of files) {
-      if (!store.resolveAbsPath(file.id)) {
+      const abs = store.resolveAbsPath(file.id);
+      const info = abs ? await stat(abs).catch(() => null) : null;
+      if (!info?.isFile()) {
         throw new Error(`"${file.name}" is no longer available. Attach it again, then send your answer.`);
       }
     }

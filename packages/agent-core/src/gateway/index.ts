@@ -413,6 +413,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // same way; the visual's measurer is the one the host wired for `visual_show`.
   const questionOptions: QuestionToolOptions = {
     saveAttachment: (upload) => getAttachmentStore().save(upload),
+    discardAttachment: (id, threadId) => getAttachmentStore().discard(id, threadId),
   };
   if (input.measureVisual) questionOptions.measure = input.measureVisual;
   // A task list is for any thread with work to lay out, the assistant's too,
