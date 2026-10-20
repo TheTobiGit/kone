@@ -110,7 +110,9 @@ export function useSessionGates(deps: SessionGatesDeps) {
    *  answer travels and nothing restores a copy of it: a failed send only
    *  stops hiding it, so whatever the backend said meanwhile — resolved,
    *  aborted, the next question — is what shows, and a question still waiting
-   *  stays retryable. */
+   *  stays retryable. The answer's files belong to it only once the backend
+   *  takes it: a refused or stale answer hands them back, since a retry opens
+   *  a fresh dialog that will never send them. */
   async function respondUserInput(
     requestId: string,
     answers: UserInputAnswers,
@@ -119,13 +121,19 @@ export function useSessionGates(deps: SessionGatesDeps) {
     const api = bridge();
     if (!api) return;
     answeringUserInput.value = requestId;
+    let taken = false;
     try {
-      await api.respondUserInput(threadId.value, requestId, answers, attachments);
+      taken = (await api.respondUserInput(threadId.value, requestId, answers, attachments)).owned;
       // Taken, or waiting nowhere any more (a stale answer): done either way.
       if (parkedUserInput.value?.requestId === requestId) parkedUserInput.value = null;
     } catch {
       // The backend never took the answers.
     } finally {
+      if (!taken) {
+        for (const file of Object.values(attachments ?? {}).flat()) {
+          void api.discardAttachment(threadId.value, file.id).catch(() => false);
+        }
+      }
       if (answeringUserInput.value === requestId) answeringUserInput.value = null;
     }
   }
