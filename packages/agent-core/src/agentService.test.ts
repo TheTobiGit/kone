@@ -414,6 +414,18 @@ describe("AgentService recovery bookkeeping", () => {
     expect(pending[0].requestId).toBe("req-2");
   });
 
+  test("files on a fixed-choice provider question are refused, not dropped", async () => {
+    const base = { ...codexBase, threadId: "t-fixed-choice" };
+    codexEmit({ ...base, type: "user-input.requested" as const, requestId: "req-fixed", turnId: "turn-1",
+      questions: [{ id: "q", header: "Q", question: "Which one?", options: [{ label: "Beta" }], fixedChoice: true }] });
+    const file = { type: "file" as const, id: "att_fixed", name: "brief.pdf", mimeType: "application/pdf", sizeBytes: 5 };
+    await expect(service.respondToUserInput(base.threadId, "req-fixed", { q: "Beta" }, { q: [file] }))
+      .rejects.toThrow("only takes one of its options");
+    // The adapter answers it without files; its resolution clears the ask.
+    codexEmit({ ...base, type: "user-input.resolved" as const, requestId: "req-fixed", answers: { q: "Beta" } });
+    expect(service.pendingInteractions().find((p) => p.requestId === "req-fixed")).toBeUndefined();
+  });
+
   test("Kone questions park the live turn, recover after reload, and answer without sending", async () => {
     const base = { ...codexBase, threadId: "t-kone-question" };
     codexEmit({ ...base, type: "turn.started", turnId: "question-turn" });

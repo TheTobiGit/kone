@@ -100,6 +100,12 @@ export class UserQuestionRequests {
     return true;
   }
 
+  /** The questions of an ask still in the thread's queue, kone's or a
+   *  provider's, or undefined once it is gone. */
+  questionsOf(threadId: string, requestId: string): UserInputQuestion[] | undefined {
+    return this.pending.get(threadId)?.get(requestId)?.requested.questions;
+  }
+
   /** Unblock Kone's own question calls — the thread's, or one turn's. A
    *  provider's asks stay with the provider, which ends them with its turn. */
   cancel(threadId: string, turnId?: string): void {

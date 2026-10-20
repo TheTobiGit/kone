@@ -3381,7 +3381,16 @@ export class AgentService {
     answers: UserInputAnswers,
     attachments?: UserInputAnswerAttachments,
   ): Promise<UserInputRespondResult> {
-    if (attachments) await this.checkAnswerAttachments(attachments);
+    if (attachments) {
+      // A fixed-choice question sends back an option and nothing else, so its
+      // files would be dropped without a word: refuse them instead.
+      const fixed = this.userQuestions.questionsOf(threadId, requestId)
+        ?.filter((question) => question.fixedChoice && attachments[question.id]?.length);
+      if (fixed?.length) {
+        throw new Error("This question only takes one of its options: files can't be sent with the answer.");
+      }
+      await this.checkAnswerAttachments(attachments);
+    }
     if (requestId.startsWith("question:")) {
       return { owned: this.userQuestions.respond(threadId, requestId, answers, attachments) };
     }
