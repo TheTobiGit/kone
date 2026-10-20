@@ -110,6 +110,7 @@ import type {
   SessionStartInput,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
 } from "@kone/agent-core/types.js";
 import type { TurnSelection } from "@kone/agent-core/selection.js";
 
@@ -917,8 +918,13 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle(
     "agent:respond-user-input",
-    (_event, threadId: string, requestId: string, answers: UserInputAnswers) =>
-      svc.respondToUserInput(threadId, requestId, answers),
+    (
+      _event,
+      threadId: string,
+      requestId: string,
+      answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
+    ) => svc.respondToUserInput(threadId, requestId, answers, attachments),
   );
   // Nested subagent controls — scoped to one run inside a turn, so stopping or
   // steering a child never touches the parent conversation.

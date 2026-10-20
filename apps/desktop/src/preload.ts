@@ -88,6 +88,7 @@ import type {
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
   UserInputRespondResult,
 } from "@kone/agent-core/index.js";
 import type { AgentEventFrame } from "@kone/agent-core/eventSubscriptions.js";
@@ -629,8 +630,9 @@ const api = {
       threadId: string,
       requestId: string,
       answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
     ): Promise<UserInputRespondResult> =>
-      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
+      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers, attachments),
     stopSubagent: (threadId: string, toolUseId: string): Promise<void> =>
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
     steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>

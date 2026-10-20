@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createRegistry } from "../registry.js";
-import { createQuestionTools } from "./questions.js";
+import { createQuestionTools, type QuestionToolOptions } from "./questions.js";
 import type { GatewayToolContext } from "../schemas.js";
 import { UserQuestionRequests } from "../../userQuestionRequests.js";
-import type { RuntimeEvent } from "../../types.js";
+import type { ChatAttachment, RuntimeEvent, UserInputQuestion } from "../../types.js";
 
 const ctx: GatewayToolContext = { threadId: "t", turnId: "turn", provider: "codex", cwd: "/tmp", requestId: 1 };
 
@@ -93,7 +96,7 @@ test("the turn ending under an open question settles it as declined", async () =
 
 test("invalid or idle calls never open a dialog", async () => {
   let calls = 0;
-  const registry = createRegistry(createQuestionTools(async () => { calls++; return {}; }));
+  const registry = createRegistry(createQuestionTools(async () => { calls++; return { answers: {} }; }));
   expect((await registry.call(ctx, "ask_question", { questions: [] })).isError).toBe(true);
   expect((await registry.call({ ...ctx, turnId: null }, "ask_question", { questions: [{ question: "Q?" }] })).isError).toBe(true);
   expect((await registry.call(ctx, "ask_question", { questions: [{ question: " " }] })).isError).toBe(true);
@@ -105,4 +108,104 @@ test("every session is told to ask through the tool, never by message", () => {
   const [tool] = createQuestionTools();
   expect(tool?.promptGuidelines?.join(" ")).toContain("`ask_question`");
   expect(tool?.promptGuidelines?.join(" ")).toContain("never ask the user to answer in a new message");
+});
+
+// ── images and a visual on the question, files on the answer ────────────────
+
+function fakeOptions(overrides: Partial<QuestionToolOptions> = {}): QuestionToolOptions {
+  let saved = 0;
+  return {
+    saveAttachment: async (upload) => {
+      saved += 1;
+      return {
+        type: upload.mimeType.startsWith("image/") ? "image" : "file",
+        id: `att_${saved}`,
+        name: upload.name,
+        mimeType: upload.mimeType,
+        sizeBytes: Buffer.from(upload.data, "base64").length,
+      };
+    },
+    ...overrides,
+  };
+}
+
+test("a question's local images are stored and ride the question", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const file = path.join(dir, "before.png");
+  await writeFile(file, Buffer.from([1, 2, 3]));
+  let asked: UserInputQuestion[] = [];
+  const registry = createRegistry(createQuestionTools(async (request) => {
+    asked = request.questions;
+    return { answers: { q0: "The first" } };
+  }, fakeOptions()));
+  const reply = await registry.call(ctx, "ask_question", { questions: [{ question: "Which layout?", images: [file] }] });
+  expect(asked[0]?.images).toEqual([
+    { type: "image", id: "att_1", name: "before.png", mimeType: "image/png", sizeBytes: 3 },
+  ]);
+  expect(JSON.parse(reply.content[0]!.text)).toEqual({ answers: [{ question: "Which layout?", answer: "The first" }] });
+});
+
+test("a question image that is missing, not an image, or unasked for fails before the dialog", async () => {
+  let asked = 0;
+  const ask = async () => { asked += 1; return { answers: {} }; };
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const note = path.join(dir, "notes.txt");
+  await writeFile(note, "not an image");
+  const missing = path.join(dir, "missing.png");
+  const registry = createRegistry(createQuestionTools(ask, fakeOptions()));
+  for (const images of [[missing], [note]]) {
+    const reply = await registry.call(ctx, "ask_question", { questions: [{ question: "Which?", images }] });
+    expect(reply.isError).toBe(true);
+    expect(reply.content[0]!.text).toContain(images[0]!);
+  }
+  expect(asked).toBe(0);
+  const denied = await createRegistry(createQuestionTools(ask)).call(ctx, "ask_question", {
+    questions: [{ question: "Which?", images: [note] }],
+  });
+  expect(denied.isError).toBe(true);
+  expect(denied.content[0]!.text).toContain("capability_denied");
+  expect(asked).toBe(0);
+});
+
+test("a question's visual is stored and measured like one visual_show shows", async () => {
+  const heights: Array<[number, number]> = [[400, 300], [680, 280], [1140, 270]];
+  let asked: UserInputQuestion[] = [];
+  const registry = createRegistry(createQuestionTools(async (request) => {
+    asked = request.questions;
+    return { answers: { q0: "A" } };
+  }, fakeOptions({ measure: async () => heights })));
+  await registry.call(ctx, "ask_question", {
+    questions: [{ question: "Which layout?", visual: { title: "Layouts", html: "<h1>Layouts</h1>", height: 9_999 } }],
+  });
+  expect(asked[0]?.visual).toEqual({
+    attachmentId: "att_1",
+    title: "Layouts",
+    height: 2_000,
+    heights,
+  });
+});
+
+test("an answer's files come back with paths, images as blocks, and count as an answer", async () => {
+  const image: ChatAttachment = { type: "image", id: "att_9", name: "shot.png", mimeType: "image/png", sizeBytes: 3 };
+  const pdf: ChatAttachment = { type: "file", id: "att_10", name: "brief.pdf", mimeType: "application/pdf", sizeBytes: 5 };
+  const registry = createRegistry(createQuestionTools(async () => ({
+    answers: { q0: null },
+    attachments: { q0: [image, pdf] },
+  }), fakeOptions({
+    resolveAttachmentPath: (id) => `/store/${id}.bin`,
+    readAttachmentBytes: async (id) => (id === image.id ? Buffer.from([9, 8, 7]) : null),
+  })));
+  const reply = await registry.call(ctx, "ask_question", { questions: [{ question: "Which side is worse?" }] });
+  expect(JSON.parse(reply.content[0]!.text)).toEqual({ answers: [{
+    question: "Which side is worse?",
+    answer: null,
+    attachments: [
+      { name: "shot.png", mimeType: "image/png", path: "/store/att_9.bin" },
+      { name: "brief.pdf", mimeType: "application/pdf", path: "/store/att_10.bin" },
+    ],
+  }] });
+  expect(reply.content[1]!.type).toBe("text");
+  expect(reply.content[1]!.text).toContain("shot.png");
+  expect(reply.content[2]).toEqual({ type: "image", data: Buffer.from([9, 8, 7]).toString("base64"), mimeType: "image/png" });
+  expect(reply.content).toHaveLength(3);
 });

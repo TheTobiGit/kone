@@ -1,13 +1,25 @@
 import { describe, expect, test } from "bun:test";
 
-import type { UserInputQuestion } from "~/types/desktop";
-import { buildUserInputAnswers, emptyUserInputDraft, userInputAnswer } from "./userInputAnswers";
+import type { ChatAttachment, UserInputQuestion } from "~/types/desktop";
+import {
+  buildUserInputAnswers,
+  emptyUserInputDraft,
+  userInputAnswer,
+} from "./userInputAnswers";
 
 const single: UserInputQuestion = { id: "q0", header: "Color", question: "Which color?", options: [{ label: "Blue" }, { label: "Green" }] };
 const multi: UserInputQuestion = { ...single, id: "q1", question: "Which extras?", multiSelect: true };
 const free: UserInputQuestion = { id: "q2", header: "Notes", question: "Anything else?", options: [] };
 
 const draft = (patch: Partial<ReturnType<typeof emptyUserInputDraft>>) => ({ ...emptyUserInputDraft(), ...patch });
+
+const file = (id: string): ChatAttachment => ({
+  type: "file",
+  id,
+  name: `${id}.txt`,
+  mimeType: "text/plain",
+  sizeBytes: 12,
+});
 
 describe("userInputAnswer", () => {
   test("single-select sends the picked label", () => {
@@ -31,6 +43,15 @@ describe("userInputAnswer", () => {
     expect(userInputAnswer(free, draft({ text: " ship it " }))).toBe("ship it");
     expect(userInputAnswer(free, draft({}))).toBeNull();
   });
+
+  test("an attachment answers a question on its own", () => {
+    expect(userInputAnswer(free, draft({}), true)).toBe("");
+    expect(userInputAnswer(single, draft({}), true)).toBe("");
+    expect(userInputAnswer(multi, draft({}), true)).toEqual([]);
+    // Words still win over the attachment-only fallback.
+    expect(userInputAnswer(free, draft({ text: "ship it" }), true)).toBe("ship it");
+    expect(userInputAnswer(multi, draft({ picks: ["Blue"] }), true)).toEqual(["Blue"]);
+  });
 });
 
 describe("buildUserInputAnswers", () => {
@@ -44,5 +65,27 @@ describe("buildUserInputAnswers", () => {
 
   test("holds back while any question is unanswered", () => {
     expect(buildUserInputAnswers([single, free], { q0: draft({ picks: ["Blue"] }) })).toBeNull();
+  });
+
+  test("a question with a file but no words or picks still answers", () => {
+    expect(buildUserInputAnswers([single, multi, free], {
+      q0: draft({}),
+      q1: draft({}),
+      q2: draft({}),
+    }, {
+      q0: [file("a")],
+      q1: [file("b")],
+      q2: [file("c")],
+    })).toEqual({ q0: "", q1: [], q2: "" });
+  });
+
+  test("a file on another question does not answer this one", () => {
+    expect(buildUserInputAnswers([single, multi], { q0: draft({ picks: ["Blue"] }) }, {
+      q2: [file("c")],
+    })).toBeNull();
+  });
+
+  test("an empty attachment list does not answer a question", () => {
+    expect(buildUserInputAnswers([free], {}, { q2: [] })).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import type {
   ApprovalDecision,
   InteractionMode,
   ProviderKind,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
@@ -1382,10 +1383,15 @@ watch(pickedForProject, async (nextAgent, prevAgent) => {
   persistThreadSelection();
 });
 
-// Answer the agent's live question — hands the picked/typed answers back to the
-// adapter, which resolves the parked tool call and lets the turn continue.
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
-  void focusedThread.value?.respondUserInput(requestId, answers);
+// Answer the agent's live question — hands the picked/typed answers, and any
+// files uploaded for them, back to the adapter, which resolves the parked tool
+// call and lets the turn continue.
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+) {
+  void focusedThread.value?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
 function onCancelUserInput(requestId: string) {
@@ -1626,6 +1632,7 @@ useStudioRowView(registryPath, () =>
             :approval="focusedPendingApproval"
             :approval-queue="focusedThread?.pendingApprovals.value"
             :suppressed="isOverview"
+            :upload="focusedThread?.uploadAttachment"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

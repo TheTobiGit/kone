@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   KoneAgentApi,
   SpawnedThread,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import { seedFromBridge } from "../useCompaction";
@@ -104,16 +105,22 @@ export function useSessionGates(deps: SessionGatesDeps) {
   }
 
   /** Answer the parked request directly; stale answers never send a message
-   *  or start a turn. The prompt hides while the answer travels and nothing
-   *  restores a copy of it: a failed send only stops hiding it, so whatever
-   *  the backend said meanwhile — resolved, aborted, the next question — is
-   *  what shows, and a question still waiting stays retryable. */
-  async function respondUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
+   *  or start a turn. `attachments` are files already uploaded for each
+   *  question's answer, keyed by question id. The prompt hides while the
+   *  answer travels and nothing restores a copy of it: a failed send only
+   *  stops hiding it, so whatever the backend said meanwhile — resolved,
+   *  aborted, the next question — is what shows, and a question still waiting
+   *  stays retryable. */
+  async function respondUserInput(
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ): Promise<void> {
     const api = bridge();
     if (!api) return;
     answeringUserInput.value = requestId;
     try {
-      await api.respondUserInput(threadId.value, requestId, answers);
+      await api.respondUserInput(threadId.value, requestId, answers, attachments);
       // Taken, or waiting nowhere any more (a stale answer): done either way.
       if (parkedUserInput.value?.requestId === requestId) parkedUserInput.value = null;
     } catch {

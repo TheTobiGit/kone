@@ -1,5 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { EmitEvent, ProviderKind, RuntimeEvent, UserInputAnswers, UserInputQuestion } from "./types.js";
+import type {
+  EmitEvent,
+  ProviderKind,
+  RuntimeEvent,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+  UserInputQuestion,
+} from "./types.js";
+
+/** What a question call resolves with: the user's answers and, when they
+ *  attached anything to them, the files by question. */
+export type UserQuestionReply = {
+  answers: UserInputAnswers;
+  attachments?: UserInputAnswerAttachments;
+};
 
 export type UserQuestionRequest = {
   threadId: string;
@@ -19,7 +33,7 @@ type QueuedQuestion = {
   shown: boolean;
   /** Kone's own tool call, waiting on the answer. A provider's ask has none:
    *  its adapter resolves it and reports that with its own event. */
-  tool?: { resolve: (answers: UserInputAnswers) => void; removeAbort: () => void };
+  tool?: { resolve: (reply: UserQuestionReply) => void; removeAbort: () => void };
 };
 
 /** Every question a thread puts to the user, whoever asks it: Kone's blocking
@@ -35,8 +49,8 @@ export class UserQuestionRequests {
   constructor(private readonly emit: EmitEvent) {}
 
   /** The gateway awaits this; answering resolves the tool call, never a send. */
-  ask(request: UserQuestionRequest): Promise<UserInputAnswers> {
-    if (request.signal?.aborted) return Promise.resolve({});
+  ask(request: UserQuestionRequest): Promise<UserQuestionReply> {
+    if (request.signal?.aborted) return Promise.resolve({ answers: {} });
     const { threadId, turnId, provider, questions, signal } = request;
     const requestId = `question:${randomUUID()}`;
     return new Promise((resolve) => {
@@ -73,10 +87,15 @@ export class UserQuestionRequests {
 
   /** Answer one of Kone's own questions. False when it is not one, or no
    *  longer waits — a provider's ask is answered through its adapter. */
-  respond(threadId: string, requestId: string, answers: UserInputAnswers): boolean {
+  respond(
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ): boolean {
     const queued = this.pending.get(threadId)?.get(requestId);
     if (!queued?.tool) return false;
-    this.settle(queued, answers);
+    this.settle(queued, answers, attachments);
     this.showHead(threadId);
     return true;
   }
@@ -133,13 +152,19 @@ export class UserQuestionRequests {
     }
   }
 
-  private settle(queued: QueuedQuestion, answers: UserInputAnswers): void {
+  private settle(
+    queued: QueuedQuestion,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ): void {
     const { threadId, provider, requestId } = queued.requested;
     this.remove(queued);
     queued.tool?.removeAbort();
+    const reply: UserQuestionReply = { answers };
+    if (attachments && Object.keys(attachments).length > 0) reply.attachments = attachments;
     if (queued.shown) {
-      this.emit({ type: "user-input.resolved", threadId, provider, source: "kone.store", at: Date.now(), requestId, answers });
+      this.emit({ type: "user-input.resolved", threadId, provider, source: "kone.store", at: Date.now(), requestId, ...reply });
     }
-    queued.tool?.resolve(answers);
+    queued.tool?.resolve(reply);
   }
 }

@@ -424,7 +424,7 @@ describe("AgentService recovery bookkeeping", () => {
     if (!pending) throw new Error("missing recoverable question");
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: "user-input" });
     expect(await service.respondToUserInput(base.threadId, pending.requestId, { q0: "Blue" })).toEqual({ owned: true });
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: null });
     expect(FakeAdapter.sentTurns).toHaveLength(sentBefore);
@@ -438,9 +438,9 @@ describe("AgentService recovery bookkeeping", () => {
     const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn",
       questions: [{ id: "q0", header: "Question", question: "Which one?", options: [] }] });
     codexEmit({ ...base, type: "turn.aborted", turnId: "question-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
-    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({});
+    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({ answers: {} });
   });
 
   test("a provider's question and a Kone question on one thread show one at a time, and none is hidden", async () => {
@@ -466,7 +466,7 @@ describe("AgentService recovery bookkeeping", () => {
       questions: [{ id: "q", header: "Native", question: "Again?" }] });
     expect(parked().map((p) => p.requestId)).toEqual([kone[0]!.requestId]);
     codexEmit({ ...base, type: "turn.aborted", turnId: "overlap-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(parked()).toHaveLength(0);
     expect(shown()).toHaveLength(2);
     // The adapter's late word on the dropped ask still reaches listeners.
