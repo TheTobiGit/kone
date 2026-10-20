@@ -11,14 +11,20 @@ function fixture(respond: (
   requestId: string,
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
-) => Promise<{ owned: boolean }>) {
-  // SAFETY: this gate only uses respondUserInput from the bridge.
-  const api = { respondUserInput: async (
-    _thread: string,
-    id: string,
-    answers: UserInputAnswers,
-    attachments?: UserInputAnswerAttachments,
-  ) => respond(id, answers, attachments) } as never;
+) => Promise<{ owned: boolean }>, discarded: string[] = []) {
+  // SAFETY: this gate only uses respondUserInput and discardAttachment from the bridge.
+  const api = {
+    respondUserInput: async (
+      _thread: string,
+      id: string,
+      answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
+    ) => respond(id, answers, attachments),
+    discardAttachment: async (_thread: string, id: string) => {
+      discarded.push(id);
+      return true;
+    },
+  } as never;
   return useSessionGates({ threadId: ref("thread"), bridge: () => api,
     mockHasPendingApproval: () => false, mockRespondApproval: () => {} });
 }
@@ -47,6 +53,23 @@ test("answer attachments travel with their questions", async () => {
   };
   await gates.respondUserInput(question.requestId, { q0: "" }, files);
   expect(sent).toEqual([files]);
+});
+
+test("an answer's files go back unless the backend takes the answer", async () => {
+  const files = {
+    q0: [{ type: "image" as const, id: "att_1", name: "shot.png", mimeType: "image/png", sizeBytes: 4 }],
+  };
+  for (const [reply, expected] of [
+    [async () => ({ owned: true }), []],
+    [async () => ({ owned: false }), ["att_1"]],
+    [async () => { throw new Error("\"shot.png\" is no longer available."); }, ["att_1"]],
+  ] as const) {
+    const discarded: string[] = [];
+    const gates = fixture(reply, discarded);
+    gates.parkedUserInput.value = question;
+    await gates.respondUserInput(question.requestId, { q0: "" }, files);
+    expect(discarded).toEqual([...expected]);
+  }
 });
 
 test("failed answers restore the dialog, and a retry resolves it", async () => {
