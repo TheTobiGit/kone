@@ -2,14 +2,23 @@ import { expect, test } from "bun:test";
 import { ref } from "vue";
 import { useSessionGates } from "./sessionGates";
 import type { PendingUserInput } from "../agentTypes";
-import type { UserInputAnswers } from "~/types/desktop";
+import type { UserInputAnswerAttachments, UserInputAnswers } from "~/types/desktop";
 
 const question: PendingUserInput = { requestId: "question:call",
   questions: [{ id: "q0", header: "Question", question: "Color?", options: [] }] };
 
-function fixture(respond: (requestId: string, answers: UserInputAnswers) => Promise<{ owned: boolean }>) {
+function fixture(respond: (
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+) => Promise<{ owned: boolean }>) {
   // SAFETY: this gate only uses respondUserInput from the bridge.
-  const api = { respondUserInput: async (_thread: string, id: string, answers: UserInputAnswers) => respond(id, answers) } as never;
+  const api = { respondUserInput: async (
+    _thread: string,
+    id: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ) => respond(id, answers, attachments) } as never;
   return useSessionGates({ threadId: ref("thread"), bridge: () => api,
     mockHasPendingApproval: () => false, mockRespondApproval: () => {} });
 }
@@ -24,6 +33,20 @@ test("answers resolve through IPC; no send callback exists in the question flow"
   await gates.respondUserInput(question.requestId, { q0: "Blue" });
   expect(replies).toEqual([{ requestId: question.requestId, answers: { q0: "Blue" } }]);
   expect(gates.pendingUserInput.value).toBeNull();
+});
+
+test("answer attachments travel with their questions", async () => {
+  const sent: UserInputAnswerAttachments[] = [];
+  const gates = fixture(async (_requestId, _answers, attachments) => {
+    if (attachments) sent.push(attachments);
+    return { owned: true };
+  });
+  gates.parkedUserInput.value = question;
+  const files = {
+    q0: [{ type: "image" as const, id: "att_1", name: "shot.png", mimeType: "image/png", sizeBytes: 4 }],
+  };
+  await gates.respondUserInput(question.requestId, { q0: "" }, files);
+  expect(sent).toEqual([files]);
 });
 
 test("failed answers restore the dialog, and a retry resolves it", async () => {

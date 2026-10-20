@@ -20,6 +20,7 @@ import type {
   StoredThreadMeta,
   StoredThreadPage,
   TokenUsage,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import { useAgentProviders } from "~/composables/useAgentProviders";
@@ -1863,8 +1864,12 @@ export function useAgent(options: UseAgentOptions) {
   const steerSubagent = async (toolUseId: string, message: string) => {
     await active.value?.steerSubagent(toolUseId, message);
   };
-  const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
-    await active.value?.respondUserInput(requestId, answers);
+  const respondUserInput = async (
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ) => {
+    await active.value?.respondUserInput(requestId, answers, attachments);
   };
   const respondApproval = async (requestId: string, decision: ApprovalDecision) => {
     await active.value?.respondApproval(requestId, decision);

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import type { PendingApproval, PendingUserInput } from "~/composables/agentTypes";
-import type { ApprovalDecision, UserInputAnswers } from "~/types/desktop";
+import type {
+  ApprovalDecision,
+  ChatAttachment,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+} from "~/types/desktop";
 
 // The focused thread's live asks, in one place: the mid-turn question and the
 // parked tool approval both land bottom-centre over the composer's spot, each
@@ -19,16 +24,25 @@ const props = withDefaults(
     /** True while the host surface must not answer in place (the studio's
      *  overview grid). Renders nothing — keeps that guard in one place. */
     suppressed?: boolean;
+    /** The owning session's attachment uploader, so answer files can be
+     *  stored before the answer is sent. Absent hides the attach affordances. */
+    upload?: (file: File) => Promise<ChatAttachment>;
   }>(),
   {
     approvalQueue: undefined,
     suppressed: false,
+    upload: undefined,
   },
 );
 
 const emit = defineEmits<{
-  /** The question's answers, keyed by question id — resolves the parked call. */
-  answer: [requestId: string, answers: UserInputAnswers];
+  /** The question's answers, keyed by question id — resolves the parked call.
+   *  `attachments` carries stored files for the questions that have them. */
+  answer: [
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ];
   /** The question was dismissed — the caller answers it empty (declined). */
   cancel: [requestId: string];
   /** The approval decision — resolves the parked provider request. */
@@ -43,7 +57,10 @@ const emit = defineEmits<{
     contained
     :request-id="props.userInput.requestId"
     :questions="props.userInput.questions"
-    @answer="(requestId, answers) => emit('answer', requestId, answers)"
+    :upload="props.upload"
+    @answer="
+      (requestId, answers, attachments) => emit('answer', requestId, answers, attachments)
+    "
     @cancel="(requestId) => emit('cancel', requestId)"
   />
   <AgentApprovalModal

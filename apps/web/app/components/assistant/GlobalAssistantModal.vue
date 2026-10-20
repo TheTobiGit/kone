@@ -36,7 +36,13 @@ import {
   type ComposerDraft,
   type QueuedTurnEntry,
 } from "~/composables/useAgent";
-import type { ApprovalDecision, ChatAttachment, SkillReference, UserInputAnswers } from "~/types/desktop";
+import type {
+  ApprovalDecision,
+  ChatAttachment,
+  SkillReference,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+} from "~/types/desktop";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -159,8 +165,12 @@ const askOpen = computed(
   () => Boolean(pendingUserInput.value) || Boolean(pendingApproval.value),
 );
 
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
-  void session.value?.respondUserInput(requestId, answers);
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+): void {
+  void session.value?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
 function onCancelUserInput(requestId: string): void {
@@ -581,6 +591,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             :user-input="pendingUserInput"
             :approval="pendingApproval"
             :approval-queue="session?.pendingApprovals.value"
+            :upload="session?.uploadAttachment"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

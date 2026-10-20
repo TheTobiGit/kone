@@ -56,7 +56,7 @@ import {
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
 import { snoozeUntilReset } from "./limitState.js";
-import { copyTurnStamp, isCompactionSupported, StartCancelled } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -104,7 +104,8 @@ import { getThreadDispatcher } from "./dispatch.js";
 import { steeredBlockIds } from "@kone/protocol/steer-split";
 import type { GatewayHandle } from "./gateway/index.js";
 import { withViewBlock } from "./gateway/viewPreamble.js";
-import { UserQuestionRequests, type UserQuestionRequest } from "./userQuestionRequests.js";
+import { UserQuestionRequests, type UserQuestionReply, type UserQuestionRequest } from "./userQuestionRequests.js";
+import { withAnswerAttachmentRefs } from "./userInputAttachments.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -135,6 +136,7 @@ import type {
   TurnSendOptions,
   TurnStartResult,
   UserInputAnswers,
+  UserInputAnswerAttachments,
   UserInputRespondResult,
   RuntimeItem,
   RuntimeItemKind,
@@ -3376,16 +3378,40 @@ export class AgentService {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
   ): Promise<UserInputRespondResult> {
+    if (attachments) this.checkAnswerAttachments(attachments);
     if (requestId.startsWith("question:")) {
-      return { owned: this.userQuestions.respond(threadId, requestId, answers) };
+      return { owned: this.userQuestions.respond(threadId, requestId, answers, attachments) };
     }
-    return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
+    // A provider's question protocol carries text only: its files reach the
+    // model as paths in the answer. The adapters stay untouched.
+    const store = getAttachmentStore();
+    const withFiles = withAnswerAttachmentRefs(answers, attachments, (id) => store.resolveAbsPath(id));
+    return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, withFiles);
+  }
+
+  /** Every file an answer names must still be on disk, and one answer may not
+   *  carry more than the dialog offers: a stale chip is the user's to remove,
+   *  not something to hand the agent as a dead path. */
+  private checkAnswerAttachments(attachments: UserInputAnswerAttachments): void {
+    const files = Object.values(attachments).flat();
+    if (files.length > MAX_USER_INPUT_ANSWER_ATTACHMENTS) {
+      throw new Error(
+        `An answer can carry at most ${MAX_USER_INPUT_ANSWER_ATTACHMENTS} files. Remove ${files.length - MAX_USER_INPUT_ANSWER_ATTACHMENTS} and try again.`,
+      );
+    }
+    const store = getAttachmentStore();
+    for (const file of files) {
+      if (!store.resolveAbsPath(file.id)) {
+        throw new Error(`"${file.name}" is no longer available. Attach it again, then send your answer.`);
+      }
+    }
   }
 
   /** The gateway awaits this promise; answering resumes the tool call itself. */
-  async askUser(request: UserQuestionRequest): Promise<UserInputAnswers> {
-    if (this.activeTurns.get(request.threadId) !== request.turnId || request.signal?.aborted) return {};
+  async askUser(request: UserQuestionRequest): Promise<UserQuestionReply> {
+    if (this.activeTurns.get(request.threadId) !== request.turnId || request.signal?.aborted) return { answers: {} };
     return this.userQuestions.ask(request);
   }
 
