@@ -23,10 +23,14 @@ export function answerAttachmentRefLines(
   });
 }
 
-/** Fold each question's attachments into its answer text. A string answer keeps
- *  its words and gains the paths below them, an array (multi-select) gains them
- *  as a final entry, and an empty or skipped answer is just the paths. Returns
- *  the answers untouched when nothing was attached. */
+/** Fold each question's attachments into its answer. The paths always ride as
+ *  an entry of their own, never spliced into the answer's words: a picked
+ *  label has to reach a fixed-choice protocol verbatim (Antigravity matches
+ *  the first entry exactly), while list-taking ones (Codex, OpenCode) send
+ *  every entry and Claude joins them. So a string answer becomes [answer,
+ *  paths], a list gains the paths as its last entry, and an empty or skipped
+ *  answer is just the paths. Returns the answers untouched when nothing was
+ *  attached. */
 export function withAnswerAttachmentRefs(
   answers: UserInputAnswers,
   attachments: UserInputAnswerAttachments | undefined,
@@ -41,7 +45,7 @@ export function withAnswerAttachmentRefs(
     const refs = answerAttachmentRefLines(files, pathOf).join("\n");
     const answer = folded[questionId];
     if (Array.isArray(answer)) folded[questionId] = [...answer, refs];
-    else if (answer?.trim()) folded[questionId] = `${answer}\n\n${refs}`;
+    else if (answer?.trim()) folded[questionId] = [answer, refs];
     else folded[questionId] = refs;
   }
   return changed ? folded : answers;

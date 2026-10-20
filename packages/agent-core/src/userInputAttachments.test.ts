@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { answerAttachmentRefLines, withAnswerAttachmentRefs } from "./userInputAttachments.js";
+import { selectQuestionOption } from "./adapters/antigravityAcpProtocol.js";
 import type { ChatAttachment } from "./types.js";
 
 const image: ChatAttachment = { type: "image", id: "att_1", name: 'shot "one".png', mimeType: "image/png", sizeBytes: 3 };
@@ -14,9 +15,11 @@ describe("answer attachments for text-only question protocols", () => {
     ]);
   });
 
-  test("a string answer keeps its words with the paths below them", () => {
+  test("a string answer stays whole as the first entry, the paths after it", () => {
+    // A picked label must survive verbatim: fixed-choice protocols match it
+    // exactly, and read the first entry of a list.
     expect(withAnswerAttachmentRefs({ q0: "The left one" }, { q0: [image] }, pathOf)).toEqual({
-      q0: 'The left one\n\nAttached image "shot \\"one\\".png": "/store/shot one.png"',
+      q0: ["The left one", 'Attached image "shot \\"one\\".png": "/store/shot one.png"'],
     });
   });
 
@@ -38,5 +41,12 @@ describe("answer attachments for text-only question protocols", () => {
     expect(withAnswerAttachmentRefs({}, { q0: [gone] }, pathOf)).toEqual({
       q0: 'Attached image "gone.png": "att_gone"',
     });
+  });
+
+  test("a picked label still selects its option on a fixed-choice protocol", () => {
+    const folded = withAnswerAttachmentRefs({ q0: "Beta" }, { q0: [file] }, pathOf);
+    const parsed = { question: { id: "q0", header: "Pick", question: "Pick", options: [{ label: "Alpha" }, { label: "Beta" }] }, optionIds: ["a", "b"] };
+    const params = { options: [{ optionId: "a", name: "Alpha" }, { optionId: "b", name: "Beta" }] };
+    expect(selectQuestionOption(parsed, folded, params)).toBe("b");
   });
 });
