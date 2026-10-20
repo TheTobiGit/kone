@@ -7,6 +7,7 @@ import type {
   UserInputAnswers,
 } from "~/types/desktop";
 import { seedFromBridge } from "../useCompaction";
+import { sendable } from "~/utils/agentStore";
 import type {
   PendingApproval,
   PendingUserInput,
@@ -123,7 +124,10 @@ export function useSessionGates(deps: SessionGatesDeps) {
     answeringUserInput.value = requestId;
     let taken = false;
     try {
-      taken = (await api.respondUserInput(threadId.value, requestId, answers, attachments)).owned;
+      // The dialog builds both from reactive state, and the bridge refuses a
+      // proxy: they leave as plain copies.
+      const payload = attachments && sendable(attachments);
+      taken = (await api.respondUserInput(threadId.value, requestId, sendable(answers), payload)).owned;
       // Taken, or waiting nowhere any more (a stale answer): done either way.
       if (parkedUserInput.value?.requestId === requestId) parkedUserInput.value = null;
     } catch {
