@@ -125,11 +125,11 @@ function onAnswerUserInput(
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
 ): void {
-  void session.value?.respondUserInput(requestId, answers, attachments);
+  void (agent.sessionForRequest(requestId) ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
 function onCancelUserInput(requestId: string): void {
-  void session.value?.respondUserInput(requestId, {});
+  void (agent.sessionForRequest(requestId) ?? session.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — resolves the parked request and lets the
 // turn continue.

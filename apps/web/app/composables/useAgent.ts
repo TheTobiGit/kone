@@ -1859,6 +1859,11 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
+  /** The session whose question this is. A dialog answers after its exit
+   *  animation, by which time the focus may have moved on — so an answer is
+   *  routed by the request it answers, never by whichever thread is in front. */
+  const sessionForRequest = (requestId: string) =>
+    sessions.value.find((s) => s.pendingUserInput.value?.requestId === requestId) ?? null;
   const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
     const s = active.value;
     if (!s) return Promise.resolve();
@@ -2244,6 +2249,7 @@ export function useAgent(options: UseAgentOptions) {
     // each column reads its own `blocks` ref, so one thread streaming a token
     // re-renders only its own column instead of every column on screen.
     sessions,
+    sessionForRequest,
     activeKey,
     focusThread,
     focusByOffset,

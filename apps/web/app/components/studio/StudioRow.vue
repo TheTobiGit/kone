@@ -1391,11 +1391,11 @@ function onAnswerUserInput(
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
 ) {
-  void focusedThread.value?.respondUserInput(requestId, answers, attachments);
+  void (agent.sessionForRequest(requestId) ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
 function onCancelUserInput(requestId: string) {
-  void focusedThread.value?.respondUserInput(requestId, {});
+  void (agent.sessionForRequest(requestId) ?? focusedThread.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — hands the decision back to the adapter, which
 // resolves the parked provider request and lets the turn continue.
