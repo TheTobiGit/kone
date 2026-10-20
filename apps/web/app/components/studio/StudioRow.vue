@@ -1390,12 +1390,13 @@ function onAnswerUserInput(
   requestId: string,
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
+  owner?: string,
 ) {
-  void (agent.sessionForRequest(requestId) ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
+  void (agent.sessionByKey(owner) ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string) {
-  void (agent.sessionForRequest(requestId) ?? focusedThread.value)?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: string) {
+  void (agent.sessionByKey(owner) ?? focusedThread.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — hands the decision back to the adapter, which
 // resolves the parked provider request and lets the turn continue.
@@ -1634,6 +1635,7 @@ useStudioRowView(registryPath, () =>
             :suppressed="isOverview"
             :upload="focusedThread?.uploadAttachment"
             :discard="focusedThread?.discardAttachment"
+            :owner="focusedThread?.key"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

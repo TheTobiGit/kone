@@ -193,7 +193,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const stopSubagent = gates.stopSubagent;
   const steerSubagent = gates.steerSubagent;
   const respondUserInput = gates.respondUserInput;
-  const askedUserInput = gates.askedUserInput;
   const respondApproval = gates.respondApproval;
 
   // Turn params live in the unit — the flat aliases below keep this
@@ -1384,7 +1383,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     stopSubagent,
     steerSubagent,
     respondUserInput,
-    askedUserInput,
     respondApproval,
     setProvider,
     setModel,
@@ -1861,12 +1859,11 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
-  /** The session whose question this is. A dialog answers after its exit
-   *  animation, by which time the focus may have moved on and the question
-   *  itself may be gone — so an answer is routed to the thread that showed
-   *  it, never by whichever thread is in front. */
-  const sessionForRequest = (requestId: string) =>
-    sessions.value.find((s) => s.askedUserInput(requestId)) ?? null;
+  /** The session a key names, or null. A question dialog hands back the key of
+   *  the session that asked, so its answer reaches that thread even after the
+   *  focus moved on during the dialog's exit. */
+  const sessionByKey = (key: string | undefined) =>
+    key === undefined ? null : sessions.value.find((s) => s.key === key) ?? null;
   const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
     const s = active.value;
     if (!s) return Promise.resolve();
@@ -2252,7 +2249,7 @@ export function useAgent(options: UseAgentOptions) {
     // each column reads its own `blocks` ref, so one thread streaming a token
     // re-renders only its own column instead of every column on screen.
     sessions,
-    sessionForRequest,
+    sessionByKey,
     activeKey,
     focusThread,
     focusByOffset,
