@@ -151,6 +151,11 @@ export class EventIngestRepo {
    *  so the stored one is stale) — and on a compaction boundary that arrives
    *  without one, for the same reason. */
   private readonly knownResumeAnchors = new Map<string, string | null>();
+  /** The model a provider swapped a thread's requests to (`model.rerouted`),
+   *  keyed by thread, for as long as the session that rerouted lives. Usage
+   *  rows stamp it in place of the thread's model while the thread still
+   *  names the model that was swapped away. */
+  private readonly reroutes = new Map<string, { from: string; to: string }>();
 
   private captureResumeSessionAtFromEvent(db: DatabaseSync, event: RuntimeEvent): void {
     const anchor = event.refs?.resumeSessionAt ?? null;
@@ -441,7 +446,7 @@ export class EventIngestRepo {
               // SAFETY: the split counts ride beyond TokenUsage's declared
               // fields; every read below defaults them.
               const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
-              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, {
+              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, event.provider, {
                 input,
                 output,
                 total,
@@ -453,7 +458,12 @@ export class EventIngestRepo {
           });
           break;
         }
+        case "model.rerouted": {
+          this.reroutes.set(event.threadId, { from: event.fromModel, to: event.toModel });
+          break;
+        }
         case "session.exited": {
+          this.reroutes.delete(event.threadId);
           // Seal any turn left running when the process died — mirrors the
           // renderer marking in-flight assistant blocks as failed.
           // SAFETY: the projection names only the live items' turn ids, read
@@ -844,6 +854,7 @@ export class EventIngestRepo {
     threadId: string,
     turnId: string,
     at: number,
+    provider: string,
     usage: {
       input?: number;
       output?: number;
@@ -856,8 +867,9 @@ export class EventIngestRepo {
     db.prepare(
       `INSERT INTO turn_usage
          (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
-          cache_read_tokens, cache_creation_tokens, reasoning_tokens, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, provider, model, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+               (SELECT CASE WHEN model = ? THEN ? ELSE model END FROM threads WHERE thread_id = ?), ?)
        ON CONFLICT(thread_id, turn_id) DO UPDATE SET
          input_tokens          = excluded.input_tokens,
          output_tokens         = excluded.output_tokens,
@@ -865,6 +877,8 @@ export class EventIngestRepo {
          cache_read_tokens     = excluded.cache_read_tokens,
          cache_creation_tokens = excluded.cache_creation_tokens,
          reasoning_tokens      = excluded.reasoning_tokens,
+         provider              = excluded.provider,
+         model                 = excluded.model,
          at                    = excluded.at`,
     ).run(
       threadId,
@@ -875,6 +889,10 @@ export class EventIngestRepo {
       Math.round(usage.cacheReadTokens ?? 0),
       Math.round(usage.cacheCreationTokens ?? 0),
       Math.round(usage.reasoningTokens ?? 0),
+      provider,
+      this.reroutes.get(threadId)?.from ?? null,
+      this.reroutes.get(threadId)?.to ?? null,
+      threadId,
       at,
     );
   }
