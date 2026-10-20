@@ -167,6 +167,28 @@ test("a question image that is missing, not an image, or unasked for fails befor
   expect(asked).toBe(0);
 });
 
+test("one bad file anywhere in the call stores none of the good ones", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "kone-question-"));
+  const good = path.join(dir, "good.png");
+  await writeFile(good, Buffer.from([1, 2, 3]));
+  const missing = path.join(dir, "missing.png");
+  let saved = 0;
+  const options = fakeOptions();
+  const save = options.saveAttachment;
+  const registry = createRegistry(createQuestionTools(async () => ({ answers: {} }), {
+    ...options,
+    saveAttachment: async (upload) => { saved += 1; return save(upload); },
+  }));
+  for (const questions of [
+    [{ question: "Which?", images: [good, missing] }],
+    [{ question: "Which?", images: [good] }, { question: "And?", visual: { title: "Broken", html: `<img src="${missing}">`, height: 200 } }],
+  ]) {
+    const reply = await registry.call(ctx, "ask_question", { questions });
+    expect(reply.isError).toBe(true);
+  }
+  expect(saved).toBe(0);
+});
+
 test("a question's visual is stored and measured like one visual_show shows", async () => {
   const heights: Array<[number, number]> = [[400, 300], [680, 280], [1140, 270]];
   let asked: UserInputQuestion[] = [];
