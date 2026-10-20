@@ -43,6 +43,7 @@ import type {
   UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -169,13 +170,13 @@ function onAnswerUserInput(
   requestId: string,
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
-  owner?: string,
+  owner?: UserInputOwner,
 ): void {
-  void (agent.sessionByKey(owner) ?? session.value)?.respondUserInput(requestId, answers, attachments);
+  void (owner ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string, owner?: string): void {
-  void (agent.sessionByKey(owner) ?? session.value)?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, {});
 }
 function onRespondApproval(requestId: string, decision: ApprovalDecision): void {
   void session.value?.respondApproval(requestId, decision);
@@ -594,7 +595,7 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             :approval-queue="session?.pendingApprovals.value"
             :upload="session?.uploadAttachment"
             :discard="session?.discardAttachment"
-            :owner="session?.key"
+            :owner="session ?? undefined"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

@@ -15,6 +15,7 @@ import type {
   UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import type { Project } from "~/composables/useProject";
 import type { WorkspaceChoice } from "~/utils/threadWorkspace";
 import type { StudioDestination } from "~/types/studio";
@@ -1390,13 +1391,13 @@ function onAnswerUserInput(
   requestId: string,
   answers: UserInputAnswers,
   attachments?: UserInputAnswerAttachments,
-  owner?: string,
+  owner?: UserInputOwner,
 ) {
-  void (agent.sessionByKey(owner) ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
+  void (owner ?? focusedThread.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string, owner?: string) {
-  void (agent.sessionByKey(owner) ?? focusedThread.value)?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner) {
+  void (owner ?? focusedThread.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — hands the decision back to the adapter, which
 // resolves the parked provider request and lets the turn continue.
@@ -1635,7 +1636,7 @@ useStudioRowView(registryPath, () =>
             :suppressed="isOverview"
             :upload="focusedThread?.uploadAttachment"
             :discard="focusedThread?.discardAttachment"
-            :owner="focusedThread?.key"
+            :owner="focusedThread ?? undefined"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

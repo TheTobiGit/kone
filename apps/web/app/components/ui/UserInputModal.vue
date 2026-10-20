@@ -16,6 +16,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import VisualFrame from "~/components/conversation/VisualFrame.vue";
 import VisualImageViewer from "~/components/conversation/VisualImageViewer.vue";
 import { formatFileSize } from "~/utils/formatFile";
@@ -49,10 +50,9 @@ const props = defineProps<{
    *  metadata. Absent hides every attach affordance — a host with nowhere to
    *  put the bytes offers no button that would fail. */
   upload?: (file: File) => Promise<ChatAttachment>;
-  /** The key of the session that asked. Handed back with the answer, so it
-   *  reaches that thread even when the focus moved on during the exit, and
-   *  provider request ids, unique only per thread, never pick another. */
-  owner?: string;
+  /** The session that asked. Handed back with the answer, so it reaches that
+   *  session even when the focus moved on during the exit. */
+  owner?: UserInputOwner;
   /** Forget an answer file the user removed, or one this dialog closes without
    *  sending. Absent leaves those bytes to the startup sweep. */
   discard?: (attachment: ChatAttachment) => Promise<void>;
@@ -67,9 +67,9 @@ const emit = defineEmits<{
     requestId: string,
     answers: UserInputAnswers,
     attachments: UserInputAnswerAttachments | undefined,
-    owner: string | undefined,
+    owner: UserInputOwner | undefined,
   ];
-  cancel: [requestId: string, owner: string | undefined];
+  cancel: [requestId: string, owner: UserInputOwner | undefined];
 }>();
 
 // Per-question working state, keyed by question id (see UserInputDraft): the
