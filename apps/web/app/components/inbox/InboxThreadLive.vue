@@ -425,6 +425,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :checkpoints="session?.checkpoints.value ?? []"
         :now="agent.now.value"
         :thread-id="row.threadId"
+        :thread-title="threadTitle"
         :agent-seed="row.threadId"
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"

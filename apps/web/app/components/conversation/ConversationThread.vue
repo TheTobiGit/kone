@@ -115,6 +115,9 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
+  /** The thread's name, as its header shows it — what a request's trace says
+   *  it was sent to. */
+  threadTitle?: string;
   /** The session's stored-transcript read came back empty-handed — the only
    *  thing that puts the "didn't load" banner up. */
   loadFailed?: boolean;
@@ -445,6 +448,9 @@ type EnrichedExchange = {
    *  quotes. */
   requestIsNotice: boolean;
   reply: AssistantBlock | undefined;
+  /** The reply whose turn the request's trace reads: its own, or for a steer
+   *  the turn never continued after, the reply above that took it in. */
+  traceReply: AssistantBlock | undefined;
   receipt: ReceiptState;
   parts: Map<string, AttachmentPartition>;
 };
@@ -720,14 +726,19 @@ const allExchanges = computed<EnrichedExchange[]>(() => {
         requestFrom: b.role === "user" && isSpeakingSender(b.sender) ? b.sender : null,
         requestIsNotice: b.role === "user" && b.sender?.kind === "system",
         reply: undefined,
+        traceReply: undefined,
         receipt: "sent",
         parts,
       });
     } else groups[groups.length - 1]!.blocks.push(b);
   }
+  let above: AssistantBlock | undefined;
   for (const g of groups) {
     const reply = g.blocks.find((b): b is AssistantBlock => b.role === "assistant");
     g.reply = reply;
+    const first = g.blocks[0];
+    g.traceReply = reply ?? (first?.role === "user" && first.steered ? above : undefined);
+    if (g.traceReply) above = g.traceReply;
     g.receipt = !reply ? "sent" : reply.state === "running" ? "delivered" : "read";
     for (const b of g.blocks) {
       if (b.role === "user" && b.attachments?.length && !g.parts.has(b.id)) {
@@ -1357,6 +1368,9 @@ watch(
           :busy="busy"
           :copied-path-id="copiedPathId"
           :time="clock(block.at)"
+          :reply="ex.traceReply"
+          :trace-thread-id="agentSeed ?? threadId ?? null"
+          :thread-title="threadTitle"
           @save="(text) => saveUserEdit(block, text)"
           @copy="copyUserRequest(block)"
           @scratchpad="addUserRequestToScratchpad(block)"

@@ -41,6 +41,7 @@ import type {
 import type { WorktreeSetupSnapshot } from "@kone/agent-core/worktreeSetup.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type { BoardView } from "@kone/agent-core/boardView.js";
+import type { TurnTraceRecord } from "@kone/agent-core/turnTraces.js";
 import type { KoneTaskList } from "@kone/protocol/kone-tasks";
 import type {
   ThreadExportDialogResult,
@@ -704,6 +705,10 @@ const api = {
         ipcRenderer.invoke("agent:history-thread", threadId),
       compactions: (threadId: string): Promise<CompactionRecord[]> =>
         ipcRenderer.invoke("agent:history-compactions", threadId),
+      // Every turn's trace on a thread, oldest first: tokens, cost and who
+      // answered.
+      turnTraces: (threadId: string): Promise<TurnTraceRecord[]> =>
+        ipcRenderer.invoke("agent:history-turn-traces", threadId),
       // Continuation links leaving a source thread, oldest first — the
       // timeline's "Handed to" markers.
       continuationsFromSource: (sourceThreadId: string): Promise<ContinuationLink[]> =>

@@ -28,6 +28,7 @@ import { serializeQueuedAttachments } from "./session/sessionQueue";
 import { registerDevHandOff } from "~/lib/devHandOffs";
 import { WEB_PROMPT, WEB_RESEARCH } from "~/lib/devWebResearch";
 import { CODE_PROMPT, CODE_WORK } from "~/lib/devCodeWork";
+import { recordDevTurnTrace } from "~/lib/devTraces";
 
 /** The team demo's turns, in order: the hand-offs, answering a contractor's
  *  question, deciding after a stop — and a contractor's own first turn. */
@@ -924,6 +925,13 @@ export function createMockTurnRunner(deps: {
         });
       }
       reduce({ ...base(), type: "turn.completed", turnId });
+      recordDevTurnTrace({
+        threadId: threadId.value,
+        turnId,
+        provider: provider.value,
+        turnsBefore: blocks.value.filter((b) => b.role === "assistant" && b.turnId !== turnId).length,
+        promptChars: prompt.length,
+      });
       sessionState.value = "ready";
       stopMock();
       if (nextQueued) {

@@ -23,6 +23,7 @@ import { cloneStageAt } from "~/composables/useGitClone";
 import type { DesktopAgentReach, DevBridge } from "~/utils/desktopBridge";
 import * as world from "./devMocks";
 import { devHandOffThreads } from "./devHandOffs";
+import { devTurnTraces } from "./devTraces";
 import { MOCK_MAINTENANCE, MOCK_MODELS, MOCK_STATUSES } from "./devProviders";
 
 export function createDevBridge(): DevBridge {
@@ -312,6 +313,7 @@ function createDevHistory(): DesktopAgentReach["history"] {
       threads.delete(threadId);
       return Promise.resolve();
     },
+    turnTraces: (threadId) => later(devTurnTraces(threadId)),
     setPinned: (threadId, pinned) => patch(threadId, { isPinned: pinned }),
     setDone: (threadId, done) => patch(threadId, { doneAt: done ? Date.now() : 0 }),
     setVisited: (threadId, at, force) => {
