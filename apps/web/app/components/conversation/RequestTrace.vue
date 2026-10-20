@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { formatCount, formatTokens, formatUsd } from "~/utils/usageFormat";
+import { formatCount, formatTokens } from "~/utils/usageFormat";
 import ModalShell from "~/components/ui/ModalShell.vue";
 import { useModalExit } from "~/composables/useModalExit";
 import type { AssistantBlock, UserBlock } from "~/composables/agentTypes";
@@ -10,20 +10,20 @@ import type { TurnTraceRecord } from "~/types/desktop";
 import { desktopBridge } from "~/utils/desktopBridge";
 import { TRACE_TONES, type TraceTokenKind } from "~/utils/traceTones";
 
-// A request's trace: what it cost and what carried it, opened over the thread
+// A request's trace: what the message sent, opened over the thread
 // from the request itself. It grows out of the bubble and shrinks back into
 // it, like every card in kone, so the conversation stays put under the scrim.
 //
-// The card quotes the request, leads with the turn's size and price, then
-// shows where the tokens went as one proportional bar, itemized beneath it.
+// The card quotes the request, leads with how many tokens it sent, then
+// shows where they came from as one proportional bar, itemized beneath it.
 // The date and thread sit quietly in the foot band.
-// It is the request's trace, so who answered (model, provider, effort) stays
-// in the data for the response's trace and isn't drawn here.
+// It is the request's trace, so the answer's side (output, reasoning, cost,
+// and who answered) stays in the data for the response's trace.
 //
 // Tokens belong to the turn the request started, not to the words typed: the
 // provider bills the whole prompt the turn sent (instructions, history, tool
-// results) and reports it once per turn. So the big number is the turn's, and
-// the request's own words are marked in the grid as the small share they are.
+// results) and reports it once per turn. So the big number is everything the
+// message sent, and its own words are noted as the small share they are.
 
 const props = defineProps<{
   block: UserBlock;
@@ -71,18 +71,17 @@ watch(
 );
 
 const input = computed(() => trace.value?.inputTokens ?? 0);
-const output = computed(() => trace.value?.outputTokens ?? 0);
 const cacheRead = computed(() => trace.value?.cacheReadTokens ?? 0);
 const cacheWrite = computed(() => trace.value?.cacheCreationTokens ?? 0);
 const freshInput = computed(() => Math.max(0, input.value - cacheRead.value - cacheWrite.value));
-const reasoning = computed(() => Math.min(trace.value?.reasoningTokens ?? 0, output.value));
-const total = computed(() => trace.value?.totalTokens ?? input.value + output.value);
+/** The share of what was sent that came back from the cache. */
+const cachedShare = computed(() => (input.value ? Math.round((cacheRead.value / input.value) * 100) : 0));
 
 /** The words typed, as tokens: about four characters each. An estimate, and
  *  labelled one — no provider reports a single message's share. */
 const ownTokens = computed(() => (props.block.text ? Math.max(1, Math.round(props.block.text.length / 4)) : 0));
 
-// ── where the tokens went: one bar ──────────────────────────────────────────
+// ── where the sent tokens came from: one bar ──────────────────────────────────────────
 type Kind = TraceTokenKind;
 type Part = { kind: Kind; label: string; tokens: number };
 const parts = computed<Part[]>(() =>
@@ -91,8 +90,6 @@ const parts = computed<Part[]>(() =>
       { kind: "cached", label: "From cache", tokens: cacheRead.value },
       { kind: "written", label: "Saved to cache", tokens: cacheWrite.value },
       { kind: "fresh", label: "New input", tokens: freshInput.value },
-      { kind: "output", label: "Output", tokens: output.value - reasoning.value },
-      { kind: "reasoning", label: "Reasoning", tokens: reasoning.value },
     ] satisfies Part[]
   ).filter((p) => p.tokens > 0),
 );
@@ -130,8 +127,6 @@ const tones = computed(() => {
     "--t-cached": t.cached,
     "--t-written": t.written,
     "--t-fresh": t.fresh,
-    "--t-output": t.output,
-    "--t-reasoning": t.reasoning,
   };
 });
 
@@ -230,24 +225,20 @@ onBeforeUnmount(() => {
           <p v-else-if="missing" class="tr-empty">{{ missing }}</p>
 
           <template v-else-if="trace">
-            <!-- The headline: the turn's size, price, and what went each way. -->
+            <!-- The headline: how much the message sent, and how much of it the cache carried. -->
             <div class="tr-figs">
               <div class="fig">
-                <span class="fig__v">{{ formatTokens(total) }}</span>
-                <span class="fig__k">tokens</span>
+                <span class="fig__v">{{ formatTokens(input) }}</span>
+                <span class="fig__k">tokens sent</span>
               </div>
-              <div v-if="trace.costUsd !== null" class="fig">
-                <span class="fig__v">{{ formatUsd(trace.costUsd) }}</span>
-                <span class="fig__k">cost</span>
-              </div>
-              <div class="fig">
-                <span class="fig__v">{{ formatTokens(input) }}<span class="fig__sep">/</span>{{ formatTokens(output) }}</span>
-                <span class="fig__k">in / out</span>
+              <div v-if="cacheRead" class="fig">
+                <span class="fig__v">{{ cachedShare }}%</span>
+                <span class="fig__k">from cache</span>
               </div>
             </div>
 
-            <!-- Where the tokens went: one bar, each kind its share of it. -->
-            <section class="tr-sec" aria-label="Where the tokens went">
+            <!-- Where the sent tokens came from: one bar, each kind its share of it. -->
+            <section class="tr-sec" aria-label="Where the sent tokens came from">
               <div
                 class="bar"
                 :class="{ 'bar--focus': focus }"
@@ -462,10 +453,6 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
-.fig__sep {
-  margin-inline: 2px;
-  color: var(--faint);
-}
 .fig__k {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -502,8 +489,6 @@ onBeforeUnmount(() => {
 .k--cached { --c: var(--t-cached); }
 .k--written { --c: var(--t-written); }
 .k--fresh { --c: var(--t-fresh); }
-.k--output { --c: var(--t-output); }
-.k--reasoning { --c: var(--t-reasoning); }
 .bar--focus .seg:not(.is-on) { opacity: 0.2; }
 
 .rows {
