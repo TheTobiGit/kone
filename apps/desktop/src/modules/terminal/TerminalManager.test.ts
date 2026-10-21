@@ -481,6 +481,28 @@ describe("TerminalManager.openCommand", () => {
     expect(restarted?.snapshot.history).toContain(banner);
   });
 
+  test("a complete sign-in env stays complete across restart", async () => {
+    const fake = fakePty();
+    const { mgr, spawns } = makeCommandManager(fake);
+    const launch = {
+      command: { file: "codex", args: ["login"] },
+      banner,
+      completeEnv: true,
+    };
+    await mgr.openCommand(
+      { terminalId: "signin", cwd: "/home/user", env: { PATH: "/usr/bin" } },
+      launch,
+    );
+    expect(spawns[0]?.completeEnv).toBe(true);
+
+    const restartPromise = mgr.restart({ terminalId: "signin" });
+    fake.emitExit(0);
+    await restartPromise;
+
+    expect(spawns[1]?.completeEnv).toBe(true);
+    expect(spawns[1]?.env).toEqual({ PATH: "/usr/bin" });
+  });
+
   test("onSessionEnded fires for a natural exit and for a close", async () => {
     const fake = fakePty();
     const { mgr } = makeCommandManager(fake);

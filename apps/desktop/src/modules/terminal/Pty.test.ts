@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { resolveProviderSignInLaunch } from "@kone/agent-core/providerSignIn.js";
 
 import {
   buildPtyEnv,
   createPtySubscriptions,
+  resolvePtyEnv,
   type NodePtyEventSource,
 } from "./Pty.js";
 
@@ -97,6 +103,61 @@ describe("buildPtyEnv", () => {
     const env = buildPtyEnv({ HOME: "/Users/me", FOO: undefined });
     expect(env.HOME).toBe("/Users/me");
     expect("FOO" in env).toBe(false);
+  });
+
+  test("blocklisted keys are dropped from the caller env too", () => {
+    const env = buildPtyEnv(
+      { PATH: "/usr/bin" },
+      { ELECTRON_RUN_AS_NODE: "1", PORT: "3000", ELECTRON_RENDERER_PORT: "9222" },
+    );
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.PORT).toBeUndefined();
+    expect(env.ELECTRON_RENDERER_PORT).toBeUndefined();
+  });
+});
+
+describe("the sign-in launch → PTY environment", () => {
+  test("a complete env keeps browser suppressors and runtime vars removed", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "kone-pty-env-"));
+    try {
+      const exe = path.join(dir, "codex");
+      writeFileSync(exe, "#!/bin/sh\nexit 0\n");
+      chmodSync(exe, 0o755);
+
+      const base = {
+        PATH: dir,
+        HOME: dir,
+        BROWSER: "www-browser",
+        NO_BROWSER: "true",
+        ELECTRON_RUN_AS_NODE: "1",
+        PORT: "3000",
+      };
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: { codex: { binaryPath: exe } },
+        env: base,
+      });
+      expect(launch.ok).toBe(true);
+      if (!launch.ok) throw new Error(launch.message);
+      expect(launch.env.BROWSER).toBeUndefined();
+      expect(launch.env.NO_BROWSER).toBeUndefined();
+
+      // The PTY's final env: complete, so the fresh inherited base is not
+      // merged back in — and the blocklist still scrubs the caller env.
+      const final = resolvePtyEnv({ env: launch.env, completeEnv: true }, base);
+      expect(final.BROWSER).toBeUndefined();
+      expect(final.NO_BROWSER).toBeUndefined();
+      expect(final.ELECTRON_RUN_AS_NODE).toBeUndefined();
+      expect(final.PORT).toBeUndefined();
+      expect(final.PATH).toBe(dir);
+      expect(final.TERM).toBe("xterm-256color");
+
+      // The pre-fix path (merge over a freshly inherited env) would restore
+      // the browser sentinels; complete envs must not.
+      expect(buildPtyEnv(base, launch.env).BROWSER).toBe("www-browser");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

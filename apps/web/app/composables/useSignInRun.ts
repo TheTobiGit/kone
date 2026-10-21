@@ -176,6 +176,10 @@ export function useSignInRun(options: UseSignInRunOptions) {
   let seen = "";
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  /** Exit 0 landed while the start IPC was still resolving. Its check was
+   *  refused ("starting"), so the settled start runs it instead of walking the
+   *  card back to "running" over a dead PTY. */
+  let exitAwaitsStart = false;
 
   function attachPty(id: string, token: number): void {
     const api = desktopBridge()?.terminal;
@@ -219,6 +223,13 @@ export function useSignInRun(options: UseSignInRunOptions) {
       return;
     }
     if (code === 0) {
+      // `canCheck()` refuses a check while the start is still pending. Record
+      // it and let `run()` fire the check once the PTY id is in hand; otherwise
+      // the settled start would leave a dead process sitting on "running".
+      if (state.value.phase === "starting") {
+        exitAwaitsStart = true;
+        return;
+      }
       void check();
       return;
     }
@@ -242,6 +253,9 @@ export function useSignInRun(options: UseSignInRunOptions) {
     detach?.();
     detach = null;
     if (!isRunActive(state.value)) return;
+    // An auth check may be in flight; its late result must not replace the
+    // reason the run ended (the ten-minute message) with failed/verified.
+    checkToken++;
     state.value = { phase: "cancelled", reason: "timeout" };
   }
 
@@ -309,6 +323,7 @@ export function useSignInRun(options: UseSignInRunOptions) {
     checkToken++;
     state.value = { phase: "starting" };
     seen = "";
+    exitAwaitsStart = false;
     await closePty();
     // Cancel/Escape during the close: the card is gone, so nothing may spawn.
     if (disposed || token !== runToken) return;
@@ -351,7 +366,19 @@ export function useSignInRun(options: UseSignInRunOptions) {
 
     // The PTY may already have printed its URL while `start` was resolving;
     // never walk that back to "running".
-    if (state.value.phase === "starting") state.value = { phase: "running" };
+    if (state.value.phase !== "starting") return;
+    // An exit-0 that arrived before `start` resolved: the process is already
+    // gone, so run the check it could not run then instead of showing Stop for
+    // a dead CLI.
+    if (exitAwaitsStart) {
+      exitAwaitsStart = false;
+      // Step out of "starting" first: `check()` refuses that phase, and the
+      // check itself moves straight on to "checking".
+      state.value = { phase: "running" };
+      void check();
+      return;
+    }
+    state.value = { phase: "running" };
   }
 
   /** Stop the login: close the PTY (tree-kill), then cancelled. */

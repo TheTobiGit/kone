@@ -69,6 +69,11 @@ type HarnessOptions = {
   finish?: ProviderSignInCommand["finish"];
   /** When set, every `close` waits for this latch. */
   closeGate?: () => Promise<void>;
+  /** When set, `start` holds its answer until this latch resolves — the window
+   *  where a live PTY can exit before `start()` has settled. */
+  startGate?: () => Promise<void>;
+  /** When set, `check` holds its answer until this latch resolves. */
+  checkGate?: () => Promise<void>;
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -78,6 +83,7 @@ function harness(options: HarnessOptions = {}) {
   const command: ProviderSignInCommand = { ...COMMAND, finish: options.finish ?? "browser" };
   let sequence = 0;
   let currentId: string | null = null;
+  let checks = 0;
 
   const emit = (event: TerminalEvent): void => {
     for (const listener of listeners) listener(event);
@@ -110,9 +116,18 @@ function harness(options: HarnessOptions = {}) {
         return Promise.resolve({ ok: false, command, message: options.startMessage });
       }
       currentId = input.terminalId;
-      return Promise.resolve({ ok: true, command, snapshot: snapshot(input.terminalId) });
+      const result = {
+        ok: true as const,
+        command,
+        snapshot: snapshot(input.terminalId),
+      };
+      return options.startGate ? options.startGate().then(() => result) : Promise.resolve(result);
     },
-    check: () => Promise.resolve(options.status ?? statusWith({})),
+    check: () => {
+      checks += 1;
+      const status = options.status ?? statusWith({});
+      return options.checkGate ? options.checkGate().then(() => status) : Promise.resolve(status);
+    },
   };
 
   installDevBridge({ ...createDevBridge(), terminal, providerSignIn });
@@ -124,6 +139,7 @@ function harness(options: HarnessOptions = {}) {
     log,
     closes,
     starts: (): number => log.filter((entry) => entry.startsWith("start:")).length,
+    checkCount: (): number => checks,
     output: (data: string): void => {
       if (!currentId) throw new Error("no PTY");
       emit({ terminalId: currentId, type: "output", sequence: ++sequence, data });
@@ -289,6 +305,54 @@ describe("useSignInRun", () => {
 
     expect(h.signIn.state.value).toEqual({ phase: "cancelled", reason: "timeout" });
     expect(h.signIn.process.value.state).toBe("none");
+  });
+
+  test("exit 0 before start() resolves still runs the check and never says running", async () => {
+    const gate = latch();
+    const h = harness({
+      startGate: () => gate.wait,
+      status: statusWith({ authLabel: "Cursor Pro" }),
+    });
+
+    const starting = h.signIn.run();
+    await settle();
+    expect(h.signIn.phase.value).toBe("starting");
+
+    // The CLI exits while the start IPC is still resolving: `canCheck()` would
+    // refuse a check now, so the exit has to be remembered.
+    h.exit(0);
+    expect(h.checkCount()).toBe(0);
+    expect(h.signIn.phase.value).toBe("starting");
+
+    gate.release();
+    await starting;
+    await settle();
+
+    expect(h.signIn.phase.value).toBe("verified");
+    expect(h.signIn.process.value.state).toBe("exited");
+    expect(h.checkCount()).toBe(1);
+  });
+
+  test("a check that resolves after the timeout cannot overwrite it", async () => {
+    const gate = latch();
+    const h = harness({
+      checkGate: () => gate.wait,
+      status: statusWith({ authLabel: "Cursor Pro" }),
+    });
+    await h.signIn.run();
+
+    const checking = h.signIn.check();
+    expect(h.signIn.phase.value).toBe("checking");
+
+    // The main process's ten-minute cap lands while the probe is in flight.
+    h.closed();
+    expect(h.signIn.state.value).toEqual({ phase: "cancelled", reason: "timeout" });
+
+    // The probe then resolves ready; it must not replace the timeout reason.
+    gate.release();
+    await checking;
+    await settle();
+    expect(h.signIn.state.value).toEqual({ phase: "cancelled", reason: "timeout" });
   });
 
   test("our own Stop stays the plain stop copy", async () => {

@@ -232,6 +232,24 @@ function signInEnv(base: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+/** Shell-quote one word for the command the user sees and copies. Spawning
+ *  never parses this text — node-pty gets the executable and argv array
+ *  directly — but a configured `binaryPath` may contain spaces, quotes or
+ *  metacharacters, and an unquoted display would paste as a different command
+ *  (or run the wrong thing). Simple tokens stay bare so the common case reads
+ *  exactly as before.
+ *
+ *  POSIX shells get single quotes with the `'\''` escape; Windows gets double
+ *  quotes with embedded quotes backslash-escaped. */
+export function shellQuote(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") {
+    if (/^[A-Za-z0-9_@%+=:,./\\-]+$/.test(value)) return value;
+    return `"${value.replace(/"/g, '\\"')}"`;
+  }
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Build the dialog's command row from a provider's login spec — the one place
  *  the executable name, args and finish mode are joined. */
 function commandFromSpec(
@@ -239,9 +257,12 @@ function commandFromSpec(
   spec: LoginSpec,
   settings: ProviderSettingsMap,
 ): ProviderSignInCommand {
+  const display = [binaryFor(provider, settings), ...spec.args]
+    .map((part) => shellQuote(part))
+    .join(" ");
   return {
     provider,
-    display: `${binaryFor(provider, settings)} ${spec.args.join(" ")}`,
+    display,
     cwd: "~",
     finish: spec.finish,
   };
