@@ -69,6 +69,15 @@ const SUBPROCESS_POLL_INTERVAL_MS = 1_000;
  *  second forever. */
 const MAX_SUBPROCESS_POLL_INTERVAL_MS = 60_000;
 
+/** A program a terminal was opened to run instead of the login shell, plus the
+ *  banner written into its history before the first byte. INTERNAL: only the
+ *  main process's provider sign-in path builds one; `terminal:open` never
+ *  forwards one, so a renderer can never name a command. */
+export type TerminalLaunch = {
+  command: { file: string; args: string[] };
+  banner?: string;
+};
+
 type TerminalSession = {
   terminalId: string;
   process: PtyProcess;
@@ -76,6 +85,9 @@ type TerminalSession = {
   /** Extra env the session was opened with — re-passed on restart so a shell
    *  never silently loses its environment. */
   env?: Record<string, string>;
+  /** The program this session was opened to run (sign-in terminals), re-run on
+   *  restart. Undefined for an ordinary shell session. */
+  launch?: TerminalLaunch;
   cols: number;
   rows: number;
   /** "closed" from the moment a close/restart starts tree-killing the PTY, so
@@ -121,6 +133,10 @@ type TerminalManagerOptions = {
 export class TerminalManager {
   private sessions = new Map<string, TerminalSession>();
   private emit: EmitTerminalEvent | null = null;
+  /** Main-process listeners told when a session exits or is closed — per
+   *  session bookkeeping (a sign-in timeout, a watcher) can drop its timer
+   *  without polling the manager. Not renderer-facing. */
+  private readonly sessionEndListeners = new Set<(terminalId: string) => void>();
   private spawn: typeof spawnPty;
   private captureProcessTable: () => Promise<ProcessChildrenMap | null>;
   private subprocessPollIntervalMs: number;
@@ -139,6 +155,23 @@ export class TerminalManager {
   /** Register the single event sink. Called once from the IPC layer. */
   onEvent(emit: EmitTerminalEvent): void {
     this.emit = emit;
+  }
+
+  /** Watch for one session ending naturally or by close. Returns a detach fn.
+   *  Internal only — see `sessionEndListeners`. */
+  onSessionEnded(listener: (terminalId: string) => void): () => void {
+    this.sessionEndListeners.add(listener);
+    return () => this.sessionEndListeners.delete(listener);
+  }
+
+  private notifySessionEnded(terminalId: string): void {
+    for (const listener of this.sessionEndListeners) {
+      try {
+        listener(terminalId);
+      } catch (error) {
+        console.error("[terminal] session-end listener failed:", error);
+      }
+    }
   }
 
   private fire(event: TerminalEvent): void {
@@ -344,6 +377,30 @@ export class TerminalManager {
   /** Open (or re-attach to) a terminal. If the session already lives and is
    *  running, returns its snapshot for replay; otherwise spawns a fresh PTY. */
   async open(input: TerminalOpenInput): Promise<TerminalSessionSnapshot> {
+    return this.openSession(input);
+  }
+
+  /** Open a terminal that runs a specific program rather than the login shell.
+   *  INTERNAL: the provider sign-in path is the only caller. A live session
+   *  under this id is refused rather than re-attached: re-attaching would hand
+   *  the caller a shell or an older program instead of the one it asked for.
+   *  The public `terminal:open` IPC never forwards a command — see
+   *  modules/terminal/ipc.ts. */
+  async openCommand(
+    input: TerminalOpenInput,
+    launch: TerminalLaunch,
+  ): Promise<TerminalSessionSnapshot> {
+    const existing = this.sessions.get(input.terminalId);
+    if (existing && existing.status !== "exited" && existing.status !== "closed") {
+      throw new Error(`Terminal '${input.terminalId}' is already running.`);
+    }
+    return this.openSession(input, launch);
+  }
+
+  private async openSession(
+    input: TerminalOpenInput,
+    launch?: TerminalLaunch,
+  ): Promise<TerminalSessionSnapshot> {
     const existing = this.sessions.get(input.terminalId);
     if (existing && existing.status !== "exited" && existing.status !== "closed") {
       // Re-attach: flush any buffered output so the snapshot's history is
@@ -360,7 +417,7 @@ export class TerminalManager {
       return snap;
     }
 
-    const session = await this.spawnSession(input);
+    const session = await this.spawnSession(input, launch);
     const snap = this.snapshot(session);
     this.fire(this.stamp(session, { terminalId: input.terminalId, type: "started", snapshot: snap }));
     this.schedulePoll();
@@ -369,7 +426,10 @@ export class TerminalManager {
 
   /** Spawn a fresh PTY for `terminalId` and wire the session's handlers. Used
    *  by both open (new session) and restart (replacing the old one). */
-  private async spawnSession(input: TerminalOpenInput): Promise<TerminalSession> {
+  private async spawnSession(
+    input: TerminalOpenInput,
+    launch?: TerminalLaunch,
+  ): Promise<TerminalSession> {
     const cols = input.cols ?? DEFAULT_COLS;
     const rows = input.rows ?? DEFAULT_ROWS;
     let process: PtyProcess;
@@ -379,6 +439,7 @@ export class TerminalManager {
         cols,
         rows,
         env: input.env,
+        command: launch?.command,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -416,6 +477,14 @@ export class TerminalManager {
       modeTracker: createModeReplayTracker(cols, rows),
     };
     if (input.env) session.env = input.env;
+    if (launch) {
+      session.launch = launch;
+      if (launch.banner !== undefined) {
+        // Before the program's first byte, and part of history so the `started`
+        // snapshot replays it even if the renderer attaches a moment later.
+        this.appendHistory(session, launch.banner);
+      }
+    }
 
     session.detachData = process.onData((data) => {
       // Raw bytes feed the mode tracker (it must see queries to track kitty
@@ -442,6 +511,7 @@ export class TerminalManager {
           signal: session.exitSignal ?? undefined,
         }),
       );
+      this.notifySessionEnded(session.terminalId);
     });
 
     this.sessions.set(input.terminalId, session);
@@ -492,7 +562,10 @@ export class TerminalManager {
       rows: input.rows ?? s.rows,
     };
     if (s.env) restartInput.env = s.env;
-    const spawn = await this.spawnSession(restartInput);
+    // A sign-in terminal restarts as itself: re-run the same CLI command and
+    // replay its banner, never fall back to an interactive shell the renderer
+    // did not ask for.
+    const spawn = await this.spawnSession(restartInput, s.launch);
     spawn.sequence = carriedSequence;
 
     const snap = this.snapshot(spawn);
@@ -564,6 +637,7 @@ export class TerminalManager {
     // fresh session under this id; only drop the one being closed.
     if (this.sessions.get(input.terminalId) === s) this.sessions.delete(input.terminalId);
     this.fire(this.stamp(s, { terminalId: input.terminalId, type: "closed" }));
+    this.notifySessionEnded(input.terminalId);
   }
 
   /** SIGTERM on the whole process tree with a 1s grace, then SIGKILL on the

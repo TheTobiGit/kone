@@ -1,5 +1,6 @@
 import { onBeforeUnmount, shallowRef } from "vue";
-import type { TerminalEvent, TerminalStatus } from "~/types/desktop";
+import type { TerminalEvent, TerminalSessionSnapshot, TerminalStatus } from "~/types/desktop";
+import { desktopBridge } from "~/utils/desktopBridge";
 
 // ── The project's terminal manager ───────────────────────────────────────────
 // A project-scoped registry of live PTY terminals, the sibling of useAgent.
@@ -42,6 +43,10 @@ export type UseTerminalOptions = {
   cwd: string | (() => string);
 };
 
+/** What `spawn(open)` resolves to when the caller supplies its own opener:
+ *  the strip key, plus why the opener failed, if it did. */
+export type TerminalSpawn = { key: string; error?: unknown };
+
 /** Cap the client replay buffer. Slightly above the backend's 512KB history so
  *  a fresh attach shows the full server scrollback; live sinks get every delta
  *  regardless, so this only bounds cold replay. */
@@ -65,13 +70,23 @@ function uid(): string {
 
 export function useTerminal(options: UseTerminalOptions) {
   const resolveCwd = () => (options.cwd instanceof Function ? options.cwd() : options.cwd);
-  const bridge = () => (import.meta.client ? window.koneDesktop?.terminal : undefined);
+  // The real preload wins; the dev stand-in answers when there is none, so a
+  // browser `nuxt dev` can serve the project strip the same registry a shell
+  // does. `import.meta.client` guards the bare `window` read during SSR; the
+  // stand-in itself is only ever installed on the client. desktopBridge()
+  // already prefers `window.koneDesktop`, so there is one lookup here, not two.
+  const bridge = () => desktopBridge()?.terminal;
 
   // Reactive list (status only). Buffers + sinks are kept off to the side, keyed
   // by terminalId, so streaming output never mutates reactive state.
   const sessions = shallowRef<TerminalSession[]>([]);
   const buffers = new Map<string, string>();
   const sinks = new Map<string, Set<TerminalSink>>();
+  // Only the terminals this instance spawned. The event stream is global (one
+  // window, many registries), so without this every registry would buffer every
+  // other's output — the sign-in card's transcript would sit in the project
+  // strip's memory after the card closes, which the card promises it doesn't.
+  const owned = new Set<string>();
   // Last event sequence that seeded each terminal's replay buffer. The manager
   // re-emits `started` on every re-attach; a stale re-seed would clobber a live
   // buffer mid-stream, so re-seeds only happen when the sequence has advanced.
@@ -116,6 +131,7 @@ export function useTerminal(options: UseTerminalOptions) {
     const api = bridge();
     if (api) {
       detach = api.onEvent((event: TerminalEvent) => {
+        if (!owned.has(event.terminalId)) return;
         switch (event.type) {
           case "started":
             // The manager re-emits `started` on every re-attach; only re-seed
@@ -176,8 +192,20 @@ export function useTerminal(options: UseTerminalOptions) {
     };
   }
 
-  /** Spawn a new terminal and return its stable strip key. */
-  async function spawn(): Promise<string> {
+  /** Spawn a new terminal and return its stable strip key. `open`, when given,
+   *  replaces the bridge's `open` call — the provider sign-in modal starts its
+   *  PTY through `providerSignIn.start` instead, but still wants the same
+   *  registry, buffer and attach plumbing every terminal gets. The callback
+   *  receives the id this composable minted, so the caller can subscribe to the
+   *  PTY's events before anything is spawned, and it reports its own failure
+   *  here rather than through a variable the caller has to read back. */
+  async function spawn(): Promise<string>;
+  async function spawn(
+    open: (terminalId: string, cwd: string) => Promise<TerminalSessionSnapshot>,
+  ): Promise<TerminalSpawn>;
+  async function spawn(
+    open?: (terminalId: string, cwd: string) => Promise<TerminalSessionSnapshot>,
+  ): Promise<string | TerminalSpawn> {
     const terminalId = uid();
     const key = uid();
     const session: TerminalSession = {
@@ -189,23 +217,30 @@ export function useTerminal(options: UseTerminalOptions) {
       childCommandLabel: null,
       attach: makeAttach(terminalId),
     };
+    owned.add(terminalId);
     buffers.set(terminalId, "");
     sessions.value = [...sessions.value, session];
 
+    function applySnapshot(snapshot: TerminalSessionSnapshot): void {
+      // `started` usually seeds the buffer first; only seed here if it hasn't
+      // arrived yet (avoid clobbering already-streamed output).
+      if (!buffers.get(terminalId)) {
+        seedBuffer(terminalId, snapshot.history);
+        lastSeededSequence.set(terminalId, snapshot.sequence);
+      }
+      setActivity(terminalId, snapshot.hasRunningSubprocess, snapshot.childCommandLabel);
+      setStatus(terminalId, snapshot.status);
+    }
+
     const api = bridge();
-    if (api) {
+    const openSession = open ?? (api ? (id: string, cwd: string) => api.open({ terminalId: id, cwd }) : null);
+    let error: unknown;
+    if (openSession) {
       try {
-        const snapshot = await api.open({ terminalId, cwd: session.cwd });
-        // `started` usually seeds the buffer first; only seed here if it hasn't
-        // arrived yet (avoid clobbering already-streamed output).
-        if (!buffers.get(terminalId)) {
-          seedBuffer(terminalId, snapshot.history);
-          lastSeededSequence.set(terminalId, snapshot.sequence);
-        }
-        setActivity(terminalId, snapshot.hasRunningSubprocess, snapshot.childCommandLabel);
-        setStatus(terminalId, snapshot.status);
-      } catch {
+        applySnapshot(await openSession(terminalId, session.cwd));
+      } catch (cause) {
         setStatus(terminalId, "error");
+        error = cause;
       }
     } else {
       // Browser dev mock (no Electron bridge): a tiny echo shell.
@@ -213,7 +248,9 @@ export function useTerminal(options: UseTerminalOptions) {
       seedBuffer(terminalId, "kone terminal (dev mock)\r\n$ ");
     }
 
-    return key;
+    // A caller with its own opener gets the failure handed back; the strip's
+    // plain `spawn()` still resolves to just the key, as it always has.
+    return open ? { key, error } : key;
   }
 
   /** Write user input to a terminal. */
@@ -274,6 +311,7 @@ export function useTerminal(options: UseTerminalOptions) {
     } catch {
       // best effort
     }
+    owned.delete(s.terminalId);
     buffers.delete(s.terminalId);
     sinks.delete(s.terminalId);
     lastSeededSequence.delete(s.terminalId);

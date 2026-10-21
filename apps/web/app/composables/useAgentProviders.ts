@@ -47,9 +47,12 @@ let watching = false;
  *  point at which kone stops caring what its providers are doing). `refreshNow`
  *  is the composable's own `refresh`, which dedupes itself; every instance
  *  closes over the same module state, so whichever one gets here first is as
- *  good as any other. */
+ *  good as any other. Called from the composable body, not from `prepare()`:
+ *  Settings can be reached straight from the home screen without anything having
+ *  asked to prepare the surface, and an in-app sign-in there still has to move
+ *  the row it just verified. */
 function watch(refreshNow: () => Promise<void>): void {
-  if (watching || !import.meta.client) return;
+  if (watching || typeof window === "undefined") return;
   watching = true;
   // The cheap path: the main process announces a discovery round only when it
   // actually differs, so a status corrected in the background lands here with
@@ -205,6 +208,11 @@ export function useAgentProviders() {
     }
   }
 
+  // Any surface that asks about providers is enough to keep them live — this
+  // is the app's one provider store, and the listener is what makes a sign-in
+  // completed elsewhere (the modal, another window) land here without a reload.
+  watch(refresh);
+
   /** Make the provider surface usable. Hydrates from disk first and returns as
    *  soon as that lands, kicking the live re-probe off behind it — callers that
    *  `await prepare()` are gating UI on it, and a cold CLI handshake is not
@@ -214,7 +222,6 @@ export function useAgentProviders() {
   async function prepare(): Promise<void> {
     if (preparing) return preparing;
     preparing = (async () => {
-      watch(refresh);
       await hydrate();
       if (statuses.value.length) void refresh().catch(() => {});
       else await refresh();

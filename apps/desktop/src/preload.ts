@@ -73,6 +73,8 @@ import type {
   ProviderKind,
   ProviderMaintenance,
   ProviderSettingsMap,
+  ProviderSignInCommand,
+  ProviderSignInStartInput,
   ProviderStatus,
   ProviderUpdateResult,
   RevertTurnCheckpointResult,
@@ -105,6 +107,7 @@ import type {
   TerminalSessionSnapshot,
   TerminalWriteInput,
 } from "./modules/terminal/index.js";
+import type { ProviderSignInStart } from "./agent/providerSignInIpc.js";
 import type {
   ScratchpadDeleteInput,
   ScratchpadListInput,
@@ -224,6 +227,24 @@ function ensureAgentEventListening(): void {
     }
   });
   void ipcRenderer.invoke("agent:subscribe");
+}
+
+// The terminal event stream gets the same fan-out contract. It matters more
+// here: unsubscribing on ANY detach tells the main process to stop sending to
+// the whole renderer, so a second listener (the sign-in modal) detaching would
+// silently kill the project terminal strip's stream. One renderer listener,
+// subscribed on the first callback and released on the last.
+type TerminalEventCallback = (event: TerminalEvent) => void;
+const terminalEventCallbacks = new Set<TerminalEventCallback>();
+let terminalEventListening = false;
+function ensureTerminalEventListening(): void {
+  if (terminalEventListening) return;
+  terminalEventListening = true;
+  ipcRenderer.on("terminal:event", (_event: IpcRendererEvent, event: TerminalEvent) => {
+    const callbacks = [...terminalEventCallbacks];
+    for (const cb of callbacks) cb(event);
+  });
+  void ipcRenderer.invoke("terminal:subscribe");
 }
 
 const api = {
@@ -967,14 +988,27 @@ const api = {
     ack: (input: TerminalAckInput): Promise<void> =>
       ipcRenderer.invoke("terminal:ack", input),
     onEvent: (cb: (event: TerminalEvent) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, ev: TerminalEvent) => cb(ev);
-      ipcRenderer.on("terminal:event", listener);
-      void ipcRenderer.invoke("terminal:subscribe");
+      ensureTerminalEventListening();
+      terminalEventCallbacks.add(cb);
       return () => {
-        ipcRenderer.removeListener("terminal:event", listener);
-        void ipcRenderer.invoke("terminal:unsubscribe");
+        terminalEventCallbacks.delete(cb);
+        if (terminalEventCallbacks.size === 0) {
+          terminalEventListening = false;
+          ipcRenderer.removeAllListeners("terminal:event");
+          void ipcRenderer.invoke("terminal:unsubscribe");
+        }
       };
     },
+  },
+  providerSignIn: {
+    // The renderer names a provider; the main process resolves the CLI's own
+    // login command. Nothing here can name a command or carry a credential.
+    command: (provider: ProviderKind): Promise<ProviderSignInCommand | null> =>
+      ipcRenderer.invoke("provider-signin:command", provider),
+    start: (input: ProviderSignInStartInput): Promise<ProviderSignInStart> =>
+      ipcRenderer.invoke("provider-signin:start", input),
+    check: (provider: ProviderKind): Promise<ProviderStatus> =>
+      ipcRenderer.invoke("provider-signin:check", provider),
   },
   scratchpad: {
     list: (input: ScratchpadListInput): Promise<ScratchpadRecord[]> =>

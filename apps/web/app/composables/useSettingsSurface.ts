@@ -1,5 +1,6 @@
 import { computed, ref } from "vue";
 import { useWindowSize } from "@vueuse/core";
+import type { ProviderKind } from "~/types/desktop";
 
 // Which settings pane is showing, and how far the launcher has to slide aside to
 // reveal it.
@@ -80,6 +81,11 @@ const pane = ref<SettingsPane>("root");
 const compact = ref(false);
 /** Whether the settings drawer is open. */
 const isOpen = ref(false);
+/** Which provider the providers page should select when it next lands. Set by a
+ *  deep link — the composer's status tray asking for "Open provider setup" — and
+ *  cleared by the pane as soon as it has honoured it. Module-scope like the rest,
+ *  because the asker and the pane share no parent that could pass it down. */
+const providerFocus = ref<ProviderKind | null>(null);
 
 export function useSettingsSurface() {
   const { width } = useWindowSize();
@@ -115,5 +121,25 @@ export function useSettingsSurface() {
     isOpen.value = false;
   }
 
-  return { pane, isPage, compact, isOpen, revealWidth, COLUMN_WIDTH, openPane, openDrawer, closeDrawer };
+  /** Deep link into Settings → Providers with one provider selected. The pane
+   *  consumes `providerFocus` on its next tick, whether it was already showing
+   *  or is only now being opened. */
+  function openProviderSetup(provider: ProviderKind) {
+    providerFocus.value = provider;
+    openDrawer("providers");
+  }
+
+  return {
+    pane,
+    isPage,
+    compact,
+    isOpen,
+    providerFocus,
+    revealWidth,
+    COLUMN_WIDTH,
+    openPane,
+    openDrawer,
+    openProviderSetup,
+    closeDrawer,
+  };
 }

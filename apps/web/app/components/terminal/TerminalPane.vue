@@ -11,6 +11,11 @@ import type { TerminalSession } from "~/composables/useTerminal";
 
 const props = defineProps<{
   session: TerminalSession;
+  /** Let a host peel one key chord back out of the PTY: xterm calls this for
+   *  every keydown it would otherwise send, and `true` means "handled — keep it
+   *  off the wire". The sign-in modal uses it to make Shift+Tab a way out of
+   *  the terminal without stealing any key the CLI itself wants. */
+  escapeKey?: (event: KeyboardEvent) => boolean;
 }>();
 
 const emit = defineEmits<{
@@ -169,6 +174,11 @@ onMounted(() => {
   term.loadAddon(fitAddon);
   term.open(container.value);
 
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown") return true;
+    return props.escapeKey?.(event) !== true;
+  });
+
   term.onData((data) => emit("write", data));
 
   // Fit once layout settles (double rAF: lay out, then measure), then attach the
@@ -284,6 +294,14 @@ function maybeShowExitNotice(status: TerminalSession["status"]): void {
 }
 
 watch(() => props.session.status, (status) => maybeShowExitNotice(status));
+
+/** Let a host move the keyboard into the PTY — the sign-in modal does this the
+ *  moment the login command starts, so the CLI's own prompts are answerable
+ *  without a click. */
+function focus(): void {
+  term?.focus();
+}
+defineExpose({ focus });
 
 onBeforeUnmount(() => {
   detachSink?.();

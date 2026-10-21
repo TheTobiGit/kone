@@ -8,7 +8,7 @@
 
 import { existsSync } from "node:fs";
 
-import * as nodePty from "node-pty";
+import type * as NodePty from "node-pty";
 
 import { buildAgentEnv } from "@kone/agent-core/processEnv.js";
 
@@ -66,16 +66,19 @@ export type PtySpawnInput = {
   cols: number;
   rows: number;
   env?: Record<string, string>;
+  /** Run this program instead of the user's login shell. Used by the main
+   *  process's provider sign-in path — never forwarded from renderer IPC. */
+  command?: { file: string; args: string[] };
 };
 
 /** The subscription surface a PTY must expose for createPtySubscriptions to
  *  wrap. node-pty's onData/onExit already return a fresh IDisposable per
  *  registration, so this is just a shape both the real pty and fakes satisfy. */
 export type NodePtyEventSource = {
-  onData(listener: (data: string) => void): nodePty.IDisposable;
+  onData(listener: (data: string) => void): NodePty.IDisposable;
   onExit(
     listener: (ev: { exitCode: number; signal?: number }) => void,
-  ): nodePty.IDisposable;
+  ): NodePty.IDisposable;
 };
 
 /** The event subscription surface createPtySubscriptions builds: each method
@@ -127,16 +130,16 @@ function shellArgs(shell: string): string[] {
  *  missing binary, so we walk the fallback list rather than failing hard on a
  *  missing $SHELL. Bare names (no slash) are left for node-pty to resolve via
  *  PATH. */
-async function resolveShell(): Promise<{ shell: string; args: string[] }> {
+async function resolveShell(): Promise<{ file: string; args: string[] }> {
   const candidates = shellCandidates();
-  for (const shell of candidates) {
-    const isPath = shell.includes("/") || shell.includes("\\");
-    if (!isPath || existsSync(shell)) {
-      return { shell, args: shellArgs(shell) };
+  for (const file of candidates) {
+    const isPath = file.includes("/") || file.includes("\\");
+    if (!isPath || existsSync(file)) {
+      return { file, args: shellArgs(file) };
     }
   }
   const fallback = candidates[candidates.length - 1] ?? "/bin/sh";
-  return { shell: fallback, args: shellArgs(fallback) };
+  return { file: fallback, args: shellArgs(fallback) };
 }
 
 /** Build the env for the embedded shell: scrub the host terminal's identity
@@ -165,12 +168,18 @@ export function buildPtyEnv(
   return env;
 }
 
-/** Spawn a login PTY shell in `cwd` with the recovered login-shell PATH. */
+/** Spawn a login PTY shell in `cwd` with the recovered login-shell PATH. When
+ *  `input.command` names a program, spawn that instead — the shell's arguments
+ *  (`-l`, zsh's `nopromptsp`) belong to a shell, not to an arbitrary CLI. */
 export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
-  const { shell, args } = await resolveShell();
+  const { file, args } = input.command ?? (await resolveShell());
   const env = buildPtyEnv(await buildAgentEnv(), input.env);
+  // Loaded here, not at module scope: node-pty's native binding is absent in
+  // some checkouts (and in every pure test run), and the pure helpers above
+  // must stay importable without it. The real app always builds the binding.
+  const nodePty = await import("node-pty");
 
-  const pty = nodePty.spawn(shell, args, {
+  const pty = nodePty.spawn(file, args, {
     cwd: input.cwd,
     cols: input.cols,
     rows: input.rows,
