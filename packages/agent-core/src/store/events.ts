@@ -435,25 +435,36 @@ export class EventIngestRepo {
               .get(event.threadId) as { turn_id: string | null } | undefined;
             if (turnRow?.turn_id) {
               const { input, output } = event.usage;
-              // The cache/reasoning split rides on `event.usage` as extra
-              // properties beyond TokenUsage's declared shape (see
-              // TokenUsageSplits in usage/report.ts for why it isn't a
-              // first-class field on that type yet) — every adapter now
-              // attaches it, defaulting to 0 itself where it has no such
-              // count, but this read defaults again so a payload from an
-              // adapter this store doesn't recognise (or a test) still
-              // records real zeros instead of throwing.
-              // SAFETY: the split counts ride beyond TokenUsage's declared
-              // fields; every read below defaults them.
-              const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
-              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, event.provider, {
-                input,
-                output,
-                total,
-                cacheReadTokens: splits.cacheReadTokens ?? 0,
-                cacheCreationTokens: splits.cacheCreationTokens ?? 0,
-                reasoningTokens: splits.reasoningTokens ?? 0,
-              });
+              // A context-only snapshot — the live mid-turn fill — refreshes
+              // the meter columns above but carries no spend. Folding it into
+              // the audit row would upsert it with nulls, wiping the numbers
+              // a real usage event already recorded, so only a payload that
+              // reports at least one billed count counts here.
+              const hasSpend =
+                (input !== undefined && input !== null && Number.isFinite(input)) ||
+                (output !== undefined && output !== null && Number.isFinite(output)) ||
+                (total !== undefined && total !== null && Number.isFinite(total));
+              if (hasSpend) {
+                // The cache/reasoning split rides on `event.usage` as extra
+                // properties beyond TokenUsage's declared shape (see
+                // TokenUsageSplits in usage/report.ts for why it isn't a
+                // first-class field on that type yet) — every adapter now
+                // attaches it, defaulting to 0 itself where it has no such
+                // count, but this read defaults again so a payload from an
+                // adapter this store doesn't recognise (or a test) still
+                // records real zeros instead of throwing.
+                // SAFETY: the split counts ride beyond TokenUsage's declared
+                // fields; every read below defaults them.
+                const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
+                this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, event.provider, {
+                  input,
+                  output,
+                  total,
+                  cacheReadTokens: splits.cacheReadTokens ?? 0,
+                  cacheCreationTokens: splits.cacheCreationTokens ?? 0,
+                  reasoningTokens: splits.reasoningTokens ?? 0,
+                });
+              }
             }
           });
           break;

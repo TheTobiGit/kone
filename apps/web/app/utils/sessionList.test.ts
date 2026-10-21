@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ForkContext, StoredThreadMeta } from "~/types/desktop";
+import type { ForkContext, RuntimeEvent, StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import { isWorkspacePending } from "./threadWorkspace";
 import {
   byRecency,
   DONE_CLEARED,
+  isRowChangingEvent,
   isThreadDone,
   isThreadUnread,
   liftLegacyPins,
@@ -383,5 +384,25 @@ describe("nextVisitStamp — one pure pass from latch plus list settle to stamp"
     expect(cleared.next).toBeNull();
     const restamped = nextVisitStamp(cleared.next, input({ rows: [row("a", true)] }));
     expect(restamped.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
+  });
+});
+
+describe("isRowChangingEvent — which events are worth a list re-read", () => {
+  const usage = (u: Record<string, number | boolean>) =>
+    // SAFETY: only `type` and `usage` are read by the predicate under test.
+    ({ type: "thread.token-usage.updated", usage: u }) as unknown as RuntimeEvent;
+
+  test("a live context-only snapshot changes no rendered row", () => {
+    expect(isRowChangingEvent(usage({ contextUsed: 40_000, contextWindow: 200_000, compactsAutomatically: true }))).toBe(false);
+  });
+
+  test("a usage report carrying spend still moves the row's tokens", () => {
+    expect(isRowChangingEvent(usage({ input: 10, output: 5, total: 15, contextUsed: 15 }))).toBe(true);
+  });
+
+  test("the rest of the allowlist passes through, and streaming deltas stay out", () => {
+    // SAFETY: only `type` is read for events other than token usage.
+    expect(isRowChangingEvent({ type: "turn.completed" } as unknown as RuntimeEvent)).toBe(true);
+    expect(isRowChangingEvent({ type: "item.updated" } as unknown as RuntimeEvent)).toBe(false);
   });
 });

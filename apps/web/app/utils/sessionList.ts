@@ -55,6 +55,19 @@ export const ROW_CHANGING_EVENTS = new Set<RuntimeEvent["type"]>([
   "thread.pinned.updated",
 ]);
 
+/** Whether `event` changes a row these lists render — ROW_CHANGING_EVENTS,
+ *  less the live context snapshots. A provider streams a context-only usage
+ *  report (window fill, no spend) on every model call so the meter tracks a
+ *  running turn; the store writes only the context columns on it, which no
+ *  list row reads, so a refetch per call would change nothing. A report that
+ *  carries spend still moves `tokens` and still counts. */
+export function isRowChangingEvent(event: RuntimeEvent): boolean {
+  if (!ROW_CHANGING_EVENTS.has(event.type)) return false;
+  if (event.type !== "thread.token-usage.updated") return true;
+  const { input, output, total } = event.usage;
+  return input !== undefined || output !== undefined || total !== undefined;
+}
+
 /** localStorage pin key — browser-dev fallback and the one-time migration
  *  source for installs that pinned before pins moved into the DB (v18). */
 export const SESSION_PIN_KEY = "kone:pinned-sessions";

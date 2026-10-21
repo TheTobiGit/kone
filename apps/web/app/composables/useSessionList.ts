@@ -8,7 +8,7 @@ import {
   byRecency,
   liftLegacyPins,
   markThreadVisited,
-  ROW_CHANGING_EVENTS,
+  isRowChangingEvent,
   SESSION_PIN_KEY,
   summarizeSession,
   type SessionProjectTag,
@@ -209,7 +209,7 @@ export function useSessionList(source: SessionListSource) {
   const agent = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const detach = agent()?.onEvent((event: RuntimeEvent) => {
-    if (!ROW_CHANGING_EVENTS.has(event.type)) return;
+    if (!isRowChangingEvent(event)) return;
     // Title updates are cheap and user-visible — apply in place when we already
     // have the row, otherwise fall through to a silent reload.
     if (event.type === "thread.title.updated") {
