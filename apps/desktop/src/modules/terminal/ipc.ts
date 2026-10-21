@@ -35,8 +35,17 @@ export function registerTerminalIpc(): void {
     }
   });
 
+  // The renderer names a shell only. Rebuild the input field by field so a
+  // stray `command`/`banner` smuggled over IPC is dropped — spawning an
+  // arbitrary program is main-process-only (provider sign-in, openCommand).
   ipcMain.handle("terminal:open", (_event, input: TerminalOpenInput) =>
-    mgr.open(input),
+    mgr.open({
+      terminalId: input.terminalId,
+      cwd: input.cwd,
+      cols: input.cols,
+      rows: input.rows,
+      env: input.env,
+    }),
   );
   ipcMain.handle("terminal:write", (_event, input: TerminalWriteInput) =>
     mgr.write(input),
