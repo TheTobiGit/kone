@@ -4,9 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AlertCircleIcon,
   CheckmarkCircle02Icon,
-  ComputerTerminal01Icon,
   Loading03Icon,
-  StopCircleIcon,
 } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import TerminalPane from "~/components/terminal/TerminalPane.vue";
@@ -17,17 +15,18 @@ import { useSound } from "~/composables/useSound";
 import { PROVIDER_BRAND } from "~/utils/modelPicker";
 import type { ProviderKind } from "~/types/desktop";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
+import { signInFooter, type SignInActionId } from "~/utils/signInFooter";
 
 // In-app provider sign-in: run the provider CLI's own login command in a kone
 // PTY, right here, and re-read its health when the user says they're done.
 // kone never stores a credential — the CLI writes it where it always does —
 // and the transcript stays in memory, dropped when the card closes.
 //
-// The card is the house shell (UiModalShell + the picker's header/footer bands)
-// anchored bottom-right over the composer, per mockup 01a. It owns no state of
-// its own beyond focus: the run lives in useSignInRun, the terminal in
-// TerminalPane, and closing goes through useProviderSignIn().closed() so focus
-// returns to whatever opened it.
+// Variant A: the house header band, then the LIVE terminal edge to edge, then
+// one footer band with a short status and the actions. There is no lede and no
+// note — the transcript is the explanation. The run lives in useSignInRun, the
+// terminal in TerminalPane, and closing goes through useProviderSignIn().closed()
+// so focus returns to whatever opened it.
 //
 // The scrim is inert on purpose: a stray click must never kill a login that is
 // mid-flight. Escape only closes while focus is outside the terminal — inside
@@ -46,7 +45,7 @@ const hintId = useId();
 const signIn = useSignInRun({ provider: props.provider, label });
 // The card reads the state and the resolved command; everything else it does
 // goes back through the run (`signIn.stop()`, `signIn.check()`).
-const { state, command, copied, display, bin, finish, live, session, settled } = signIn;
+const { state, command, copied, display, finish, live, session, settled } = signIn;
 
 const { shown, closing, dismiss } = useModalExit();
 const { closed } = useProviderSignIn();
@@ -58,110 +57,30 @@ const paneEl = ref<{ focus: () => void } | null>(null);
 const primaryEl = ref<HTMLButtonElement | null>(null);
 const headerButtonEl = ref<HTMLButtonElement | null>(null);
 
-/** The transcript hint belongs to the run, as the mockups show it: beside a
- *  login that is running, waiting, being checked, or verified. While nothing has
- *  started (idle, starting) or the run is over (failed, cancelled) it is neither
- *  true nor useful, and it is the first thing to cost the footer its single row. */
-const transcriptNote = computed(() => {
-  const at = state.value.phase;
-  return at === "running" || at === "waiting" || at === "checking" || at === "verified";
-});
+// ── the footer, derived once ────────────────────────────────────────────────
+// One status line and one action set, both mapped from the same union in
+// ~/utils/signInFooter and tested there. The card only turns an action id into
+// a handler, so adding a phase adds a case to the pure mapping, not markup.
 
-// ── the footer's two written pieces ─────────────────────────────────────────
-// One status line and one action set, both derived from the same union. The
-// copy is the spec's table, verbatim; adding a phase means adding a case here,
-// not another block of markup.
-
-const STATUS_ICON = {
-  spin: { icon: Loading03Icon, class: "signin-spin" },
-  ok: { icon: CheckmarkCircle02Icon, class: "signin-ok" },
-  danger: { icon: AlertCircleIcon, class: "signin-danger" },
-  muted: { icon: StopCircleIcon, class: "signin-muted" },
-} as const;
-
-type StatusIcon = keyof typeof STATUS_ICON;
-
-/** A 6px dot stands in for the icon in idle and waiting (amber + halo). */
-type StatusLine = { icon?: StatusIcon; text: string; code?: string; after?: string; dot?: "idle" | "waiting" };
-
-const statusLine = computed<StatusLine>(() => {
-  const current = state.value;
-  switch (current.phase) {
-    case "idle":
-      return { dot: "idle", text: "Ready to run ", code: display.value };
-    case "starting":
-      return { icon: "spin", text: "Starting ", code: bin.value, after: "…" };
-    case "running":
-      return { icon: "spin", text: "Running ", code: display.value, after: "…" };
-    case "waiting":
-      return { dot: "waiting", text: finish.value === "terminal" ? "Waiting for you in the terminal…" : "Waiting for the browser…" };
-    case "checking":
-      return { icon: "spin", text: `Checking with ${label}…` };
-    case "verified":
-      return { icon: "ok", text: current.status.authLabel ? `Signed in · ${current.status.authLabel}` : "Signed in" };
-    case "failed":
-      // A check failure keeps the provider's sentence; an exit names the code.
-      if (current.failure.kind === "check") {
-        return { icon: "danger", text: `Not signed in yet · ${current.failure.reason}` };
-      }
-      if (current.failure.kind === "exit") {
-        return { icon: "danger", text: "", code: bin.value, after: ` exited with code ${current.failure.code ?? "?"}` };
-      }
-      return { icon: "danger", text: current.failure.reason };
-    case "cancelled":
-      return { icon: "muted", text: current.reason === "timeout" ? "Sign-in stopped after 10 minutes" : "Sign-in stopped" };
-  }
-});
-
-const lineIcon = computed(() =>
-  statusLine.value.icon ? STATUS_ICON[statusLine.value.icon] : null,
+const footer = computed(() =>
+  signInFooter({
+    state: state.value,
+    finish: finish.value,
+    live: live.value,
+    copied: copied.value,
+  }),
 );
 
-/** Primary is the filled pill; outline is the verified state's Done. */
-type Action = { label: string; onClick: () => void; disabled?: boolean; variant?: "primary" | "outline" };
+/** The dot stands in for an icon in idle, waiting and cancelled. */
+const TONE_ICON = {
+  busy: { icon: Loading03Icon, class: "signin-spin" },
+  ok: { icon: CheckmarkCircle02Icon, class: "signin-ok" },
+  danger: { icon: AlertCircleIcon, class: "signin-danger" },
+} as const;
 
-type FooterActions = { secondary: Action[]; primary: Action };
-
-const noop = (): void => {};
-
-const actions = computed<FooterActions>(() => {
-  const current = state.value;
-  switch (current.phase) {
-    case "idle":
-      return {
-        secondary: [
-          { label: copied.value ? "Copied" : "Copy command", onClick: copyCommand },
-          { label: "Check authentication", onClick: () => signIn.check() },
-        ],
-        primary: { label: "Run login", onClick: runLogin },
-      };
-    case "starting":
-      return {
-        secondary: [{ label: "Check authentication", onClick: noop, disabled: true }],
-        primary: { label: "Starting…", onClick: noop, disabled: true },
-      };
-    case "running":
-    case "waiting":
-      return { secondary: [{ label: "Stop", onClick: () => signIn.stop() }], primary: { label: "Check authentication", onClick: () => signIn.check() } };
-    case "checking":
-      return { secondary: live.value ? [{ label: "Stop", onClick: () => signIn.stop() }] : [], primary: { label: "Checking…", onClick: noop, disabled: true } };
-    case "verified":
-      return { secondary: [], primary: { label: "Done", onClick: requestClose, variant: "outline" } };
-    case "failed": {
-      const copyAction = { label: copied.value ? "Copied" : "Copy command", onClick: copyCommand };
-      if (current.failure.kind === "check") {
-        // A failing check never kills the CLI: while it lives, Stop stays.
-        const again = live.value ? { label: "Stop", onClick: () => signIn.stop() } : { label: "Run again", onClick: runLogin };
-        return { secondary: [again], primary: { label: "Check authentication", onClick: () => signIn.check() } };
-      }
-      return {
-        secondary: [copyAction],
-        primary: { label: current.failure.kind === "start" ? "Try again" : "Run again", onClick: runLogin },
-      };
-    }
-    case "cancelled":
-      return { secondary: [{ label: copied.value ? "Copied" : "Copy command", onClick: copyCommand }], primary: { label: "Run again", onClick: runLogin } };
-  }
+const lineIcon = computed(() => {
+  const tone = footer.value.status.tone;
+  return tone === "busy" || tone === "ok" || tone === "danger" ? TONE_ICON[tone] : null;
 });
 
 // ── focus ───────────────────────────────────────────────────────────────────
@@ -192,8 +111,8 @@ function focusableEls(): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input, textarea, [tabindex]:not([tabindex="-1"])'));
 }
 
-/** True while the keyboard is inside the terminal well — the CLI owns every
- *  key there, Escape and Tab included. */
+/** True while the keyboard is inside the terminal — the CLI owns every key
+ *  there, Escape and Tab included. */
 function terminalHasFocus(): boolean {
   const el = document.activeElement;
   return el != null && wellEl.value?.contains(el) === true;
@@ -279,6 +198,16 @@ function copyCommand(): void {
   });
 }
 
+/** The mapping names an intent; the card owns the effect. `satisfies` keeps the
+ *  literal key set while still proving every action id has a handler. */
+const handlers = {
+  run: runLogin,
+  stop: () => void signIn.stop(),
+  check: () => void signIn.check(),
+  copy: copyCommand,
+  close: requestClose,
+} satisfies Record<SignInActionId, () => void>;
+
 // A verified sign-in is the one outcome worth hearing from across the room;
 // the card's own close already has the dismissal cue. A settled state also
 // hands the keyboard back to the primary action, since the button the user was
@@ -316,36 +245,29 @@ watch(settled, async (done) => {
           </button>
         </div>
 
-        <div class="signin-main">
-          <p class="signin-lede">
-            kone runs <code>{{ display }}</code> for you, here, with the executable from your
-            settings.
-            {{ finish === "terminal"
-              ? "Answer its questions in the terminal below."
-              : "Finish in the browser it opens." }}
-            The CLI keeps the credential, not kone.
-          </p>
-
-          <div ref="wellEl" class="signin-well" role="group" aria-label="Login terminal" :aria-describedby="hintId">
-            <TerminalPane
-              v-if="session"
-              ref="paneEl"
-              :session="session"
-              :escape-key="leaveTerminal"
-              @write="writeTerminal"
-              @resize="resizeTerminal"
-            />
-            <!-- Nothing started: the well shows what pressing Run login will do,
-                 in the terminal's own face, so the card never looks empty. Not
-                 once the card is exiting — the PTY is already gone, and the
-                 prompt popping back in would flash under the fade. -->
-            <div v-else-if="!closing" class="signin-preview" aria-hidden="true">
-              <div class="signin-preview__cwd">{{ command?.cwd ?? "~" }}</div>
-              <div class="signin-preview__cmd"><span class="signin-prompt">❯</span> {{ display }}</div>
-              <div class="signin-preview__hint">Nothing runs until you press {{ actions.primary.label }}.</div>
+        <!-- The body IS the terminal: no lede, no inset well, edge to edge
+             between the two bands, whose scoops round its corners. Its height
+             is fixed, so the card never moves between states. -->
+        <div ref="wellEl" class="signin-term" role="group" aria-label="Login terminal" :aria-describedby="hintId">
+          <TerminalPane
+            v-if="session"
+            ref="paneEl"
+            :session="session"
+            :escape-key="leaveTerminal"
+            @write="writeTerminal"
+            @resize="resizeTerminal"
+          />
+          <!-- Nothing started: the terminal shows the command at its prompt, as
+               if it had been typed and was waiting for Enter. Not once the card
+               is exiting — the PTY is already gone, and the prompt popping back
+               in would flash under the fade. -->
+          <div v-else-if="!closing" class="signin-preview" aria-hidden="true">
+            <div class="signin-preview__cwd">{{ command?.cwd ?? "~" }}</div>
+            <div class="signin-preview__cmd">
+              <span class="signin-prompt">❯</span> {{ display }}<span class="signin-preview__cursor" />
             </div>
-            <p :id="hintId" class="signin-hint">Shift+Tab leaves the terminal.</p>
           </div>
+          <p :id="hintId" class="signin-hint">Shift+Tab leaves the terminal.</p>
         </div>
 
         <!-- Footer band, welded to the card's lower edge with the scoops
@@ -360,31 +282,26 @@ watch(settled, async (done) => {
               :stroke-width="2"
               aria-hidden="true"
             />
-            <span v-else class="signin-dot" :class="{ 'signin-dot--waiting': statusLine.dot === 'waiting' }" aria-hidden="true" />
-            <span class="signin-stateline__text">{{ statusLine.text }}<code v-if="statusLine.code">{{ statusLine.code }}</code>{{ statusLine.after }}</span>
-          </span>
-
-          <span v-if="transcriptNote" class="signin-note">
-            <HugeiconsIcon :icon="ComputerTerminal01Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
-            Transcript isn't saved
+            <span v-else class="signin-dot" :class="{ 'signin-dot--waiting': footer.status.tone === 'waiting' }" aria-hidden="true" />
+            <span class="signin-stateline__text">{{ footer.status.text }}</span>
           </span>
 
           <div class="signin-actions">
             <button
-              v-for="action in actions.secondary"
-              :key="action.label"
+              v-for="action in footer.secondary"
+              :key="action.id"
               type="button"
               class="picker-action text-muted"
               :disabled="action.disabled"
-              @click="action.onClick"
+              @click="handlers[action.id]"
             >{{ action.label }}</button>
             <button
               ref="primaryEl"
               type="button"
-              :class="actions.primary.variant === 'outline' ? 'signin-done' : 'signin-primary'"
-              :disabled="actions.primary.disabled"
-              @click="actions.primary.onClick"
-            >{{ actions.primary.label }}</button>
+              :class="footer.primary.variant === 'outline' ? 'signin-done' : 'signin-primary'"
+              :disabled="footer.primary.disabled"
+              @click="handlers[footer.primary.id]"
+            >{{ footer.primary.label }}</button>
           </div>
         </div>
       </div>
@@ -401,7 +318,7 @@ watch(settled, async (done) => {
   flex-direction: column;
 }
 /* Anchored bottom-right like mockup 01a; a full-width card on a phone. */
-.signin-card { width: 100%; max-width: 600px; }
+.signin-card { width: 100%; max-width: 560px; }
 
 .signin-body {
   --band-bg: var(--band);
@@ -420,6 +337,8 @@ watch(settled, async (done) => {
   gap: 1rem;
   padding: 0.625rem 1rem;
   background-color: var(--band-bg);
+  /* The scoops sit over the terminal below; the band owns its own corners. */
+  z-index: 1;
 }
 .picker-header::before, .picker-header::after {
   content: "";
@@ -451,28 +370,47 @@ watch(settled, async (done) => {
   text-overflow: ellipsis;
 }
 
-/* ── body ────────────────────────────────────────────────────────────────── */
-.signin-main {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 4px 16px 12px;
+/* ── body: the terminal, edge to edge ────────────────────────────────────── */
+/* One fixed height in every state — idle preview, live PTY, settled — so the
+   card never jumps as the run moves through its phases. 19rem / 17rem is the
+   variant A terminal from the mockups. */
+.signin-term {
+  box-sizing: border-box;
+  height: 19rem;
+  padding: 18px 18px 14px;
+  background: var(--term-bg);
+  overflow: hidden;
   min-width: 0;
 }
+@media (max-width: 519px) {
+  .signin-term { height: 17rem; padding: 16px 14px 12px; }
+}
 
-.signin-lede { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
-.signin-lede code { font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 0.95em; color: var(--ink); }
-
-/* The terminal well: a quiet inset slab, about fourteen rows tall. */
-.signin-well { box-sizing: border-box; height: 17.5rem; border-radius: 12px; background: var(--term-bg); padding: 10px 12px; box-shadow: inset 0 0 0 1px var(--line-soft); overflow: hidden; }
-
-/* The idle preview speaks the terminal's face, so the well reads as a terminal
+/* The idle preview speaks the terminal's face, so the body reads as a terminal
    that simply hasn't run anything yet. */
-.signin-preview { height: 100%; display: flex; flex-direction: column; gap: 2px; font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 12.5px; line-height: 1.45; }
+.signin-preview {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
 .signin-preview__cwd { color: var(--faint); }
-.signin-preview__cmd { color: var(--term-ink, var(--ink)); }
+.signin-preview__cmd { color: var(--term-ink, var(--ink)); overflow-wrap: anywhere; }
 .signin-prompt { color: var(--ok); }
-.signin-preview__hint { color: var(--muted); }
+.signin-preview__cursor {
+  display: inline-block;
+  width: 0.62em;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: text-bottom;
+  background: var(--term-cursor, var(--accent));
+  opacity: 0.85;
+}
 
 /* Screen-reader-only: the terminal's way out, spoken with the region. */
 .signin-hint {
@@ -491,12 +429,13 @@ watch(settled, async (done) => {
   display: flex;
   align-items: center;
   /* A row when the card has room, two when it doesn't: the status line wraps
-     and the actions drop to their own right-aligned row, never off the edge. */
+     and the actions drop to their own row, never off the edge. */
   flex-wrap: wrap;
   gap: 1rem;
   row-gap: 8px;
   padding: 0.625rem 1rem;
   background-color: var(--band-bg);
+  z-index: 1;
 }
 .picker-footer::before, .picker-footer::after {
   content: "";
@@ -518,18 +457,16 @@ watch(settled, async (done) => {
 .signin-stateline {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  /* 12rem, not 14: at 600 the idle three-action footer is ~571px wide with a
-     14rem basis, which is three pixels past the band and would wrap every wide
-     card onto two rows. The status line still grows into whatever is spare. */
-  flex: 1 1 12rem;
+  gap: 0.45rem;
+  /* 8rem: at a phone width the status drops onto its own row above the
+     actions, as in A-10; on a wide card it grows into the spare room. */
+  flex: 1 1 8rem;
   min-width: 0;
   font-size: 12.5px;
   line-height: 1.35;
   color: var(--ink-soft);
 }
 .signin-stateline__text { min-width: 0; overflow-wrap: anywhere; }
-.signin-stateline code { font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 0.95em; color: var(--ink); }
 
 .signin-dot {
   width: 6px;
@@ -547,29 +484,12 @@ watch(settled, async (done) => {
 
 .signin-ok,
 .signin-danger,
-.signin-muted,
 .signin-spin {
   flex: none;
 }
 .signin-ok { color: var(--ok); }
 .signin-danger { color: var(--danger); }
-.signin-muted { color: var(--muted); }
 .signin-spin { color: var(--muted); animation: signin-spin 1s linear infinite; }
-
-.signin-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  flex: none;
-}
-@media (max-width: 519px) {
-  .signin-note {
-    display: none;
-  }
-}
 
 .signin-actions {
   display: flex;
