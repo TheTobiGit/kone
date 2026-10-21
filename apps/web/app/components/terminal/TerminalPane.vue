@@ -16,6 +16,14 @@ const props = defineProps<{
    *  off the wire". The sign-in modal uses it to make Shift+Tab a way out of
    *  the terminal without stealing any key the CLI itself wants. */
   escapeKey?: (event: KeyboardEvent) => boolean;
+  /** xterm's accessibility mode: mirrors output into an aria-live tree so a
+   *  screen reader hears the CLI's prompts. Off for the strip's terminals. */
+  screenReaderMode?: boolean;
+  /** Spoken name for this terminal's input/region (the sign-in modal sets one;
+   *  ordinary terminals keep xterm's own "Terminal input"). */
+  ariaLabel?: string;
+  /** id of a visible-or-sr-only description, e.g. how to leave the terminal. */
+  ariaDescribedBy?: string;
 }>();
 
 const emit = defineEmits<{
@@ -164,6 +172,9 @@ onMounted(() => {
     cursorWidth: 1,
     theme: buildTheme(),
     scrollback: 10000,
+    // xterm's screen-reader support: an aria-live mirror of the screen. Only
+    // surfaces that opt in (sign-in) get it; the terminal strip stays as-is.
+    screenReaderMode: props.screenReaderMode === true,
     // Opaque background (matched to the app ground) keeps glyph edges crisp —
     // a transparent background otherwise renders as black on the DOM renderer.
     allowTransparency: false,
@@ -173,6 +184,14 @@ onMounted(() => {
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(container.value);
+
+  // xterm names the input "Terminal input" for every surface; a host that
+  // supplies a name (and an escape hint) gets its own, on the actual focusable
+  // textarea rather than only on the wrapper.
+  if (props.ariaLabel) term.textarea?.setAttribute("aria-label", props.ariaLabel);
+  if (props.ariaDescribedBy) {
+    term.textarea?.setAttribute("aria-describedby", props.ariaDescribedBy);
+  }
 
   term.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown") return true;
@@ -319,7 +338,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="terminal-pane" ref="container" />
+  <div
+    class="terminal-pane"
+    ref="container"
+    :role="ariaLabel ? 'group' : undefined"
+    :aria-label="ariaLabel"
+  />
 </template>
 
 <style scoped>

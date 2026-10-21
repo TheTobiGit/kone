@@ -76,6 +76,10 @@ const MAX_SUBPROCESS_POLL_INTERVAL_MS = 60_000;
 export type TerminalLaunch = {
   command: { file: string; args: string[] };
   banner?: string;
+  /** The open input's `env` is the complete child environment (provider
+   *  sign-in builds one). Carried onto restart so the same sanitized env is
+   *  used again rather than a freshly inherited one. */
+  completeEnv?: boolean;
 };
 
 type TerminalSession = {
@@ -439,6 +443,7 @@ export class TerminalManager {
         cols,
         rows,
         env: input.env,
+        completeEnv: launch?.completeEnv,
         command: launch?.command,
       });
     } catch (err) {

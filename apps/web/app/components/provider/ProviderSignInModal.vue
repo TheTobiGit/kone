@@ -254,6 +254,9 @@ watch(settled, async (done) => {
             ref="paneEl"
             :session="session"
             :escape-key="leaveTerminal"
+            screen-reader-mode
+            aria-label="Sign-in terminal input"
+            :aria-described-by="hintId"
             @write="writeTerminal"
             @resize="resizeTerminal"
           />
@@ -317,14 +320,26 @@ watch(settled, async (done) => {
   display: flex;
   flex-direction: column;
 }
-/* Anchored bottom-right like mockup 01a; a full-width card on a phone. */
-.signin-card { width: 100%; max-width: 560px; }
+/* Anchored bottom-right like mockup 01a; a full-width card on a phone. The
+   height is a ceiling, not a size: on a short viewport (or at zoom) the card
+   shrinks with the terminal instead of pushing the header/Close or footer off
+   the edge. The overlay's own padding is the 3rem / 1.5rem removed here. */
+.signin-card {
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100dvh - 3rem);
+}
+@media (max-width: 639px) {
+  .signin-card { max-height: calc(100dvh - 1.5rem); }
+}
 
 .signin-body {
   --band-bg: var(--band);
   --band-arc: 14px;
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   min-width: 0;
 }
 
@@ -332,6 +347,7 @@ watch(settled, async (done) => {
 .picker-header {
   position: relative;
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -371,19 +387,20 @@ watch(settled, async (done) => {
 }
 
 /* ── body: the terminal, edge to edge ────────────────────────────────────── */
-/* One fixed height in every state — idle preview, live PTY, settled — so the
-   card never jumps as the run moves through its phases. 19rem / 17rem is the
-   variant A terminal from the mockups. */
+/* A preferred 19rem (17rem on a phone), not a fixed height: the terminal is
+   the flex item that gives way when the card hits its viewport ceiling, so the
+   header and footer always stay on screen. */
 .signin-term {
   box-sizing: border-box;
-  height: 19rem;
+  flex: 1 1 19rem;
+  min-height: 0;
   padding: 18px 18px 14px;
   background: var(--term-bg);
   overflow: hidden;
   min-width: 0;
 }
 @media (max-width: 519px) {
-  .signin-term { height: 17rem; padding: 16px 14px 12px; }
+  .signin-term { flex-basis: 17rem; padding: 16px 14px 12px; }
 }
 
 /* The idle preview speaks the terminal's face, so the body reads as a terminal
@@ -427,6 +444,7 @@ watch(settled, async (done) => {
 .picker-footer {
   position: relative;
   display: flex;
+  flex: none;
   align-items: center;
   /* A row when the card has room, two when it doesn't: the status line wraps
      and the actions drop to their own row, never off the edge. */

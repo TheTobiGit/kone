@@ -66,6 +66,11 @@ export type PtySpawnInput = {
   cols: number;
   rows: number;
   env?: Record<string, string>;
+  /** When true, `env` is the COMPLETE child environment: no inherited base is
+   *  merged in. Used by the main process's provider sign-in path, whose env has
+   *  already had browser suppressors and runtime vars removed — merging over a
+   *  fresh `buildAgentEnv()` would put them straight back. */
+  completeEnv?: boolean;
   /** Run this program instead of the user's login shell. Used by the main
    *  process's provider sign-in path — never forwarded from renderer IPC. */
   command?: { file: string; args: string[] };
@@ -145,20 +150,31 @@ async function resolveShell(): Promise<{ file: string; args: string[] }> {
 /** Build the env for the embedded shell: scrub the host terminal's identity
  *  and Electron/dev-server runtime vars from `baseEnv`, let `extra` (caller
  *  env) win, then pin our own TERM/COLORTERM so curses apps (vim, top) and
- *  colour output match the embedded xterm.js — see the blocklist note. Pure
- *  so the pipeline is testable without spawning a real shell. */
+ *  colour output match the embedded xterm.js — see the blocklist note.
+ *
+ *  `extra` is scrubbed too: a caller env is not an escape hatch for the
+ *  runtime vars the blocklist exists to keep out (`ELECTRON_RUN_AS_NODE`,
+ *  `PORT`, …). With `options.complete`, `baseEnv` is ignored entirely: the
+ *  caller has built the whole environment and merging would restore what it
+ *  removed. Pure so the pipeline is testable without spawning a real shell. */
 export function buildPtyEnv(
   baseEnv: Record<string, string | undefined>,
   extra?: Record<string, string> | undefined,
+  options: { complete?: boolean } = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
-    if (value === undefined) continue;
-    if (HOST_TERMINAL_ENV_BLOCKLIST.has(key)) continue;
-    env[key] = value;
+  if (!options.complete) {
+    for (const [key, value] of Object.entries(baseEnv)) {
+      if (value === undefined) continue;
+      if (HOST_TERMINAL_ENV_BLOCKLIST.has(key)) continue;
+      env[key] = value;
+    }
   }
   if (extra) {
-    for (const [key, value] of Object.entries(extra)) env[key] = value;
+    for (const [key, value] of Object.entries(extra)) {
+      if (HOST_TERMINAL_ENV_BLOCKLIST.has(key)) continue;
+      env[key] = value;
+    }
   }
   // node-pty only writes `name` into the child's TERM on the Unix path; the
   // ConPTY path leaves the environment untouched, so Windows children inherit
@@ -168,12 +184,25 @@ export function buildPtyEnv(
   return env;
 }
 
+/** The final child env for one spawn: complete envs replace, ordinary terminals
+ *  inherit. Shared with the tests so the launch → PTY pipeline is asserted
+ *  through the same branch spawnPty takes. */
+export function resolvePtyEnv(
+  input: Pick<PtySpawnInput, "env" | "completeEnv">,
+  baseEnv: Record<string, string | undefined>,
+): Record<string, string> {
+  return buildPtyEnv(baseEnv, input.env, { complete: input.completeEnv === true });
+}
+
 /** Spawn a login PTY shell in `cwd` with the recovered login-shell PATH. When
  *  `input.command` names a program, spawn that instead — the shell's arguments
  *  (`-l`, zsh's `nopromptsp`) belong to a shell, not to an arbitrary CLI. */
 export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
   const { file, args } = input.command ?? (await resolveShell());
-  const env = buildPtyEnv(await buildAgentEnv(), input.env);
+  // A complete env comes from a main-process caller that already resolved the
+  // login-shell PATH; skip the probe and the merge.
+  const baseEnv = input.completeEnv ? {} : await buildAgentEnv();
+  const env = resolvePtyEnv(input, baseEnv);
   // Loaded here, not at module scope: node-pty's native binding is absent in
   // some checkouts (and in every pure test run), and the pure helpers above
   // must stay importable without it. The real app always builds the binding.

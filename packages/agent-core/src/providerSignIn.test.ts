@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   resolveProviderSignInCommand,
   resolveProviderSignInLaunch,
+  shellQuote,
 } from "./providerSignIn.js";
 import type { ProviderKind, ProviderSettingsMap } from "./types.js";
 
@@ -85,8 +86,33 @@ describe("resolveProviderSignInCommand", () => {
     ).toBe("cursor-agent login");
   });
 
+  test("a configured executable with spaces is shell-quoted for display", () => {
+    const command = resolveProviderSignInCommand("codex", settings("/opt/My Tools/codex"));
+    expect(command?.display).toBe("'/opt/My Tools/codex' login");
+  });
+
   test("droid has no login command", () => {
     expect(resolveProviderSignInCommand("droid", {})).toBeNull();
+  });
+});
+
+describe("shellQuote", () => {
+  test("simple words stay bare", () => {
+    expect(shellQuote("login")).toBe("login");
+    expect(shellQuote("cursor-agent")).toBe("cursor-agent");
+    expect(shellQuote("/opt/bin/codex")).toBe("/opt/bin/codex");
+  });
+
+  test("spaces, quotes and metacharacters are quoted for a POSIX shell", () => {
+    expect(shellQuote("/opt/My Tools/codex")).toBe("'/opt/My Tools/codex'");
+    expect(shellQuote("/opt/a$b;c&(d)/codex")).toBe("'/opt/a$b;c&(d)/codex'");
+    expect(shellQuote("/opt/it's/codex")).toBe("'/opt/it'\\''s/codex'");
+  });
+
+  test("Windows gets double quotes instead of single", () => {
+    expect(shellQuote("C:\\Tools\\codex.exe", "win32")).toBe("C:\\Tools\\codex.exe");
+    expect(shellQuote("C:\\My Tools\\codex.exe", "win32")).toBe('"C:\\My Tools\\codex.exe"');
+    expect(shellQuote('C:\\a"b\\codex.exe', "win32")).toBe('"C:\\a\\"b\\codex.exe"');
   });
 });
 
@@ -129,6 +155,28 @@ describe("resolveProviderSignInLaunch", () => {
     if (!launch.ok) throw new Error(launch.message);
     expect(launch.file).toBe("cursor-agent");
     expect(launch.command.display).toBe("cursor-agent login");
+  });
+
+  test("an executable path with spaces is quoted for display but spawned directly", () => {
+    const bin = path.join(temp, "My Tools");
+    mkdirSync(bin, { recursive: true });
+    const file = path.join(bin, "codex");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: file } },
+      env: { PATH: temp },
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    // Spawning is filename + argv, never a shell line.
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+    // Display, copy text and the terminal banner get the shell-quoted form.
+    expect(launch.command.display).toBe(`'${file}' login`);
+    expect(launch.banner).toContain(`'${file}' login`);
   });
 
   test("a bare name that isn't on PATH is a sentence, not a throw", () => {
