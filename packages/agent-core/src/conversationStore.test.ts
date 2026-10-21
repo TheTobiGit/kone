@@ -1368,6 +1368,36 @@ describe("live capture contracts", () => {
     raw.close();
   });
 
+  test("a context-only snapshot refreshes the meter without touching the turn's audit row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "claudeAgent"));
+    // A live mid-turn fill carries no spend, so it must not upsert the audit
+    // row and blank the numbers the real usage event just wrote.
+    // SAFETY: the literal is the context-only usage payload under test.
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "claudeAgent",
+      at: 16,
+      source: "kone.store",
+      usage: { contextUsed: 90_000, contextWindow: 200_000, compactsAutomatically: true },
+    } as RuntimeEvent);
+
+    expect(store.threadMeta("t-1")?.contextUsed).toBe(90_000);
+    const raw = rawDb();
+    // SAFETY: the event written above lands exactly these columns.
+    const usage = raw
+      .prepare(`SELECT * FROM turn_usage WHERE thread_id = 't-1' AND turn_id = 'turn-1'`)
+      .get() as { input_tokens: number; output_tokens: number; total_tokens: number; at: number };
+    expect(usage.input_tokens).toBe(100);
+    expect(usage.output_tokens).toBe(50);
+    expect(usage.total_tokens).toBe(150);
+    expect(usage.at).toBe(15); // the context-only event left it alone
+    raw.close();
+  });
+
   test("a turn's usage row names the model a reroute swapped in", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex", model: "gpt-5" });
