@@ -100,3 +100,26 @@ test("release leaves a modal hosted elsewhere alone", () => {
   expect(signIn.target.value).toBe("cursor");
   expect(signIn.host.value).toBe("app");
 });
+
+test("a released modal's late close leaves the next modal open", () => {
+  // Settings closes mid-exit: the pane releases its card, the composer opens a
+  // new one, then the old card's exit callback lands.
+  const opener = new FakeHTMLElement();
+  installDom(opener);
+  signIn.open("cursor", "pane");
+  const stale = signIn.ticket();
+  signIn.release("pane");
+  signIn.open("codex");
+  signIn.closed(stale);
+
+  expect(signIn.target.value).toBe("codex");
+  expect(signIn.host.value).toBe("app");
+  expect(opener.focused).toBe(0);
+});
+
+test("a modal's own close still closes it", () => {
+  signIn.open("cursor", "pane");
+  signIn.closed(signIn.ticket());
+
+  expect(signIn.target.value).toBeNull();
+});

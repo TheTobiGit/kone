@@ -14,11 +14,16 @@ import type { ProviderKind } from "~/types/desktop";
 // mounts inside its own page frame, so the card stays in the pane that opened
 // it. `release` is the pane's half of that: a pane that goes away takes its
 // hosted modal with it.
+//
+// Every open gets a ticket. A card closes with the ticket it was opened under,
+// so a card whose exit lands after its pane released it (and something else
+// opened) cannot close the modal that replaced it.
 
 export type SignInHost = "app" | "pane";
 
 const target = ref<ProviderKind | null>(null);
 const host = ref<SignInHost>("app");
+let current = 0;
 /** The element focused when the modal was asked for, so closing hands focus back. */
 let opener: HTMLElement | null = null;
 
@@ -37,12 +42,20 @@ export function useProviderSignIn() {
   function open(provider: ProviderKind, where: SignInHost = "app"): void {
     if (target.value) return;
     opener = currentOpener();
+    current++;
     target.value = provider;
     host.value = where;
   }
 
-  /** Called by the modal once its exit has played. */
-  function closed(): void {
+  /** The ticket of the modal open now; a card reads it as it mounts. */
+  function ticket(): number {
+    return current;
+  }
+
+  /** Called by the modal once its exit has played, with its own ticket. A
+   *  stale ticket is a card that was already released: ignore it. */
+  function closed(ticketOfCard: number = current): void {
+    if (ticketOfCard !== current) return;
     target.value = null;
     host.value = "app";
     const el = opener;
@@ -60,5 +73,5 @@ export function useProviderSignIn() {
     opener = null;
   }
 
-  return { target: readonly(target), host: readonly(host), open, closed, release };
+  return { target: readonly(target), host: readonly(host), open, ticket, closed, release };
 }
