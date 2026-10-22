@@ -1,19 +1,19 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile, type ChildProcess } from "node:child_process";
 
 import { z } from "zod";
 
+import { killTree } from "@kone/agent-core/spawn.js";
+import { resolveLaunch, withLaunchOptions, type ResolvedLaunch } from "@kone/agent-core/windowsLaunch.js";
 import { git, repoRoot } from "@kone/git-core/core.js";
 import type {
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
 } from "@kone/git-core/types.js";
 
-const execFileAsync = promisify(execFile);
-
 const MAX_SUMMARY_CHARS = 6_000;
 const MAX_PATCH_CHARS = 40_000;
 const CLI_TIMEOUT_MS = 25_000;
+const CLI_MAX_BUFFER = 2 * 1024 * 1024;
 
 function limitSection(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -186,9 +186,106 @@ const CommitOutputWire = z.object({
   branch: z.string().optional(),
 });
 
-async function tryGenerateWithCli(
+/** The options one CLI candidate is started with. `timeout` is absent for a
+ *  Windows batch launch: execFile's timeout would kill only the cmd.exe
+ *  wrapper, so that tree is torn down by hand instead (runCliCandidate). */
+export type CommitCliExecOptions = {
+  cwd: string;
+  timeout?: number;
+  maxBuffer: number;
+  windowsVerbatimArguments?: boolean;
+};
+
+/** A CLI candidate in flight: the child — its pid is the only handle to the
+ *  tree behind a cmd.exe wrapper — and its buffered stdout. */
+export type CommitCliProcess = {
+  child: ChildProcess;
+  done: Promise<{ stdout: string }>;
+};
+
+/** The `execFile` textGen starts a CLI with, promisified but keeping the child
+ *  (`promisify(execFile)` resolves stdout/stderr only, and the Windows timeout
+ *  needs the pid). */
+export type CommitCliExecFile = (
+  file: string,
+  args: readonly string[],
+  options: CommitCliExecOptions,
+) => CommitCliProcess;
+
+/** What a CLI call needs from the host: the platform a launch is resolved for,
+ *  the environment its PATH is read from, and the execFile that starts it. All
+ *  injectable so the Windows rules can be exercised off Windows; production
+ *  leaves them out. */
+export type CommitCliDeps = {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  execFile?: CommitCliExecFile;
+};
+
+/** `execFile` with its child kept: the promise settles on the callback, while
+ *  the child is returned to the caller immediately so a timer can reach it. */
+const execFileWithChild: CommitCliExecFile = (file, args, options) => {
+  let settle!: (value: { stdout: string }) => void;
+  let fail!: (reason: Error) => void;
+  const done = new Promise<{ stdout: string }>((resolve, reject) => {
+    settle = resolve;
+    fail = reject;
+  });
+  const child = execFile(file, args, options, (error, stdout) => {
+    if (error) fail(error);
+    else settle({ stdout });
+  });
+  return { child, done };
+};
+
+/** Start one resolved candidate. Off Windows (and for a native Windows `.exe`)
+ *  this is exactly the execFile call textGen has always made. A Windows batch
+ *  shim runs through cmd.exe, so execFile's own `timeout` is left off — it would
+ *  kill only the wrapper and orphan the CLI the shim started — and the wrapper's
+ *  whole tree is torn down instead. The candidate is abandoned once that
+ *  teardown returns, so a child that never reports its exit cannot wedge the
+ *  call. */
+async function runCliCandidate(
+  exec: CommitCliExecFile,
+  launch: ResolvedLaunch,
+  cwd: string,
+): Promise<{ stdout: string }> {
+  if (!launch.windowsVerbatimArguments) {
+    return exec(launch.file, launch.args, {
+      cwd,
+      timeout: CLI_TIMEOUT_MS,
+      maxBuffer: CLI_MAX_BUFFER,
+    }).done;
+  }
+  const run = exec(
+    launch.file,
+    launch.args,
+    withLaunchOptions({ cwd, maxBuffer: CLI_MAX_BUFFER }, launch),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      void killTree(run.child.pid).finally(() => reject(new Error("commit CLI timed out")));
+    }, CLI_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([run.done, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Ask each installed CLI in turn for a commit message. Returns null when none
+ *  answers, so the caller can fall back to the deterministic suggestion.
+ *
+ *  Each candidate is resolved for the platform first: on Windows an npm install
+ *  is a `.cmd` shim that plain execFile cannot start, so it is launched through
+ *  cmd.exe. A candidate that cannot be resolved is skipped exactly like one that
+ *  fails to start. `deps` is the test seam described by CommitCliDeps. */
+export async function tryGenerateWithCli(
   prompt: string,
   cwd: string,
+  deps: CommitCliDeps = {},
 ): Promise<CommitMessageGenerationResult | null> {
   const commands = [
     {
@@ -214,15 +311,21 @@ async function tryGenerateWithCli(
     },
   ];
 
+  const platform = deps.platform ?? process.platform;
+  const env = deps.env ?? process.env;
+  const exec = deps.execFile ?? execFileWithChild;
+
   for (const cmd of commands) {
+    const launch = resolveLaunch(cmd.bin, cmd.args, { env, platform, cwd });
+    if (!launch.ok) {
+      // Not installed, or an npm shim Windows cannot start: the same "try the
+      // next candidate" a spawn failure gets.
+      continue;
+    }
+
     let stdout: string;
     try {
-      const res = await execFileAsync(cmd.bin, cmd.args, {
-        cwd,
-        timeout: CLI_TIMEOUT_MS,
-        maxBuffer: 2 * 1024 * 1024,
-      });
-      stdout = res.stdout;
+      stdout = (await runCliCandidate(exec, launch, cwd)).stdout;
     } catch {
       // CLI candidate failed or is not installed; try next
       continue;

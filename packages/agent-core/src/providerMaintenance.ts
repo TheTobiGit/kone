@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { resolveClaudeInstallation } from "./claudeHome.js";
 import { runStreaming } from "./spawn.js";
+import type { LaunchDeps } from "./windowsLaunch.js";
 import type {
   ProviderInstallSource,
   ProviderKind,
@@ -644,11 +645,18 @@ export async function resolveProviderMaintenance(input: {
 /** Run the update kone resolved for `provider`. Returns the transcript so the
  *  pane can show what the installer actually said — an update that "failed" is
  *  usually a permissions or prefix problem the output names outright, and
- *  hiding it just sends the user to a terminal to run the command again. */
+ *  hiding it just sends the user to a terminal to run the command again.
+ *
+ *  `launch` injects the platform and spawn the update is resolved for/with (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. The package
+ *  manager is a launch of its own: on Windows npm's `npm.cmd` shim cannot be
+ *  spawned directly, so `runStreaming` resolves the bare `npm` to it and wraps
+ *  the run in cmd.exe. */
 export async function runProviderUpdate(input: {
   provider: ProviderKind;
   binaryOverride?: string;
   env: NodeJS.ProcessEnv;
+  launch?: LaunchDeps;
 }): Promise<{ outcome: ProviderUpdateOutcome; message: string | null; output: string | null }> {
   const definition = DEFINITIONS[input.provider];
   if (!definition.binary) {
@@ -676,7 +684,10 @@ export async function runProviderUpdate(input: {
     };
   }
 
-  const separator = process.platform === "win32" ? ";" : ":";
+  // The PATH the package manager runs with has to be written the way the launch
+  // reads it back: on Windows that is `;`, whatever the host running kone is.
+  const platform = input.launch?.platform ?? process.platform;
+  const separator = platform === "win32" ? ";" : ":";
   const env: NodeJS.ProcessEnv = command.pathPrepend
     ? { ...input.env, PATH: [command.pathPrepend, input.env.PATH].filter(Boolean).join(separator) }
     : { ...input.env };
@@ -686,6 +697,7 @@ export async function runProviderUpdate(input: {
     // one cwd that always exists and belongs to nobody's repository.
     cwd: os.homedir(),
     env,
+    launch: input.launch,
   });
   let timedOut = false;
   const timer = setTimeout(() => {
