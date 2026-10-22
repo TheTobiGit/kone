@@ -8,8 +8,8 @@ import type {
 } from "~/types/desktop";
 import { resetProviderSettingsForTests, useProviderSettings } from "./useProviderSettings";
 
-/** A stand-in for the preload's provider-settings bridge: it keeps the snapshot
- *  the main process would hold, records writes, and lets a test push. */
+/** A stand-in for the preload's provider-settings bridge: one store however
+ *  many windows subscribe, with the revision bump and broadcast a write causes. */
 function installBridge(opts: {
   revision?: number;
   settings?: ProviderSettingsMap;
@@ -18,20 +18,42 @@ function installBridge(opts: {
   afterImport?: ProviderSettingsSnapshot;
   /** Answer with only the pre-snapshot calls, as an older preload would. */
   legacyApi?: boolean;
+  /** Fail this many patchSettings writes, as a save that didn't land would. */
+  failPatches?: number;
+  /** Fail this many imports, as a store that couldn't be written would. */
+  failImports?: number;
 }) {
   let current: ProviderSettingsSnapshot = {
     revision: opts.revision ?? 1,
     settings: opts.settings ?? {},
     legacyImportPending: opts.legacyImportPending ?? false,
   };
-  let listener: ((snapshot: ProviderSettingsSnapshot) => void) | null = null;
+  let failPatches = opts.failPatches ?? 0;
+  let failImports = opts.failImports ?? 0;
+  const listeners = new Set<(snapshot: ProviderSettingsSnapshot) => void>();
+  // Snapshots served before the store itself, so a second "window" can start
+  // from what it read before the first one wrote.
+  const served: ProviderSettingsSnapshot[] = [];
   let subscribeCalls = 0;
   const setCalls: Array<{ provider: ProviderKind; config: ProviderConfig }> = [];
+  const patchCalls: Array<{ provider: ProviderKind; patch: ProviderConfig }> = [];
   const importCalls: LegacyRendererProviderSettings[] = [];
+
+  const announce = (snapshot: ProviderSettingsSnapshot) => {
+    for (const listener of listeners) listener(snapshot);
+  };
+
+  /** Main's write path: bump the revision, then tell every window. */
+  const commit = (next: ProviderSettingsMap, legacyImportPending = current.legacyImportPending) => {
+    current = { revision: current.revision + 1, settings: next, legacyImportPending };
+    announce(current);
+    return current;
+  };
 
   type FakeAgent = {
     getSettings: () => Promise<ProviderSettingsMap>;
     setSettings: (provider: ProviderKind, config: ProviderConfig) => Promise<ProviderSettingsMap>;
+    patchSettings?: (provider: ProviderKind, patch: ProviderConfig) => Promise<ProviderSettingsSnapshot>;
     getSettingsSnapshot?: () => Promise<ProviderSettingsSnapshot>;
     importLegacySettings?: (
       legacy: LegacyRendererProviderSettings,
@@ -43,30 +65,44 @@ function installBridge(opts: {
     getSettings: () => Promise.resolve(current.settings),
     setSettings: (provider, config) => {
       setCalls.push({ provider, config: { ...config } });
-      current = {
-        revision: current.revision + 1,
-        settings: { ...current.settings, [provider]: { ...config } },
-        legacyImportPending: current.legacyImportPending,
-      };
+      commit({ ...current.settings, [provider]: { ...config } });
       return Promise.resolve(current.settings);
     },
   };
   if (!opts.legacyApi) {
-    agent.getSettingsSnapshot = () => Promise.resolve(current);
+    agent.getSettingsSnapshot = () => Promise.resolve(served.shift() ?? current);
+    agent.patchSettings = (provider, patch) => {
+      patchCalls.push({ provider, patch: { ...patch } });
+      if (failPatches > 0) {
+        failPatches -= 1;
+        return Promise.reject(new Error("settings not saved"));
+      }
+      const merged: ProviderConfig = { ...current.settings[provider], ...patch };
+      for (const [key, value] of Object.entries(patch)) {
+        // An `undefined` value clears the field, as main's merge does.
+        if (value === undefined) Reflect.deleteProperty(merged, key);
+      }
+      return Promise.resolve(commit({ ...current.settings, [provider]: merged }));
+    };
     agent.importLegacySettings = (legacy) => {
       importCalls.push(legacy);
-      current = opts.afterImport ?? {
-        revision: current.revision + 1,
-        settings: current.settings,
-        legacyImportPending: false,
-      };
+      if (failImports > 0) {
+        failImports -= 1;
+        return Promise.reject(new Error("import not saved"));
+      }
+      if (opts.afterImport) {
+        current = opts.afterImport;
+        announce(current);
+      } else {
+        commit(current.settings, false);
+      }
       return Promise.resolve(current);
     };
     agent.onSettingsChanged = (cb) => {
       subscribeCalls += 1;
-      listener = cb;
+      listeners.add(cb);
       return () => {
-        listener = null;
+        listeners.delete(cb);
       };
     };
   }
@@ -76,9 +112,19 @@ function installBridge(opts: {
   (globalThis as { window?: unknown }).window = { koneDesktop: { agent } };
   return {
     setCalls,
+    patchCalls,
     importCalls,
+    /** Main's store as it stands now. */
+    main: (): ProviderSettingsMap => current.settings,
+    /** Serve one stale snapshot to the next read, as a window that lived
+     *  through a write in another window would still hold. */
+    serveNext: (stale: ProviderSettingsSnapshot) => {
+      served.push(stale);
+    },
     /** Push a snapshot the way main broadcasts after a write. */
-    push: (snapshot: ProviderSettingsSnapshot) => listener?.(snapshot),
+    push: (next: ProviderSettingsSnapshot) => {
+      announce(next);
+    },
     /** How many times a surface asked to be told about writes. */
     subscribeCalls: () => subscribeCalls,
   };
@@ -176,7 +222,7 @@ describe("useProviderSettings: main-process mirror", () => {
     expect(bridge.subscribeCalls()).toBe(1);
   });
 
-  test("a toggle writes the merged config and shows at once", async () => {
+  test("a toggle sends only the field it changed, and shows at once", async () => {
     const bridge = installBridge({
       revision: 2,
       settings: { codex: { enabled: true, binaryPath: "/opt/codex", handoffTokenCap: 2000 } },
@@ -187,21 +233,21 @@ describe("useProviderSettings: main-process mirror", () => {
     const pending = settings.setEnabled("codex", false);
     expect(settings.isEnabled("codex")).toBe(false);
     await pending;
-    expect(bridge.setCalls[0]).toEqual({
-      provider: "codex",
-      config: { enabled: false, binaryPath: "/opt/codex", handoffTokenCap: 2000 },
+    expect(bridge.patchCalls[0]).toEqual({ provider: "codex", patch: { enabled: false } });
+    expect(bridge.main().codex).toEqual({
+      enabled: false,
+      binaryPath: "/opt/codex",
+      handoffTokenCap: 2000,
     });
 
     settings.setModelHidden("codex", "gpt-5", true);
     expect(settings.isModelHidden("codex", "gpt-5")).toBe(true);
-    expect(bridge.setCalls[1]).toEqual({
-      provider: "codex",
-      config: {
-        enabled: false,
-        binaryPath: "/opt/codex",
-        handoffTokenCap: 2000,
-        hiddenModels: ["gpt-5"],
-      },
+    expect(bridge.patchCalls[1]).toEqual({ provider: "codex", patch: { hiddenModels: ["gpt-5"] } });
+    expect(bridge.main().codex).toEqual({
+      enabled: false,
+      binaryPath: "/opt/codex",
+      handoffTokenCap: 2000,
+      hiddenModels: ["gpt-5"],
     });
 
     // main's answer is the last word, even when it disagrees with the optimism
@@ -210,7 +256,7 @@ describe("useProviderSettings: main-process mirror", () => {
     expect(settings.isModelHidden("codex", "gpt-5")).toBe(false);
   });
 
-  test("a binary path writes through the same path, clearing when blank", async () => {
+  test("a binary path writes only that field, clearing when blank", async () => {
     const bridge = installBridge({
       revision: 1,
       settings: { codex: { enabled: false, binaryPath: "/opt/codex" } },
@@ -220,14 +266,12 @@ describe("useProviderSettings: main-process mirror", () => {
 
     await settings.setBinaryPath("codex", " /usr/local/bin/codex ");
     expect(settings.binaryPath("codex")).toBe("/usr/local/bin/codex");
-    expect(bridge.setCalls[0]?.config).toEqual({
-      enabled: false,
-      binaryPath: "/usr/local/bin/codex",
-    });
+    expect(bridge.patchCalls[0]?.patch).toEqual({ binaryPath: "/usr/local/bin/codex" });
 
     await settings.setBinaryPath("codex", "  ");
     expect(settings.binaryPath("codex")).toBe("");
-    expect(bridge.setCalls[1]?.config).toEqual({ enabled: false, binaryPath: undefined });
+    expect(bridge.patchCalls[1]?.patch).toEqual({ binaryPath: undefined });
+    expect(bridge.main().codex).toEqual({ enabled: false });
   });
 
   test("nothing is persisted in localStorage any more", async () => {
@@ -239,11 +283,11 @@ describe("useProviderSettings: main-process mirror", () => {
     settings.setModelHidden("codex", "gpt-5", true);
 
     expect(writes).toEqual([]);
-    expect(bridge.setCalls).toHaveLength(2);
+    expect(bridge.patchCalls).toHaveLength(2);
   });
 
   test("a preload without the snapshot calls still reads and writes", async () => {
-    installBridge({
+    const bridge = installBridge({
       revision: 1,
       settings: { codex: { enabled: true, binaryPath: "/opt/codex" } },
       legacyApi: true,
@@ -255,6 +299,58 @@ describe("useProviderSettings: main-process mirror", () => {
     await settings.setEnabled("codex", false);
     expect(settings.isEnabled("codex")).toBe(false);
     expect(settings.binaryPath("codex")).toBe("/opt/codex");
+    // No patchSettings on an old preload: the whole entry replaces the old one.
+    expect(bridge.setCalls[0]).toEqual({
+      provider: "codex",
+      config: { enabled: false, binaryPath: "/opt/codex" },
+    });
+  });
+});
+
+describe("useProviderSettings: concurrent writes", () => {
+  test("two windows editing different fields both keep their change", async () => {
+    const bridge = installBridge({ revision: 1, settings: { codex: { enabled: true } } });
+    const windowA = useProviderSettings();
+    await windowA.load();
+    await windowA.setEnabled("codex", false);
+    expect(bridge.main().codex).toEqual({ enabled: false });
+
+    // Window B loaded the same stale store before A wrote. Module state is one
+    // mirror per process, so it starts over from the snapshot it still holds.
+    resetProviderSettingsForTests();
+    bridge.serveNext(snapshot(1, { codex: { enabled: true } }));
+    const windowB = useProviderSettings();
+    await windowB.load();
+    expect(windowB.isEnabled("codex")).toBe(true);
+
+    windowB.setModelHidden("codex", "gpt-5", true);
+
+    // Each window sent only its own field, so neither undid the other.
+    expect(bridge.patchCalls).toEqual([
+      { provider: "codex", patch: { enabled: false } },
+      { provider: "codex", patch: { hiddenModels: ["gpt-5"] } },
+    ]);
+    expect(bridge.main().codex).toEqual({ enabled: false, hiddenModels: ["gpt-5"] });
+    expect(windowB.isEnabled("codex")).toBe(false);
+    expect(windowB.isModelHidden("codex", "gpt-5")).toBe(true);
+  });
+
+  test("a save that fails puts main's value back", async () => {
+    const bridge = installBridge({
+      revision: 5,
+      settings: { codex: { enabled: true } },
+      failPatches: 1,
+    });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    const pending = settings.setEnabled("codex", false);
+    expect(settings.isEnabled("codex")).toBe(false);
+    await pending;
+
+    // Main never moved, so neither does the mirror — at the same revision.
+    expect(settings.isEnabled("codex")).toBe(true);
+    expect(bridge.main().codex).toEqual({ enabled: true });
   });
 });
 
@@ -309,6 +405,46 @@ describe("useProviderSettings: legacy import", () => {
 
     expect(bridge.importCalls).toEqual([{}]);
     expect(settings.isEnabled("codex")).toBe(true);
+  });
+
+  test("an import that can't be saved keeps the keys and retries on the next load", async () => {
+    const { store } = installStorage({
+      "kone.providers.enabled": JSON.stringify({ codex: false }),
+    });
+    const bridge = installBridge({
+      revision: 1,
+      legacyImportPending: true,
+      afterImport: snapshot(2, { codex: { enabled: false } }),
+      failImports: 1,
+    });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    // Main's store as it stood, not the choices the import couldn't keep.
+    expect(settings.isEnabled("codex")).toBe(true);
+    expect(store.has("kone.providers.enabled")).toBe(true);
+
+    // A plain load() tries again — no background loop, just the next caller.
+    await settings.load();
+    expect(bridge.importCalls).toHaveLength(2);
+    expect(settings.isEnabled("codex")).toBe(false);
+    expect(store.has("kone.providers.enabled")).toBe(false);
+  });
+
+  test("an import that lands but leaves the store pending keeps the keys", async () => {
+    const { store } = installStorage({
+      "kone.providers.enabled": JSON.stringify({ codex: false }),
+    });
+    installBridge({
+      revision: 1,
+      legacyImportPending: true,
+      afterImport: snapshot(2, { codex: { enabled: false } }, true),
+    });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    expect(settings.isEnabled("codex")).toBe(false);
+    expect(store.has("kone.providers.enabled")).toBe(true);
   });
 });
 

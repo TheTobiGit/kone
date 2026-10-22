@@ -556,6 +556,10 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** Merge only the given fields onto the provider's current entry in main;
+     *  an `undefined` value clears that field. */
+    patchSettings: (provider: ProviderKind, patch: ProviderConfig): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:patch-settings", provider, patch),
     /** The whole settings store plus its revision — the renderer mirrors this
      *  instead of keeping a copy of its own. */
     getSettingsSnapshot: (): Promise<ProviderSettingsSnapshot> =>

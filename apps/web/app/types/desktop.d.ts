@@ -3300,11 +3300,19 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** Merge just these fields onto the provider's current entry in main (an
+   *  `undefined` value clears that field), so two windows editing different
+   *  fields never undo each other. Rejects when the write could not be saved. */
+  patchSettings: (
+    provider: ProviderKind,
+    patch: ProviderConfig,
+  ) => Promise<ProviderSettingsSnapshot>;
   /** The whole settings store plus its revision — the renderer mirrors this
    *  rather than keeping a copy of its own. */
   getSettingsSnapshot: () => Promise<ProviderSettingsSnapshot>;
   /** Hand the store the renderer's legacy localStorage values; it imports them
-   *  once and resolves to the resulting snapshot. */
+   *  once and resolves to the resulting snapshot. Rejects when the import could
+   *  not be saved, leaving it pending for the next load. */
   importLegacySettings: (
     legacy: LegacyRendererProviderSettings,
   ) => Promise<ProviderSettingsSnapshot>;

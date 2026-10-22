@@ -9,6 +9,7 @@ import type { QueuedTurnEnqueueInput } from "./conversationStoreTypes.js";
 import type {
   ModelDescriptor,
   ProviderAdapter,
+  ProviderConfig,
   ProviderKind,
   ProviderStatus,
   QueuedTurnRow,
@@ -126,6 +127,12 @@ class FakeAdapter {
   }
   async respondToUserInput(): Promise<UserInputRespondResult> {
     return { owned: true };
+  }
+  /** The service's settings hook, as a real adapter keeps it — every config it
+   *  was handed, so a test can see what a write applied. */
+  configs: ProviderConfig[] = [];
+  setConfig(config: ProviderConfig): void {
+    this.configs.push(config);
   }
   async listSessions(): Promise<unknown[]> {
     return [];
@@ -2360,6 +2367,28 @@ describe("AgentService.checkProvider", () => {
     } finally {
       writeProviderSettings("codex", { enabled: true });
       await disabledService.stopAll();
+    }
+  });
+
+  test("a settings patch merges onto the store and re-points the live adapter", async () => {
+    writeProviderSettings("codex", { enabled: true });
+    const codex = new FakeAdapter(() => {}, "codex");
+    const patchedService = new AgentServiceCtor({
+      // SAFETY: one fake codex adapter is the whole roster this test needs.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: () => [codex] as unknown as ProviderAdapter[],
+    });
+
+    try {
+      const snapshot = patchedService.patchProviderSettings("codex", { hiddenModels: ["gpt-5"] });
+      expect(snapshot.settings.codex).toEqual({ enabled: true, hiddenModels: ["gpt-5"] });
+
+      // A second window's toggle lands on top of the first window's field.
+      patchedService.patchProviderSettings("codex", { enabled: false });
+      expect(codex.configs.at(-1)).toEqual({ enabled: false, hiddenModels: ["gpt-5"] });
+    } finally {
+      writeProviderSettings("codex", { enabled: true });
+      await patchedService.stopAll();
     }
   });
 });

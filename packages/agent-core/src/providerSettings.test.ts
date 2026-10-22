@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import * as atomicWrite from "@kone/agent-core/lib-atomicWrite.js";
 
 import { DEFAULT_HANDOFF_TOKEN_CAP, MAX_HANDOFF_TOKEN_CAP, MIN_HANDOFF_TOKEN_CAP } from "./contextBudget.js";
 import type { JsonValue } from "./lib-jsonValue.js";
@@ -17,6 +19,7 @@ import {
   setProviderHandoffTokenCap,
   writeProviderSettings,
   handoffTokenCapFor,
+  patchProviderSettings,
 } from "./providerSettings.js";
 import { setUserDataDir } from "./userDataDir.js";
 import type { LegacyRendererProviderSettings, ProviderSettingsSnapshot } from "./types.js";
@@ -275,6 +278,105 @@ describe("providerSettings envelope", () => {
     const settings = readProviderSettings();
     expect(settings.codex).toEqual({ enabled: false, binaryPath: "/bin/codex" });
     expect(settings.cursor).toBeUndefined();
+  });
+});
+
+describe("providerSettings write failures", () => {
+  /** Make every settings write fail, the way an unwritable app-data directory
+   *  does. chmod is the real thing; as root it is a no-op, so fall back to
+   *  making the atomic writer throw the error chmod would have raised. Returns
+   *  the undo. */
+  function failWrites(): () => void {
+    chmodSync(dir, 0o500);
+    try {
+      writeFileSync(path.join(dir, "probe"), "x");
+    } catch {
+      return () => chmodSync(dir, 0o700);
+    }
+    rmSync(path.join(dir, "probe"), { force: true });
+    chmodSync(dir, 0o700);
+    const spy = spyOn(atomicWrite, "writeFileAtomicSync").mockImplementation(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    return () => spy.mockRestore();
+  }
+
+  it("throws, and leaves memory and disk on the last good write", () => {
+    writeProviderSettings("codex", { enabled: false });
+    const before = readProviderSettingsSnapshot();
+    const seen: ProviderSettingsSnapshot[] = [];
+    const unsubscribe = onProviderSettingsChanged((snapshot) => {
+      seen.push(snapshot);
+    });
+    const restore = failWrites();
+    try {
+      expect(() => writeProviderSettings("codex", { enabled: true })).toThrow(
+        /provider settings could not be saved: EACCES/i,
+      );
+    } finally {
+      restore();
+      unsubscribe();
+    }
+    // Nothing moved in memory, no listener heard about a write that never
+    // reached the disk, and the file still holds the last good write.
+    expect(readProviderSettingsSnapshot()).toEqual(before);
+    expect(seen).toHaveLength(0);
+    expect(onDisk().settings).toEqual({ codex: { enabled: false } });
+  });
+
+  it("keeps the legacy import pending when the write fails, and retries it later", () => {
+    writeProviderSettings("codex", { enabled: false });
+    const before = onDisk();
+    const restore = failWrites();
+    try {
+      expect(() => importLegacyRendererSettings({ enabled: { opencode: false } })).toThrow(
+        /provider settings could not be saved/i,
+      );
+    } finally {
+      restore();
+    }
+    // Still owed, and the file still says so.
+    expect(readProviderSettingsSnapshot().legacyImportPending).toBe(true);
+    expect(onDisk()).toEqual(before);
+
+    // The next call, once writes work again, imports for real.
+    const retried = importLegacyRendererSettings({ enabled: { opencode: false } });
+    expect(retried.legacyImportPending).toBe(false);
+    resetProviderSettingsForTests();
+    expect(readProviderSettings()).toMatchObject({
+      codex: { enabled: false },
+      opencode: { enabled: false },
+    });
+    expect(readProviderSettingsSnapshot().legacyImportPending).toBe(false);
+  });
+});
+
+describe("providerSettings patch", () => {
+  it("merges onto main's current entry, so two windows do not undo each other", () => {
+    writeProviderSettings("codex", { enabled: true });
+    // Window B's copy of the store, taken before window A writes anything.
+    const stale = readProviderSettingsSnapshot();
+    expect(stale.settings.codex?.enabled).toBe(true);
+
+    // Window A flips the toggle; window B edits a different field, sending only
+    // what it changed.
+    patchProviderSettings("codex", { enabled: false });
+    const merged = patchProviderSettings("codex", { hiddenModels: ["gpt-5"] });
+    expect(merged.codex).toEqual({ enabled: false, hiddenModels: ["gpt-5"] });
+
+    resetProviderSettingsForTests();
+    expect(readProviderSettings().codex).toEqual({ enabled: false, hiddenModels: ["gpt-5"] });
+  });
+
+  it("clears a field patched as undefined and keeps the rest", () => {
+    writeProviderSettings("codex", { enabled: false, binaryPath: "/bin/codex" });
+    const next = patchProviderSettings("codex", { binaryPath: undefined });
+    expect(next.codex).toEqual({ enabled: false });
+  });
+
+  it("creates an entry for a provider that has none, defaulting to enabled", () => {
+    const next = patchProviderSettings("cursor", { hiddenModels: ["x"] });
+    expect(next.cursor).toEqual({ enabled: true, hiddenModels: ["x"] });
   });
 });
 
