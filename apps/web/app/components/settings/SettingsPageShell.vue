@@ -28,7 +28,10 @@ type IconGlyph = readonly (readonly [string, Readonly<Record<string, string | nu
 //
 // Slots: #actions sits at the masthead's right; #lede rides between masthead and
 // body (a progress thread, an error line); default is the body; #foot is the pane
-// note, reached by pressing the i at the bottom rather than sitting as a strip.
+// note, reached by pressing the i at the bottom rather than sitting as a strip;
+// #overlay is the pane's own layer, last in the frame, for a modal that must
+// cover this page rather than the window (the section is its positioned
+// ancestor, so `contained` resolves to the pane).
 
 const props = withDefaults(
   defineProps<{
@@ -187,6 +190,11 @@ const crumb = computed(() => {
         </div>
       </Transition>
     </div>
+
+    <!-- The pane's own layer: absolutely positioned children here cover the page
+         without joining the flex column, so a modal hosted by the pane neither
+         shifts the body nor adds a scrollbar. -->
+    <slot name="overlay" />
   </section>
 </template>
 
@@ -202,6 +210,10 @@ const crumb = computed(() => {
   min-height: 0;
   padding: 1.25rem 1.5rem;
   overflow: hidden;
+  /* The containing block for the #overlay layer: a pane-hosted modal covers this
+     page, not the window. Nothing in here depends on a higher one — the note is
+     fixed, so it stays against the drawer. */
+  position: relative;
 }
 
 @keyframes sps-in {
