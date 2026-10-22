@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { findOnPath } from "../processEnv.js";
 import { userDataPath } from "../userDataDir.js";
+import { findWindowsLaunchableOnPath } from "../windowsLaunch.js";
 import { LspAbortError, LspClient } from "./client.js";
 import type { LspSpawnFn } from "./client.js";
 import { clampInt, isJsonList, isRecord, jsonText, positiveInt } from "./json.js";
@@ -146,6 +147,9 @@ export interface LspManagerOptions {
   sleep?: (ms: number) => Promise<void>;
   defaultTimeoutMs?: number;
   idleTimeoutMs?: number;
+  /** The platform binary resolution targets; injected so the Windows rules can
+   *  be exercised from any host. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
 }
 
 interface LspPoolEntry {
@@ -178,6 +182,7 @@ export class LspManager {
   private readonly clock: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly defaultTimeoutMs: number | undefined;
+  private readonly platform: NodeJS.Platform;
   private idleTimeoutMs: number;
   private readonly pool = new Map<string, LspPoolEntry>();
   private readonly starting = new Map<string, Promise<LspPoolEntry>>();
@@ -186,11 +191,18 @@ export class LspManager {
 
   constructor(options: LspManagerOptions = {}) {
     this.defaults = options.defaults ?? TS_DEFAULT_SERVERS;
-    // findOnPath is the shared PATH search; the local .bin walk stays in the
-    // registry's resolver, which receives these deps.
+    this.platform = options.platform ?? process.platform;
+    // The local .bin walk stays in the registry's resolver, which receives these
+    // deps. On Windows the PATH lookup must only answer with a file Windows can
+    // start: findOnPath tries the bare name first there, so it prefers npm's
+    // extensionless sh script (and resolves a shim to its target), while a spawn
+    // needs the `.cmd` itself.
     this.binaryDeps = options.binaryDeps ?? {
       existsSync: fsExistsSync,
-      lookupOnPath: (command) => findOnPath(command),
+      lookupOnPath: (command) =>
+        this.platform === "win32"
+          ? (findWindowsLaunchableOnPath(command, process.env)?.found ?? null)
+          : findOnPath(command),
     };
     this.readTextFile = options.readTextFile ?? defaultReadTextFile;
     this.userDataPathFn = options.userDataPathFn ?? userDataPath;
@@ -476,9 +488,13 @@ export class LspManager {
     cwd: string,
     rootPath: string,
   ): Promise<LspPoolEntry> {
-    const binary = resolveServerBinary(server, cwd, this.binaryDeps);
+    const binary = resolveServerBinary(server, cwd, this.binaryDeps, this.platform);
     if (binary === null) {
-      throw new LspServerStartError(server.name, server.command, searchedBinaryPaths(server, cwd));
+      throw new LspServerStartError(
+        server.name,
+        server.command,
+        searchedBinaryPaths(server, cwd, this.platform),
+      );
     }
     let entry: LspPoolEntry | null = null;
     const client = new LspClient({
@@ -506,16 +522,21 @@ export class LspManager {
 }
 
 // Every place the resolver looked for a bare command: the local .bin walk,
-// nearest first. Path-shaped commands never consult that walk — they name
-// one file — so the single resolved candidate is the whole story.
-function searchedBinaryPaths(server: ServerConfig, cwd: string): readonly string[] {
+// nearest first, in the launchable spelling for the platform. Path-shaped
+// commands never consult that walk — they name one file — so the single
+// resolved candidate is the whole story.
+function searchedBinaryPaths(
+  server: ServerConfig,
+  cwd: string,
+  platform: NodeJS.Platform,
+): readonly string[] {
   if (server.command.includes("/") || server.command.includes(path.sep)) {
     const candidate = path.isAbsolute(server.command)
       ? server.command
       : path.join(path.resolve(cwd), server.command);
     return [candidate];
   }
-  return localBinCandidates(cwd, server.command, process.platform);
+  return localBinCandidates(cwd, server.command, platform);
 }
 
 // Walk up from the queried file to the nearest directory holding a root
