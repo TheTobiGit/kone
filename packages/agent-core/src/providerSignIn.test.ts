@@ -481,4 +481,224 @@ describe("resolveProviderSignInLaunch", () => {
     expect(launch.args).toEqual(["login"]);
     expect(Array.isArray(launch.args)).toBe(true);
   });
+
+  // ── Windows launchability ────────────────────────────────────────────────
+  // npm's cmd-shim writes three files per CLI side by side: `codex` (a POSIX
+  // sh script), `codex.cmd` and `codex.ps1`. Only the .cmd is something
+  // CreateProcess-through-cmd.exe can run; picking the extensionless script —
+  // the first PATH match by name — passes validation on win32 (no X_OK there)
+  // and then fails at spawn. These tests pin the PATHEXT walk that replaces
+  // that first-match lookup.
+
+  test("an npm project .bin sibling set resolves the .cmd shim, not the sh script", () => {
+    const dir = binDir("win-npm-bin");
+    shim(dir, "codex");
+    const file = shim(dir, "codex.cmd");
+    shim(dir, "codex.ps1");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("C:\\Windows\\System32\\cmd.exe");
+    // Hand-derived literal, not built with the production escaping helpers:
+    // this directory has no spaces, so escapeCmdCommand is identity, and
+    // escapeCmdArgument("login", true) is ^^^"login^^^" (the wrapping quotes
+    // pick up one caret per pass, and the second pass escapes the first's).
+    expect(launch.args).toBe(`/d /s /c "${file} ^^^"login^^^""`);
+  });
+
+  test("a global npm AppData\\Roaming\\npm sibling set resolves the .cmd shim", () => {
+    const dir = binDir("win-appdata", "AppData", "Roaming", "npm");
+    const file = shim(dir, "codex.cmd");
+    shim(dir, "codex");
+    shim(dir, "codex.ps1");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("C:\\Windows\\cmd.exe");
+    expect(launch.args).toBe(`/d /s /c "${escapeCmdCommand(file)} ^^^"login^^^""`);
+    expect(launch.args).toContain(dir);
+  });
+
+  test(".EXE wins over .CMD in one directory and is spawned directly", () => {
+    const dir = binDir("win-pathext-order");
+    shim(dir, "codex.cmd");
+    const exe = shim(dir, "codex.exe");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe(exe);
+    expect(launch.args).toEqual(["login"]);
+  });
+
+  test("a PATHEXT the user reordered picks the .cmd, under any key casing", () => {
+    const dir = binDir("win-pathext-custom");
+    const cmd = shim(dir, "codex.cmd");
+    shim(dir, "codex.exe");
+
+    for (const [key, value] of [
+      ["PathExt", ".CMD;.EXE"],
+      ["PATHEXT", ".CMD;.EXE"],
+      ["pathext", ".CMD;.EXE"],
+    ] as const) {
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: {},
+        env: { PATH: dir, ComSpec: "C:\\Windows\\cmd.exe", [key]: value },
+        platform: "win32",
+      });
+
+      expect(launch.ok).toBe(true);
+      if (!launch.ok) throw new Error(launch.message);
+      expect(launch.file).toBe("C:\\Windows\\cmd.exe");
+      expect(launch.args).toBe(`/d /s /c "${escapeCmdCommand(cmd)} ^^^"login^^^""`);
+    }
+  });
+
+  test("only an extensionless sh script (or a .ps1) on PATH is a clear sentence", () => {
+    const bare = binDir("win-bare-shim");
+    const bareFile = shim(bare, "codex");
+    const bareLaunch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: bare, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(bareLaunch).toMatchObject({ ok: false });
+    if (bareLaunch.ok) throw new Error("expected a failure");
+    expect(bareLaunch.message).toContain(bareFile);
+    expect(bareLaunch.message).toContain("isn't something Windows can run");
+    // The dialog can still show what it would have run.
+    expect(bareLaunch.command?.display).toBe("codex login");
+
+    const ps1 = binDir("win-ps1-shim");
+    const ps1File = shim(ps1, "codex.ps1");
+    const ps1Launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: ps1, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(ps1Launch).toMatchObject({ ok: false });
+    if (ps1Launch.ok) throw new Error("expected a failure");
+    expect(ps1Launch.message).toContain(ps1File);
+    expect(ps1Launch.message).toContain("isn't something Windows can run");
+  });
+
+  test("an extensionless configured path resolves through PATHEXT to the .cmd", () => {
+    const dir = binDir("win-explicit");
+    const bare = shim(dir, "codex");
+    const cmd = shim(dir, "codex.cmd");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: bare } },
+      env: { PATH: temp, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("C:\\Windows\\cmd.exe");
+    // Another hand-derived literal: no spaces in the temp path, so only the
+    // argument needs escaping.
+    expect(launch.args).toBe(`/d /s /c "${cmd} ^^^"login^^^""`);
+  });
+
+  test("a configured path Windows can't run says so instead of launching it", () => {
+    const dir = binDir("win-explicit-bare");
+    const bare = shim(dir, "codex");
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: bare } },
+      env: { PATH: temp, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch).toMatchObject({ ok: false });
+    if (launch.ok) throw new Error("expected a failure");
+    expect(launch.message).toContain(bare);
+    expect(launch.message).toContain("isn't something Windows can run");
+
+    // The same for a non-PATHEXT extension, while a path that exists nowhere
+    // keeps the plain "doesn't exist" sentence.
+    const ps1 = shim(dir, "codex.ps1");
+    const ps1Launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: ps1 } },
+      env: { PATH: temp, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+    expect(ps1Launch).toMatchObject({ ok: false });
+    if (ps1Launch.ok) throw new Error("expected a failure");
+    expect(ps1Launch.message).toContain(ps1);
+    expect(ps1Launch.message).toContain("isn't something Windows can run");
+
+    const nowhere = path.join(dir, "codex-nowhere");
+    const nowhereLaunch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: nowhere } },
+      env: { PATH: temp, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+    expect(nowhereLaunch).toMatchObject({ ok: false, message: `${nowhere} doesn't exist.` });
+  });
+
+  test("non-Windows still takes the extensionless shim beside a .cmd sibling", () => {
+    const dir = binDir("linux-with-cmd-sibling");
+    const file = path.join(dir, "codex");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    shim(dir, "codex.cmd");
+    shim(dir, "codex.exe");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir },
+      platform: "linux",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+  });
+
+  test("non-Windows still enforces the executable bit", () => {
+    // The win32 branch has no X_OK to check (Windows has no executable bit),
+    // so this pins that the PATHEXT work did not leak into the POSIX path.
+    const dir = binDir("linux-not-executable");
+    writeFileSync(path.join(dir, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir },
+      platform: "linux",
+    });
+
+    expect(launch).toMatchObject({ ok: false, message: "codex isn't executable." });
+  });
 });

@@ -9,7 +9,12 @@ import { resolveClaudeInstallation } from "./claudeHome.js";
 import { resolveClineBinary } from "./clineHome.js";
 import { resolveCursorBinary } from "./cursorHome.js";
 import { resolveDroidBinary } from "./droidHome.js";
-import { findOnPathEntry } from "./processEnv.js";
+import {
+  findOnPathEntry,
+  findWindowsLaunchableIn,
+  findWindowsLaunchableOnPath,
+  pathExtensions,
+} from "./processEnv.js";
 import { defaultProviderBinary } from "./providerMaintenance.js";
 import { ProviderKindSchema } from "./types.js";
 import type { ProviderKind, ProviderSettingsMap } from "./types.js";
@@ -207,6 +212,103 @@ function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean 
   }
 }
 
+/** The sentence for "this exists, but not as a program Windows can start". The
+ *  expected list is the user's own PATHEXT, so the message matches what
+ *  resolution actually tried. */
+function notLaunchableOnWindows(file: string, env: NodeJS.ProcessEnv): string {
+  return `${file} isn't something Windows can run (expected one of ${pathExtensions(env).join(", ")}).`;
+}
+
+/** The same for a bare name found on PATH: naming where it was found saves the
+ *  user a `where codex` to work out which install the message is about. */
+function notLaunchableOnPathOnWindows(
+  file: string,
+  found: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  return `${file} was found on your PATH at ${found}, but it isn't something Windows can run (expected one of ${pathExtensions(env).join(", ")}).`;
+}
+
+/** The first PATH entry that answers to `file`'s name but is not launchable —
+ *  the extensionless sh script npm's cmd-shim writes, or its `.ps1` sibling.
+ *  Only consulted when the launchable lookup already failed, so the directory
+ *  read costs nothing until a sign-in is refused; it exists purely to turn
+ *  "isn't on your PATH" into the truth ("it's there, Windows just can't run
+ *  it"). Entries are sorted so the sentence names the same file every time. */
+function findUnlaunchableOnWindowsPath(file: string, env: NodeJS.ProcessEnv): string | null {
+  const stem = path.basename(file).toLowerCase();
+  for (const dir of (env.PATH ?? "").split(";").filter(Boolean)) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir).sort();
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const lower = entry.toLowerCase();
+      // `codex` itself, or a sibling sharing its stem (`codex.ps1`).
+      if (lower !== stem && !lower.startsWith(`${stem}.`)) continue;
+      const candidate = path.join(dir, entry);
+      try {
+        if (!fs.statSync(candidate).isFile()) continue;
+      } catch {
+        continue;
+      }
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** A configured path on Windows. A name that already carries a PATHEXT
+ *  extension is used exactly as configured; anything else — extensionless, or
+ *  a non-PATHEXT suffix like `.ps1` — gets what cmd.exe gives a bare command:
+ *  each PATHEXT extension appended in order, first existing file winning. That
+ *  is how a user who pointed kone at npm's `codex` still signs in: the runnable
+ *  `codex.cmd` beside it is what node-pty can start. The file is never launched
+ *  as configured when Windows cannot start it. */
+function locateConfiguredOnWindows(
+  file: string,
+  env: NodeJS.ProcessEnv,
+): { ok: true; found: string } | { ok: false; message: string } {
+  const resolved = path.resolve(file);
+  const hit = findWindowsLaunchableIn(path.dirname(resolved), path.basename(resolved), env);
+  if (hit) return { ok: true, found: hit.found };
+  // The configured file is there even though nothing launchable is: saying
+  // "doesn't exist" would send the user looking for a missing install.
+  if (fs.existsSync(resolved)) {
+    return { ok: false, message: notLaunchableOnWindows(file, env) };
+  }
+  return { ok: false, message: `${file} doesn't exist.` };
+}
+
+/** Windows resolution, where "found" is not the same as "can be started". A
+ *  bare name is looked up only among PATHEXT files (`findWindowsLaunchableOnPath`
+ *  — never the extensionless npm sh script); a configured path may be
+ *  extensionless and is then completed through PATHEXT. Anything that exists
+ *  but is not launchable is a sentence, never a spawn: CreateProcess would fail
+ *  and the user would see a terminal error instead of the reason. */
+function locateOnWindows(
+  file: string,
+  env: NodeJS.ProcessEnv,
+): { ok: true; found: string } | { ok: false; message: string } {
+  if (hasPathSeparator(file)) return locateConfiguredOnWindows(file, env);
+  const hit = findWindowsLaunchableOnPath(file, env);
+  if (!hit) {
+    const unlaunchable = findUnlaunchableOnWindowsPath(file, env);
+    if (unlaunchable) {
+      return { ok: false, message: notLaunchableOnPathOnWindows(file, unlaunchable, env) };
+    }
+    return { ok: false, message: `${file} isn't on your PATH.` };
+  }
+  // Belt and braces: the lookup already insists on a regular file, and win32
+  // has no executable bit to check.
+  if (!isExecutableFile(hit.found, "win32")) {
+    return { ok: false, message: `${file} isn't executable.` };
+  }
+  return { ok: true, found: hit.found };
+}
+
 /** The RESOLVED executable for a configured or default binary name, or the
  *  sentence saying why there is none. The requested name is only for the
  *  message; what comes back is the absolute path node-pty should spawn, so a
@@ -217,6 +319,7 @@ function locateBinary(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): { ok: true; found: string } | { ok: false; message: string } {
+  if (platform === "win32") return locateOnWindows(file, env);
   if (hasPathSeparator(file)) {
     const resolved = path.resolve(file);
     if (!fs.existsSync(resolved)) return { ok: false, message: `${file} doesn't exist.` };
