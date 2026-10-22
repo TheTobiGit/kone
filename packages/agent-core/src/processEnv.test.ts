@@ -4,15 +4,17 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findOnPath,
+  mergeWindowsPath,
+  windowsCliDirs,
+} from "./processEnv.js";
+import {
+  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findWindowsLaunchableIn,
   findWindowsLaunchableOnPath,
-  mergeWindowsPath,
   pathExtensions,
-  windowsCliDirs,
   windowsLaunchExtensions,
-} from "./processEnv.js";
+} from "./windowsLaunch.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "kone-process-env-"));
