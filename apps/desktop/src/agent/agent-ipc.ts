@@ -103,6 +103,7 @@ import type {
   CreateSideChatInput,
   ForkThreadAtBlockInput,
   InteractionMode,
+  LegacyRendererProviderSettings,
   ProviderConfig,
   ProviderKind,
   RewindConversationOnlyInput,
@@ -736,6 +737,17 @@ export function registerAgentIpc(): void {
     }
   });
 
+  // Provider settings live in the main process's file, so every window gets
+  // each write pushed rather than polling or keeping its own copy. Same
+  // machine-wide broadcast as above: no subscriber set to respect, and the
+  // renderer drops a push whose revision it already holds.
+  svc.onProviderSettingsChanged((snapshot) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("agent:settings-changed", snapshot);
+    }
+  });
+
   // Discovery + models (read-only probes of the user's installed CLIs).
   // `agent:surface` is the instant one — last known statuses + catalogs off the
   // disk cache, no CLI spawned — so the renderer can present a real provider
@@ -755,6 +767,15 @@ export function registerAgentIpc(): void {
     "agent:set-settings",
     (_event, provider: ProviderKind, config: ProviderConfig) =>
       svc.setProviderSettings(provider, config),
+  );
+
+  // The renderer mirror of the settings file: a snapshot plus a subscription
+  // (agent:settings-changed) rather than a copy it has to keep in sync. The
+  // legacy import lands the old localStorage values once, on first open.
+  ipcMain.handle("agent:settings-snapshot", () => svc.getProviderSettingsSnapshot());
+  ipcMain.handle(
+    "agent:import-legacy-settings",
+    (_event, legacy: LegacyRendererProviderSettings) => svc.importLegacyProviderSettings(legacy),
   );
 
   // The handoff history cap is part of provider settings, but its own getter

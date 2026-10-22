@@ -57,7 +57,7 @@ import {
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
 import { snoozeUntilReset } from "./limitState.js";
-import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, StartCancelled } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, PROVIDER_KIND_VALUES, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -89,8 +89,11 @@ import { resolveProviderMaintenance, runProviderUpdate } from "./providerMainten
 import {
   assertProviderEnabled,
   handoffTokenCapFor,
+  importLegacyRendererSettings,
   isProviderEnabled,
+  onProviderSettingsChanged as subscribeProviderSettings,
   readProviderSettings,
+  readProviderSettingsSnapshot,
   setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
   writeProviderSettings,
 } from "./providerSettings.js";
@@ -116,12 +119,14 @@ import type {
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
   ForkThreadAtTurnResult,
+  LegacyRendererProviderSettings,
   ModelDescriptor,
   ProviderAdapter,
   ProviderConfig,
   ProviderKind,
   ProviderMaintenance,
   ProviderSettingsMap,
+  ProviderSettingsSnapshot,
   ProviderStatus,
   ProviderUpdateResult,
   QueuedTurnRow,
@@ -1041,6 +1046,40 @@ export class AgentService {
   /** The user's persisted per-provider install settings (binary paths, …). */
   getProviderSettings(): ProviderSettingsMap {
     return readProviderSettings();
+  }
+
+  /** The whole settings store as a renderer mirrors it: the revision it is at,
+   *  the settings, and whether it still owes the store its legacy values. */
+  getProviderSettingsSnapshot(): ProviderSettingsSnapshot {
+    return readProviderSettingsSnapshot();
+  }
+
+  /** Fold a renderer's legacy localStorage settings into the store — the module
+   *  imports them once, ever. A toggle that flipped a provider's enabled state
+   *  re-points its adapter and re-probes, exactly as setProviderSettings does. */
+  importLegacyProviderSettings(
+    legacy: LegacyRendererProviderSettings,
+  ): ProviderSettingsSnapshot {
+    const before = readProviderSettings();
+    const snapshot = importLegacyRendererSettings(legacy);
+    let enabledChanged = false;
+    for (const provider of PROVIDER_KIND_VALUES) {
+      if (isProviderEnabled(provider, before) === isProviderEnabled(provider, snapshot.settings)) {
+        continue;
+      }
+      enabledChanged = true;
+      this.adapters.get(provider)?.setConfig?.(snapshot.settings[provider] ?? {});
+    }
+    if (enabledChanged) void this.discover();
+    return snapshot;
+  }
+
+  /** Subscribe to settings writes, including the legacy import. Returns an
+   *  unsubscribe fn. */
+  onProviderSettingsChanged(
+    listener: (snapshot: ProviderSettingsSnapshot) => void,
+  ): () => void {
+    return subscribeProviderSettings(listener);
   }
 
   /** Persist one provider's install settings and apply them to its live adapter

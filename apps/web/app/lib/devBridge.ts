@@ -13,8 +13,10 @@ import type {
   CloneProgress,
   GitActionProgressEvent,
   KoneGitApi,
+  LegacyRendererProviderSettings,
   ProviderKind,
   ProviderMaintenance,
+  ProviderSettingsSnapshot,
   ProviderStatus,
   ProviderUpdateResult,
   StoredThreadMeta,
@@ -215,6 +217,20 @@ function createDevAgent(
     statuses: devProviderStatuses(),
     models: MOCK_MODELS,
   });
+  // The stand-in's settings store: nothing stored, but the same revision and
+  // import-once contract as the real one, so a first open exercises the real
+  // path instead of a special case.
+  let settingsRevision = 1;
+  let legacyImported = false;
+  const settingsListeners = new Set<(next: ProviderSettingsSnapshot) => void>();
+  const settingsSnapshot = (): ProviderSettingsSnapshot => ({
+    revision: settingsRevision,
+    settings: {},
+    legacyImportPending: !legacyImported,
+  });
+  const announceSettings = (next: ProviderSettingsSnapshot): void => {
+    for (const listener of settingsListeners) listener(next);
+  };
   return {
     surface: () => Promise.resolve(snapshot()),
     warm: () => Promise.resolve(),
@@ -226,6 +242,24 @@ function createDevAgent(
       };
     },
     models: (provider) => Promise.resolve(MOCK_MODELS[provider] ?? []),
+    getSettingsSnapshot: () => Promise.resolve(settingsSnapshot()),
+    // Importing once bumps the revision, exactly like the main process; a
+    // second call is a no-op that returns what is already there.
+    importLegacySettings: (_legacy: LegacyRendererProviderSettings) => {
+      if (!legacyImported) {
+        legacyImported = true;
+        settingsRevision += 1;
+      }
+      const next = settingsSnapshot();
+      announceSettings(next);
+      return Promise.resolve(next);
+    },
+    onSettingsChanged: (cb) => {
+      settingsListeners.add(cb);
+      return () => {
+        settingsListeners.delete(cb);
+      };
+    },
     maintenance: () => Promise.resolve(Object.values(MOCK_MAINTENANCE)),
     // The installer "runs" for a beat and lands on the latest version, so the
     // pane's running → succeeded transition can be seen.
