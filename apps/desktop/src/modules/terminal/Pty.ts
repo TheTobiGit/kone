@@ -72,8 +72,12 @@ export type PtySpawnInput = {
    *  fresh `buildAgentEnv()` would put them straight back. */
   completeEnv?: boolean;
   /** Run this program instead of the user's login shell. Used by the main
-   *  process's provider sign-in path — never forwarded from renderer IPC. */
-  command?: { file: string; args: string[] };
+   *  process's provider sign-in path — never forwarded from renderer IPC.
+   *  `args` may be a pre-built command line STRING: a Windows `.cmd`/`.bat`
+   *  login runs through cmd.exe, and node-pty appends a string verbatim while
+   *  it would re-quote an array for CommandLineToArgvW (see agent-core's
+   *  providerSignIn). */
+  command?: { file: string; args: string[] | string };
 };
 
 /** The subscription surface a PTY must expose for createPtySubscriptions to

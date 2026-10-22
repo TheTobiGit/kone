@@ -74,7 +74,9 @@ const MAX_SUBPROCESS_POLL_INTERVAL_MS = 60_000;
  *  main process's provider sign-in path builds one; `terminal:open` never
  *  forwards one, so a renderer can never name a command. */
 export type TerminalLaunch = {
-  command: { file: string; args: string[] };
+  /** The program to run. `args` is a pre-built command line string for a
+   *  Windows batch shim launched through cmd.exe (see PtySpawnInput.command). */
+  command: { file: string; args: string[] | string };
   banner?: string;
   /** The open input's `env` is the complete child environment (provider
    *  sign-in builds one). Carried onto restart so the same sanitized env is
