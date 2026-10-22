@@ -2524,6 +2524,12 @@ export type ProviderConfig = {
   /** Model family keys hidden from the picker for this provider (opt-out;
    *  absent/empty means every model is shown). */
   hiddenModels?: string[];
+  /** Resume a thread limited on this provider at the provider's reset
+   *  (default: true). Off still marks the thread limited. */
+  resumeAtReset?: boolean;
+  /** Snooze a thread limited on this provider until the reset (default:
+   *  false). Needs a known reset; none means no snooze. */
+  snoozeWhenLimited?: boolean;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */

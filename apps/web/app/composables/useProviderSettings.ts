@@ -12,8 +12,8 @@ import type {
 
 // The user's per-provider install settings — the settings-surface companion to
 // useAgentProviders (which only *detects* installed CLIs). The desktop store owns
-// them now (binary path, enabled, hidden model families); this module is the
-// renderer's mirror of it. load() pulls a revisioned snapshot and
+// them now (binary path, enabled, hidden model families, limit behaviour); this
+// module is the renderer's mirror of it. load() pulls a revisioned snapshot and
 // onSettingsChanged pushes every later write, so two windows and the picker rail
 // never disagree. Setters update the mirror optimistically and write through the
 // same bridge; the push that follows is authoritative.
@@ -297,6 +297,27 @@ export function useProviderSettings() {
       !(hiddenModels.value[provider]?.includes(key) ?? false),
   );
 
+  /** Whether a thread the provider limits picks itself back up at the reset
+   *  (default: yes, so absent means on). Off still marks the thread limited —
+   *  it just doesn't send "Continue" when the window reopens. */
+  function resumeAtReset(provider: ProviderKind): boolean {
+    return settings.value[provider]?.resumeAtReset !== false;
+  }
+
+  async function setResumeAtReset(provider: ProviderKind, on: boolean): Promise<void> {
+    await write(provider, { resumeAtReset: on });
+  }
+
+  /** Whether a limited thread is snoozed until the reset rather than sitting in
+   *  the list marked limited (default: no). Needs a known reset to snooze until. */
+  function snoozeWhenLimited(provider: ProviderKind): boolean {
+    return settings.value[provider]?.snoozeWhenLimited === true;
+  }
+
+  async function setSnoozeWhenLimited(provider: ProviderKind, on: boolean): Promise<void> {
+    await write(provider, { snoozeWhenLimited: on });
+  }
+
   return {
     binaryPaths,
     enabledMap,
@@ -312,6 +333,10 @@ export function useProviderSettings() {
     setModelHidden,
     hiddenModelCount,
     modelVisiblePredicate,
+    resumeAtReset,
+    setResumeAtReset,
+    snoozeWhenLimited,
+    setSnoozeWhenLimited,
   };
 }
 

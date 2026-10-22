@@ -316,6 +316,59 @@ describe("useProviderSettings: main-process mirror", () => {
   });
 });
 
+describe("useProviderSettings: limit behaviour", () => {
+  test("both limit toggles read their defaults with nothing stored", async () => {
+    installBridge({ revision: 1, settings: {} });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    // Absent means today's behaviour: kone resumes at the reset and never snoozes.
+    expect(settings.resumeAtReset("codex")).toBe(true);
+    expect(settings.snoozeWhenLimited("codex")).toBe(false);
+  });
+
+  test("each toggle writes only its own field and shows at once", async () => {
+    const bridge = installBridge({
+      revision: 3,
+      settings: { codex: { enabled: true, binaryPath: "/opt/codex" } },
+    });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    const pending = settings.setResumeAtReset("codex", false);
+    expect(settings.resumeAtReset("codex")).toBe(false);
+    await pending;
+    expect(bridge.patchCalls[0]).toEqual({ provider: "codex", patch: { resumeAtReset: false } });
+
+    await settings.setSnoozeWhenLimited("codex", true);
+    expect(settings.snoozeWhenLimited("codex")).toBe(true);
+    expect(bridge.patchCalls[1]).toEqual({ provider: "codex", patch: { snoozeWhenLimited: true } });
+
+    // Each write carried one field, so the provider's other settings survived.
+    expect(bridge.main().codex).toEqual({
+      enabled: true,
+      binaryPath: "/opt/codex",
+      resumeAtReset: false,
+      snoozeWhenLimited: true,
+    });
+  });
+
+  test("a stored off/on reads back through the mirror, and a push overrules it", async () => {
+    const bridge = installBridge({
+      revision: 6,
+      settings: { codex: { resumeAtReset: false, snoozeWhenLimited: true } },
+    });
+    const settings = useProviderSettings();
+    await settings.load();
+    expect(settings.resumeAtReset("codex")).toBe(false);
+    expect(settings.snoozeWhenLimited("codex")).toBe(true);
+
+    bridge.push(snapshot(7, { codex: { resumeAtReset: true, snoozeWhenLimited: false } }));
+    expect(settings.resumeAtReset("codex")).toBe(true);
+    expect(settings.snoozeWhenLimited("codex")).toBe(false);
+  });
+});
+
 describe("useProviderSettings: failed first read", () => {
   test("a snapshot read that fails is retried by the next load", async () => {
     installStorage({});
