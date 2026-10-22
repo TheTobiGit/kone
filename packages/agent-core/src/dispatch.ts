@@ -26,6 +26,7 @@ import {
 } from "./restartBackgroundNote.js";
 import type { ContinuationRecord } from "./store/continuations.js";
 import { isSnoozed } from "./limitState.js";
+import { resumeAtResetFor } from "./providerSettings.js";
 import { renderSenderHeader, threadAgentName } from "./senderHeader.js";
 import { contractPersona } from "./contractPersona.js";
 import { SkillUnavailableError, resolveSkillReferences } from "./skillInvocation.js";
@@ -1162,6 +1163,9 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       // New work (or a manual resume) already cleared the limit: the scheduled
       // resume is stale.
       if ((meta.limitedAt ?? null) === null) return { cancel: "limit-cleared" };
+      // Read fresh: the toggle can be switched off while the resume waits out
+      // a long reset.
+      if (!resumeAtResetFor(meta.provider)) return { cancel: "resume-off" };
       return { prompt: LIMIT_RESUME_PROMPT };
     }
     const payload = parseContinuationPayload(row.payloadJson);

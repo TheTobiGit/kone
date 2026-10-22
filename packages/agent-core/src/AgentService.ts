@@ -95,6 +95,8 @@ import {
   patchProviderSettings as patchProviderSettingsInStore,
   readProviderSettings,
   readProviderSettingsSnapshot,
+  resumeAtResetFor,
+  snoozeWhenLimitedFor,
   setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
   writeProviderSettings,
 } from "./providerSettings.js";
@@ -4057,9 +4059,11 @@ export class AgentService {
 
   /** Record that a turn failed on a provider usage limit — a real state, not a
    *  generic failure. `resetAt` is the provider's own reset or null when it
-   *  gave none. A reset schedules a resume; no reset schedules nothing, so the
-   *  thread stays limited and the queue holds until a manual resume or the user
-   *  sends. Announces thread.limit.updated so lists move. */
+   *  gave none. A reset schedules a resume unless the provider's resumeAtReset
+   *  is off; no reset schedules nothing, so the thread stays limited and the
+   *  queue holds until a manual resume or the user sends. The provider's
+   *  snoozeWhenLimited also snoozes the thread until the reset. Announces
+   *  thread.limit.updated so lists move. */
   setThreadLimited(threadId: string, resetAt: number | null): void {
     const history = this.historyStore;
     if (!history) return;
@@ -4067,7 +4071,13 @@ export class AgentService {
     const provider = meta?.provider ?? this.routing.get(threadId);
     if (!provider) return;
     history.setLimited(threadId, resetAt);
-    this.scheduleLimitResume(threadId, resetAt);
+    // After the mark, so the snooze lands on a thread that reads as limited.
+    // A reset the provider never gave is never guessed into a deadline.
+    if (snoozeWhenLimitedFor(provider)) {
+      const until = snoozeUntilReset(resetAt, Date.now());
+      if (until !== null) this.setThreadSnooze(threadId, until);
+    }
+    this.scheduleLimitResume(threadId, resetAt, resumeAtResetFor(provider));
     const at = Date.now();
     this.dispatch({
       type: "thread.limit.updated",
@@ -4113,13 +4123,18 @@ export class AgentService {
   }
 
   /** Schedule the resume-at-reset continuation. Only when the provider gave a
-   *  reset — never guessed. */
-  private scheduleLimitResume(threadId: string, resetAt: number | null): void {
+   *  reset — never guessed — and only when its resumeAtReset is still on. Any
+   *  existing resume for the thread is cancelled either way. */
+  private scheduleLimitResume(
+    threadId: string,
+    resetAt: number | null,
+    resume: boolean,
+  ): void {
     const store = this.continuationStore;
     if (!store) return;
     try {
       store.cancelContinuationsForThread(threadId);
-      if (resetAt === null) return;
+      if (!resume || resetAt === null) return;
       store.scheduleContinuation({
         threadId,
         kind: LIMIT_RESUME_CONTINUATION_KIND,
