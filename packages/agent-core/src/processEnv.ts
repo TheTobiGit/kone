@@ -51,11 +51,26 @@ export function windowsCliDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   return [`${profile}\\.local\\bin`, `${profile}\\.bun\\bin`, `${profile}\\scoop\\shims`];
 }
 
+/** The env key that holds PATH. Windows env keys are case-insensitive, but a
+ *  spread `process.env` keeps the stored casing — usually `Path` — so on win32
+ *  this is whichever key already holds it (an exact `PATH` first). Reading
+ *  `env.PATH` there misses the real PATH, and writing it leaves the child two
+ *  variables. Every other platform's env is case-sensitive: always `PATH`. */
+export function pathEnvKey(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32" || "PATH" in env) return "PATH";
+  return Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH";
+}
+
 /** The inherited env with the known Windows CLI dirs appended to PATH (existing
- *  entries win; deduped). PATH is `;`-separated on Windows. */
+ *  entries win; deduped). PATH is `;`-separated on Windows, and lives under
+ *  whatever key casing the env already uses (see `pathEnvKey`). */
 export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  const seen = new Set((env.PATH ?? "").split(";").filter(Boolean));
+  const key = pathEnvKey(env, "win32");
+  const seen = new Set((env[key] ?? "").split(";").filter(Boolean));
   const merged = [...seen];
   for (const dir of windowsCliDirs(env)) {
     if (dir && !seen.has(dir)) {
@@ -63,7 +78,7 @@ export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.
       merged.push(dir);
     }
   }
-  env.PATH = merged.join(";");
+  env[key] = merged.join(";");
   return env;
 }
 
@@ -124,7 +139,7 @@ export function findOnPathEntry(
   platform: NodeJS.Platform = process.platform,
 ): PathHit | null {
   const separator = platform === "win32" ? ";" : ":";
-  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
+  for (const dir of (env[pathEnvKey(env, platform)] ?? "").split(separator).filter(Boolean)) {
     for (const name of candidateNames(binary, platform)) {
       const candidate = path.join(dir, name);
       if (!fs.existsSync(candidate)) continue;

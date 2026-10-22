@@ -5,7 +5,9 @@ import path from "node:path";
 
 import {
   findOnPath,
+  findOnPathEntry,
   mergeWindowsPath,
+  pathEnvKey,
   windowsCliDirs,
 } from "./processEnv.js";
 import {
@@ -51,6 +53,35 @@ describe("mergeWindowsPath", () => {
       "C:\\Windows\\System32;C:\\Users\\testuser\\.local\\bin;" +
         "C:\\Users\\testuser\\.bun\\bin;C:\\Users\\testuser\\scoop\\shims",
     );
+  });
+
+  test("merges into the Path key Windows actually uses, never a second PATH", () => {
+    // A spread process.env on Windows carries `Path`; writing `PATH` beside it
+    // left two variables, one of them holding only the known dirs.
+    const env = mergeWindowsPath({
+      USERPROFILE: "C:\\Users\\testuser",
+      Path: "C:\\Windows\\System32;C:\\Users\\testuser\\AppData\\Roaming\\npm",
+    });
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["Path"]);
+    expect(env.Path).toBe(
+      "C:\\Windows\\System32;C:\\Users\\testuser\\AppData\\Roaming\\npm;" +
+        "C:\\Users\\testuser\\.local\\bin;C:\\Users\\testuser\\.bun\\bin;" +
+        "C:\\Users\\testuser\\scoop\\shims",
+    );
+  });
+
+  test("pathEnvKey folds case on Windows only", () => {
+    expect(pathEnvKey({ Path: "x" }, "win32")).toBe("Path");
+    expect(pathEnvKey({ Path: "x", PATH: "y" }, "win32")).toBe("PATH");
+    expect(pathEnvKey({}, "win32")).toBe("PATH");
+    expect(pathEnvKey({ Path: "x" }, "linux")).toBe("PATH");
+  });
+
+  test("findOnPathEntry reads a Windows Path key", () => {
+    const dir = tempDir();
+    const exe = makeExecutable(dir, "codex.exe");
+    expect(findOnPathEntry("codex", { Path: dir }, "win32")?.found).toBe(exe);
+    expect(findOnPathEntry("codex.exe", { Path: dir }, "darwin")).toBeNull();
   });
 
   test("handles an empty or missing PATH", () => {

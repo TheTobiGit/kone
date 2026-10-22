@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { resolveClaudeInstallation } from "./claudeHome.js";
+import { pathEnvKey } from "./processEnv.js";
 import { runStreaming } from "./spawn.js";
 import type { LaunchDeps } from "./windowsLaunch.js";
 import type {
@@ -309,7 +310,7 @@ function locate(
   if (hasSeparator(binary)) return resolve(path.resolve(binary));
 
   const separator = process.platform === "win32" ? ";" : ":";
-  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
+  for (const dir of (env[pathEnvKey(env)] ?? "").split(separator).filter(Boolean)) {
     for (const name of candidateNames(binary)) {
       const hit = resolve(path.join(dir, name));
       if (hit) return hit;
@@ -688,8 +689,11 @@ export async function runProviderUpdate(input: {
   // reads it back: on Windows that is `;`, whatever the host running kone is.
   const platform = input.launch?.platform ?? process.platform;
   const separator = platform === "win32" ? ";" : ":";
+  // Prepended under the key that already holds PATH (`Path`, usually, on
+  // Windows), so the child never sees two PATH variables.
+  const pathKey = pathEnvKey(input.env, platform);
   const env: NodeJS.ProcessEnv = command.pathPrepend
-    ? { ...input.env, PATH: [command.pathPrepend, input.env.PATH].filter(Boolean).join(separator) }
+    ? { ...input.env, [pathKey]: [command.pathPrepend, input.env[pathKey]].filter(Boolean).join(separator) }
     : { ...input.env };
 
   const run = runStreaming(command.executable, command.args, {
