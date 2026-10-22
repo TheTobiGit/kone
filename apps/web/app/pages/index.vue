@@ -14,6 +14,10 @@ import { requestSearchJump } from "~/composables/useSearchJump";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
 import { useViewFacet } from "~/composables/useViewContext";
 import type { SearchJumpRequest } from "~/components/conversation/ConversationSearchModal.vue";
+// Imported by path rather than left to auto-import: this is the one modal every
+// provider entry point funnels into, and naming the file here keeps that single
+// mount obvious at the page shell.
+import ProviderSignInModal from "~/components/provider/ProviderSignInModal.vue";
 
 const project = useProject();
 const { recents, forget, togglePin } = useRecentProjects();
@@ -179,6 +183,11 @@ const {
   closeDrawer,
   openDrawer,
 } = useSettingsSurface();
+
+// Which provider the sign-in modal is up for, shared by every entry point: the
+// provider deck's pill, the provider detail's Sign-in block, the composer's
+// status tray. The mount below is the only listener.
+const signIn = useProviderSignIn();
 
 function onOpenProfile() {
   cue("show");
@@ -552,6 +561,16 @@ function onAttentionOpen(projectPath: string, threadId: string) {
     <AssistantGlobalAssistantModal
       v-if="assistantOpen"
       :surface-top="surfaceTop"
+    />
+
+    <!-- The provider sign-in modal, mounted once for the whole app: every entry
+         point asks the same composable, and this is the one card that answers.
+         Keyed on the provider so switching targets is a fresh run; closing is
+         the modal's own call to `closed()`. -->
+    <ProviderSignInModal
+      v-if="signIn.target.value"
+      :key="signIn.target.value"
+      :provider="signIn.target.value"
     />
 
     <!-- The conversation-search palette, over every page. Mounted only while

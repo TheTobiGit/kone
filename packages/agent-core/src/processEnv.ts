@@ -116,6 +116,133 @@ function candidateNames(binary: string, platform: NodeJS.Platform): string[] {
  *  three. */
 export type PathHit = { found: string; real: string; dir: string };
 
+/** What cmd.exe itself tries for a bare command when PATHEXT is unset. */
+const DEFAULT_PATH_EXTENSIONS = [".COM", ".EXE", ".BAT", ".CMD"];
+
+/** The extensions Windows will start a command from, in the order it tries
+ *  them: PATHEXT from `env`, under any key casing (Windows env keys are
+ *  case-insensitive, a JS object's are not — the same reason
+ *  `commandInterpreter` in providerSignIn scans for ComSpec), falling back to
+ *  cmd.exe's default when it is missing or holds no entry. Empty entries are
+ *  dropped (PATHEXT commonly ends in `;`) and a leading dot is added if the user
+ *  wrote `EXE`, so callers can append an entry straight to a bare name. This is
+ *  the raw list, PATHEXT's unlaunchable suffixes included; a launch wants
+ *  `windowsLaunchExtensions` instead. */
+export function pathExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = Object.entries(env).find(([key]) => key.toLowerCase() === "pathext")?.[1];
+  const extensions = (raw ?? "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => (entry.startsWith(".") ? entry : `.${entry}`));
+  return extensions.length > 0 ? extensions : [...DEFAULT_PATH_EXTENSIONS];
+}
+
+/** The suffixes node-pty can actually start on Windows: a native image
+ *  (`.exe`, `.com`), or a batch shim (`.cmd`, `.bat`) that `cmdLaunch` wraps in
+ *  ComSpec. PATHEXT usually lists more — `.PS1`, `.VBS`, `.JS` — but those need
+ *  an interpreter kone does not supply, so none of them is ever a launch
+ *  candidate, whatever the user's PATHEXT says. Compared case-insensitively,
+ *  the way Windows compares filenames. */
+export const SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS = [".exe", ".com", ".cmd", ".bat"] as const;
+
+/** The PATHEXT order narrowed to what Windows can actually start: the user's
+ *  own order among the supported suffixes, so a PATHEXT of `.CMD;.EXE` still
+ *  tries the `.cmd` first. A PATHEXT with nothing supported in it (`.PS1` only)
+ *  falls back to cmd.exe's default order rather than to no candidates at all —
+ *  an unusual PATHEXT is no reason to stop finding `codex.cmd`. This is the
+ *  list a launch walks; `pathExtensions` stays the raw PATHEXT. */
+export function windowsLaunchExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const supported = pathExtensions(env).filter((extension) =>
+    SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS.some((entry) => entry === extension.toLowerCase()),
+  );
+  return supported.length > 0 ? supported : [...DEFAULT_PATH_EXTENSIONS];
+}
+
+/** Whether `name` already ends in a suffix Windows can start, so it is used
+ *  as-is instead of completed. Deliberately not "is in PATHEXT": a configured
+ *  `codex.exe` works under any PATHEXT, and a `.ps1` that PATHEXT happens to
+ *  list is still not a program. A dotted name with no supported suffix
+ *  (`foo.bar`) is completed like a bare one. */
+function hasWindowsLaunchExtension(name: string): boolean {
+  const lower = name.toLowerCase();
+  return SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+/** A directory's entries keyed by their lowercased name — the way Windows
+ *  itself compares filenames, and the reason a supported suffix finds
+ *  `codex.EXE` from the lowercased completion guess (the tests injected a win32
+ *  platform from Linux). An unreadable directory holds nothing, so it yields
+ *  nothing. */
+function entriesByName(dir: string): Map<string, string> {
+  try {
+    return new Map(fs.readdirSync(dir).map((entry) => [entry.toLowerCase(), entry]));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Find the file Windows would start for `name` in ONE directory: the name
+ *  itself when it already ends in a supported suffix, otherwise the first
+ *  existing supported completion in PATHEXT order (`codex.cmd` for npm's
+ *  `codex`+`codex.cmd`+`codex.ps1` sibling set — the `.ps1` is skipped even
+ *  when PATHEXT lists it, because there is no interpreter to run it). Null when
+ *  the directory has no launchable match. This is the rule for both a bare name
+ *  on PATH and an explicit configured path's own directory, so both ask the
+ *  same question here. */
+export function findWindowsLaunchableIn(
+  dir: string,
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PathHit | null {
+  const names = hasWindowsLaunchExtension(name)
+    ? [name]
+    : windowsLaunchExtensions(env).map((extension) => `${name}${extension}`);
+  const entries = entriesByName(dir);
+  for (const candidateName of names) {
+    const entry = entries.get(candidateName.toLowerCase());
+    if (!entry) continue;
+    const candidate = path.join(dir, entry);
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+    } catch {
+      continue;
+    }
+    try {
+      return { found: candidate, real: fs.realpathSync(candidate), dir };
+    } catch {
+      return { found: candidate, real: candidate, dir };
+    }
+  }
+  return null;
+}
+
+/** Find a bare name among the files Windows can actually START. For each PATH
+ *  directory, in order, it tries `findWindowsLaunchableIn`: a name that already
+ *  ends in a supported suffix (`.exe`, `.com`, `.cmd`, `.bat`) is tried as-is,
+ *  whatever PATHEXT says, and any other name is completed through the supported
+ *  entries of PATHEXT.
+ *
+ *  This is deliberately not `findOnPathEntry`: that one accepts the bare name
+ *  and only knows `.exe`/`.cmd`/`.bat`, so on Windows it prefers npm's
+ *  extensionless `codex` sh script — which sits beside `codex.cmd` and
+ *  `codex.ps1` in `node_modules\.bin` and in `%APPDATA%\npm` — over the `.cmd`.
+ *  An extensionless script is not something CreateProcess can launch, and
+ *  neither is a `.ps1` (no interpreter is spawned for it, even when PATHEXT
+ *  lists it), so neither is ever returned here. Callers that only need "where
+ *  does this install live" keep using `findOnPathEntry`; callers that are about
+ *  to spawn need this. */
+export function findWindowsLaunchableOnPath(
+  binary: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PathHit | null {
+  for (const dir of (env.PATH ?? "").split(";").filter(Boolean)) {
+    const hit = findWindowsLaunchableIn(dir, binary, env);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** Find a bare binary name across PATH, keeping both the entry and its target.
  *  Returns null when nothing on PATH matches. */
 export function findOnPathEntry(

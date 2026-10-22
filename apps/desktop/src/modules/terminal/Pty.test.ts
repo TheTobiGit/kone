@@ -1,9 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { resolveProviderSignInLaunch } from "@kone/agent-core/providerSignIn.js";
 
 import {
   buildPtyEnv,
   createPtySubscriptions,
+  resolvePtyEnv,
+  spawnPty,
   type NodePtyEventSource,
+  type PtySpawnInput,
 } from "./Pty.js";
 
 type ExitEvent = { exitCode: number; signal?: number };
@@ -97,6 +105,106 @@ describe("buildPtyEnv", () => {
     const env = buildPtyEnv({ HOME: "/Users/me", FOO: undefined });
     expect(env.HOME).toBe("/Users/me");
     expect("FOO" in env).toBe(false);
+  });
+
+  test("blocklisted keys are dropped from the caller env too", () => {
+    const env = buildPtyEnv(
+      { PATH: "/usr/bin" },
+      { ELECTRON_RUN_AS_NODE: "1", PORT: "3000", ELECTRON_RENDERER_PORT: "9222" },
+    );
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.PORT).toBeUndefined();
+    expect(env.ELECTRON_RENDERER_PORT).toBeUndefined();
+  });
+});
+
+describe("the sign-in launch → PTY environment", () => {
+  test("a complete env keeps browser suppressors and runtime vars removed", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "kone-pty-env-"));
+    try {
+      const exe = path.join(dir, "codex");
+      writeFileSync(exe, "#!/bin/sh\nexit 0\n");
+      chmodSync(exe, 0o755);
+
+      const base = {
+        PATH: dir,
+        HOME: dir,
+        BROWSER: "www-browser",
+        NO_BROWSER: "true",
+        ELECTRON_RUN_AS_NODE: "1",
+        PORT: "3000",
+      };
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: { codex: { binaryPath: exe } },
+        env: base,
+      });
+      expect(launch.ok).toBe(true);
+      if (!launch.ok) throw new Error(launch.message);
+      expect(launch.env.BROWSER).toBeUndefined();
+      expect(launch.env.NO_BROWSER).toBeUndefined();
+
+      // The PTY's final env: complete, so the fresh inherited base is not
+      // merged back in — and the blocklist still scrubs the caller env.
+      const final = resolvePtyEnv({ env: launch.env, completeEnv: true }, base);
+      expect(final.BROWSER).toBeUndefined();
+      expect(final.NO_BROWSER).toBeUndefined();
+      expect(final.ELECTRON_RUN_AS_NODE).toBeUndefined();
+      expect(final.PORT).toBeUndefined();
+      expect(final.PATH).toBe(dir);
+      expect(final.TERM).toBe("xterm-256color");
+
+      // The pre-fix path (merge over a freshly inherited env) would restore
+      // the browser sentinels; complete envs must not.
+      expect(buildPtyEnv(base, launch.env).BROWSER).toBe("www-browser");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("spawnPty command", () => {
+  test("a pre-built Windows command line reaches node-pty as one string", async () => {
+    const spawns: Array<{ file: string; args: string[] | string }> = [];
+    // node-pty's native binding is not loadable under `bun test`, and spawnPty
+    // imports it lazily — so a fake is enough to see exactly what it is handed.
+    mock.module("node-pty", () => ({
+      spawn: (file: string, args: string[] | string) => {
+        spawns.push({ file, args });
+        return {
+          pid: 1,
+          cols: 80,
+          rows: 24,
+          write: () => {},
+          resize: () => {},
+          kill: () => {},
+          pause: () => {},
+          resume: () => {},
+          onData: () => ({ dispose: () => {} }),
+          onExit: () => ({ dispose: () => {} }),
+        };
+      },
+    }));
+    const commandLine = '/d /s /c "C:\\Program^ Files\\nodejs\\codex.cmd ^^^"login^^^""';
+    const input: PtySpawnInput = {
+      cwd: os.tmpdir(),
+      cols: 80,
+      rows: 24,
+      env: { PATH: "/usr/bin" },
+      completeEnv: true,
+      command: { file: "cmd.exe", args: commandLine },
+    };
+    try {
+      await spawnPty(input);
+    } finally {
+      mock.restore();
+    }
+    // A string must stay a string: node-pty appends it to the command line
+    // verbatim, while an array would be re-quoted for CommandLineToArgvW and
+    // lose the ^-escapes cmd.exe needs.
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]?.file).toBe("cmd.exe");
+    expect(spawns[0]?.args).toBe(commandLine);
   });
 });
 

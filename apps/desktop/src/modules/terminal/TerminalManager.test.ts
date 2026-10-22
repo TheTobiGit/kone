@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { TerminalManager } from "./TerminalManager.js";
-import type { PtyProcess } from "./Pty.js";
+import type { PtyProcess, PtySpawnInput } from "./Pty.js";
 import type { TerminalEvent } from "./types.js";
 
 // ── Fake PTY seam ────────────────────────────────────────────────────────────
@@ -405,5 +405,118 @@ describe("TerminalManager.closeIdleInDir", () => {
     await mgr.open({ terminalId: "a", cwd: "/other" });
     expect(await mgr.closeIdleInDir("/wt")).toEqual([]);
     await mgr.disposeAll();
+  });
+});
+
+describe("TerminalManager.openCommand", () => {
+  function makeCommandManager(fake: FakePty) {
+    const spawns: PtySpawnInput[] = [];
+    const mgr = new TerminalManager({
+      spawn: async (input) => {
+        spawns.push(input);
+        return fake.process;
+      },
+    });
+    const events: TerminalEvent[] = [];
+    mgr.onEvent((e) => events.push(e));
+    return { mgr, events, spawns };
+  }
+
+  const banner = "\x1b[2m~\x1b[0m\r\n\x1b[32m❯\x1b[0m codex login\r\n\r\n";
+
+  test("spawns the named program and puts the banner in history", async () => {
+    const fake = fakePty();
+    const { mgr, spawns } = makeCommandManager(fake);
+
+    const snapshot = await mgr.openCommand(
+      {
+        terminalId: "signin",
+        cwd: "/home/user",
+        env: { PATH: "/usr/bin" },
+      },
+      { command: { file: "codex", args: ["login"] }, banner },
+    );
+
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]?.command).toEqual({ file: "codex", args: ["login"] });
+    expect(spawns[0]?.env).toEqual({ PATH: "/usr/bin" });
+    expect(snapshot.history).toContain(banner);
+  });
+
+  test("refuses an id that already has a live session", async () => {
+    const fake = fakePty();
+    const { mgr, spawns } = makeCommandManager(fake);
+    await mgr.open({ terminalId: "signin", cwd: "/home/user" });
+
+    await expect(
+      mgr.openCommand(
+        { terminalId: "signin", cwd: "/home/user" },
+        { command: { file: "codex", args: ["login"] }, banner },
+      ),
+    ).rejects.toThrow("already running");
+    // The ordinary shell was neither replaced nor re-attached as the login.
+    expect(spawns).toHaveLength(1);
+  });
+
+  test("restart re-runs the same program with the same banner", async () => {
+    const fake = fakePty();
+    const { mgr, events, spawns } = makeCommandManager(fake);
+    await mgr.openCommand(
+      {
+        terminalId: "signin",
+        cwd: "/home/user",
+        env: { PATH: "/usr/bin" },
+      },
+      { command: { file: "codex", args: ["login"] }, banner },
+    );
+
+    const restartPromise = mgr.restart({ terminalId: "signin" });
+    fake.emitExit(0);
+    await restartPromise;
+
+    expect(spawns).toHaveLength(2);
+    expect(spawns[1]?.command).toEqual({ file: "codex", args: ["login"] });
+    expect(spawns[1]?.env).toEqual({ PATH: "/usr/bin" });
+    const restarted = events.find((e) => e.type === "restarted");
+    expect(restarted?.snapshot.history).toContain(banner);
+  });
+
+  test("a complete sign-in env stays complete across restart", async () => {
+    const fake = fakePty();
+    const { mgr, spawns } = makeCommandManager(fake);
+    const launch = {
+      command: { file: "codex", args: ["login"] },
+      banner,
+      completeEnv: true,
+    };
+    await mgr.openCommand(
+      { terminalId: "signin", cwd: "/home/user", env: { PATH: "/usr/bin" } },
+      launch,
+    );
+    expect(spawns[0]?.completeEnv).toBe(true);
+
+    const restartPromise = mgr.restart({ terminalId: "signin" });
+    fake.emitExit(0);
+    await restartPromise;
+
+    expect(spawns[1]?.completeEnv).toBe(true);
+    expect(spawns[1]?.env).toEqual({ PATH: "/usr/bin" });
+  });
+
+  test("onSessionEnded fires for a natural exit and for a close", async () => {
+    const fake = fakePty();
+    const { mgr } = makeCommandManager(fake);
+    const ended: string[] = [];
+    mgr.onSessionEnded((terminalId) => ended.push(terminalId));
+
+    await mgr.openCommand(
+      { terminalId: "signin", cwd: "/home/user" },
+      { command: { file: "codex", args: ["login"] }, banner },
+    );
+    fake.emitExit(0);
+    expect(ended).toEqual(["signin"]);
+
+    await mgr.close({ terminalId: "signin", deleteHistory: true });
+    expect(ended).toEqual(["signin", "signin"]);
   });
 });

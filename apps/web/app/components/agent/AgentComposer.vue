@@ -71,6 +71,7 @@ import {
   type ModelOption,
 } from "~/utils/modelCatalog";
 import { PROVIDER_BRAND } from "~/utils/modelPicker";
+import { canSignIn as canSignInProvider } from "~/utils/providerLogin";
 import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 
 // "Agent input — states" board. One object walks four states:
@@ -320,6 +321,30 @@ const { prefs: composerPrefs } = useComposerPrefs();
 // kone no longer offers or miss one it does.
 const noProvider = computed(() => !props.healthStatus);
 const providerMarks = OFFERED_PROVIDERS.map((provider) => PROVIDER_BRAND[provider]);
+
+// A signed-out provider is the one block the user can clear from the composer:
+// its CLI has a login command, so the tray can hand that to the sign-in modal
+// instead of only re-checking. Whether it does is the shared login table's
+// answer, not this surface's — Droid is the one provider without a login
+// subcommand (it pairs a device on first run) — and a composer with no health
+// row has no provider to name.
+const canSignIn = computed(
+  () =>
+    props.healthStatus?.readiness === "needs-login" &&
+    canSignInProvider(props.healthStatus.provider),
+);
+const signIn = useProviderSignIn();
+const { openProviderSetup } = useSettingsSurface();
+
+function onSignIn() {
+  if (props.healthStatus) signIn.open(props.healthStatus.provider);
+}
+
+/** "Open provider setup" is a deep link, not a detour: the drawer opens on
+ *  Providers with this provider already selected. */
+function onProviderSetup() {
+  if (props.healthStatus) openProviderSetup(props.healthStatus.provider);
+}
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 
@@ -1221,14 +1246,18 @@ defineExpose({ wake, setDraft, focus });
 
     <!-- Top status tray — the send-block reason, hanging off the top of the
          card. Only rendered while blocked, so an unblocked composer is
-         exactly what it was. -->
+         exactly what it was. A signed-out provider also gets the two ways
+         forward here: sign in, or open its setup. -->
     <ComposerStatusTray
       :expanded="open"
       :closing="closing"
       :blocked-reason="blockedReason"
       :health-status="healthStatus"
       :health-checking="healthChecking"
+      :can-sign-in="canSignIn"
       @recheck="emit('recheck')"
+      @signin="onSignIn"
+      @setup="onProviderSetup"
     />
 
     <!-- One surface, morphing. Closed it's the orb; open it's the card. -->

@@ -567,6 +567,11 @@ export class AgentService {
   /** The discovery round in flight, so concurrent callers share one set of CLI
    *  spawns instead of racing their own. */
   private discovering: Promise<ProviderStatus[]> | null = null;
+  /** Tail of the provider-probe queue. Discovery probes every CLI and a check
+   *  probes one; running them at once would race two handshakes for the same
+   *  CLI and two writers for one disk snapshot, so each round starts when the
+   *  previous one settles. */
+  private providerRounds: Promise<unknown> = Promise.resolve();
   /** Told whenever the provider surface actually changes — the desktop layer
    *  forwards this to every renderer, so a status corrected in the background
    *  reaches the UI without anyone asking for it. */
@@ -863,6 +868,18 @@ export class AgentService {
     return { ...surface, statuses };
   }
 
+  /** Queue one provider-probe round behind the previous one. Success or
+   *  failure both release the queue: a failed round published nothing, and the
+   *  next one still deserves to run. */
+  private queueProviderRound<T>(round: () => Promise<T>): Promise<T> {
+    const result = this.providerRounds.then(round, round);
+    this.providerRounds = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   /** Probe every provider on the user's machine — what's installed + logged in.
    *
    *  Folded over the previous round before it is published or persisted: a probe
@@ -873,29 +890,12 @@ export class AgentService {
     // Single-flight: discovery spawns a CLI per provider, and two surfaces
     // asking at once (the picker opening while warmup is still running) would
     // otherwise pay for that twice and race each other to the disk snapshot.
-    this.discovering ??= (async () => {
+    this.discovering ??= this.queueProviderRound(async () => {
       try {
         const settings = readProviderSettings();
         const cached = readProviderCache().statuses;
         const probed = await Promise.all(
-          [...this.adapters.values()].map(async (a) => {
-            // Manual-compaction support is adapter code truth — derived from
-            // the adapter's compaction union here, never probed or persisted.
-            const supportsThreadCompaction = isCompactionSupported(a.capabilities.compaction);
-            if (!isProviderEnabled(a.provider, settings)) {
-              const prev = cached.find((s) => s.provider === a.provider);
-              return {
-                ...disabledProviderStatus(a.provider, prev?.label ?? a.provider),
-                supportsThreadCompaction,
-              };
-            }
-            const status = await a.discover();
-            return {
-              ...status,
-              enabled: statusEnabled(status),
-              supportsThreadCompaction,
-            };
-          }),
+          [...this.adapters.values()].map((a) => this.probeProvider(a, settings, cached)),
         );
         const statuses = stabilizeProviderStatuses(cached, probed);
         this.publishStatuses(statuses);
@@ -903,8 +903,66 @@ export class AgentService {
       } finally {
         this.discovering = null;
       }
-    })();
+    });
     return this.discovering;
+  }
+
+  /** One provider's fresh row, with the disabled and manual-compaction rules
+   *  applied — the shared half of a full discovery and a single check. The
+   *  input adapter must already have had its discovery caches dropped when the
+   *  caller is re-probing after a login. */
+  private async probeProvider(
+    adapter: ProviderAdapter,
+    settings: ProviderSettingsMap,
+    cached: readonly ProviderStatus[],
+  ): Promise<ProviderStatus> {
+    // Manual-compaction support is adapter code truth — derived from the
+    // adapter's compaction union here, never probed or persisted.
+    const supportsThreadCompaction = isCompactionSupported(adapter.capabilities.compaction);
+    if (!isProviderEnabled(adapter.provider, settings)) {
+      const prev = cached.find((s) => s.provider === adapter.provider);
+      return {
+        ...disabledProviderStatus(adapter.provider, prev?.label ?? adapter.provider),
+        supportsThreadCompaction,
+      };
+    }
+    const status = await adapter.discover();
+    return {
+      ...status,
+      enabled: statusEnabled(status),
+      supportsThreadCompaction,
+    };
+  }
+
+  /** Re-probe exactly ONE provider and fold its fresh row into the cached
+   *  surface. This is what "Check authentication" calls after a login: drop
+   *  that adapter's cached handshake, ask only that adapter, then publish the
+   *  merged round so the corrected row reaches every renderer.
+   *
+   *  The check runs in the same single-flight slot as a full discovery — a
+   *  later discovery waits for it, and a discovery already queued runs first —
+   *  so two handshakes for one CLI are never in flight at once. The cache is
+   *  re-read after the probe resolves: whatever round is on disk then is what
+   *  the checked row is folded into. */
+  async checkProvider(provider: ProviderKind): Promise<ProviderStatus> {
+    const adapter = this.adapter(provider);
+    adapter.invalidateDiscoveryCaches?.();
+
+    const probed = await this.queueProviderRound(() =>
+      this.probeProvider(adapter, readProviderSettings(), readProviderCache().statuses),
+    );
+
+    // Re-read AFTER the probe: a full discovery that published a newer round
+    // while this CLI was answering must keep its other rows. Folding into the
+    // pre-probe snapshot would overwrite them with stale data.
+    const cached = readProviderCache().statuses;
+    const [folded] = stabilizeProviderStatuses(cached, [probed]);
+    if (!folded) throw new Error(`No provider status for ${provider}.`);
+    const merged = cached.some((status) => status.provider === provider)
+      ? cached.map((status) => (status.provider === provider ? folded : status))
+      : [...cached, folded];
+    this.publishStatuses(merged);
+    return folded;
   }
 
   /** Subscribe to provider-surface changes. Returns an unsubscribe fn. */

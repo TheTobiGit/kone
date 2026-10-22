@@ -193,6 +193,14 @@ const DEFINITIONS = {
   },
 } satisfies Record<ProviderKind, MaintenanceDefinition>;
 
+/** The default executable name for a provider's CLI, before the user's
+ *  binary-path override. Every provider kone can sign in has one, and sign-in
+ *  reuses this table so the login command and maintenance always name the same
+ *  executable. */
+export function defaultProviderBinary(provider: ProviderKind): string {
+  return DEFINITIONS[provider].binary;
+}
+
 // ── versions ──────────────────────────────────────────────────────────────────
 
 type Semver = { major: number; minor: number; patch: number; pre: string[] };
