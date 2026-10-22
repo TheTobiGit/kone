@@ -1,9 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { killTree } from "./spawn.js";
+import { spawnLaunch, type LaunchDeps } from "./windowsLaunch.js";
 
 // Generic bidirectional JSON-RPC 2.0 client over a persistent child process's
 // stdio — newline-delimited, one JSON value per line, in both directions. This
@@ -63,7 +64,9 @@ export type JsonRpcRequestHandler = (params: JsonValue | null | undefined) => Pr
 
 /** A persistent JSON-RPC-over-stdio child process. */
 export class JsonRpcClient {
-  private readonly child: ChildProcessWithoutNullStreams;
+  /** Absent when the launch never started — the exit path has already run (or
+   *  is about to, see the constructor), so every child-touching path guards. */
+  private readonly child?: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private readonly pending = new Map<
     JsonRpcId,
@@ -83,35 +86,53 @@ export class JsonRpcClient {
   constructor(
     command: string,
     args: string[],
-    opts: { cwd?: string; env: NodeJS.ProcessEnv; label?: string },
+    opts: { cwd?: string; env: NodeJS.ProcessEnv; label?: string; launch?: LaunchDeps },
   ) {
+    // The label is the configured command's own name, never the interpreter a
+    // Windows batch shim is wrapped in: this is what the user pointed kone at.
     this.label = opts.label ?? basename(command);
-    this.child = spawn(command, args, {
-      cwd: opts.cwd,
-      env: opts.env,
-      windowsHide: true,
-      // Own process group on POSIX so kill() can signal the whole tree — the
-      // app-server forks its own tool subprocesses (shell commands, etc.).
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+      command,
+      args,
+      {
+        cwd: opts.cwd,
+        env: opts.env,
+        windowsHide: true,
+        // Own process group on POSIX so kill() can signal the whole tree — the
+        // app-server forks its own tool subprocesses (shell commands, etc.).
+        detached: (opts.launch?.platform ?? process.platform) !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+      opts.launch,
+    );
+    if (!launched.ok) {
+      // Nothing was started, and the launch failure is the same event a live
+      // child would have reported: run the exit path on the next tick, so the
+      // constructor never throws and handlers registered right after it still
+      // fire. In-flight calls reject with "<label> process exited" exactly as
+      // they do for a real ENOENT.
+      queueMicrotask(() => this.handleExit(null));
+      return;
+    }
+    const child = launched.child;
+    this.child = child;
 
-    const outRl = createInterface({ input: this.child.stdout });
+    const outRl = createInterface({ input: child.stdout });
     outRl.on("line", (line) => this.handleLine(line));
 
-    const errRl = createInterface({ input: this.child.stderr });
+    const errRl = createInterface({ input: child.stderr });
     errRl.on("line", (line) => {
       for (const handler of this.stderrHandlers) handler(line);
     });
 
-    this.child.on("error", () => this.handleExit(null));
-    this.child.on("close", (code) => this.handleExit(code));
+    child.on("error", () => this.handleExit(null));
+    child.on("close", (code) => this.handleExit(code));
 
     // A write landing between the child's pipe breaking and its `close` event
     // emits an error on the stdin stream itself, not on the child handle. With
     // no listener that error is uncaught and kills the main process, so treat a
     // broken pipe as the child being gone: reject in-flight calls and exit.
-    this.child.stdin.on("error", () => this.handleExit(null));
+    child.stdin.on("error", () => this.handleExit(null));
   }
 
   private handleExit(code: number | null): void {
@@ -214,7 +235,7 @@ export class JsonRpcClient {
   }
 
   private writeRaw(msg: JsonRpcOutbound): void {
-    if (this.exited) return;
+    if (this.exited || !this.child) return;
     const stdin = this.child.stdin;
     if (!stdin.writable || stdin.destroyed) return;
     // The callback swallows a late EPIPE; the stream's `error` listener above is
@@ -291,7 +312,7 @@ export class JsonRpcClient {
    *  awaits this before starting a replacement session doesn't spawn the new
    *  child while the old one still holds the CLI's on-disk session store. */
   async kill(): Promise<void> {
-    if (this.exited) return;
+    if (this.exited || !this.child) return;
     await killTree(this.child.pid);
   }
 }
