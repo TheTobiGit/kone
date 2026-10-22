@@ -2521,10 +2521,32 @@ export type ProviderConfig = {
    *  model's window, native usage, the new prompt and headroom; this only caps
    *  it. Absent uses the built-in default (see contextHandoff.ts). */
   handoffTokenCap?: number;
+  /** Model family keys hidden from the picker for this provider (opt-out;
+   *  absent/empty means every model is shown). */
+  hiddenModels?: string[];
 };
 
 /** Persisted install settings for every provider, keyed by provider. */
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
+/** The whole provider-settings store as a renderer receives it — the main
+ *  process's file is the only source of truth, and every write is pushed. */
+export type ProviderSettingsSnapshot = {
+  /** Monotonic write counter of the settings file; a renderer ignores a push
+   *  whose revision is not newer than the one it holds. */
+  revision: number;
+  settings: ProviderSettingsMap;
+  /** True until the renderer's legacy localStorage values have been imported
+   *  once. */
+  legacyImportPending: boolean;
+};
+
+/** The pre-store values a renderer may still hold in localStorage, sent up once
+ *  so they are folded into the file rather than lost. */
+export type LegacyRendererProviderSettings = {
+  enabled?: Partial<Record<ProviderKind, boolean>>;
+  hiddenModels?: Partial<Record<ProviderKind, string[]>>;
+};
 
 // ── Install maintenance (see providerMaintenance.ts) ─────────────────────────
 
