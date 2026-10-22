@@ -41,6 +41,10 @@ export type TerminalSession = {
 
 export type UseTerminalOptions = {
   cwd: string | (() => string);
+  /** Whether a renderer is behind this, which is what decides if the live event
+   *  listener can be installed. Defaults to `import.meta.client`; a Bun test is
+   *  neither server nor client, so it says so explicitly. */
+  client?: boolean;
 };
 
 /** What `spawn(open)` resolves to when the caller supplies its own opener:
@@ -54,10 +58,12 @@ export type TerminalSpawn = { key: string; terminalId: string; error?: unknown }
 export type TerminalOpenResult = {
   terminalId: string;
   snapshot: TerminalSessionSnapshot;
-  /** Events the opener buffered before the main-generated id was known. `spawn`
-   *  replays the ones newer than `snapshot.sequence` through the same routing
-   *  the live listener uses, so early output reaches the transcript. */
-  replay?: TerminalEvent[];
+  /** Drains whatever the opener buffered before the main-generated id was
+   *  known. `spawn` calls it synchronously, in the same step it adopts the id,
+   *  so there is no window where an event belongs to neither the opener nor
+   *  this registry. Events newer than `snapshot.sequence` are then replayed
+   *  through the live routing path, each exactly once. */
+  replay?: () => TerminalEvent[];
 };
 
 /** Cap the client replay buffer. Slightly above the backend's 512KB history so
@@ -141,7 +147,7 @@ export function useTerminal(options: UseTerminalOptions) {
   // ── The single event listener, routed by terminalId ────────────────────────
   /** Apply one event to this registry: output into the replay buffer and live
    *  sinks, lifecycle into the reactive strip state. The live listener and
-   *  `spawn`'s replay of events buffered before adoption both come through
+   *  `spawn`'s drain of events buffered before adoption both come through
    *  here, so an early chunk lands in the transcript exactly once. */
   function routeEvent(event: TerminalEvent): void {
     if (!owned.has(event.terminalId)) return;
@@ -187,7 +193,7 @@ export function useTerminal(options: UseTerminalOptions) {
 
   const eventApi = bridge();
   let detach: (() => void) | null = null;
-  if (import.meta.client && eventApi) {
+  if ((options.client ?? import.meta.client) && eventApi) {
     detach = eventApi.onEvent(routeEvent);
   }
 
@@ -285,9 +291,12 @@ export function useTerminal(options: UseTerminalOptions) {
           applySnapshot(opened.snapshot);
           // Events the opener held while the main-generated id was unknown:
           // the live listener had no ownership yet, so they never reached a
-          // buffer. The snapshot already covers everything up to its sequence;
-          // newer events go through the live routing path, each exactly once.
-          for (const event of opened.replay ?? []) {
+          // buffer. Draining them in this same synchronous step — after
+          // `adoptId`, before anything can await — is what leaves no gap for a
+          // live event to fall into. The snapshot already covers everything up
+          // to its sequence; newer events go through the live routing path,
+          // each exactly once.
+          for (const event of opened.replay?.() ?? []) {
             if (event.terminalId !== opened.terminalId) continue;
             if (event.sequence <= opened.snapshot.sequence) continue;
             routeEvent(event);
