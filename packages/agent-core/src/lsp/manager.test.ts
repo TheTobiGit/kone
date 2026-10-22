@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync as fsExistsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync as fsExistsSync,
+  mkdtempSync,
+  realpathSync as fsRealpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -223,6 +228,87 @@ describe("LspManager resolution errors", () => {
       if (!(failure instanceof LspNoServerError)) throw new Error("expected an LspNoServerError");
       expect(failure.disabledNames).toEqual(["fake"]);
     } finally {
+      await manager.disposeAll();
+    }
+  });
+});
+
+describe("LspManager windows binary lookup", () => {
+  /** Install an npm-shaped sibling set in a fresh PATH dir: the `.cmd` Windows
+   *  can start, the extensionless sh script it cannot, and the `.ps1` nobody
+   *  can run without an interpreter. */
+  function npmInstall(name: string): string {
+    const binDir = freshDir("kone-lsp-win32-bin-");
+    writeFileSync(path.join(binDir, name), "#!/bin/sh\nexit 1\n");
+    writeFileSync(path.join(binDir, `${name}.cmd`), "@echo off\r\n");
+    writeFileSync(path.join(binDir, `${name}.ps1`), "# not launchable\n");
+    return binDir;
+  }
+
+  /** Point PATH at one directory for the duration of a test. The manager's
+   *  default lookup reads the real environment, so a test that exercises it has
+   *  to own PATH; the caller restores what it found. */
+  function usePath(binDir: string): () => void {
+    const previous = process.env.PATH;
+    process.env.PATH = binDir;
+    return () => {
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
+    };
+  }
+
+  test("a bare command resolves the PATH .cmd shim, not the sh script", async () => {
+    const proj = freshDir("kone-lsp-win32-proj-");
+    const name = "kone-typescript-lsp";
+    const binDir = npmInstall(name);
+    const restorePath = usePath(binDir);
+    const launched: string[] = [];
+    const manager = new LspManager({
+      defaults: [fakeServerConfig("never-spawned", { command: name })],
+      platform: "win32",
+      // Startup is cut off at the spawn seam: which binary was resolved is the
+      // whole question here, so nothing real needs to run.
+      spawnProcess: (binary) => {
+        launched.push(binary);
+        throw new Error("start aborted by the test");
+      },
+      readTextFile: noConfigs(),
+    });
+    try {
+      await expect(
+        manager.getClient({ cwd: proj, filePath: path.join(proj, "a.fakets") }),
+      ).rejects.toThrow("start aborted by the test");
+      expect(launched).toEqual([path.join(binDir, `${name}.cmd`)]);
+    } finally {
+      restorePath();
+      await manager.disposeAll();
+    }
+  });
+
+  test("off windows the same PATH lookup still finds the bare name", async () => {
+    const proj = freshDir("kone-lsp-posix-proj-");
+    const name = "kone-typescript-lsp";
+    const binDir = npmInstall(name);
+    const restorePath = usePath(binDir);
+    const launched: string[] = [];
+    const manager = new LspManager({
+      defaults: [fakeServerConfig("never-spawned", { command: name })],
+      platform: "linux",
+      spawnProcess: (binary) => {
+        launched.push(binary);
+        throw new Error("start aborted by the test");
+      },
+      readTextFile: noConfigs(),
+    });
+    try {
+      await expect(
+        manager.getClient({ cwd: proj, filePath: path.join(proj, "a.fakets") }),
+      ).rejects.toThrow("start aborted by the test");
+      // findOnPath resolves symlinks, so the expectation is the real path of the
+      // extensionless file — unchanged from before this fix.
+      expect(launched).toEqual([fsRealpathSync(path.join(binDir, name))]);
+    } finally {
+      restorePath();
       await manager.disposeAll();
     }
   });

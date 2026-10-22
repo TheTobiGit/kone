@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { findOnPath } from "./processEnv.js";
+import { findWindowsLaunchableIn, findWindowsLaunchableOnPath } from "./windowsLaunch.js";
 
 // Locates the Antigravity ACP server executable + its harness helper.
 //
@@ -91,6 +92,34 @@ function hasSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
 
+/** The ACP server a bare name or configured path points at, on the platform in
+ *  question. On Windows only a file Windows can start counts, and an
+ *  extensionless or unusably-suffixed name is completed in its own directory —
+ *  the same rule every other launch follows, so an npm `agy.cmd` install (or a
+ *  user pointing kone at npm's extensionless `agy`) resolves to the shim. Off
+ *  Windows this is the historical PATH lookup and existence check.
+ *
+ *  The located file is the one kone launches, so the harness is paired beside it
+ *  (`antigravityHarnessFileName`). The Windows lookup reports the PATH entry it
+ *  found rather than a symlink target, which is the file both the installer and
+ *  the harness live next to: the shims Windows puts on PATH are real files the
+ *  installer wrote, not links. */
+function locateAntigravityAcpBinary(
+  file: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  isBareName: boolean,
+): string | null {
+  if (platform === "win32") {
+    if (isBareName) return findWindowsLaunchableOnPath(file, env)?.found ?? null;
+    const resolved = path.resolve(file);
+    const hit = findWindowsLaunchableIn(path.dirname(resolved), path.basename(resolved), env);
+    return hit?.found ?? null;
+  }
+  if (isBareName) return findOnPath(file, env, platform);
+  return fs.existsSync(path.resolve(file)) ? path.resolve(file) : null;
+}
+
 /** Default executable names to probe on PATH when nothing else resolved. The
  *  ACP server is not normally on PATH — this is a last resort before
  *  print-mode fallback, not a primary source. */
@@ -113,16 +142,7 @@ export function resolveAntigravityAcpBinary(input: {
   // 1. The user's explicit override — an absolute path is taken as given, a
   //    bare name is looked up on PATH. The harness always rides beside it.
   if (override) {
-    if (hasSeparator(override)) {
-      const executablePath = path.resolve(override);
-      if (!fs.existsSync(executablePath)) return null;
-      return {
-        executablePath,
-        harnessPath: path.join(path.dirname(executablePath), antigravityHarnessFileName(platform)),
-        source: "override",
-      };
-    }
-    const found = findOnPath(override, env, platform);
+    const found = locateAntigravityAcpBinary(override, env, platform, !hasSeparator(override));
     if (!found) return null;
     return {
       executablePath: found,
@@ -144,7 +164,7 @@ export function resolveAntigravityAcpBinary(input: {
 
   // 3. A last-resort PATH probe for a manually installed server.
   for (const name of DEFAULT_PATH_NAMES) {
-    const found = findOnPath(name, env, platform);
+    const found = locateAntigravityAcpBinary(name, env, platform, true);
     if (!found) continue;
     return {
       executablePath: found,
