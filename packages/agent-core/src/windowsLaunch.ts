@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+
 import type { PathHit } from "./processEnv.js";
 
 // What kone may actually start on Windows, and how.
@@ -443,4 +445,69 @@ export function withLaunchOptions<T extends object>(
  *  the quotes we built and would strip the carets cmd.exe has to see. */
 export function ptyArgs(launch: ResolvedLaunch): string[] | string {
   return launch.windowsVerbatimArguments ? launch.args.join(" ") : launch.args;
+}
+
+// ── Spawning what was resolved ───────────────────────────────────────────────
+
+/** What a launch needs from the machine it runs on: the platform to resolve for
+ *  (injected so the Windows rules can be exercised from any host) and the spawn
+ *  to call (injected so a test can assert the exact launch). Both default to
+ *  the real thing. */
+export type LaunchDeps = {
+  platform?: NodeJS.Platform;
+  spawn?: typeof import("node:child_process").spawn;
+};
+
+/** The options a launch is spawned with: child_process's own, with the env
+ *  every agent child needs made explicit because the resolution reads its PATH
+ *  and PATHEXT, and `cwd` narrowed to a path — that is also the directory a
+ *  configured relative path is resolved against, and the resolution has no use
+ *  for the `URL` form SpawnOptions also accepts. */
+export type SpawnLaunchOptions = Omit<SpawnOptions, "cwd"> & {
+  cwd?: string;
+  env: NodeJS.ProcessEnv;
+};
+
+/** A launch that started, or the Error a failed spawn would have raised. The
+ *  child keeps the caller's own `ChildProcess` subtype (a transport that pipes
+ *  all three stdio ends asks for `ChildProcessWithoutNullStreams`), which Node's
+ *  spawn signature cannot correlate to `options`. */
+export type SpawnLaunchResult<T extends ChildProcess = ChildProcess> =
+  | { ok: true; child: T }
+  | { ok: false; error: NodeJS.ErrnoException };
+
+/** Resolve a launch and start it — the one place the shared spawn helpers
+ *  (spawn.ts's streaming run and probe, jsonRpc.ts's transport) go through, so
+ *  none of them repeats the resolve / wrap / fail dance.
+ *
+ *  Off Windows this is the caller's own spawn call: `resolveLaunch` hands back
+ *  the command and argv untouched and `withLaunchOptions` the very same options
+ *  object, so nothing about a launch on another platform changes — not even an
+ *  added key.
+ *
+ *  A launch that cannot happen is RETURNED, never thrown: the helpers turn it
+ *  into the same result a child's `error` event would have produced, which is
+ *  the failure shape every adapter already handles. `options.cwd` is also the
+ *  directory a configured relative path is resolved against, matching where the
+ *  child itself would run. */
+export function spawnLaunch<T extends ChildProcess = ChildProcess>(
+  command: string,
+  args: readonly string[],
+  options: SpawnLaunchOptions,
+  deps: LaunchDeps = {},
+): SpawnLaunchResult<T> {
+  const launch = resolveLaunch(command, args, {
+    env: options.env,
+    platform: deps.platform ?? process.platform,
+    cwd: options.cwd,
+  });
+  if (!launch.ok) return { ok: false, error: launchFailureError(command, launch) };
+  const spawnChild = deps.spawn ?? spawn;
+  // SAFETY: T is the child shape the caller configured through `options` — the
+  // stdio ends it piped are the ones it typed as non-null. Node's spawn
+  // signature does not carry that correlation, so the caller declares it.
+  return {
+    ok: true,
+    child: spawnChild(launch.file, launch.args, withLaunchOptions(options, launch)) as T,
+  };
 }

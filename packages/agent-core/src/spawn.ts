@@ -1,5 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+
+import { spawnLaunch, type LaunchDeps } from "./windowsLaunch.js";
 
 // Shared subprocess plumbing for agent adapters — the agent-layer analogue of
 // git/core.ts. Agent CLIs are long-lived and spawn their own child tools, so we
@@ -31,7 +33,9 @@ export type StreamingRun = {
 };
 
 /** Spawn `command args` in `cwd`, streaming stdout/stderr line-by-line to the
- *  callbacks as they flush, while also accumulating the full text. */
+ *  callbacks as they flush, while also accumulating the full text. `launch`
+ *  injects the platform and the spawn the launch is resolved for/with (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
 export function runStreaming(
   command: string,
   args: string[],
@@ -40,18 +44,34 @@ export function runStreaming(
     env: NodeJS.ProcessEnv;
     onStdoutLine?: (line: string) => void;
     onStderrLine?: (line: string) => void;
+    launch?: LaunchDeps;
   },
 ): StreamingRun {
-  const child = spawn(command, args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    windowsHide: true,
-    // Own process group on POSIX so killTree can signal the group (-pid) and
-    // reap the tool subprocesses the agent forks, not just the parent.
-    detached: process.platform !== "win32",
-    // stdin closed: print mode must never block on an interactive prompt.
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+    command,
+    args,
+    {
+      cwd: opts.cwd,
+      env: opts.env,
+      windowsHide: true,
+      // Own process group on POSIX so killTree can signal the group (-pid) and
+      // reap the tool subprocesses the agent forks, not just the parent.
+      detached: (opts.launch?.platform ?? process.platform) !== "win32",
+      // stdin closed: print mode must never block on an interactive prompt.
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+    opts.launch,
+  );
+  if (!launched.ok) {
+    // A launch that could not start (no such CLI, or a shim Windows cannot run)
+    // behaves exactly like the "error" event below: the reason lands in stderr,
+    // there is no exit code, and there is no child to kill.
+    return {
+      done: Promise.resolve({ code: null, stdout: "", stderr: `${launched.error.message}\n` }),
+      kill: () => {},
+    };
+  }
+  const child = launched.child;
 
   let stdout = "";
   let stderr = "";
@@ -213,20 +233,41 @@ export type ProbeResult = {
  *  hangs until the timeout. For quick, bounded probes (`--version` and the
  *  like) — never for turns. Each stream is capped at 1 MiB and a timed-out
  *  probe tears down the child's whole process group, escalating SIGTERM to
- *  SIGKILL. */
+ *  SIGKILL. `launch` injects the platform and spawn the resolution uses (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
 export function probeResult(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs = 30_000,
+  launch?: LaunchDeps,
 ): Promise<ProbeResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      env,
-      windowsHide: true,
-      // stdin closed so the CLI can't block waiting on it.
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+      command,
+      args,
+      {
+        env,
+        windowsHide: true,
+        // stdin closed so the CLI can't block waiting on it.
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+      launch,
+    );
+    if (!launched.ok) {
+      // The failure a child's "error" event would have reported, without a
+      // child: ENOENT means nothing is there to run, anything else (a shim
+      // Windows cannot start, an argv cmd.exe cannot carry) is a failure.
+      resolve({
+        outcome: launched.error.code === "ENOENT" ? "missing" : "failure",
+        stdout: "",
+        stderr: "",
+        code: null,
+        error: launched.error,
+      });
+      return;
+    }
+    const child = launched.child;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -276,14 +317,16 @@ export function probeResult(
  *  (some agent CLIs exit non-zero yet produce their real result).
  *
  *  Prefer `probeResult` where the *reason* a probe failed changes what the user
- *  should be told; this wrapper cannot tell a missing binary from a wedged one. */
+ *  should be told; this wrapper cannot tell a missing binary from a wedged one.
+ *  `launch` is passed straight through to `probeResult`. */
 export function probe(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs = 30_000,
+  launch?: LaunchDeps,
 ): Promise<string | null> {
-  return probeResult(command, args, env, timeoutMs).then((result) => {
+  return probeResult(command, args, env, timeoutMs, launch).then((result) => {
     if (result.outcome === "missing" || result.outcome === "failure") return null;
     // A timeout that captured nothing is indistinguishable from a dead binary
     // through this signature — the reason `probeResult` exists.
