@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
-import { pathEnvKey, type PathHit } from "./processEnv.js";
+import { pathEnvKey, windowsEnvKey, type PathHit } from "./processEnv.js";
 
 // What kone may actually start on Windows, and how.
 //
@@ -42,7 +42,8 @@ export type ResolvedLaunch = {
 
 /** The environment a launch is resolved against, plus the platform it targets
  *  (injected so the Windows rules can be exercised from any host) and the
- *  directory a configured relative path is resolved against. */
+ *  directory a configured relative path or relative PATH entry is resolved
+ *  against (the process's own when absent). */
 export type LaunchOptions = { env: NodeJS.ProcessEnv; platform?: NodeJS.Platform; cwd?: string };
 
 // ── What Windows can start ───────────────────────────────────────────────────
@@ -51,16 +52,17 @@ export type LaunchOptions = { env: NodeJS.ProcessEnv; platform?: NodeJS.Platform
 const DEFAULT_PATH_EXTENSIONS = [".COM", ".EXE", ".BAT", ".CMD"];
 
 /** The extensions Windows will start a command from, in the order it tries
- *  them: PATHEXT from `env`, under any key casing (Windows env keys are
- *  case-insensitive, a JS object's are not — the same reason
- *  `commandInterpreter` below scans for ComSpec), falling back to cmd.exe's
- *  default when it is missing or holds no entry. Empty entries are dropped
- *  (PATHEXT commonly ends in `;`) and a leading dot is added if the user wrote
- *  `EXE`, so callers can append an entry straight to a bare name. This is the
- *  raw list, PATHEXT's unlaunchable suffixes included; a launch wants
- *  `windowsLaunchExtensions` instead. */
+ *  them: PATHEXT from `env`, under the key casing Node passes to the child
+ *  (`windowsEnvKey`: Windows env keys are case-insensitive, a JS object's are
+ *  not — the same rule `commandInterpreter` below uses for ComSpec), falling
+ *  back to cmd.exe's default when it is missing or holds no entry. Empty
+ *  entries are dropped (PATHEXT commonly ends in `;`) and a leading dot is
+ *  added if the user wrote `EXE`, so callers can append an entry straight to a
+ *  bare name. This is the raw list, PATHEXT's unlaunchable suffixes included;
+ *  a launch wants `windowsLaunchExtensions` instead. */
 export function pathExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = Object.entries(env).find(([key]) => key.toLowerCase() === "pathext")?.[1];
+  const key = windowsEnvKey(env, "PATHEXT");
+  const raw = key === undefined ? undefined : env[key];
   const extensions = (raw ?? "")
     .split(";")
     .map((entry) => entry.trim())
@@ -148,11 +150,43 @@ export function findWindowsLaunchableIn(
   return null;
 }
 
-/** The PATH entries a Windows launch searches, in order, read from whichever
- *  key holds PATH (`pathEnvKey`: a spread `process.env` on Windows usually
- *  carries `Path`). Empty entries (a trailing `;` is common) are dropped. */
-function windowsPathEntries(env: NodeJS.ProcessEnv): string[] {
-  return (env[pathEnvKey(env, "win32")] ?? "").split(";").filter(Boolean);
+/** A Windows PATH value split the way libuv's `search_path`
+ *  (src/win/process.c) reads it — the lookup Node's own spawn did before kone
+ *  resolved launches itself. An entry that opens with `"` or `'` runs to the
+ *  matching quote, so a `;` inside it does not split; one leading and one
+ *  trailing quote are not part of the directory; empty entries (a trailing `;`
+ *  is common) are skipped. */
+export function splitWindowsPath(value: string): string[] {
+  const entries: string[] = [];
+  let start = 0;
+  while (start < value.length) {
+    let end = start;
+    const quote = value[start];
+    if (quote === '"' || quote === "'") {
+      const close = value.indexOf(quote, start + 1);
+      end = close === -1 ? value.length : close;
+    }
+    const separator = value.indexOf(";", end);
+    end = separator === -1 ? value.length : separator;
+    let entry = value.slice(start, end);
+    if (entry.startsWith('"') || entry.startsWith("'")) entry = entry.slice(1);
+    if (entry.endsWith('"') || entry.endsWith("'")) entry = entry.slice(0, -1);
+    if (entry) entries.push(entry);
+    start = end + 1;
+  }
+  return entries;
+}
+
+/** The PATH directories a Windows launch searches, in order: PATH read from
+ *  whichever key holds it (`pathEnvKey`: a spread `process.env` on Windows
+ *  usually carries `Path`), split like libuv, and each entry made absolute
+ *  against the launch's `cwd` — a relative entry names a directory under the
+ *  directory the child runs in, as it did for libuv, not under kone's own. */
+function windowsPathEntries(env: NodeJS.ProcessEnv, cwd?: string): string[] {
+  const base = cwd ?? process.cwd();
+  return splitWindowsPath(env[pathEnvKey(env, "win32")] ?? "").map((entry) =>
+    path.resolve(base, entry),
+  );
 }
 
 /** Find a bare name among the files Windows can actually START. For each PATH
@@ -173,12 +207,27 @@ function windowsPathEntries(env: NodeJS.ProcessEnv): string[] {
 export function findWindowsLaunchableOnPath(
   binary: string,
   env: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
 ): PathHit | null {
-  for (const dir of windowsPathEntries(env)) {
+  for (const dir of windowsPathEntries(env, cwd)) {
     const hit = findWindowsLaunchableIn(dir, binary, env);
     if (hit) return hit;
   }
   return null;
+}
+
+/** System32's taskkill.exe, by absolute path: a bare `taskkill` is a PATH
+ *  lookup, and an agent env whose PATH lacks System32 would quietly fail to
+ *  tear anything down. The Windows directory is `SystemRoot`, else `windir`
+ *  (each read from the casing Node passes to a child, see `windowsEnvKey`),
+ *  else the conventional `C:\Windows`. */
+export function taskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+  const value = (name: string) => {
+    const key = windowsEnvKey(env, name);
+    return key === undefined ? undefined : env[key];
+  };
+  const root = value("SystemRoot") || value("windir") || "C:\\Windows";
+  return path.win32.join(root, "System32", "taskkill.exe");
 }
 
 // ── The cmd.exe command line ─────────────────────────────────────────────────
@@ -223,13 +272,11 @@ export function escapeCmdCommand(command: string): string {
 }
 
 /** The command interpreter to run a batch shim: `ComSpec` under any casing
- *  (`ComSpec`, `COMSPEC`, `comspec` — Windows env keys are case-insensitive, a
- *  JS object is not), else the conventional `cmd.exe` on PATH. */
+ *  (`ComSpec`, `COMSPEC`, `comspec` — read from the casing Node passes to the
+ *  child, see `windowsEnvKey`), else the conventional `cmd.exe` on PATH. */
 function commandInterpreter(env: NodeJS.ProcessEnv): string {
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === "comspec" && value) return value;
-  }
-  return "cmd.exe";
+  const key = windowsEnvKey(env, "ComSpec");
+  return (key === undefined ? undefined : env[key]) || "cmd.exe";
 }
 
 /** What to spawn for a resolved Windows path: a `.cmd`/`.bat` target goes
@@ -303,9 +350,13 @@ function notLaunchableOnPathOnWindows(file: string, found: string): string {
  *  read costs nothing until a launch is refused; it exists purely to turn
  *  "isn't on your PATH" into the truth ("it's there, Windows just can't run
  *  it"). Entries are sorted so the sentence names the same file every time. */
-function findUnlaunchableOnWindowsPath(file: string, env: NodeJS.ProcessEnv): string | null {
+function findUnlaunchableOnWindowsPath(
+  file: string,
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+): string | null {
   const stem = path.basename(file).toLowerCase();
-  for (const dir of windowsPathEntries(env)) {
+  for (const dir of windowsPathEntries(env, cwd)) {
     let entries: string[];
     try {
       entries = fs.readdirSync(dir).sort();
@@ -373,9 +424,9 @@ function locateOnWindows(
   cwd?: string,
 ): { ok: true; found: string } | LaunchFailure {
   if (file.includes("/") || file.includes("\\")) return locateConfiguredOnWindows(file, env, cwd);
-  const hit = findWindowsLaunchableOnPath(file, env);
+  const hit = findWindowsLaunchableOnPath(file, env, cwd);
   if (!hit) {
-    const unlaunchable = findUnlaunchableOnWindowsPath(file, env);
+    const unlaunchable = findUnlaunchableOnWindowsPath(file, env, cwd);
     if (unlaunchable) {
       return {
         ok: false,
@@ -458,7 +509,7 @@ export type LaunchDeps = {
 /** The options a launch is spawned with: child_process's own, with the env
  *  every agent child needs made explicit because the resolution reads its PATH
  *  and PATHEXT, and `cwd` narrowed to a path — that is also the directory a
- *  configured relative path is resolved against, and the resolution has no use
+ *  relative path or PATH entry is resolved against, and the resolution has no use
  *  for the `URL` form SpawnOptions also accepts. */
 export type SpawnLaunchOptions = Omit<SpawnOptions, "cwd"> & {
   cwd?: string;
@@ -485,8 +536,8 @@ export type SpawnLaunchResult<T extends ChildProcess = ChildProcess> =
  *  A launch that cannot happen is RETURNED, never thrown: the helpers turn it
  *  into the same result a child's `error` event would have produced, which is
  *  the failure shape every adapter already handles. `options.cwd` is also the
- *  directory a configured relative path is resolved against, matching where the
- *  child itself would run. */
+ *  directory a configured relative path or relative PATH entry is resolved
+ *  against, matching where the child itself would run. */
 export function spawnLaunch<T extends ChildProcess = ChildProcess>(
   command: string,
   args: readonly string[],

@@ -51,25 +51,44 @@ export function windowsCliDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   return [`${profile}\\.local\\bin`, `${profile}\\.bun\\bin`, `${profile}\\scoop\\shims`];
 }
 
-/** The env key that holds PATH. Windows env keys are case-insensitive, but a
- *  spread `process.env` keeps the stored casing — usually `Path` — so on win32
- *  this is whichever key already holds it (an exact `PATH` first). Reading
- *  `env.PATH` there misses the real PATH, and writing it leaves the child two
- *  variables. Every other platform's env is case-sensitive: always `PATH`. */
+/** The key Node keeps for `name` when it spawns a child on Windows. Windows env
+ *  keys are case-insensitive, but an env object can hold one variable under
+ *  several casings (`Path` beside `PaTH`); Node passes the child exactly one of
+ *  them — it sorts the keys and keeps the first per case-insensitive name
+ *  (lib/child_process.js, normalizeSpawnArguments). Anything kone reads on the
+ *  child's behalf (PATH, PATHEXT, ComSpec) has to read that same key, or the
+ *  launch is resolved against a value the child never sees. Undefined when the
+ *  variable is absent under every casing. */
+export function windowsEnvKey(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const wanted = name.toUpperCase();
+  return Object.keys(env)
+    .sort()
+    .find((key) => key.toUpperCase() === wanted);
+}
+
+/** The env key that holds PATH. On win32 that is whichever casing Node would
+ *  pass to the child (`windowsEnvKey`; a spread `process.env` usually carries
+ *  `Path`, and an exact `PATH` always sorts first) — reading `env.PATH` there
+ *  misses the real PATH, and writing it leaves the child two variables. Every
+ *  other platform's env is case-sensitive: always `PATH`. */
 export function pathEnvKey(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  if (platform !== "win32" || "PATH" in env) return "PATH";
-  return Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH";
+  if (platform !== "win32") return "PATH";
+  return windowsEnvKey(env, "PATH") ?? "PATH";
 }
 
 /** The inherited env with the known Windows CLI dirs appended to PATH (existing
  *  entries win; deduped). PATH is `;`-separated on Windows, and lives under
- *  whatever key casing the env already uses (see `pathEnvKey`). */
+ *  the key casing Node would pass to the child (see `pathEnvKey`); any other
+ *  casing of PATH is dropped, so the launch resolver and the child see one. */
 export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   const key = pathEnvKey(env, "win32");
+  for (const other of Object.keys(env)) {
+    if (other !== key && other.toUpperCase() === "PATH") delete env[other];
+  }
   const seen = new Set((env[key] ?? "").split(";").filter(Boolean));
   const merged = [...seen];
   for (const dir of windowsCliDirs(env)) {

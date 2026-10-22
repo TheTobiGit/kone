@@ -233,3 +233,40 @@ export async function runLaunchScript(input: {
 
   return { code, stdout, stderr, records: input.fixture.records() };
 }
+
+/** A stand-in for System32's taskkill on the scenario's PATH: it records the
+ *  argv `killTree` sends (so the Windows teardown is observable from outside)
+ *  and really kills that pid, so the scenario can exit instead of hanging on
+ *  its own child. Returns the record file the caller asserts on.
+ *
+ *  killTree spawns taskkill by its absolute Windows path
+ *  (`C:\Windows\System32\taskkill.exe` for an env without SystemRoot). That
+ *  name holds no `/`, so on this host it is a PATH lookup for a file with that
+ *  literal name — which is what this writes into `binDir`. A bare `taskkill`
+ *  never reaches it, so a regression to the PATH lookup fails the scenario. */
+export function installTaskkillRecorder(fixture: LaunchFixture): string {
+  const recordFile = `${fixture.recordFile}.taskkill`;
+  const recorder = path.join(fixture.root, "taskkill-recorder.js");
+  write(
+    recorder,
+    `const fs = require("node:fs");
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(recordFile)}, JSON.stringify(argv) + "\\n");
+const pid = Number(argv[1]);
+if (Number.isInteger(pid) && pid > 0) {
+  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+}
+`,
+    0o644,
+  );
+  // A shell wrapper, because bun will not load a script whose own name ends
+  // in `.exe`.
+  write(
+    // Written out rather than taken from `taskkillPath`, so the stand-in cannot
+    // follow that function into a regression.
+    path.join(fixture.binDir, "C:\\Windows\\System32\\taskkill.exe"),
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(recorder)} "$@"\n`,
+    0o755,
+  );
+  return recordFile;
+}

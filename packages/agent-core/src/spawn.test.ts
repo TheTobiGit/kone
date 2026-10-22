@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createLaunchFixture, recordingSpawn } from "./testing/win32Launch.js";
-import { escapeCmdCommand, spawnLaunch } from "./windowsLaunch.js";
+import { escapeCmdCommand, spawnLaunch, taskkillPath } from "./windowsLaunch.js";
 
 // The gateway-injection suites stub spawn.ts by its resolved absolute path with
 // mock.module (their `probe` returns "ok" so no real CLI is spawned), and bun
@@ -184,6 +185,167 @@ describe("killTree", () => {
     const start = Date.now();
     await killTree(child.pid!);
     expect(Date.now() - start).toBeLessThan(200);
+  });
+});
+
+// ── Windows teardown ────────────────────────────────────────────────────────
+// On Windows killTree hands the tree to taskkill. Bare `taskkill` is a PATH
+// lookup, and a provider whose PATH lacks System32 used to "succeed" at
+// teardown while staying alive. These tests inject win32 and a fake spawn, so
+// the taskkill run is scripted and nothing real is killed.
+
+type TaskkillSpawn = NonNullable<Parameters<typeof killTree>[1]>["spawn"];
+
+/** A spawn stand-in whose taskkill child does whatever `script` makes it do,
+ *  with the launches it saw and whether each child was killed. */
+function fakeTaskkill(script: (child: EventEmitter) => void) {
+  const calls: { file: string; args: readonly string[]; options: SpawnOptions }[] = [];
+  const killed: boolean[] = [];
+  const fake: TaskkillSpawn = (file, args, options) => {
+    calls.push({ file, args, options });
+    const index = killed.push(false) - 1;
+    const child = Object.assign(new EventEmitter(), {
+      kill: () => {
+        killed[index] = true;
+        return true;
+      },
+    });
+    queueMicrotask(() => script(child));
+    return child;
+  };
+  return { calls, killed, spawn: fake };
+}
+
+/** A kill stand-in that records the pids it was asked to end. */
+function recordingKill(fail?: NodeJS.ErrnoException) {
+  const killed: number[] = [];
+  return {
+    killed,
+    kill: (pid: number) => {
+      killed.push(pid);
+      if (fail) throw fail;
+    },
+  };
+}
+
+describe("taskkillPath", () => {
+  test("is System32's taskkill under SystemRoot, windir, or C:\\Windows", () => {
+    expect(taskkillPath({ SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\taskkill.exe");
+    expect(taskkillPath({ SYSTEMROOT: "D:\\Win" })).toBe("D:\\Win\\System32\\taskkill.exe");
+    expect(taskkillPath({ windir: "E:\\W" })).toBe("E:\\W\\System32\\taskkill.exe");
+    expect(taskkillPath({})).toBe("C:\\Windows\\System32\\taskkill.exe");
+  });
+});
+
+describe("killTree on Windows", () => {
+  const env = { SystemRoot: "C:\\Windows" };
+
+  test("runs System32's taskkill on the tree and stops there when it succeeds", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 0, null));
+    const fallback = recordingKill();
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(taskkill.calls).toEqual([
+      {
+        file: "C:\\Windows\\System32\\taskkill.exe",
+        args: ["/pid", "4242", "/T", "/F"],
+        options: { windowsHide: true, stdio: "ignore" },
+      },
+    ]);
+    expect(fallback.killed).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("kills the pid directly, and says so, when taskkill cannot be started", async () => {
+    const missing: NodeJS.ErrnoException = Object.assign(new Error("spawn taskkill ENOENT"), {
+      code: "ENOENT",
+    });
+    const taskkill = fakeTaskkill((child) => child.emit("error", missing));
+    const fallback = recordingKill();
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(fallback.killed).toEqual([4242]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("4242");
+  });
+
+  test("kills the pid directly when taskkill exits non-zero", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 1, null));
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: () => {},
+    });
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("kills the pid directly when spawning taskkill throws", async () => {
+    const throwing: TaskkillSpawn = () => {
+      throw new Error("spawn EPERM");
+    };
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: throwing,
+      kill: fallback.kill,
+      warn: () => {},
+    });
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("gives up on a taskkill that hangs, ends it, and kills the pid directly", async () => {
+    const taskkill = fakeTaskkill(() => {});
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      timeoutMs: 20,
+      warn: () => {},
+    });
+    expect(taskkill.killed).toEqual([true]);
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("a pid that is already gone is not a warning", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 128, null));
+    const gone: NodeJS.ErrnoException = Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    const fallback = recordingKill(gone);
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(fallback.killed).toEqual([4242]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("off Windows taskkill is never run", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 0, null));
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    await killTree(child.pid!, { platform: "linux", spawn: taskkill.spawn });
+    expect(taskkill.calls).toEqual([]);
   });
 });
 
