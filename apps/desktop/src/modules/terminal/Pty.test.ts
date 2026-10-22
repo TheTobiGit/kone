@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +9,9 @@ import {
   buildPtyEnv,
   createPtySubscriptions,
   resolvePtyEnv,
+  spawnPty,
   type NodePtyEventSource,
+  type PtySpawnInput,
 } from "./Pty.js";
 
 type ExitEvent = { exitCode: number; signal?: number };
@@ -158,6 +160,51 @@ describe("the sign-in launch → PTY environment", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("spawnPty command", () => {
+  test("a pre-built Windows command line reaches node-pty as one string", async () => {
+    const spawns: Array<{ file: string; args: string[] | string }> = [];
+    // node-pty's native binding is not loadable under `bun test`, and spawnPty
+    // imports it lazily — so a fake is enough to see exactly what it is handed.
+    mock.module("node-pty", () => ({
+      spawn: (file: string, args: string[] | string) => {
+        spawns.push({ file, args });
+        return {
+          pid: 1,
+          cols: 80,
+          rows: 24,
+          write: () => {},
+          resize: () => {},
+          kill: () => {},
+          pause: () => {},
+          resume: () => {},
+          onData: () => ({ dispose: () => {} }),
+          onExit: () => ({ dispose: () => {} }),
+        };
+      },
+    }));
+    const commandLine = '/d /s /c "C:\\Program^ Files\\nodejs\\codex.cmd ^^^"login^^^""';
+    const input: PtySpawnInput = {
+      cwd: os.tmpdir(),
+      cols: 80,
+      rows: 24,
+      env: { PATH: "/usr/bin" },
+      completeEnv: true,
+      command: { file: "cmd.exe", args: commandLine },
+    };
+    try {
+      await spawnPty(input);
+    } finally {
+      mock.restore();
+    }
+    // A string must stay a string: node-pty appends it to the command line
+    // verbatim, while an array would be re-quoted for CommandLineToArgvW and
+    // lose the ^-escapes cmd.exe needs.
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]?.file).toBe("cmd.exe");
+    expect(spawns[0]?.args).toBe(commandLine);
   });
 });
 

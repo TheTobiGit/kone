@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  escapeCmdArgument,
+  escapeCmdCommand,
   formatLoginCommand,
   resolveProviderSignInCommand,
   resolveProviderSignInLaunch,
@@ -25,6 +27,22 @@ afterAll(() => {
 function executable(name: string): string {
   const file = path.join(temp, name);
   writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  return file;
+}
+
+/** A fresh directory under the test temp root: one PATH entry per test, so a
+ *  shim in one test can never be found by another. */
+function binDir(...parts: string[]): string {
+  const dir = path.join(temp, ...parts);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** A fake npm shim. The resolver only stats the file (an injected win32
+ *  platform skips the executable bit), so plain text is enough. */
+function shim(dir: string, name: string): string {
+  const file = path.join(dir, name);
+  writeFileSync(file, "@echo off\r\n");
   return file;
 }
 
@@ -150,6 +168,33 @@ describe("shellQuote", () => {
   });
 });
 
+describe("Windows cmd.exe escaping", () => {
+  test("an argument is quoted, then meta-escaped twice for a batch target", () => {
+    // cross-spawn's lib/util/escape.js with doubleEscapeMetaChars: the
+    // wrapping quotes are meta chars too, so they pick up a caret per pass —
+    // and the second pass escapes the first pass's carets.
+    expect(escapeCmdArgument("login", true)).toBe('^^^"login^^^"');
+    expect(escapeCmdArgument("hello world", true)).toBe('^^^"hello^^^ world^^^"');
+    expect(escapeCmdArgument('a"b', true)).toBe('^^^"a\\^^^"b^^^"');
+    expect(escapeCmdArgument("a&b", true)).toBe('^^^"a^^^&b^^^"');
+    expect(escapeCmdArgument("100%", true)).toBe('^^^"100^^^%^^^"');
+    expect(escapeCmdArgument("a^b", true)).toBe('^^^"a^^^^b^^^"');
+    expect(escapeCmdArgument("a!b", true)).toBe('^^^"a^^^!b^^^"');
+    expect(escapeCmdArgument("(x)", true)).toBe('^^^"^^^(x^^^)^^^"');
+    // Trailing backslashes are doubled so they can't escape the closing quote.
+    expect(escapeCmdArgument("C:\\tmp\\", true)).toBe('^^^"C:\\tmp\\\\^^^"');
+  });
+
+  test("the script path only gets its meta chars escaped, never quoted", () => {
+    expect(escapeCmdCommand("/tmp/Program Files/nodejs/codex.cmd")).toBe(
+      "/tmp/Program^ Files/nodejs/codex.cmd",
+    );
+    expect(escapeCmdCommand("C:\\Program Files\\nodejs\\codex.cmd")).toBe(
+      "C:\\Program^ Files\\nodejs\\codex.cmd",
+    );
+  });
+});
+
 describe("resolveProviderSignInLaunch", () => {
   test("returns the binary, args, home cwd and display command", () => {
     executable("signin-codex");
@@ -161,7 +206,7 @@ describe("resolveProviderSignInLaunch", () => {
 
     expect(launch.ok).toBe(true);
     if (!launch.ok) throw new Error(launch.message);
-    expect(launch.file).toBe("signin-codex");
+    expect(launch.file).toBe(path.join(temp, "signin-codex"));
     expect(launch.args).toEqual(["login"]);
     expect(launch.cwd).toBe(os.homedir());
     expect(launch.command.display).toBe("signin-codex login");
@@ -187,7 +232,7 @@ describe("resolveProviderSignInLaunch", () => {
 
     expect(launch.ok).toBe(true);
     if (!launch.ok) throw new Error(launch.message);
-    expect(launch.file).toBe("cursor-agent");
+    expect(launch.file).toBe(path.join(bin, "cursor-agent"));
     expect(launch.command.display).toBe("cursor-agent login");
   });
 
@@ -302,8 +347,138 @@ describe("resolveProviderSignInLaunch", () => {
 
     expect(launch.ok).toBe(true);
     if (!launch.ok) throw new Error(launch.message);
-    expect(launch.file).toBe("claude");
+    expect(launch.file).toBe(path.join(bin, "claude"));
     expect(launch.args).toEqual(["auth", "login"]);
     expect(launch.command.display).toBe("claude auth login");
+  });
+
+  test("a .cmd shim is run through ComSpec with an escaped command line", () => {
+    const dir = binDir("win-cmd");
+    const file = shim(dir, "codex.cmd");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    // Spawned as cmd.exe + one pre-built command line, not as codex.cmd: a
+    // batch file is not an executable CreateProcess can run.
+    expect(launch.file).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(launch.args).toBe(`/d /s /c "${escapeCmdCommand(file)} ^^^"login^^^""`);
+    expect(launch.args).toContain(file);
+    // The display still names the provider's own binary, unescaped.
+    expect(launch.command.display).toBe("codex login");
+    expect(launch.banner).toContain("codex login");
+  });
+
+  test("a .bat shim gets the same cmd.exe treatment", () => {
+    const dir = binDir("win-bat");
+    const file = shim(dir, "codex.bat");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("C:\\Windows\\cmd.exe");
+    expect(launch.args).toBe(`/d /s /c "${escapeCmdCommand(file)} ^^^"login^^^""`);
+  });
+
+  test("a missing ComSpec falls back to cmd.exe", () => {
+    const dir = binDir("win-no-comspec");
+    shim(dir, "codex.cmd");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("cmd.exe");
+  });
+
+  test("ComSpec is honoured whatever its key casing", () => {
+    for (const [key, value] of [
+      ["COMSPEC", "C:\\Upper\\cmd.exe"],
+      ["comspec", "C:\\lower\\cmd.exe"],
+    ] as const) {
+      const dir = binDir(`win-comspec-${key}`);
+      shim(dir, "codex.cmd");
+
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: {},
+        env: { PATH: dir, [key]: value },
+        platform: "win32",
+      });
+
+      expect(launch.ok).toBe(true);
+      if (!launch.ok) throw new Error(launch.message);
+      expect(launch.file).toBe(value);
+    }
+  });
+
+  test("a native .exe is spawned directly with the original argv", () => {
+    const dir = binDir("win-exe");
+    const file = shim(dir, "codex.exe");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+  });
+
+  test("a shim under a path with spaces is caret-escaped in the command line", () => {
+    const dir = binDir("win-spaces", "Program Files", "nodejs");
+    const file = shim(dir, "codex.cmd");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: `${temp};${dir}`, ComSpec: "C:\\Windows\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.args).toBe(`/d /s /c "${file.replace(/ /g, "^ ")} ^^^"login^^^""`);
+    expect(launch.args).toContain("Program^ Files/nodejs");
+  });
+
+  test("non-Windows launches the resolved path with the original argv array", () => {
+    const dir = binDir("linux-bin");
+    const file = path.join(dir, "codex");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: {},
+      env: { PATH: dir },
+      platform: "linux",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+    expect(Array.isArray(launch.args)).toBe(true);
   });
 });
