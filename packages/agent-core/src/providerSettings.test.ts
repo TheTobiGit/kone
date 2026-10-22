@@ -20,6 +20,8 @@ import {
   writeProviderSettings,
   handoffTokenCapFor,
   patchProviderSettings,
+  resumeAtResetFor,
+  snoozeWhenLimitedFor,
 } from "./providerSettings.js";
 import { setUserDataDir } from "./userDataDir.js";
 import type { LegacyRendererProviderSettings, ProviderSettingsSnapshot } from "./types.js";
@@ -377,6 +379,45 @@ describe("providerSettings patch", () => {
   it("creates an entry for a provider that has none, defaulting to enabled", () => {
     const next = patchProviderSettings("cursor", { hiddenModels: ["x"] });
     expect(next.cursor).toEqual({ enabled: true, hiddenModels: ["x"] });
+  });
+});
+
+describe("providerSettings usage-limit toggles", () => {
+  it("defaults to today's behaviour: resume at reset on, snooze off", () => {
+    expect(resumeAtResetFor("claudeAgent", {})).toBe(true);
+    expect(snoozeWhenLimitedFor("claudeAgent", {})).toBe(false);
+    expect(resumeAtResetFor("codex", { codex: { enabled: true } })).toBe(true);
+    expect(snoozeWhenLimitedFor("codex", { codex: { enabled: true } })).toBe(false);
+  });
+
+  it("round-trips both toggles through the file, next to the provider's other fields", () => {
+    writeProviderSettings("codex", { binaryPath: "/bin/codex" });
+    patchProviderSettings("codex", { resumeAtReset: false });
+    patchProviderSettings("codex", { snoozeWhenLimited: true });
+
+    resetProviderSettingsForTests();
+    const settings = readProviderSettings();
+    expect(settings.codex).toEqual({
+      enabled: true,
+      binaryPath: "/bin/codex",
+      resumeAtReset: false,
+      snoozeWhenLimited: true,
+    });
+    expect(resumeAtResetFor("codex")).toBe(false);
+    expect(snoozeWhenLimitedFor("codex")).toBe(true);
+  });
+
+  it("reads a hand-edited non-boolean toggle as its default", () => {
+    writeFileSync(
+      settingsFile(),
+      JSON.stringify({
+        version: 1,
+        revision: 3,
+        settings: { codex: { resumeAtReset: "no", snoozeWhenLimited: 1 } },
+      }),
+    );
+    expect(resumeAtResetFor("codex")).toBe(true);
+    expect(snoozeWhenLimitedFor("codex")).toBe(false);
   });
 });
 

@@ -642,6 +642,23 @@ function toggleUpdateChecks() {
   if (providerSettings.updateChecks.value) void upkeep.check({ force: true });
 }
 
+// ── limit behaviour ───────────────────────────────────────────────────────────
+// Two per-provider answers about what happens when that provider's window runs
+// out: whether the thread picks itself back up at the reset, and whether it waits
+// snoozed until then. Both write through the provider-settings store, so the
+// mirror the pane reads is the same one every other surface reads.
+function toggleResumeAtReset() {
+  const provider = current.value.provider;
+  void providerSettings.setResumeAtReset(provider, !providerSettings.resumeAtReset(provider));
+  cue("toggle", { off: !providerSettings.resumeAtReset(provider) });
+}
+
+function toggleSnoozeWhenLimited() {
+  const provider = current.value.provider;
+  void providerSettings.setSnoozeWhenLimited(provider, !providerSettings.snoozeWhenLimited(provider));
+  cue("toggle", { off: !providerSettings.snoozeWhenLimited(provider) });
+}
+
 // ── copying a command ─────────────────────────────────────────────────────────
 // Every command this page names is also copyable, because the honest answer to
 // "can kone do this for me?" is sometimes no — and then the user needs the exact
@@ -984,6 +1001,42 @@ async function copy(text: string) {
           <section class="pp__block pp__limits" aria-label="Limits">
             <p class="pp__blocklabel">Limits</p>
             <AgentSettingsLimits :space="limits" :provider="current.provider" :foot="false" />
+
+            <div class="pp__limitrows">
+              <button
+                type="button"
+                role="switch"
+                class="pp__checkrow pp__limitrow"
+                :aria-checked="providerSettings.resumeAtReset(current.provider)"
+                :tabindex="open ? 0 : -1"
+                @click="toggleResumeAtReset"
+              >
+                <span class="pp__checklabel">Auto-resume at reset</span>
+                <span
+                  class="pp__switch"
+                  :class="{ 'pp__switch--on': providerSettings.resumeAtReset(current.provider) }"
+                >
+                  <i class="pp__knob" />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="switch"
+                class="pp__checkrow pp__limitrow"
+                :aria-checked="providerSettings.snoozeWhenLimited(current.provider)"
+                :tabindex="open ? 0 : -1"
+                @click="toggleSnoozeWhenLimited"
+              >
+                <span class="pp__checklabel">Snooze limited threads</span>
+                <span
+                  class="pp__switch"
+                  :class="{ 'pp__switch--on': providerSettings.snoozeWhenLimited(current.provider) }"
+                >
+                  <i class="pp__knob" />
+                </span>
+              </button>
+            </div>
           </section>
 
           <!-- ── executable ───────────────────────────────────────────────── -->
@@ -1569,6 +1622,20 @@ async function copy(text: string) {
 }
 .pp__limits {
   align-items: stretch;
+}
+/* The two limit switches live in the block, not in the deck's foot: the label
+   takes the block's left edge and the switch its right, so the pair scans with
+   the meters above them. Same row, same switch — only the alignment changes, and
+   the capsule becomes a quiet rect, since a full-width pill reads as a button. */
+.pp__limitrows {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.pp__limitrow {
+  justify-content: space-between;
+  padding: 7px 2px;
+  border-radius: 8px;
 }
 .pp__tilde {
   font-family: var(--font-mono);
