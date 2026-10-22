@@ -563,12 +563,13 @@ function onAttentionOpen(projectPath: string, threadId: string) {
       :surface-top="surfaceTop"
     />
 
-    <!-- The provider sign-in modal, mounted once for the whole app: every entry
-         point asks the same composable, and this is the one card that answers.
+    <!-- The app-level sign-in modal: the composer's tray asks the same composable,
+         and this is the one card that answers it. The settings Providers pane
+         hosts its own copy inside the pane, so this one stays on the app host.
          Keyed on the provider so switching targets is a fresh run; closing is
          the modal's own call to `closed()`. -->
     <ProviderSignInModal
-      v-if="signIn.target.value"
+      v-if="signIn.target.value && signIn.host.value === 'app'"
       :key="signIn.target.value"
       :provider="signIn.target.value"
     />

@@ -28,6 +28,11 @@ import { signInFooter, type SignInActionId } from "~/utils/signInFooter";
 // terminal in TerminalPane, and closing goes through useProviderSignIn().closed()
 // so focus returns to whatever opened it.
 //
+// The same card is mounted twice, and `contained` is the one difference: the
+// page shell mounts it over the window (the composer's tray, which is not inside
+// settings), and the providers pane mounts it inside its own frame, so a card
+// opened from a pane stays in that pane.
+//
 // The scrim is inert on purpose: a stray click must never kill a login that is
 // mid-flight. Escape only closes while focus is outside the terminal — inside
 // it, every key belongs to the CLI (opencode's provider menu uses arrows and
@@ -35,6 +40,8 @@ import { signInFooter, type SignInActionId } from "~/utils/signInFooter";
 
 const props = defineProps<{
   provider: ProviderKind;
+  /** Cover the settings pane that hosts this copy instead of the window. */
+  contained?: boolean;
 }>();
 
 const brand = PROVIDER_BRAND[props.provider];
@@ -48,7 +55,8 @@ const signIn = useSignInRun({ provider: props.provider, label });
 const { state, command, copied, display, finish, live, session, settled } = signIn;
 
 const { shown, closing, dismiss } = useModalExit();
-const { closed } = useProviderSignIn();
+const { closed, ticket } = useProviderSignIn();
+const myTicket = ticket();
 const { cue } = useSound();
 
 const cardEl = ref<HTMLElement | null>(null);
@@ -123,7 +131,7 @@ function requestClose(): void {
   // Kill the CLI now rather than after the exit plays: a login process must
   // not outlive the card that started it.
   void signIn.dispose();
-  dismiss(() => closed());
+  dismiss(() => closed(myTicket));
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -223,11 +231,18 @@ watch(settled, async (done) => {
 </script>
 
 <template>
-  <UiModalShell v-slot="{ card }" :shown="shown" scrim="inert" class="z-[60] items-end justify-end p-6 max-sm:p-3">
+  <UiModalShell
+    v-slot="{ card }"
+    :shown="shown"
+    scrim="inert"
+    :contained="contained"
+    class="z-[60] items-end justify-end p-6 max-sm:p-3"
+  >
     <div
       ref="cardEl"
       v-bind="card"
       class="modal-card signin-card relative z-20 w-full overflow-hidden"
+      :class="{ 'signin-card--contained': contained }"
       role="dialog"
       aria-modal="true"
       :aria-labelledby="titleId"
@@ -331,6 +346,13 @@ watch(settled, async (done) => {
 }
 @media (max-width: 639px) {
   .signin-card { max-height: calc(100dvh - 1.5rem); }
+}
+/* A pane-hosted card is ceilinged by the pane, not the viewport: the overlay is
+   `absolute inset-0`, so a percentage is the pane. Its padding is already
+   outside the box a percentage resolves against, and this comes after the phone
+   rule so a narrow viewport never reaches a pane. */
+.signin-card--contained {
+  max-height: 100%;
 }
 
 .signin-body {

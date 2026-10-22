@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiChipIcon,
@@ -17,6 +17,7 @@ import {
   UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
+import ProviderSignInModal from "~/components/provider/ProviderSignInModal.vue";
 import AgentSettingsLimits from "~/components/agent/AgentSettingsLimits.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import ProviderDeckLimits, { deckReadout, pctLabel, type DeckReadout } from "~/components/provider/ProviderDeckLimits.vue";
@@ -39,11 +40,13 @@ import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/
 //
 // "Bring your own subscription" still governs everything: no credential ever
 // passes through here. What this page does with a command is name it, and — for
-// the login commands — run it for the user in kone's own terminal, in the modal
-// the pill, the Sign-in block and the composer's tray all open. The CLI writes
-// its credential where it always would; kone only ever sees the transcript, and
-// only for as long as the modal is up. Installs are the one other thing it runs:
-// for a CLI whose channel kone recognises, that channel's update.
+// the login commands — run it for the user in kone's own terminal, in a modal
+// this page hosts itself: the pill and the Sign-in block open it in the pane
+// below, so the card stays on the page that asked for it, while the composer's
+// tray opens the app-level one over the window. The CLI writes its credential
+// where it always would; kone only ever sees the transcript, and only for as
+// long as the modal is up. Installs are the one other thing it runs: for a CLI
+// whose channel kone recognises, that channel's update.
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
@@ -56,6 +59,11 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 const { cue } = useSound();
 const signIn = useProviderSignIn();
+// The card this page hosts dies with the page: leaving Providers (or closing the
+// drawer) while a login is up unmounts the modal, which disposes its PTY. The
+// opener is inside this surface, so there is no focus to hand back.
+onBeforeUnmount(() => signIn.release("pane"));
+
 // A deep link from the composer's status tray: land on the provider it named,
 // then clear the request so coming back here later doesn't yank the deck off
 // whatever the user chose in the meantime.
@@ -491,7 +499,7 @@ const heroStatus = computed(() => {
 function heroClick() {
   const a = heroAction.value;
   if (a.kind === "update") return void update();
-  if (a.kind === "signin") return signIn.open(current.value.provider);
+  if (a.kind === "signin") return signIn.open(current.value.provider, "pane");
   if (a.kind === "toggle") return toggleEnabled();
 }
 
@@ -870,7 +878,7 @@ async function copy(text: string) {
               type="button"
               class="pp__btn pp__btn--outline"
               :tabindex="open ? 0 : -1"
-              @click="signIn.open(current.provider)"
+              @click="signIn.open(current.provider, 'pane')"
             >
               {{ current.status?.readiness === "ready" ? "Sign in again" : "Sign in" }}
             </button>
@@ -1091,6 +1099,20 @@ async function copy(text: string) {
       kone drives the agent CLIs you've already signed into, with your own subscription, and never
       stores your credentials. Limits are read locally and never sent; a
       <span class="pp__tilde">~</span> marks spend kone estimated from token counts.
+    </template>
+
+    <!-- The sign-in card belongs to this page: mounted in the pane's own layer so
+         a login opened from the deck or the Sign-in block stays where the click
+         was, over the pane rather than the whole window. Keyed on the provider so
+         switching targets is a fresh run; the card closes itself through
+         `closed()`. -->
+    <template #overlay>
+      <ProviderSignInModal
+        v-if="signIn.target.value && signIn.host.value === 'pane'"
+        :key="signIn.target.value"
+        :provider="signIn.target.value"
+        contained
+      />
     </template>
   </SettingsPageShell>
 </template>
