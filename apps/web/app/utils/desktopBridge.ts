@@ -22,7 +22,16 @@ import type { createMockTurnRunner } from "~/composables/agentMock";
  *  is a superset, so either one satisfies it. */
 export type DesktopAgentReach = Pick<
   KoneAgentApi,
-  "surface" | "warm" | "discover" | "onProvidersChanged" | "models" | "maintenance" | "updateProvider"
+  | "surface"
+  | "warm"
+  | "discover"
+  | "onProvidersChanged"
+  | "models"
+  | "maintenance"
+  | "updateProvider"
+  | "getSettingsSnapshot"
+  | "importLegacySettings"
+  | "onSettingsChanged"
 > & {
   history: Pick<
     KoneAgentHistoryApi,

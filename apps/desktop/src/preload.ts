@@ -65,6 +65,7 @@ import type {
   HandInRecord,
   HandInResult,
   InteractionMode,
+  LegacyRendererProviderSettings,
   ModelDescriptor,
   PreviewTurnCheckpointResult,
   ProfileStats,
@@ -73,6 +74,7 @@ import type {
   ProviderKind,
   ProviderMaintenance,
   ProviderSettingsMap,
+  ProviderSettingsSnapshot,
   ProviderSignInCommand,
   ProviderSignInStartInput,
   ProviderStatus,
@@ -554,6 +556,30 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** Merge only the given fields onto the provider's current entry in main;
+     *  an `undefined` value clears that field. */
+    patchSettings: (provider: ProviderKind, patch: ProviderConfig): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:patch-settings", provider, patch),
+    /** The whole settings store plus its revision — the renderer mirrors this
+     *  instead of keeping a copy of its own. */
+    getSettingsSnapshot: (): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:settings-snapshot"),
+    /** Hand the store the values the old renderer kept in localStorage; it
+     *  imports them once and resolves to the resulting snapshot. */
+    importLegacySettings: (
+      legacy: LegacyRendererProviderSettings,
+    ): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:import-legacy-settings", legacy),
+    /** Settings changed in the main process — this window's write or another
+     *  window's. Machine-wide push; returns an unsubscribe fn. */
+    onSettingsChanged: (
+      cb: (snapshot: ProviderSettingsSnapshot) => void,
+    ): (() => void) => {
+      const listener = (_event: IpcRendererEvent, snapshot: ProviderSettingsSnapshot) =>
+        cb(snapshot);
+      ipcRenderer.on("agent:settings-changed", listener);
+      return () => ipcRenderer.removeListener("agent:settings-changed", listener);
+    },
     /** The provider's handoff history cap in tokens (its own getter/setter so a
      *  settings surface can read/write just the number; the setter merges). */
     getHandoffBudget: (provider: ProviderKind): Promise<number> =>

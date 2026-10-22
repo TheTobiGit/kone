@@ -57,7 +57,7 @@ import {
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
 import { snoozeUntilReset } from "./limitState.js";
-import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, StartCancelled } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, PROVIDER_KIND_VALUES, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -89,8 +89,12 @@ import { resolveProviderMaintenance, runProviderUpdate } from "./providerMainten
 import {
   assertProviderEnabled,
   handoffTokenCapFor,
+  importLegacyRendererSettings,
   isProviderEnabled,
+  onProviderSettingsChanged as subscribeProviderSettings,
+  patchProviderSettings as patchProviderSettingsInStore,
   readProviderSettings,
+  readProviderSettingsSnapshot,
   setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
   writeProviderSettings,
 } from "./providerSettings.js";
@@ -116,12 +120,14 @@ import type {
   ForkThreadAtBlockInput,
   ForkThreadAtBlockResult,
   ForkThreadAtTurnResult,
+  LegacyRendererProviderSettings,
   ModelDescriptor,
   ProviderAdapter,
   ProviderConfig,
   ProviderKind,
   ProviderMaintenance,
   ProviderSettingsMap,
+  ProviderSettingsSnapshot,
   ProviderStatus,
   ProviderUpdateResult,
   QueuedTurnRow,
@@ -1043,6 +1049,40 @@ export class AgentService {
     return readProviderSettings();
   }
 
+  /** The whole settings store as a renderer mirrors it: the revision it is at,
+   *  the settings, and whether it still owes the store its legacy values. */
+  getProviderSettingsSnapshot(): ProviderSettingsSnapshot {
+    return readProviderSettingsSnapshot();
+  }
+
+  /** Fold a renderer's legacy localStorage settings into the store — the module
+   *  imports them once, ever. A toggle that flipped a provider's enabled state
+   *  re-points its adapter and re-probes, exactly as setProviderSettings does. */
+  importLegacyProviderSettings(
+    legacy: LegacyRendererProviderSettings,
+  ): ProviderSettingsSnapshot {
+    const before = readProviderSettings();
+    const snapshot = importLegacyRendererSettings(legacy);
+    let enabledChanged = false;
+    for (const provider of PROVIDER_KIND_VALUES) {
+      if (isProviderEnabled(provider, before) === isProviderEnabled(provider, snapshot.settings)) {
+        continue;
+      }
+      enabledChanged = true;
+      this.adapters.get(provider)?.setConfig?.(snapshot.settings[provider] ?? {});
+    }
+    if (enabledChanged) void this.discover();
+    return snapshot;
+  }
+
+  /** Subscribe to settings writes, including the legacy import. Returns an
+   *  unsubscribe fn. */
+  onProviderSettingsChanged(
+    listener: (snapshot: ProviderSettingsSnapshot) => void,
+  ): () => void {
+    return subscribeProviderSettings(listener);
+  }
+
   /** Persist one provider's install settings and apply them to its live adapter
    *  so the next discover / session picks up the change without a restart.
    *  Returns the full updated map. */
@@ -1055,6 +1095,21 @@ export class AgentService {
       void this.discover();
     }
     return next;
+  }
+
+  /** Merge one provider's changed fields (an `undefined` value clears that
+   *  field) into what main last wrote, and apply the result to its live adapter
+   *  exactly as setProviderSettings does. A renderer sends only what it
+   *  changed, so two windows never undo each other. Returns the mirror the
+   *  renderers read. */
+  patchProviderSettings(provider: ProviderKind, patch: ProviderConfig): ProviderSettingsSnapshot {
+    const wasEnabled = isProviderEnabled(provider);
+    const next = patchProviderSettingsInStore(provider, patch);
+    this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
+    if (wasEnabled !== isProviderEnabled(provider, next)) {
+      void this.discover();
+    }
+    return this.getProviderSettingsSnapshot();
   }
 
   /** Persist one provider's handoff history cap (in tokens). Returns the full

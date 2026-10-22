@@ -939,9 +939,31 @@ export type ProviderConfig = {
   /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
    *  this provider (default 16000; clamped 1024–64000). */
   handoffTokenCap?: number;
+  /** Model family keys hidden from the picker for this provider (opt-out;
+   *  absent/empty means every model is shown). */
+  hiddenModels?: string[];
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
+/** The whole provider-settings store as a renderer receives it (mirrors
+ *  packages/agent-core/src/types.ts). */
+export type ProviderSettingsSnapshot = {
+  /** Monotonic write counter of the settings file; a renderer ignores a push
+   *  whose revision is not newer than the one it holds. */
+  revision: number;
+  settings: ProviderSettingsMap;
+  /** True until the renderer's legacy localStorage values have been imported
+   *  once. */
+  legacyImportPending: boolean;
+};
+
+/** The pre-store values a renderer may still hold in localStorage, sent up once
+ *  so they are folded into the file rather than lost. */
+export type LegacyRendererProviderSettings = {
+  enabled?: Partial<Record<ProviderKind, boolean>>;
+  hiddenModels?: Partial<Record<ProviderKind, string[]>>;
+};
 
 // ── Install maintenance (mirrors packages/agent-core/src/providerMaintenance.ts) ─
 
@@ -3278,6 +3300,26 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** Merge just these fields onto the provider's current entry in main (an
+   *  `undefined` value clears that field), so two windows editing different
+   *  fields never undo each other. Rejects when the write could not be saved. */
+  patchSettings: (
+    provider: ProviderKind,
+    patch: ProviderConfig,
+  ) => Promise<ProviderSettingsSnapshot>;
+  /** The whole settings store plus its revision — the renderer mirrors this
+   *  rather than keeping a copy of its own. */
+  getSettingsSnapshot: () => Promise<ProviderSettingsSnapshot>;
+  /** Hand the store the renderer's legacy localStorage values; it imports them
+   *  once and resolves to the resulting snapshot. Rejects when the import could
+   *  not be saved, leaving it pending for the next load. */
+  importLegacySettings: (
+    legacy: LegacyRendererProviderSettings,
+  ) => Promise<ProviderSettingsSnapshot>;
+  /** A settings write landed in the main process — this window's or another
+   *  window's. Ignore a snapshot whose revision is not newer. Returns an
+   *  unsubscribe fn. */
+  onSettingsChanged: (cb: (snapshot: ProviderSettingsSnapshot) => void) => () => void;
   /** The provider's handoff history cap in tokens. */
   getHandoffBudget: (provider: ProviderKind) => Promise<number>;
   /** Set one provider's handoff history cap; merges and resolves to the

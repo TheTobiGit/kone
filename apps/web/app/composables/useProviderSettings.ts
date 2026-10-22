@@ -1,125 +1,203 @@
 import { computed, ref } from "vue";
 import { useStorage } from "@vueuse/core";
-import type { ProviderKind, ProviderSettingsMap } from "~/types/desktop";
+import { desktopBridge } from "~/utils/desktopBridge";
+import type {
+  KoneAgentApi,
+  LegacyRendererProviderSettings,
+  ProviderConfig,
+  ProviderKind,
+  ProviderSettingsMap,
+  ProviderSettingsSnapshot,
+} from "~/types/desktop";
 
 // The user's per-provider install settings — the settings-surface companion to
-// useAgentProviders (which only *detects* installed CLIs). Two axes:
+// useAgentProviders (which only *detects* installed CLIs). The desktop store owns
+// them now (binary path, enabled, hidden model families); this module is the
+// renderer's mirror of it. load() pulls a revisioned snapshot and
+// onSettingsChanged pushes every later write, so two windows and the picker rail
+// never disagree. Setters update the mirror optimistically and write through the
+// same bridge; the push that follows is authoritative.
 //
-//  • binaryPath — where a provider's CLI actually lives. This has to reach the
-//    Electron main process (the adapters spawn the binary), so it's persisted
-//    through the desktop bridge (koneDesktop.agent.get/setSettings). In `nuxt
-//    dev` there's no bridge, so it falls back to localStorage purely so the
-//    Providers pane stays demoable in the browser.
-//
-//  • enabled — whether a provider shows up in the model-picker rail at all. This
-//    is a pure renderer-side view filter (no bridge needed), so it lives in
-//    localStorage the same way useStripPrefs' motion knobs do, shared at module
-//    scope so flipping it in the drawer updates the rail live.
-//
-// Module-scope state so every surface (the drawer, ProjectView's rail) reads one
-// reactive source and a change in one is seen everywhere without a reload.
+// A plain browser has nowhere to persist: the mirror is the session's store
+// (everything enabled, nothing hidden) and the dev stand-in answers reads
+// without one. Module scope so the drawer, the rail and the picker read one
+// reactive source.
 
 const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity", "cline"];
 
-// Where the dev (no-bridge) fallback stashes binary paths, mirroring the shape
-// the desktop store persists. Kept separate from `enabled` so the two axes never
-// step on each other.
-const DEV_BINARY_KEY = "kone.providers.binaryPaths";
+// Where `enabled` and the hidden model families used to live in the renderer.
+// They're read once when main reports an un-imported store, then removed; the
+// file is the only store after that.
+const LEGACY_ENABLED_KEY = "kone.providers.enabled";
+const LEGACY_HIDDEN_KEY = "kone.models.hidden";
 
-// binaryPath per provider. Authoritative source is the desktop store; this is
-// the renderer's warm mirror of it (populated by load()).
-const binaryPaths = ref<Partial<Record<ProviderKind, string>>>({});
+/** The slice of the preload this module writes through. All optional so a
+ *  preload that predates the snapshot calls still typechecks (and loses no more
+ *  than its live updates). */
+type SettingsBridge = Partial<
+  Pick<
+    KoneAgentApi,
+    | "getSettings"
+    | "setSettings"
+    | "patchSettings"
+    | "getSettingsSnapshot"
+    | "importLegacySettings"
+    | "onSettingsChanged"
+  >
+>;
+
+// The desktop store's settings, mirrored. Authoritative copy lives in main; this
+// ref is replaced wholesale by each applied snapshot.
+const settings = ref<ProviderSettingsMap>({});
+// The revision of the snapshot in `settings`; -1 means nothing applied yet.
+const revision = ref(-1);
+// One subscription per session, however many surfaces call load().
+let stopListening: (() => void) | null = null;
 let loaded = false;
 
-// Which providers are allowed in the picker rail. Absent = enabled (opt-out), so
-// a fresh install shows every detected provider. Synced across windows.
-const enabledMap = useStorage<Partial<Record<ProviderKind, boolean>>>(
-  "kone.providers.enabled",
-  {},
-  undefined,
-  { listenToStorageChanges: true },
-);
+/** binaryPath per provider, flattened for the pane. */
+const binaryPaths = computed<Partial<Record<ProviderKind, string>>>(() => {
+  const out: Partial<Record<ProviderKind, string>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const path = settings.value[provider]?.binaryPath?.trim();
+    if (path) out[provider] = path;
+  }
+  return out;
+});
 
-// Which individual models are hidden from the picker, keyed by provider then by
-// model *family* key (ModelOption.key — the same core the picker groups by). Like
-// enabledMap this is opt-out: a family absent from its provider's list is shown,
-// so a fresh install and every newly-detected model default to visible. A pure
-// renderer-side view filter, so localStorage (synced across windows) is enough.
-const hiddenModels = useStorage<Partial<Record<ProviderKind, string[]>>>(
-  "kone.models.hidden",
-  {},
-  undefined,
-  { listenToStorageChanges: true },
-);
+/** Which providers are allowed in the picker rail. Absent = enabled (opt-out),
+ *  so a fresh install shows every detected provider. */
+const enabledMap = computed<Partial<Record<ProviderKind, boolean>>>(() => {
+  const out: Partial<Record<ProviderKind, boolean>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const enabled = settings.value[provider]?.enabled;
+    if (enabled !== undefined) out[provider] = enabled !== false;
+  }
+  return out;
+});
+
+/** Which model *families* are hidden from the picker, keyed by provider. Like
+ *  enabledMap this is opt-out: a family absent from its provider's list is
+ *  shown, and an empty list is the same as no list. */
+const hiddenModels = computed<Partial<Record<ProviderKind, string[]>>>(() => {
+  const out: Partial<Record<ProviderKind, string[]>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const hidden = settings.value[provider]?.hiddenModels;
+    if (hidden?.length) out[provider] = [...hidden];
+  }
+  return out;
+});
 
 // Whether the providers pane may look up newer CLI versions when it opens. On by
 // default, but genuinely optional: it's a network call about software the user
 // might have pinned deliberately, and kone shouldn't reach out to registries
-// behind the back of someone who'd rather it didn't.
+// behind the back of someone who'd rather it didn't. The only setting still kept
+// in the renderer.
 const updateChecks = useStorage<boolean>("kone.providers.updateChecks", true, undefined, {
   listenToStorageChanges: true,
 });
 
-function bridge() {
-  return import.meta.client ? window.koneDesktop?.agent : undefined;
+function bridge(): SettingsBridge | undefined {
+  // Existence probe, not a narrowing one: the preload only exists in the desktop
+  // renderer, and bun tests stand one in on globalThis.window. The dev stand-in
+  // answers a plain browser, so `nuxt dev` runs the same snapshot path.
+  const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+  return preload ?? desktopBridge()?.agent;
 }
 
-function readDevBinaryPaths(): Partial<Record<ProviderKind, string>> {
-  if (!import.meta.client) return {};
+/** Apply a snapshot from main, newest wins. A push can overtake the reply to a
+ *  read, so anything at or below the revision already applied is stale — unless
+ *  the caller re-read main after a failed write, where the file legitimately
+ *  never moved. */
+function apply(snapshot: ProviderSettingsSnapshot, force = false): void {
+  if (!force && snapshot.revision <= revision.value) return;
+  settings.value = snapshot.settings;
+  revision.value = snapshot.revision;
+}
+
+function listen(api: SettingsBridge): void {
+  if (stopListening || !api.onSettingsChanged) return;
+  stopListening = api.onSettingsChanged(apply);
+}
+
+function readLegacy<T>(key: string): T | undefined {
   try {
-    const raw = localStorage.getItem(DEV_BINARY_KEY);
-    // SAFETY: DEV_BINARY_KEY is written only by writeDevBinaryPaths() below,
-    // from exactly this shape; malformed JSON throws into the catch.
-    return raw ? (JSON.parse(raw) as Partial<Record<ProviderKind, string>>) : {};
+    const raw = localStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed: T | null = JSON.parse(raw);
+    // The keys held plain maps when anything wrote them; anything else (an
+    // array, a bare value) is absent rather than something to import.
+    if (parsed === null || !(parsed instanceof Object) || Array.isArray(parsed)) return undefined;
+    return parsed;
   } catch {
-    return {};
+    // Unparseable, or a blocked store: treat it as nothing to import.
+    return undefined;
   }
 }
 
-function writeDevBinaryPaths(map: Partial<Record<ProviderKind, string>>): void {
-  if (!import.meta.client) return;
+function readLegacySettings(): LegacyRendererProviderSettings {
+  return {
+    enabled: readLegacy<Partial<Record<ProviderKind, boolean>>>(LEGACY_ENABLED_KEY),
+    hiddenModels: readLegacy<Partial<Record<ProviderKind, string[]>>>(LEGACY_HIDDEN_KEY),
+  };
+}
+
+function dropLegacySettings(): void {
   try {
-    localStorage.setItem(DEV_BINARY_KEY, JSON.stringify(map));
+    // The import ran (or another window already ran it); the keys are inert.
+    localStorage.removeItem(LEGACY_ENABLED_KEY);
+    localStorage.removeItem(LEGACY_HIDDEN_KEY);
   } catch {
-    // best-effort; a full/blocked localStorage never breaks the pane.
+    // Blocked store: the keys can't be read by anything either.
   }
-}
-
-/** Flatten the desktop store's `{ provider: { binaryPath } }` map into the flat
- *  provider→path shape the pane binds to. */
-function fromSettingsMap(map: ProviderSettingsMap): Partial<Record<ProviderKind, string>> {
-  const out: Partial<Record<ProviderKind, string>> = {};
-  for (const provider of KNOWN_PROVIDERS) {
-    const path = map[provider]?.binaryPath?.trim();
-    if (path) out[provider] = path;
-  }
-  return out;
 }
 
 export function useProviderSettings() {
-  /** Load persisted binary paths and enablement once. Reads the desktop store when present,
-   *  else the dev localStorage fallback. Idempotent. */
+  /** Mirror main's settings once, then keep them live. Idempotent; a failed
+   *  read keeps whatever this window already shows. */
   async function load(force = false): Promise<void> {
     if (loaded && !force) return;
     const api = bridge();
-    if (api?.getSettings) {
+    // A read or import that didn't land leaves this load unsettled, so the
+    // next load() tries again; nothing retries on its own.
+    let settled = true;
+    if (api?.getSettingsSnapshot) {
+      listen(api);
       try {
-        const settings = await api.getSettings();
-        binaryPaths.value = fromSettingsMap(settings);
-        const map: Partial<Record<ProviderKind, boolean>> = {};
-        for (const provider of KNOWN_PROVIDERS) {
-          if (settings[provider]?.enabled !== undefined) {
-            map[provider] = settings[provider]?.enabled !== false;
+        const snapshot = await api.getSettingsSnapshot();
+        if (snapshot.legacyImportPending && api.importLegacySettings) {
+          // Show main's store until the import is saved, so the pane never
+          // shows choices the file doesn't have.
+          apply(snapshot);
+          try {
+            const imported = await api.importLegacySettings(readLegacySettings());
+            apply(imported);
+            if (imported.legacyImportPending) settled = false;
+            else dropLegacySettings();
+          } catch {
+            // Not saved: the keys are still the only copy of those choices.
+            settled = false;
           }
+        } else {
+          apply(snapshot);
+          // Pending with no importer means a build that can still needs the
+          // keys; once imported, leftovers are stale copies of the store.
+          if (!snapshot.legacyImportPending) dropLegacySettings();
         }
-        enabledMap.value = { ...enabledMap.value, ...map };
       } catch {
-        binaryPaths.value = {};
+        // Keep the current mirror; the next push or load() settles it.
+        settled = false;
       }
-    } else {
-      binaryPaths.value = readDevBinaryPaths();
+    } else if (api?.getSettings) {
+      // Preload without the snapshot calls: no revision, no pushes.
+      try {
+        settings.value = await api.getSettings();
+      } catch {
+        // Keep the current mirror; the next load() tries again.
+        settled = false;
+      }
     }
-    loaded = true;
+    loaded = settled;
   }
 
   /** The configured binary path for a provider, or "" when it runs on default. */
@@ -127,29 +205,45 @@ export function useProviderSettings() {
     return binaryPaths.value[provider] ?? "";
   }
 
-  /** Persist a provider's binary path. An empty/blank value clears the override
-   *  (the adapter falls back to its default). Writes through to the desktop
-   *  store (which re-points the live adapter) or the dev fallback. */
-  async function setBinaryPath(provider: ProviderKind, path: string): Promise<void> {
-    const trimmed = path.trim();
-    const next = { ...binaryPaths.value };
-    if (trimmed) next[provider] = trimmed;
-    else delete next[provider];
-    binaryPaths.value = next;
+  /** Persist one provider's change: show it now, write through the bridge, and
+   *  let the push that follows confirm it. Only the changed fields reach main,
+   *  so a second window editing another field never gets undone. */
+  async function write(provider: ProviderKind, patch: ProviderConfig): Promise<void> {
+    const next = { ...settings.value[provider], ...patch };
+    settings.value = { ...settings.value, [provider]: next };
 
     const api = bridge();
-    if (api?.setSettings) {
+    if (api?.patchSettings) {
       try {
-        const current = (await api.getSettings())[provider] ?? {};
-        binaryPaths.value = fromSettingsMap(
-          await api.setSettings(provider, { ...current, binaryPath: trimmed || undefined }),
-        );
+        apply(await api.patchSettings(provider, patch));
       } catch {
-        // Keep the optimistic in-memory value; the pane still reflects the edit.
+        // Nothing was saved, so the revision didn't move either: force the read
+        // back past the guard to take the optimism off the pane.
+        if (api.getSettingsSnapshot) {
+          try {
+            apply(await api.getSettingsSnapshot(), true);
+          } catch {
+            // Unreadable too; the next push or reload settles it.
+          }
+        }
       }
-    } else {
-      writeDevBinaryPaths(next);
+      return;
     }
+    if (!api?.setSettings) return;
+    // A preload from before patchSettings: the whole entry is all it can take.
+    try {
+      const written = await api.setSettings(provider, next);
+      // Without the push, the reply to the write is the only authoritative copy.
+      if (!api.getSettingsSnapshot) settings.value = written;
+    } catch {
+      // Keep the optimistic value; the pane still reflects the edit.
+    }
+  }
+
+  /** Persist a provider's binary path. An empty/blank value clears the override
+   *  (the adapter falls back to its default). */
+  async function setBinaryPath(provider: ProviderKind, path: string): Promise<void> {
+    await write(provider, { binaryPath: path.trim() || undefined });
   }
 
   /** Whether a provider may appear in the picker rail (default: yes). */
@@ -158,17 +252,7 @@ export function useProviderSettings() {
   }
 
   async function setEnabled(provider: ProviderKind, on: boolean): Promise<void> {
-    enabledMap.value = { ...enabledMap.value, [provider]: on };
-
-    const api = bridge();
-    if (api?.setSettings) {
-      try {
-        const current = (await api.getSettings())[provider] ?? {};
-        await api.setSettings(provider, { ...current, enabled: on });
-      } catch {
-        // Keep optimistic in-memory value
-      }
-    }
+    await write(provider, { enabled: on });
   }
 
   /** Predicate for filtering a list of provider-tagged rows by the enabled map,
@@ -184,6 +268,8 @@ export function useProviderSettings() {
     return hiddenModels.value[provider]?.includes(key) ?? false;
   }
 
+  /** Hiding a family writes through the bridge; the mirror updates first so the
+   *  toggle reacts on the same frame. */
   function setModelHidden(provider: ProviderKind, key: string, hidden: boolean): void {
     const current = hiddenModels.value[provider] ?? [];
     const next = hidden
@@ -191,7 +277,7 @@ export function useProviderSettings() {
         ? current
         : [...current, key]
       : current.filter((k) => k !== key);
-    hiddenModels.value = { ...hiddenModels.value, [provider]: next };
+    void write(provider, { hiddenModels: next });
   }
 
   /** How many of a provider's families the user has hidden — for the pane's
@@ -227,4 +313,13 @@ export function useProviderSettings() {
     hiddenModelCount,
     modelVisiblePredicate,
   };
+}
+
+/** Test hook: the mirror and its subscription outlive a single test case. */
+export function resetProviderSettingsForTests(): void {
+  stopListening?.();
+  stopListening = null;
+  settings.value = {};
+  revision.value = -1;
+  loaded = false;
 }
