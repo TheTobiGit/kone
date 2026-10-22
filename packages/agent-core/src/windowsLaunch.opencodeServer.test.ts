@@ -8,6 +8,7 @@ import { OpenCodeServerPool } from "./opencodeServer.js";
 import {
   agentCoreModuleUrl,
   createLaunchFixture,
+  installTaskkillRecorder,
   recordingSpawn,
   runLaunchScript,
   type LaunchFixture,
@@ -55,34 +56,12 @@ function readRecordFile(file: string): string[][] {
   }
 }
 
-/** A stand-in `taskkill` on the scenario's PATH: it records the argv `killTree`
- *  sends (so the Windows teardown is observable from the outside) and really
- *  kills that pid, so the scenario can exit instead of hanging on its own
- *  child. Returns the record file the caller asserts on. */
-function installTaskkillRecorder(fixture: LaunchFixture): string {
-  const recordFile = `${fixture.recordFile}.taskkill`;
-  writeFileSync(
-    path.join(fixture.binDir, "taskkill"),
-    `#!${process.execPath}
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(recordFile)}, JSON.stringify(argv) + "\\n");
-const pid = Number(argv[1]);
-if (Number.isInteger(pid) && pid > 0) {
-  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
-}
-`,
-    { mode: 0o755 },
-  );
-  return recordFile;
-}
-
 /** A stand-in cmd.exe for a `serve` scenario: it prints the fixture's canned
  *  stdout (the listening line) and then idles, so the server reaches readiness
  *  and a teardown has something to kill — the harness's own ComSpec recorder
  *  exits immediately. PATH is narrowed to the fixture's bin dir alone: a
  *  single entry is the one spelling both the Windows resolution (`;`-split)
- *  and this host's own `taskkill` lookup (`:`-split) read the same way. */
+ *  and this host's own lookup of the taskkill stand-in (`:`-split) read the same way. */
 function withIdlingComspec(fixture: LaunchFixture): LaunchFixture {
   const comspec = path.join(fixture.root, "cmd-idle");
   writeFileSync(

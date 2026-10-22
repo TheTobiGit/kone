@@ -7,6 +7,7 @@ import { resolveAntigravityBinary } from "./antigravityHome.js";
 import {
   agentCoreModuleUrl,
   createLaunchFixture,
+  installTaskkillRecorder,
   recordingSpawn,
   runLaunchScript,
   type LaunchFixture,
@@ -111,29 +112,16 @@ describe("Antigravity helper process through the launch seam", () => {
   test("on Windows a timed-out helper is torn down with taskkill", async () => {
     const fixture = createLaunchFixture();
     fixture.installNpmSiblings(BINARY);
-    const taskkillRecord = `${fixture.recordFile}.taskkill`;
+    const taskkillRecord = installTaskkillRecorder(fixture);
     // A cmd.exe that never finishes: the helper's timeout is the only way out,
     // and on Windows the child is cmd.exe, so the real CLI would survive a
     // bare `child.kill()`.
     const slowComspec = path.join(fixture.root, "cmd-slow");
     writeFileSync(slowComspec, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
-    writeFileSync(
-      path.join(fixture.binDir, "taskkill"),
-      `#!${process.execPath}
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(taskkillRecord)}, JSON.stringify(argv) + "\\n");
-const pid = Number(argv[1]);
-if (Number.isInteger(pid) && pid > 0) {
-  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
-}
-`,
-      { mode: 0o755 },
-    );
     const scenario: LaunchFixture = {
       ...fixture,
       // PATH is narrowed to the bin dir alone: a single entry is what both the
-      // Windows resolution (`;`-split) and this host's `taskkill` lookup
+      // Windows resolution (`;`-split) and this host's lookup of the taskkill stand-in
       // (`:`-split) read as that directory.
       env: (options) => ({ ...fixture.env(options), PATH: fixture.binDir, ComSpec: slowComspec }),
     };
