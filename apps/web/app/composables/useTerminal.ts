@@ -44,8 +44,17 @@ export type UseTerminalOptions = {
 };
 
 /** What `spawn(open)` resolves to when the caller supplies its own opener:
- *  the strip key, plus why the opener failed, if it did. */
-export type TerminalSpawn = { key: string; error?: unknown };
+ *  the strip key, the backend PTY id (main-generated when the opener adopted
+ *  one), plus why the opener failed, if it did. */
+export type TerminalSpawn = { key: string; terminalId: string; error?: unknown };
+
+/** An opener that starts the PTY itself and tells the registry which backend id
+ *  it got. Provider sign-in uses this: the main process mints the id, so the
+ *  renderer cannot know it until `start` returns. */
+export type TerminalOpenResult = {
+  terminalId: string;
+  snapshot: TerminalSessionSnapshot;
+};
 
 /** Cap the client replay buffer. Slightly above the backend's 512KB history so
  *  a fresh attach shows the full server scrollback; live sinks get every delta
@@ -196,30 +205,39 @@ export function useTerminal(options: UseTerminalOptions) {
    *  replaces the bridge's `open` call — the provider sign-in modal starts its
    *  PTY through `providerSignIn.start` instead, but still wants the same
    *  registry, buffer and attach plumbing every terminal gets. The callback
-   *  receives the id this composable minted, so the caller can subscribe to the
-   *  PTY's events before anything is spawned, and it reports its own failure
-   *  here rather than through a variable the caller has to read back. */
+   *  receives a provisional id so it can subscribe before anything is spawned;
+   *  when the opener returns a `{ terminalId, snapshot }` result (sign-in's
+   *  main-generated id), the session adopts that id for every later
+   *  write/resize/close and for its event stream. */
   async function spawn(): Promise<string>;
   async function spawn(
-    open: (terminalId: string, cwd: string) => Promise<TerminalSessionSnapshot>,
+    open: (
+      terminalId: string,
+      cwd: string,
+    ) => Promise<TerminalSessionSnapshot | TerminalOpenResult>,
   ): Promise<TerminalSpawn>;
   async function spawn(
-    open?: (terminalId: string, cwd: string) => Promise<TerminalSessionSnapshot>,
+    open?: (
+      terminalId: string,
+      cwd: string,
+    ) => Promise<TerminalSessionSnapshot | TerminalOpenResult>,
   ): Promise<string | TerminalSpawn> {
-    const terminalId = uid();
+    const provisionalId = uid();
     const key = uid();
     const session: TerminalSession = {
       key,
-      terminalId,
+      terminalId: provisionalId,
       cwd: resolveCwd(),
       status: "starting",
       hasRunningSubprocess: false,
       childCommandLabel: null,
-      attach: makeAttach(terminalId),
+      attach: makeAttach(provisionalId),
     };
-    owned.add(terminalId);
-    buffers.set(terminalId, "");
+    owned.add(provisionalId);
+    buffers.set(provisionalId, "");
     sessions.value = [...sessions.value, session];
+
+    let terminalId = provisionalId;
 
     function applySnapshot(snapshot: TerminalSessionSnapshot): void {
       // `started` usually seeds the buffer first; only seed here if it hasn't
@@ -232,12 +250,30 @@ export function useTerminal(options: UseTerminalOptions) {
       setStatus(terminalId, snapshot.status);
     }
 
+    /** Move the registry's bookkeeping onto the id the main process minted.
+     *  Nothing has been attached to the provisional id yet (the caller only
+     *  gets the session after this resolves), so the buffers can move with it. */
+    function adoptId(adopted: string): void {
+      if (adopted === terminalId) return;
+      const buffered = buffers.get(terminalId) ?? "";
+      owned.delete(terminalId);
+      buffers.delete(terminalId);
+      lastSeededSequence.delete(terminalId);
+      terminalId = adopted;
+      owned.add(adopted);
+      buffers.set(adopted, buffered);
+      session.terminalId = adopted;
+      session.attach = makeAttach(adopted);
+    }
+
     const api = bridge();
     const openSession = open ?? (api ? (id: string, cwd: string) => api.open({ terminalId: id, cwd }) : null);
     let error: unknown;
     if (openSession) {
       try {
-        applySnapshot(await openSession(terminalId, session.cwd));
+        const opened = await openSession(provisionalId, session.cwd);
+        if ("snapshot" in opened) adoptId(opened.terminalId);
+        applySnapshot("snapshot" in opened ? opened.snapshot : opened);
       } catch (cause) {
         setStatus(terminalId, "error");
         error = cause;
@@ -250,7 +286,7 @@ export function useTerminal(options: UseTerminalOptions) {
 
     // A caller with its own opener gets the failure handed back; the strip's
     // plain `spawn()` still resolves to just the key, as it always has.
-    return open ? { key, error } : key;
+    return open ? { key, terminalId, error } : key;
   }
 
   /** Write user input to a terminal. */

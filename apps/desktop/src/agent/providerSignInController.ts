@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { AgentService } from "@kone/agent-core/AgentService.js";
 import {
   ProviderSignInStartInputSchema,
@@ -34,7 +36,14 @@ import { claimTerminal, releaseTerminal } from "../modules/terminal/ownership.js
  *  the missing binary is the expected case. Mirrors the renderer contract in
  *  apps/web/app/types/desktop.d.ts. */
 export type ProviderSignInStart =
-  | { ok: true; command: ProviderSignInCommand; snapshot: TerminalSessionSnapshot }
+  | {
+      ok: true;
+      /** Main-generated PTY id. The renderer attaches to this; it is never
+       *  taken from renderer input. */
+      terminalId: string;
+      command: ProviderSignInCommand;
+      snapshot: TerminalSessionSnapshot;
+    }
   | {
       ok: false;
       /** Null when this provider has no login subcommand at all (Droid). */
@@ -86,6 +95,8 @@ export type ProviderSignInControllerOptions = {
   svc: Pick<AgentService, "getProviderSettings" | "checkProvider">;
   /** Test seam: the base env the login resolves against. */
   buildEnv?: () => Promise<NodeJS.ProcessEnv>;
+  /** Test seam: the main-generated terminal id. Defaults to `signin-<uuid>`. */
+  terminalIdFactory?: () => string;
 };
 
 /** One accepted login request. It owns the PTY id, the sender watchers, the
@@ -95,6 +106,8 @@ class SignInRun {
   readonly provider: ProviderKind;
   readonly terminalId: string;
   readonly sender: SignInSender;
+  /** This run's ownership token; release is a no-op unless it still matches. */
+  readonly token: string;
   private readonly manager: SignInTerminalManager;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly detachers: Array<() => void> = [];
@@ -109,16 +122,17 @@ class SignInRun {
   constructor(input: {
     provider: ProviderKind;
     terminalId: string;
+    token: string;
     sender: SignInSender;
     manager: SignInTerminalManager;
   }) {
     this.provider = input.provider;
     this.terminalId = input.terminalId;
+    this.token = input.token;
     this.sender = input.sender;
     this.manager = input.manager;
-    // Claim before queueing or spawning: no other window may attach to this id
-    // even during the wait for the env read and the spawn.
-    claimTerminal(this.terminalId, this.sender);
+    // The claim is already reserved by `start`, before this run existed; the
+    // constructor only owns the sender watchers.
 
     if (this.sender.isDestroyed()) {
       this.gone = true;
@@ -190,7 +204,20 @@ class SignInRun {
     this.timer = null;
     for (const detach of this.detachers.splice(0)) detach();
     if (!kill) {
-      if (!keepClaim) releaseTerminal(this.terminalId, this.sender);
+      if (!keepClaim) {
+        releaseTerminal(this.terminalId, this.token);
+        return;
+      }
+      // The session is gone but its transcript stays private to this window.
+      // One self-removing watcher releases the claim when that window dies; a
+      // normal close releases it through the terminal IPC path instead, and
+      // this listener then becomes a harmless no-op (the token no longer
+      // matches a newer claim).
+      if (this.sender.isDestroyed()) {
+        releaseTerminal(this.terminalId, this.token);
+      } else {
+        this.sender.once("destroyed", () => releaseTerminal(this.terminalId, this.token));
+      }
       return;
     }
     void this.manager
@@ -201,7 +228,7 @@ class SignInRun {
       .finally(() => {
         // Keep the claim until the close (and its `closed` event) has settled,
         // so the transcript's last event still goes only to its window.
-        releaseTerminal(this.terminalId, this.sender);
+        releaseTerminal(this.terminalId, this.token);
       });
   }
 }
@@ -218,6 +245,8 @@ export function createProviderSignInController(
 ): ProviderSignInController {
   const { manager, svc } = options;
   const buildEnv = options.buildEnv ?? (() => buildAgentEnv());
+  /** The main process owns sign-in ids. Renderer input cannot name one. */
+  const newTerminalId = options.terminalIdFactory ?? (() => `signin-${randomUUID()}`);
 
   /** The one live run per provider — a second "Sign in" replaces the first. */
   const runs = new Map<ProviderKind, SignInRun>();
@@ -296,7 +325,7 @@ export function createProviderSignInController(
     try {
       const snapshot = await manager.openCommand(
         {
-          terminalId: input.terminalId,
+          terminalId: run.terminalId,
           cwd: launch.cwd,
           cols: input.cols,
           rows: input.rows,
@@ -316,14 +345,19 @@ export function createProviderSignInController(
         return { ok: false, command: launch.command, message: WENT_AWAY };
       }
       run.markSpawned();
-      run.armTimeout(() => releaseTracked(run.provider, input.terminalId));
+      run.armTimeout(() => releaseTracked(run.provider, run.terminalId));
       // Release again after the awaits: the early release above can be stale by
       // the time the spawn resolves, and tracking over a live run would strand
       // its PTY and its timer.
       const tracked = runs.get(run.provider);
       if (tracked) releaseRun(tracked, { kill: true });
       runs.set(run.provider, run);
-      return { ok: true, command: launch.command, snapshot };
+      return {
+        ok: true,
+        terminalId: run.terminalId,
+        command: launch.command,
+        snapshot,
+      };
     } catch (error) {
       // Nothing was spawned (a refused id, a spawn failure), so this only
       // detaches the watchers and the claim.
@@ -350,12 +384,26 @@ export function createProviderSignInController(
       });
     }
 
-    // Accept the request now: claim the id and install navigation/destroy
-    // watchers BEFORE it waits in the per-provider queue, so a reload during
-    // that wait cancels it instead of launching an unattended login later.
+    // Accept the request now: reserve a main-generated id under this run's own
+    // token, then install navigation/destroy watchers BEFORE it waits in the
+    // per-provider queue, so a reload during that wait cancels it instead of
+    // launching an unattended login later.
+    //
+    // A conflicting reservation is refused here, before any run, watcher,
+    // spawn or kill exists. The existing claim is left exactly as it was.
+    const terminalId = newTerminalId();
+    const token = randomUUID();
+    if (!claimTerminal(terminalId, sender, token)) {
+      return Promise.resolve({
+        ok: false,
+        command: commandFor(input.provider),
+        message: "That sign-in terminal is already in use.",
+      });
+    }
     const run = new SignInRun({
       provider: input.provider,
-      terminalId: input.terminalId,
+      terminalId,
+      token,
       sender,
       manager,
     });

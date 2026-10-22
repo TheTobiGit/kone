@@ -5,9 +5,12 @@
 // the main process records which WebContents started it and refuses every other
 // window: no output, no history/snapshot reattach, no write, close or restart.
 //
-// This registry lives in the main process on purpose. The renderer's own
-// `owned` bookkeeping is a convenience, not a boundary: a compromised renderer
-// can name any terminal id it likes.
+// A claim carries the run's own random token. Cleanup must present that token,
+// so a failed or stale request can never release a newer run's protection (and
+// a conflicting claim is refused before anything is mutated). The terminal IPC
+// close handler, which has already authorized the sender as the owner, has one
+// separate close path. This registry lives in the main process: the renderer's
+// own bookkeeping is a convenience, not a boundary.
 
 /** The slice of Electron's WebContents the registry needs. Structural so the
  *  IPC handlers and their tests share one contract without importing Electron
@@ -16,31 +19,47 @@ export type TerminalOwner = {
   isDestroyed(): boolean;
 };
 
-const owners = new Map<string, TerminalOwner>();
+type TerminalClaim = {
+  owner: TerminalOwner;
+  /** Unique per accepted sign-in request (main-generated). */
+  token: string;
+};
 
-/** Bind `terminalId` to the renderer that started it. Claim before spawning so
- *  another window cannot attach during the spawn window. */
-export function claimTerminal(terminalId: string, owner: TerminalOwner): void {
-  owners.set(terminalId, owner);
+const claims = new Map<string, TerminalClaim>();
+
+/** Reserve `terminalId` for `owner` under `token`. Returns false whenever the
+ *  id is already claimed, leaving that claim untouched. A destroyed owner's
+ *  claim is still held until its run's cleanup releases it, so a replacement
+ *  can never race the dying PTY's close and reattach to its transcript. */
+export function claimTerminal(
+  terminalId: string,
+  owner: TerminalOwner,
+  token: string,
+): boolean {
+  if (claims.has(terminalId)) return false;
+  claims.set(terminalId, { owner, token });
+  return true;
 }
 
-/** Drop the claim, but only if `owner` still holds it — a newer run may have
- *  reused the id, and releasing it would unprotect that run. Omitting `owner`
- *  clears whatever holds the id (session close, app shutdown). */
-export function releaseTerminal(terminalId: string, owner?: TerminalOwner): void {
-  if (owner !== undefined && owners.get(terminalId) !== owner) return;
-  owners.delete(terminalId);
+/** Drop the claim only if THIS run still holds it. A refused or stale request
+ *  passing a different token is a no-op. */
+export function releaseTerminal(terminalId: string, token: string): void {
+  if (claims.get(terminalId)?.token !== token) return;
+  claims.delete(terminalId);
+}
+
+/** The one non-token release path: an explicit close of a terminal the IPC
+ *  handler has already authorized `owner` to act on. */
+export function releaseClosedTerminal(terminalId: string, owner: TerminalOwner): void {
+  if (claims.get(terminalId)?.owner !== owner) return;
+  claims.delete(terminalId);
 }
 
 /** The window a terminal belongs to, or null for a shared/ordinary terminal.
- *  A destroyed owner is pruned (and reads as unowned): nobody can act as it. */
+ *  A destroyed owner keeps its claim until the run releases it; until then the
+ *  terminal is locked to everyone (nobody can act as, or around, a dead window). */
 export function terminalOwner(terminalId: string): TerminalOwner | null {
-  const owner = owners.get(terminalId) ?? null;
-  if (owner !== null && owner.isDestroyed()) {
-    owners.delete(terminalId);
-    return null;
-  }
-  return owner;
+  return claims.get(terminalId)?.owner ?? null;
 }
 
 /** True when `sender` may act on `terminalId`: unowned terminals are open to

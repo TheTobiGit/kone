@@ -88,7 +88,7 @@ describe("terminal IPC ownership", () => {
     ipc.handlers.subscribe(owner);
     ipc.handlers.subscribe(stranger);
 
-    claimTerminal("signin", owner);
+    claimTerminal("signin", owner, "run-token");
     await mgr.openCommand(
       { terminalId: "signin", cwd: "/home/user", env: { PATH: "/usr/bin" } },
       { command: { file: "cursor-agent", args: ["login"] }, banner: BANNER, completeEnv: true },
@@ -177,7 +177,7 @@ describe("terminal IPC ownership", () => {
     const owner = fakeWindow();
     ipc.handlers.subscribe(owner);
 
-    claimTerminal("signin", owner);
+    claimTerminal("signin", owner, "run-token");
     await mgr.openCommand(
       { terminalId: "signin", cwd: "/home/user" },
       { command: { file: "codex", args: ["login"] } },

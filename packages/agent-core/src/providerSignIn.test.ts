@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  formatLoginCommand,
   resolveProviderSignInCommand,
   resolveProviderSignInLaunch,
   shellQuote,
+  shellQuoteExecutable,
 } from "./providerSignIn.js";
 import type { ProviderKind, ProviderSettingsMap } from "./types.js";
 
@@ -91,6 +93,15 @@ describe("resolveProviderSignInCommand", () => {
     expect(command?.display).toBe("'/opt/My Tools/codex' login");
   });
 
+  test("the display line is platform-appropriate (PowerShell call operator)", () => {
+    const command = resolveProviderSignInCommand(
+      "codex",
+      { codex: { binaryPath: "C:\\Program Files\\codex.exe" } },
+      "win32",
+    );
+    expect(command?.display).toBe("& 'C:\\Program Files\\codex.exe' login");
+  });
+
   test("droid has no login command", () => {
     expect(resolveProviderSignInCommand("droid", {})).toBeNull();
   });
@@ -103,16 +114,39 @@ describe("shellQuote", () => {
     expect(shellQuote("/opt/bin/codex")).toBe("/opt/bin/codex");
   });
 
-  test("spaces, quotes and metacharacters are quoted for a POSIX shell", () => {
+  test("POSIX spaces, quotes and expansion characters are single-quoted", () => {
     expect(shellQuote("/opt/My Tools/codex")).toBe("'/opt/My Tools/codex'");
     expect(shellQuote("/opt/a$b;c&(d)/codex")).toBe("'/opt/a$b;c&(d)/codex'");
+    expect(shellQuote("/opt/$HOME/$(whoami)/codex")).toBe("'/opt/$HOME/$(whoami)/codex'");
+    expect(shellQuote("/opt/`id`/codex")).toBe("'/opt/`id`/codex'");
+    expect(shellQuote('/opt/a"b/codex')).toBe("'/opt/a\"b/codex'");
+    // An embedded apostrophe closes the quote, escapes itself, reopens.
     expect(shellQuote("/opt/it's/codex")).toBe("'/opt/it'\\''s/codex'");
   });
 
-  test("Windows gets double quotes instead of single", () => {
+  test("Windows/PowerShell uses single quotes and doubles apostrophes", () => {
     expect(shellQuote("C:\\Tools\\codex.exe", "win32")).toBe("C:\\Tools\\codex.exe");
-    expect(shellQuote("C:\\My Tools\\codex.exe", "win32")).toBe('"C:\\My Tools\\codex.exe"');
-    expect(shellQuote('C:\\a"b\\codex.exe', "win32")).toBe('"C:\\a\\"b\\codex.exe"');
+    expect(shellQuote("C:\\My Tools\\codex.exe", "win32")).toBe("'C:\\My Tools\\codex.exe'");
+    expect(shellQuote("C:\\$HOME\\codex.exe", "win32")).toBe("'C:\\$HOME\\codex.exe'");
+    expect(shellQuote("C:\\a'b\\codex.exe", "win32")).toBe("'C:\\a''b\\codex.exe'");
+    expect(shellQuote('C:\\a"b\\codex.exe', "win32")).toBe("'C:\\a\"b\\codex.exe'");
+  });
+
+  test("a quoted Windows executable gets PowerShell's call operator", () => {
+    expect(shellQuoteExecutable("codex", "win32")).toBe("codex");
+    expect(shellQuoteExecutable("C:\\Tools\\codex.exe", "win32")).toBe("C:\\Tools\\codex.exe");
+    expect(shellQuoteExecutable("C:\\My Tools\\codex.exe", "win32")).toBe(
+      "& 'C:\\My Tools\\codex.exe'",
+    );
+    // POSIX command position needs no operator.
+    expect(shellQuoteExecutable("/opt/My Tools/codex", "linux")).toBe("'/opt/My Tools/codex'");
+  });
+
+  test("the copy line quotes the executable and every argument", () => {
+    expect(formatLoginCommand("codex", ["login"], "linux")).toBe("codex login");
+    expect(formatLoginCommand("C:\\Program Files\\codex.exe", ["login", "$x"], "win32")).toBe(
+      "& 'C:\\Program Files\\codex.exe' login '$x'",
+    );
   });
 });
 

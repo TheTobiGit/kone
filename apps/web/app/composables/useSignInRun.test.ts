@@ -84,6 +84,7 @@ function harness(options: HarnessOptions = {}) {
   let sequence = 0;
   let currentId: string | null = null;
   let checks = 0;
+  let nextSignInId = 0;
 
   const emit = (event: TerminalEvent): void => {
     for (const listener of listeners) listener(event);
@@ -110,16 +111,20 @@ function harness(options: HarnessOptions = {}) {
 
   const providerSignIn: KoneProviderSignInApi = {
     command: () => Promise.resolve(command),
-    start: (input) => {
-      log.push(`start:${input.terminalId}`);
+    start: () => {
+      // The real main process mints the id; the fake does too so the test
+      // exercises adoption rather than trusting the provisional id.
+      const terminalId = `signin-test-${++nextSignInId}`;
+      log.push(`start:${terminalId}`);
       if (options.startMessage) {
         return Promise.resolve({ ok: false, command, message: options.startMessage });
       }
-      currentId = input.terminalId;
+      currentId = terminalId;
       const result = {
         ok: true as const,
+        terminalId,
         command,
-        snapshot: snapshot(input.terminalId),
+        snapshot: snapshot(terminalId),
       };
       return options.startGate ? options.startGate().then(() => result) : Promise.resolve(result);
     },
@@ -170,7 +175,9 @@ describe("useSignInRun", () => {
     await h.signIn.run();
     expect(h.signIn.phase.value).toBe("running");
     expect(h.signIn.process.value.state).toBe("live");
-    expect(h.signIn.session.value?.terminalId).toBeDefined();
+    // The session adopted the id the "main process" returned, not the
+    // provisional one the registry minted.
+    expect(h.signIn.session.value?.terminalId).toMatch(/^signin-test-/);
 
     h.output("Open this URL in your browser to sign in:\r\n  \x1b[4;36mhttps://cursor.com/login?x=1\x1b[0m\r\n");
     expect(h.signIn.state.value).toEqual({ phase: "waiting" });
