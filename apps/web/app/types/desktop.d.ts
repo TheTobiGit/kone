@@ -3633,6 +3633,66 @@ export type KoneTerminalApi = {
   onEvent: (cb: (event: TerminalEvent) => void) => () => void;
 };
 
+// ── Provider sign-in (in-app login terminal) ─────────────────────────────────
+// "Sign in" runs the provider CLI's OWN login command in a kone PTY. The main
+// process resolves the command from the provider and its configured executable
+// (ProviderConfig.binaryPath) — the renderer never names a command, so this
+// cannot be turned into "run anything". kone never sees or stores the
+// credential: the CLI writes it wherever it always does, and "Check
+// authentication" only re-reads provider health.
+
+/** The login command kone would run for a provider, resolved in the main process. */
+export type ProviderSignInCommand = {
+  provider: ProviderKind;
+  /** What the user sees and can copy, e.g. "cursor-agent login" or
+   *  "/opt/bin/codex login" when a custom executable is set. */
+  display: string;
+  /** Where it runs, tilde-abbreviated for display, e.g. "~". */
+  cwd: string;
+  /** How the CLI finishes: "browser" opens a sign-in page, "terminal" asks
+   *  its questions in the terminal (e.g. opencode's provider menu). */
+  finish: "browser" | "terminal";
+};
+
+export type ProviderSignInStartInput = {
+  provider: ProviderKind;
+  /** @deprecated Ignored by the main process: sign-in PTY ids are main-generated.
+   *  The renderer still supplies a provisional id for the dev stand-in. */
+  terminalId: string;
+  /** Initial grid. */
+  cols?: number;
+  rows?: number;
+};
+
+export type ProviderSignInStart =
+  | {
+      ok: true;
+      /** Main-generated PTY id the renderer attaches to. Present from the real
+       *  main process; the browser dev stand-in may omit it. */
+      terminalId?: string;
+      command: ProviderSignInCommand;
+      snapshot: TerminalSessionSnapshot;
+    }
+  | {
+      ok: false;
+      /** Null when this provider has no login subcommand at all (Droid). */
+      command: ProviderSignInCommand | null;
+      /** One plain sentence, e.g. "cursor-agent isn't on your PATH." */
+      message: string;
+    };
+
+export type KoneProviderSignInApi = {
+  /** The login command for `provider`, or null when its CLI has none. Never spawns. */
+  command: (provider: ProviderKind) => Promise<ProviderSignInCommand | null>;
+  /** Start the login command in a fresh PTY. */
+  start: (input: ProviderSignInStartInput) => Promise<ProviderSignInStart>;
+  /** Re-probe this ONE provider now (dropping its cached probe first) and
+   *  return its fresh status. The result is also folded into the shared
+   *  surface and pushed on agent:providers-changed, so a verified check clears
+   *  "needs sign-in" everywhere. */
+  check: (provider: ProviderKind) => Promise<ProviderStatus>;
+};
+
 export type ScratchpadRecord = {
   id: string;
   projectPath: string;
@@ -4404,6 +4464,7 @@ export type KoneDesktopApi = {
   system: KoneSystemApi;
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
+  providerSignIn: KoneProviderSignInApi;
   scratchpad: KoneScratchpadApi;
   bench: KoneBenchApi;
   schedules: KoneSchedulesApi;

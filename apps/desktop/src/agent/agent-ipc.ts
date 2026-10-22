@@ -55,6 +55,7 @@ import {
   currentView,
 } from "../modules/appState/index.js";
 import { getTerminalManager } from "../modules/terminal/index.js";
+import { registerProviderSignInIpc } from "./providerSignInIpc.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { listInvokableSkillsChecked } from "@kone/agent-core/skillInvocation.js";
@@ -779,6 +780,10 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:update-provider", (_event, provider: ProviderKind) =>
     svc.updateProvider(provider),
   );
+
+  // In-app provider sign-in: its own module, since the handler owns a live-run
+  // registry (timeout, PTY, renderer watchers) rather than just an IPC binding.
+  registerProviderSignInIpc(svc);
 
   // Subscribe/unsubscribe the calling renderer to the event stream. Subscribe
   // always runs the reload-recovery replay — see eventSubscriptions.ts for why

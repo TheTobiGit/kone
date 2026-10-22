@@ -17,6 +17,7 @@ export type {
   RevertTurnCheckpointResult,
 } from "./AgentService.js";
 export type { ProviderSurfaceSnapshot } from "./providerCache.js";
+export * from "./providerSignIn.js";
 export * from "./compaction/index.js";
 export * from "./commandSafety.js";
 export * from "./inventory/index.js";

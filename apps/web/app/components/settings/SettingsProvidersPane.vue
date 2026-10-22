@@ -14,6 +14,7 @@ import {
   LinkSquare02Icon,
   Package01Icon,
   RefreshIcon,
+  UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import AgentSettingsLimits from "~/components/agent/AgentSettingsLimits.vue";
@@ -21,7 +22,10 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import ProviderDeckLimits, { deckReadout, pctLabel, type DeckReadout } from "~/components/provider/ProviderDeckLimits.vue";
 import ProviderModelMeta from "~/components/provider/ProviderModelMeta.vue";
 import { buildModelCatalog, type BrandKey, type ModelOption } from "~/utils/modelCatalog";
+import { PROVIDER_BRAND } from "~/utils/modelPicker";
+import { canSignIn, PROVIDER_LOGIN } from "~/utils/providerLogin";
 import { OFFERED_PROVIDERS, isProviderOffered } from "~/utils/providerOffer";
+import { desktopBridge } from "~/utils/desktopBridge";
 import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/desktop";
 
 // The agent-provider surface, as a place rather than a drawer pane.
@@ -34,9 +38,12 @@ import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/
 // state that actually changes: is it usable, is it current, how does kone reach it.
 //
 // "Bring your own subscription" still governs everything: no credential ever
-// passes through here. The most this page does is name the command the user
-// should run in their own terminal, and — for a CLI whose install channel kone
-// recognises — run that channel's update for them.
+// passes through here. What this page does with a command is name it, and — for
+// the login commands — run it for the user in kone's own terminal, in the modal
+// the pill, the Sign-in block and the composer's tray all open. The CLI writes
+// its credential where it always would; kone only ever sees the transcript, and
+// only for as long as the modal is up. Installs are the one other thing it runs:
+// for a CLI whose channel kone recognises, that channel's update.
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
@@ -48,6 +55,11 @@ const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
 const { cue } = useSound();
+const signIn = useProviderSignIn();
+// A deep link from the composer's status tray: land on the provider it named,
+// then clear the request so coming back here later doesn't yank the deck off
+// whatever the user chose in the meantime.
+const { providerFocus } = useSettingsSurface();
 const providers = useAgentProviders();
 const providerSettings = useProviderSettings();
 const upkeep = useProviderMaintenance();
@@ -57,10 +69,11 @@ const upkeep = useProviderMaintenance();
 const limits = useAgentSettings(() => null);
 
 // Static per-provider facts no probe carries: what to call it, whose it is, its
-// logomark, the gradient its card wears, the command that signs it in, and where
-// its own docs live. The sign-in commands match the adapters' own not-ready
-// messages verbatim — two places telling the user two different commands is worse
-// than one place.
+// logomark, the gradient its card wears, and where its own docs live. The
+// logomark comes from the shared PROVIDER_BRAND table so this page and the
+// picker can never disagree about which mark a provider wears; the login
+// command is not repeated here — the one renderer table in utils/providerLogin
+// answers that, and the bridge resolves the real one.
 type ProviderMeta = {
   label: string;
   vendor: string;
@@ -71,7 +84,6 @@ type ProviderMeta = {
   blurb: string;
   /** External CLI the user installs, or null when kone bundles the runtime. */
   binary: string | null;
-  signIn: string | null;
   docs: { href: string; label: string } | null;
 };
 
@@ -79,21 +91,19 @@ const PROVIDER_META = {
   codex: {
     label: "Codex",
     vendor: "OpenAI",
-    brand: "codex",
+    brand: PROVIDER_BRAND.codex,
     grad: "linear-gradient(152deg, #14b98d 0%, #0c8a68 100%)",
     blurb: "OpenAI's coding agent, driven through its app-server protocol.",
     binary: "codex",
-    signIn: "codex login",
     docs: { href: "https://platform.openai.com/usage", label: "OpenAI usage" },
   },
   claudeAgent: {
     label: "Claude",
     vendor: "Anthropic",
-    brand: "claude",
+    brand: PROVIDER_BRAND.claudeAgent,
     grad: "linear-gradient(152deg, #e79269 0%, #cf6238 100%)",
     blurb: "Claude Code, driven through the Agent SDK kone ships.",
     binary: null,
-    signIn: "claude login",
     docs: {
       href: "https://docs.anthropic.com/en/docs/about-claude/models#rate-limits",
       label: "Anthropic limits",
@@ -102,57 +112,51 @@ const PROVIDER_META = {
   cursor: {
     label: "Cursor",
     vendor: "Cursor",
-    brand: "cursor",
+    brand: PROVIDER_BRAND.cursor,
     grad: "linear-gradient(152deg, #4c4c55 0%, #191920 100%)",
     blurb: "Cursor's agent CLI, driven over ACP.",
     binary: "cursor-agent",
-    signIn: "cursor-agent login",
     docs: { href: "https://cursor.com/dashboard", label: "Cursor dashboard" },
   },
   opencode: {
     label: "OpenCode",
     vendor: "OpenCode",
-    brand: "opencode",
+    brand: PROVIDER_BRAND.opencode,
     // Monochrome like the brand itself: warm charcoal into the brand ink
     // (#201D1D on cream — the brand ships no saturated accent, so the old
     // indigo wash had to go).
     grad: "linear-gradient(152deg, #4a4642 0%, #201d1d 100%)",
     blurb: "A house of providers — one gateway onto many model vendors.",
     binary: "opencode",
-    signIn: "opencode auth login",
     docs: { href: "https://opencode.ai/docs", label: "OpenCode docs" },
   },
   droid: {
     label: "Factory Droid",
     vendor: "Factory",
-    brand: "droid",
+    brand: PROVIDER_BRAND.droid,
     // Factory's brand is near-black monochrome (#020202) with no chromatic
     // accent, so the card wears graphite rather than the old invented orange.
     grad: "linear-gradient(152deg, #52525b 0%, #27272a 100%)",
     blurb: "Factory's Droid CLI, driven over ACP.",
     binary: "droid",
-    // Droid pairs a device on first run rather than taking a login subcommand.
-    signIn: null,
     docs: null,
   },
   antigravity: {
     label: "Antigravity",
     vendor: "Google",
-    brand: "antigravity",
+    brand: PROVIDER_BRAND.antigravity,
     grad: "linear-gradient(152deg, #6ea8fe 0%, #4285f4 100%)",
     blurb: "Google's agent CLI, driven in print mode with capture hooks.",
     binary: "agy",
-    signIn: "agy login",
     docs: { href: "https://antigravity.google", label: "Antigravity" },
   },
   cline: {
     label: "Cline",
     vendor: "Cline",
-    brand: "cline",
+    brand: PROVIDER_BRAND.cline,
     grad: "linear-gradient(152deg, #bd8bfc 0%, #9f58fa 100%)",
     blurb: "Cline's coding agent CLI, driven over ACP.",
     binary: "cline",
-    signIn: "cline auth",
     docs: { href: "https://cline.bot", label: "Cline docs" },
   },
 } satisfies Record<ProviderKind, ProviderMeta>;
@@ -162,6 +166,20 @@ const ORDER: readonly ProviderKind[] = OFFERED_PROVIDERS;
 // ── the deck ────────────────────────────────────────────────────────────────
 
 const selected = ref<ProviderKind>("codex");
+
+// Honour a deep link as soon as it arrives: setting the selection is the whole
+// job, and clearing the request keeps `providerFocus` from firing again on the
+// next open. Runs immediately so a link that was set while the pane was away
+// still lands.
+watch(
+  providerFocus,
+  (provider) => {
+    if (!provider) return;
+    selected.value = provider;
+    providerFocus.value = null;
+  },
+  { immediate: true },
+);
 
 // The one mark a folded spine may wear. Colour carries the meaning, the shape
 // stays constant — a calm dot, never a glyph — so the deck reads at a glance
@@ -406,7 +424,7 @@ const runLine = computed(() => {
 // (kone's parallel to "connected": a ready provider offered in the picker).
 type HeroAction =
   | { kind: "update"; label: string }
-  | { kind: "signin"; label: string; copy: string }
+  | { kind: "signin"; label: string }
   | { kind: "docs"; label: string; href: string }
   | { kind: "toggle"; label: string }
   | { kind: "busy" | "idle"; label: string };
@@ -418,8 +436,8 @@ const heroAction = computed<HeroAction>(() => {
   if (canUpdate.value && row.status?.available && m?.standing === "behind" && m.latestKnowable) {
     return { kind: "update", label: m.latestVersion ? `Update to ${m.latestVersion}` : "Update" };
   }
-  if (row.status?.readiness === "needs-login" && row.meta.signIn) {
-    return { kind: "signin", label: "Sign in", copy: row.meta.signIn };
+  if (row.status?.readiness === "needs-login" && canSignIn(row.provider)) {
+    return { kind: "signin", label: "Sign in" };
   }
   if (row.status?.readiness === "not-installed") {
     return row.meta.docs
@@ -473,9 +491,43 @@ const heroStatus = computed(() => {
 function heroClick() {
   const a = heroAction.value;
   if (a.kind === "update") return void update();
-  if (a.kind === "signin") return void copy(a.copy);
+  if (a.kind === "signin") return signIn.open(current.value.provider);
   if (a.kind === "toggle") return toggleEnabled();
 }
+
+// ── the sign-in command ──────────────────────────────────────────────────────
+// The Login row names the command the main process would actually run, so a
+// custom executable path (/opt/bin/codex) reads here exactly as it does in the
+// modal. The bridge resolves it; until it answers — or with no bridge at all —
+// the provider's documented default stands in, from the one renderer table.
+const loginCommand = ref<string | null>(null);
+let loginRequest = 0;
+
+watch(
+  [() => current.value.provider, () => providerSettings.binaryPaths.value],
+  async ([provider]) => {
+    const request = ++loginRequest;
+    loginCommand.value = null;
+    const api = desktopBridge()?.providerSignIn;
+    if (!api) return;
+    try {
+      const command = await api.command(provider);
+      // A switch — or a second path committed while the bridge was answering —
+      // must not label the page with a command that is already stale.
+      if (request === loginRequest) loginCommand.value = command?.display ?? null;
+    } catch {
+      // The documented default is still honest; the modal re-asks the bridge
+      // for the command it will really run.
+    }
+  },
+  { immediate: true, deep: true },
+);
+
+/** What the Login row shows and copies: the resolved command when the bridge
+ *  has one, the provider's documented default otherwise. */
+const loginDisplay = computed(
+  () => loginCommand.value ?? PROVIDER_LOGIN[current.value.provider]?.display ?? "",
+);
 
 // ── the executable ────────────────────────────────────────────────────────────
 // A local draft so typing doesn't write through on every keystroke; committed on
@@ -728,11 +780,7 @@ async function copy(text: string) {
                 class="pp__spin"
                 aria-hidden="true"
               />
-              {{
-                heroAction.kind === "signin" && copied === heroAction.copy
-                  ? "Copied"
-                  : heroAction.label
-              }}
+              {{ heroAction.label }}
             </button>
           </div>
         </div>
@@ -767,6 +815,67 @@ async function copy(text: string) {
                so the two columns scan like a sheet, without boxing the facts
                off the page they already sit on. -->
           <div class="pp__side">
+          <!-- ── sign-in ─────────────────────────────────────────────────── -->
+          <!-- The one thing here that is still the CLI's to do: it signs
+               itself in, in the modal's own terminal, and keeps the credential
+               where it always did. The command stays copyable for anyone who'd
+               rather run it themselves. -->
+          <section
+            v-if="canSignIn(current.provider) && current.status?.readiness !== 'not-installed'"
+            class="pp__block"
+            aria-label="Sign-in"
+          >
+            <p class="pp__blocklabel">Sign-in</p>
+
+            <dl class="pp__facts">
+              <div class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="UserCheck01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Account
+                </dt>
+                <dd
+                  class="pp__factsval--plain"
+                  :class="{ 'pp__factsval--warn': current.status?.readiness !== 'ready' }"
+                >
+                  {{
+                    current.status?.readiness === "ready"
+                      ? (current.status?.authLabel ?? "Signed in")
+                      : "Not signed in"
+                  }}
+                </dd>
+              </div>
+
+              <div class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="ComputerTerminal01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Login
+                </dt>
+                <dd class="pp__factsval--cmd">
+                  <code>{{ loginDisplay }}</code>
+                  <button
+                    type="button"
+                    class="pp__copy"
+                    :tabindex="open ? 0 : -1"
+                    aria-label="Copy the sign-in command"
+                    @click="copy(loginDisplay)"
+                  >
+                    <HugeiconsIcon :icon="Copy01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
+                    {{ copied === loginDisplay ? "Copied" : "Copy" }}
+                  </button>
+                </dd>
+              </div>
+            </dl>
+
+            <button
+              type="button"
+              class="pp__btn pp__btn--outline"
+              :tabindex="open ? 0 : -1"
+              @click="signIn.open(current.provider)"
+            >
+              {{ current.status?.readiness === "ready" ? "Sign in again" : "Sign in" }}
+            </button>
+          </section>
+
           <!-- ── version ──────────────────────────────────────────────────── -->
           <section class="pp__block" aria-label="Version">
             <p class="pp__blocklabel">Version</p>
@@ -1037,6 +1146,21 @@ async function copy(text: string) {
 }
 .pp__btn:hover:not(:disabled) {
   background-color: var(--hover);
+}
+/* The sign-in block's own action: the masthead's bare-until-hover recipe reads
+   as plain text down on the sheet, and this is the one row here that opens
+   something. A quiet bordered pill, its border on the facts rows' left edge. */
+.pp__btn--outline {
+  height: auto;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.pp__btn--outline:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .pp__btn:focus-visible {
   outline: none;
@@ -1497,6 +1621,11 @@ async function copy(text: string) {
   font-family: var(--font-sans);
   font-size: 12.5px;
   font-variant-numeric: normal;
+}
+/* A missing sign-in is an ask rather than a fault, so it wears the same amber
+   the deck's attention pip does — not the alert red. */
+.pp__facts dd.pp__factsval--warn {
+  color: var(--warn);
 }
 .pp__factsval--cmd {
   position: relative;

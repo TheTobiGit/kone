@@ -12,10 +12,17 @@ const props = defineProps<{
   blockedReason: string | null | undefined;
   healthStatus: ProviderStatus | null | undefined;
   healthChecking?: boolean;
+  /** The provider is signed out and has a login command kone can run, so the
+   *  tray can offer the sign-in modal rather than only a re-check. */
+  canSignIn?: boolean;
 }>();
 
 const emit = defineEmits<{
   recheck: [];
+  /** Run the provider's own login command in the sign-in modal. */
+  signin: [];
+  /** Open Settings → Providers with this provider selected. */
+  setup: [];
 }>();
 
 // Null provider (nothing installed) and not-installed are the hard stop;
@@ -26,6 +33,13 @@ const severe = computed(
 );
 
 const visible = computed(() => !!props.blockedReason);
+
+// Beside a Sign in button, the provider's own "run `x login`" sentence is noise: name it and the fact.
+const reason = computed(() =>
+  props.canSignIn && props.healthStatus
+    ? `${props.healthStatus.label} isn't signed in.`
+    : props.blockedReason,
+);
 </script>
 
 <template>
@@ -38,9 +52,32 @@ const visible = computed(() => !!props.blockedReason);
   >
     <span class="status-tray__item">
       <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" class="status-tray__alert" />
-      <span class="status-tray__label">{{ blockedReason }}</span>
+      <span class="status-tray__label">{{ reason }}</span>
     </span>
+
+    <!-- A signed-out provider has an action with a real end: run its login here,
+         or go configure it. Everything else blocked keeps the bare re-check. -->
+    <template v-if="canSignIn">
+      <button
+        type="button"
+        class="status-tray__item status-tray__action"
+        :tabindex="expanded ? 0 : -1"
+        @click.stop="emit('signin')"
+      >
+        <span class="status-tray__label status-tray__label--strong">Sign in</span>
+      </button>
+      <span class="status-tray__sep" aria-hidden="true">·</span>
+      <button
+        type="button"
+        class="status-tray__item status-tray__action status-tray__action--quiet"
+        :tabindex="expanded ? 0 : -1"
+        @click.stop="emit('setup')"
+      >
+        <span class="status-tray__label">Open provider setup</span>
+      </button>
+    </template>
     <button
+      v-else
       type="button"
       class="status-tray__item status-tray__action"
       :tabindex="expanded ? 0 : -1"
@@ -120,6 +157,20 @@ const visible = computed(() => !!props.blockedReason);
 }
 .status-tray__label--strong {
   font-weight: 600;
+}
+/* The sign-in pair: the strong action takes the auto margin that pushes it out
+   from the reason, and the quiet one rides beside it. A dot does the separating,
+   so two links never read as two competing buttons. */
+.status-tray__action--quiet {
+  margin-left: 0;
+}
+.status-tray__action--quiet .status-tray__label {
+  opacity: 0.72;
+}
+.status-tray__sep {
+  flex: none;
+  opacity: 0.45;
+  font-size: 12.5px;
 }
 .status-tray__alert {
   flex: none;

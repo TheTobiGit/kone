@@ -15,6 +15,7 @@ import type {
   KoneGitApi,
   ProviderKind,
   ProviderMaintenance,
+  ProviderStatus,
   ProviderUpdateResult,
   StoredThreadMeta,
 } from "~/types/desktop";
@@ -24,9 +25,19 @@ import type { DesktopAgentReach, DevBridge } from "~/utils/desktopBridge";
 import * as world from "./devMocks";
 import { devHandOffThreads } from "./devHandOffs";
 import { devTurnTraces } from "./devTraces";
-import { MOCK_MAINTENANCE, MOCK_MODELS, MOCK_STATUSES } from "./devProviders";
+import { MOCK_MAINTENANCE, MOCK_MODELS } from "./devProviders";
+import { createDevProviderSignIn, createDevTerminal, devProviderStatuses } from "./devSignIn";
 
 export function createDevBridge(): DevBridge {
+  // The provider surface's push channel, shared by the dev agent and the
+  // scripted sign-in: a verified login re-reads the demo provider table and
+  // announces it, exactly as `agent:providers-changed` does in the shell.
+  const providerListeners = new Set<(statuses: ProviderStatus[]) => void>();
+  const announceProviders = (): void => {
+    const next = devProviderStatuses();
+    for (const listener of providerListeners) listener(next);
+  };
+
   return {
     fs: {
       home: () => Promise.resolve(world.MOCK_HOME),
@@ -36,7 +47,9 @@ export function createDevBridge(): DevBridge {
       writeProjectFile: (_root, _path, _content) => beat(),
     },
     git: createDevGit(),
-    agent: createDevAgent(),
+    agent: createDevAgent(providerListeners),
+    terminal: createDevTerminal(),
+    providerSignIn: createDevProviderSignIn(announceProviders),
     turnRunner: createMockTurnRunner,
   };
 }
@@ -193,13 +206,25 @@ function createDevGit(): KoneGitApi {
 
 // ── providers and the thread list ─────────────────────────────────────────────
 
-function createDevAgent(): DesktopAgentReach {
-  const snapshot = () => ({ version: 1, savedAt: Date.now(), statuses: MOCK_STATUSES, models: MOCK_MODELS });
+function createDevAgent(
+  providerListeners: Set<(statuses: ProviderStatus[]) => void>,
+): DesktopAgentReach {
+  const snapshot = () => ({
+    version: 1,
+    savedAt: Date.now(),
+    statuses: devProviderStatuses(),
+    models: MOCK_MODELS,
+  });
   return {
     surface: () => Promise.resolve(snapshot()),
     warm: () => Promise.resolve(),
-    discover: () => Promise.resolve(MOCK_STATUSES),
-    onProvidersChanged: () => () => {},
+    discover: () => Promise.resolve(devProviderStatuses()),
+    onProvidersChanged: (cb) => {
+      providerListeners.add(cb);
+      return () => {
+        providerListeners.delete(cb);
+      };
+    },
     models: (provider) => Promise.resolve(MOCK_MODELS[provider] ?? []),
     maintenance: () => Promise.resolve(Object.values(MOCK_MAINTENANCE)),
     // The installer "runs" for a beat and lands on the latest version, so the

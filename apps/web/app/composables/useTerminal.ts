@@ -1,5 +1,6 @@
 import { onBeforeUnmount, shallowRef } from "vue";
-import type { TerminalEvent, TerminalStatus } from "~/types/desktop";
+import type { TerminalEvent, TerminalSessionSnapshot, TerminalStatus } from "~/types/desktop";
+import { desktopBridge } from "~/utils/desktopBridge";
 
 // ── The project's terminal manager ───────────────────────────────────────────
 // A project-scoped registry of live PTY terminals, the sibling of useAgent.
@@ -40,6 +41,29 @@ export type TerminalSession = {
 
 export type UseTerminalOptions = {
   cwd: string | (() => string);
+  /** Whether a renderer is behind this, which is what decides if the live event
+   *  listener can be installed. Defaults to `import.meta.client`; a Bun test is
+   *  neither server nor client, so it says so explicitly. */
+  client?: boolean;
+};
+
+/** What `spawn(open)` resolves to when the caller supplies its own opener:
+ *  the strip key, the backend PTY id (main-generated when the opener adopted
+ *  one), plus why the opener failed, if it did. */
+export type TerminalSpawn = { key: string; terminalId: string; error?: unknown };
+
+/** An opener that starts the PTY itself and tells the registry which backend id
+ *  it got. Provider sign-in uses this: the main process mints the id, so the
+ *  renderer cannot know it until `start` returns. */
+export type TerminalOpenResult = {
+  terminalId: string;
+  snapshot: TerminalSessionSnapshot;
+  /** Drains whatever the opener buffered before the main-generated id was
+   *  known. `spawn` calls it synchronously, in the same step it adopts the id,
+   *  so there is no window where an event belongs to neither the opener nor
+   *  this registry. Events newer than `snapshot.sequence` are then replayed
+   *  through the live routing path, each exactly once. */
+  replay?: () => TerminalEvent[];
 };
 
 /** Cap the client replay buffer. Slightly above the backend's 512KB history so
@@ -65,13 +89,23 @@ function uid(): string {
 
 export function useTerminal(options: UseTerminalOptions) {
   const resolveCwd = () => (options.cwd instanceof Function ? options.cwd() : options.cwd);
-  const bridge = () => (import.meta.client ? window.koneDesktop?.terminal : undefined);
+  // The real preload wins; the dev stand-in answers when there is none, so a
+  // browser `nuxt dev` can serve the project strip the same registry a shell
+  // does. `import.meta.client` guards the bare `window` read during SSR; the
+  // stand-in itself is only ever installed on the client. desktopBridge()
+  // already prefers `window.koneDesktop`, so there is one lookup here, not two.
+  const bridge = () => desktopBridge()?.terminal;
 
   // Reactive list (status only). Buffers + sinks are kept off to the side, keyed
   // by terminalId, so streaming output never mutates reactive state.
   const sessions = shallowRef<TerminalSession[]>([]);
   const buffers = new Map<string, string>();
   const sinks = new Map<string, Set<TerminalSink>>();
+  // Only the terminals this instance spawned. The event stream is global (one
+  // window, many registries), so without this every registry would buffer every
+  // other's output — the sign-in card's transcript would sit in the project
+  // strip's memory after the card closes, which the card promises it doesn't.
+  const owned = new Set<string>();
   // Last event sequence that seeded each terminal's replay buffer. The manager
   // re-emits `started` on every re-attach; a stale re-seed would clobber a live
   // buffer mid-stream, so re-seeds only happen when the sequence has advanced.
@@ -111,51 +145,56 @@ export function useTerminal(options: UseTerminalOptions) {
   }
 
   // ── The single event listener, routed by terminalId ────────────────────────
-  let detach: (() => void) | null = null;
-  if (import.meta.client) {
-    const api = bridge();
-    if (api) {
-      detach = api.onEvent((event: TerminalEvent) => {
-        switch (event.type) {
-          case "started":
-            // The manager re-emits `started` on every re-attach; only re-seed
-            // when this snapshot is newer than the one already in the buffer.
-            if ((lastSeededSequence.get(event.terminalId) ?? -1) < event.sequence) {
-              seedBuffer(event.terminalId, event.snapshot.history);
-            }
-            lastSeededSequence.set(event.terminalId, event.sequence);
-            setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
-            setStatus(event.terminalId, event.snapshot.status);
-            break;
-          case "restarted":
-            // Explicit reset — always re-seed, whatever the buffer holds.
-            seedBuffer(event.terminalId, event.snapshot.history);
-            lastSeededSequence.set(event.terminalId, event.sequence);
-            setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
-            setStatus(event.terminalId, event.snapshot.status);
-            break;
-          case "output":
-            appendOutput(event.terminalId, event.data);
-            // Flow-control ack: the main process pauses/resumes the PTY at
-            // 100KB/5KB watermarks. Fire-and-forget — a lost ack must never
-            // break the stream, so no await and no throw.
-            void api.ack({ terminalId: event.terminalId, byteCount: event.data.length });
-            break;
-          case "exited":
-            setStatus(event.terminalId, "exited");
-            break;
-          case "error":
-            setStatus(event.terminalId, "error");
-            break;
-          case "activity":
-            setActivity(event.terminalId, event.hasRunningSubprocess, event.childCommandLabel);
-            break;
-          case "closed":
-            setStatus(event.terminalId, "closed");
-            break;
+  /** Apply one event to this registry: output into the replay buffer and live
+   *  sinks, lifecycle into the reactive strip state. The live listener and
+   *  `spawn`'s drain of events buffered before adoption both come through
+   *  here, so an early chunk lands in the transcript exactly once. */
+  function routeEvent(event: TerminalEvent): void {
+    if (!owned.has(event.terminalId)) return;
+    switch (event.type) {
+      case "started":
+        // The manager re-emits `started` on every re-attach; only re-seed
+        // when this snapshot is newer than the one already in the buffer.
+        if ((lastSeededSequence.get(event.terminalId) ?? -1) < event.sequence) {
+          seedBuffer(event.terminalId, event.snapshot.history);
         }
-      });
+        lastSeededSequence.set(event.terminalId, event.sequence);
+        setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
+        setStatus(event.terminalId, event.snapshot.status);
+        break;
+      case "restarted":
+        // Explicit reset — always re-seed, whatever the buffer holds.
+        seedBuffer(event.terminalId, event.snapshot.history);
+        lastSeededSequence.set(event.terminalId, event.sequence);
+        setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
+        setStatus(event.terminalId, event.snapshot.status);
+        break;
+      case "output":
+        appendOutput(event.terminalId, event.data);
+        // Flow-control ack: the main process pauses/resumes the PTY at
+        // 100KB/5KB watermarks. Fire-and-forget — a lost ack must never
+        // break the stream, so no await and no throw.
+        void eventApi?.ack({ terminalId: event.terminalId, byteCount: event.data.length });
+        break;
+      case "exited":
+        setStatus(event.terminalId, "exited");
+        break;
+      case "error":
+        setStatus(event.terminalId, "error");
+        break;
+      case "activity":
+        setActivity(event.terminalId, event.hasRunningSubprocess, event.childCommandLabel);
+        break;
+      case "closed":
+        setStatus(event.terminalId, "closed");
+        break;
     }
+  }
+
+  const eventApi = bridge();
+  let detach: (() => void) | null = null;
+  if ((options.client ?? import.meta.client) && eventApi) {
+    detach = eventApi.onEvent(routeEvent);
   }
 
   function makeAttach(terminalId: string) {
@@ -176,36 +215,98 @@ export function useTerminal(options: UseTerminalOptions) {
     };
   }
 
-  /** Spawn a new terminal and return its stable strip key. */
-  async function spawn(): Promise<string> {
-    const terminalId = uid();
+  /** Spawn a new terminal and return its stable strip key. `open`, when given,
+   *  replaces the bridge's `open` call — the provider sign-in modal starts its
+   *  PTY through `providerSignIn.start` instead, but still wants the same
+   *  registry, buffer and attach plumbing every terminal gets. The callback
+   *  receives a provisional id so it can subscribe before anything is spawned;
+   *  when the opener returns a `{ terminalId, snapshot }` result (sign-in's
+   *  main-generated id), the session adopts that id for every later
+   *  write/resize/close and for its event stream. */
+  async function spawn(): Promise<string>;
+  async function spawn(
+    open: (
+      terminalId: string,
+      cwd: string,
+    ) => Promise<TerminalSessionSnapshot | TerminalOpenResult>,
+  ): Promise<TerminalSpawn>;
+  async function spawn(
+    open?: (
+      terminalId: string,
+      cwd: string,
+    ) => Promise<TerminalSessionSnapshot | TerminalOpenResult>,
+  ): Promise<string | TerminalSpawn> {
+    const provisionalId = uid();
     const key = uid();
     const session: TerminalSession = {
       key,
-      terminalId,
+      terminalId: provisionalId,
       cwd: resolveCwd(),
       status: "starting",
       hasRunningSubprocess: false,
       childCommandLabel: null,
-      attach: makeAttach(terminalId),
+      attach: makeAttach(provisionalId),
     };
-    buffers.set(terminalId, "");
+    owned.add(provisionalId);
+    buffers.set(provisionalId, "");
     sessions.value = [...sessions.value, session];
 
+    let terminalId = provisionalId;
+
+    function applySnapshot(snapshot: TerminalSessionSnapshot): void {
+      // `started` usually seeds the buffer first; only seed here if it hasn't
+      // arrived yet (avoid clobbering already-streamed output).
+      if (!buffers.get(terminalId)) {
+        seedBuffer(terminalId, snapshot.history);
+        lastSeededSequence.set(terminalId, snapshot.sequence);
+      }
+      setActivity(terminalId, snapshot.hasRunningSubprocess, snapshot.childCommandLabel);
+      setStatus(terminalId, snapshot.status);
+    }
+
+    /** Move the registry's bookkeeping onto the id the main process minted.
+     *  Nothing has been attached to the provisional id yet (the caller only
+     *  gets the session after this resolves), so the buffers can move with it. */
+    function adoptId(adopted: string): void {
+      if (adopted === terminalId) return;
+      const buffered = buffers.get(terminalId) ?? "";
+      owned.delete(terminalId);
+      buffers.delete(terminalId);
+      lastSeededSequence.delete(terminalId);
+      terminalId = adopted;
+      owned.add(adopted);
+      buffers.set(adopted, buffered);
+      session.terminalId = adopted;
+      session.attach = makeAttach(adopted);
+    }
+
     const api = bridge();
-    if (api) {
+    const openSession = open ?? (api ? (id: string, cwd: string) => api.open({ terminalId: id, cwd }) : null);
+    let error: unknown;
+    if (openSession) {
       try {
-        const snapshot = await api.open({ terminalId, cwd: session.cwd });
-        // `started` usually seeds the buffer first; only seed here if it hasn't
-        // arrived yet (avoid clobbering already-streamed output).
-        if (!buffers.get(terminalId)) {
-          seedBuffer(terminalId, snapshot.history);
-          lastSeededSequence.set(terminalId, snapshot.sequence);
+        const opened = await openSession(provisionalId, session.cwd);
+        if ("snapshot" in opened) {
+          adoptId(opened.terminalId);
+          applySnapshot(opened.snapshot);
+          // Events the opener held while the main-generated id was unknown:
+          // the live listener had no ownership yet, so they never reached a
+          // buffer. Draining them in this same synchronous step — after
+          // `adoptId`, before anything can await — is what leaves no gap for a
+          // live event to fall into. The snapshot already covers everything up
+          // to its sequence; newer events go through the live routing path,
+          // each exactly once.
+          for (const event of opened.replay?.() ?? []) {
+            if (event.terminalId !== opened.terminalId) continue;
+            if (event.sequence <= opened.snapshot.sequence) continue;
+            routeEvent(event);
+          }
+        } else {
+          applySnapshot(opened);
         }
-        setActivity(terminalId, snapshot.hasRunningSubprocess, snapshot.childCommandLabel);
-        setStatus(terminalId, snapshot.status);
-      } catch {
+      } catch (cause) {
         setStatus(terminalId, "error");
+        error = cause;
       }
     } else {
       // Browser dev mock (no Electron bridge): a tiny echo shell.
@@ -213,7 +314,9 @@ export function useTerminal(options: UseTerminalOptions) {
       seedBuffer(terminalId, "kone terminal (dev mock)\r\n$ ");
     }
 
-    return key;
+    // A caller with its own opener gets the failure handed back; the strip's
+    // plain `spawn()` still resolves to just the key, as it always has.
+    return open ? { key, terminalId, error } : key;
   }
 
   /** Write user input to a terminal. */
@@ -274,6 +377,7 @@ export function useTerminal(options: UseTerminalOptions) {
     } catch {
       // best effort
     }
+    owned.delete(s.terminalId);
     buffers.delete(s.terminalId);
     sinks.delete(s.terminalId);
     lastSeededSequence.delete(s.terminalId);
