@@ -214,10 +214,17 @@ export function useSignInRun(options: UseSignInRunOptions) {
     }
   }
 
-  function flushEarly(id: string): void {
+  /** Drain the events held while the main-generated id was unknown. */
+  function takeEarly(): TerminalEvent[] {
     const events = earlyEvents;
     earlyEvents = [];
     earlyOutputBytes = 0;
+    return events;
+  }
+
+  /** Feed held events for `id` to the state machine, once each. The opener and
+   *  the post-adoption flush both use this, so nothing is observed twice. */
+  function observeEarly(id: string, events: TerminalEvent[]): void {
     for (const event of events) {
       if (event.terminalId === id) handleEvent(event);
     }
@@ -395,10 +402,14 @@ export function useSignInRun(options: UseSignInRunOptions) {
       const result = await api.start({ provider, terminalId: provisionalId });
       if (!result.ok) throw new Error(result.message);
       const terminalId = result.terminalId ?? provisionalId;
-      ptyId = terminalId;
-      flushEarly(terminalId);
       command.value = result.command;
-      return { terminalId, snapshot: result.snapshot };
+      // The renderer cannot attach to the id until `spawn` adopts it, so the
+      // registry replays these itself (`replay`). Hand it everything buffered
+      // and observe the same events here, so the card and the transcript agree.
+      // Output the snapshot already carries is filtered out by sequence there.
+      const early = takeEarly();
+      observeEarly(terminalId, early);
+      return { terminalId, snapshot: result.snapshot, replay: early };
     });
     if (disposed || token !== runToken) {
       // A newer run (or a close) took over while this one was spawning.
@@ -415,6 +426,12 @@ export function useSignInRun(options: UseSignInRunOptions) {
       state.value = { phase: "failed", failure: { kind: "start", reason } };
       return;
     }
+
+    // The registry owns the adopted id now, so the listener can stop buffering.
+    // Anything still held arrived between the opener returning and adoption
+    // (the registry routed those live; here they are observed by the card).
+    ptyId = started.terminalId;
+    observeEarly(ptyId, takeEarly());
 
     // The PTY may already have printed its URL while `start` was resolving;
     // never walk that back to "running".

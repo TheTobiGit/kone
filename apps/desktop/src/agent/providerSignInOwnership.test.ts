@@ -14,6 +14,8 @@ import { createTerminalIpc, type TerminalSender } from "../modules/terminal/ipcH
 import type { PtyProcess } from "../modules/terminal/Pty.js";
 import {
   claimTerminal,
+  onTerminalReleased,
+  releaseClosedTerminal,
   releaseTerminal,
   terminalOwner,
 } from "../modules/terminal/ownership.js";
@@ -82,6 +84,7 @@ type FakeWindow = TerminalSender &
     events: TerminalEvent[];
     reload(): void;
     destroy(): void;
+    destroyedListeners(): number;
   };
 
 function fakeWindow(): FakeWindow {
@@ -92,6 +95,7 @@ function fakeWindow(): FakeWindow {
   return {
     events,
     isDestroyed: () => isDestroyed,
+    destroyedListeners: () => destroyed.size,
     send: (_channel, event) => {
       events.push(event);
     },
@@ -223,6 +227,77 @@ describe("sign-in terminal ownership collisions", () => {
     expect(claimTerminal("signin-token", b, "token-b")).toBe(true);
     releaseTerminal("signin-token", "token-b");
     expect(terminalOwner("signin-token")).toBeNull();
+  });
+
+  test("closing an exited sign-in through the terminal IPC path drops its claim watcher", async () => {
+    const pty = fakePty();
+    const manager = new TerminalManager({ spawn: async () => pty.process });
+    const ipc = createTerminalIpc(manager);
+    const a = fakeWindow();
+    ipc.handlers.subscribe(a);
+    const controller = controllerFor(manager);
+
+    // subscribe() keeps one `destroyed` listener of its own: the baseline every
+    // sign-in run must return to.
+    const baseline = a.destroyedListeners();
+    expect(baseline).toBe(1);
+
+    const started = await controller.start({ provider: "codex" }, a);
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error(started.message);
+    const id = started.terminalId;
+
+    // The CLI exits on its own; the claim is kept for the window.
+    pty.emitExit(0);
+    await flush();
+    expect(terminalOwner(id)).toBe(a);
+    expect(a.destroyedListeners()).toBe(baseline + 1);
+
+    // Closing the exited terminal through the terminal IPC path drops the claim
+    // — and the watcher the claim existed for.
+    const closing = ipc.handlers.close(a, { terminalId: id, deleteHistory: true });
+    pty.emitExit(0);
+    await closing;
+
+    expect(terminalOwner(id)).toBeNull();
+    expect(a.destroyedListeners()).toBe(baseline);
+  });
+
+  test("a claim's release hook runs once, and a stale token cannot touch it", () => {
+    const a = fakeWindow();
+    const b = fakeWindow();
+    let released = 0;
+    let stale = 0;
+
+    expect(claimTerminal("signin-hook", a, "token-a")).toBe(true);
+    expect(onTerminalReleased("signin-hook", "token-a", () => (released += 1))).toBe(true);
+    // A stale/refused run attaches nothing, and its release is a no-op, so the
+    // live claim's hook is neither replaced nor fired early.
+    expect(onTerminalReleased("signin-hook", "token-b", () => (stale += 1))).toBe(false);
+    releaseTerminal("signin-hook", "token-b");
+    expect(released).toBe(0);
+    expect(stale).toBe(0);
+    expect(terminalOwner("signin-hook")).toBe(a);
+
+    // The owner's close path drops the claim and runs the hook, once.
+    releaseClosedTerminal("signin-hook", a);
+    expect(terminalOwner("signin-hook")).toBeNull();
+    expect(released).toBe(1);
+    // Releasing an already-dropped claim through either path is a no-op.
+    releaseTerminal("signin-hook", "token-a");
+    releaseClosedTerminal("signin-hook", a);
+    expect(released).toBe(1);
+
+    // The token path runs the hook too.
+    expect(claimTerminal("signin-hook", b, "token-c")).toBe(true);
+    expect(onTerminalReleased("signin-hook", "token-c", () => (released += 1))).toBe(true);
+    releaseTerminal("signin-hook", "token-c");
+    expect(released).toBe(2);
+
+    // A new claim on the reused id starts without the previous hook.
+    expect(claimTerminal("signin-hook", a, "token-d")).toBe(true);
+    releaseTerminal("signin-hook", "token-d");
+    expect(released).toBe(2);
   });
 
   test("a refused provider cannot reserve a new id either", async () => {

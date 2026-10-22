@@ -10,7 +10,7 @@ import {
   type SignInSender,
   type SignInTerminalManager,
 } from "./providerSignInController.js";
-import { terminalOwner } from "../modules/terminal/ownership.js";
+import { releaseClosedTerminal, terminalOwner } from "../modules/terminal/ownership.js";
 import type { TerminalOpenInput, TerminalSessionSnapshot } from "../modules/terminal/types.js";
 
 // The sign-in request lifecycle, driven through fake WebContents and a fake
@@ -186,6 +186,37 @@ describe("provider sign-in request lifecycle", () => {
     expect(terminalOwner("signin-1")).toBe(sender);
     sender.destroy();
     expect(terminalOwner("signin-1")).toBeNull();
+    expect(sender.destroyedListeners()).toBe(0);
+  });
+
+  test("an exited sign-in closed through the terminal path leaves no destroyed listener", async () => {
+    const manager = fakeManager();
+    const sender = fakeSender();
+    const controller = controllerFor(manager);
+
+    // Past Node's default listener budget: the repro left one `destroyed`
+    // listener behind per exited-then-closed sign-in.
+    for (let run = 0; run < 12; run += 1) {
+      const result = await start(controller, sender);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      const id = result.terminalId;
+
+      // The CLI exits on its own: the claim (and its watcher) stay, so the
+      // transcript remains private to this window...
+      manager.endSession(id);
+      expect(terminalOwner(id)).toBe(sender);
+      expect(sender.destroyedListeners()).toBe(1);
+
+      // ...until the window closes the terminal through the terminal IPC path,
+      // which releases the claim and must detach the watcher with it.
+      releaseClosedTerminal(id, sender);
+      expect(terminalOwner(id)).toBeNull();
+      expect(sender.destroyedListeners()).toBe(0);
+    }
+
+    expect(sender.navigationListeners()).toBe(0);
+    expect(sender.destroyedListeners()).toBe(0);
   });
 
   test("ids are main-generated, unique, and any renderer-supplied id is ignored", async () => {

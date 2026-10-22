@@ -54,6 +54,10 @@ export type TerminalSpawn = { key: string; terminalId: string; error?: unknown }
 export type TerminalOpenResult = {
   terminalId: string;
   snapshot: TerminalSessionSnapshot;
+  /** Events the opener buffered before the main-generated id was known. `spawn`
+   *  replays the ones newer than `snapshot.sequence` through the same routing
+   *  the live listener uses, so early output reaches the transcript. */
+  replay?: TerminalEvent[];
 };
 
 /** Cap the client replay buffer. Slightly above the backend's 512KB history so
@@ -135,52 +139,56 @@ export function useTerminal(options: UseTerminalOptions) {
   }
 
   // ── The single event listener, routed by terminalId ────────────────────────
-  let detach: (() => void) | null = null;
-  if (import.meta.client) {
-    const api = bridge();
-    if (api) {
-      detach = api.onEvent((event: TerminalEvent) => {
-        if (!owned.has(event.terminalId)) return;
-        switch (event.type) {
-          case "started":
-            // The manager re-emits `started` on every re-attach; only re-seed
-            // when this snapshot is newer than the one already in the buffer.
-            if ((lastSeededSequence.get(event.terminalId) ?? -1) < event.sequence) {
-              seedBuffer(event.terminalId, event.snapshot.history);
-            }
-            lastSeededSequence.set(event.terminalId, event.sequence);
-            setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
-            setStatus(event.terminalId, event.snapshot.status);
-            break;
-          case "restarted":
-            // Explicit reset — always re-seed, whatever the buffer holds.
-            seedBuffer(event.terminalId, event.snapshot.history);
-            lastSeededSequence.set(event.terminalId, event.sequence);
-            setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
-            setStatus(event.terminalId, event.snapshot.status);
-            break;
-          case "output":
-            appendOutput(event.terminalId, event.data);
-            // Flow-control ack: the main process pauses/resumes the PTY at
-            // 100KB/5KB watermarks. Fire-and-forget — a lost ack must never
-            // break the stream, so no await and no throw.
-            void api.ack({ terminalId: event.terminalId, byteCount: event.data.length });
-            break;
-          case "exited":
-            setStatus(event.terminalId, "exited");
-            break;
-          case "error":
-            setStatus(event.terminalId, "error");
-            break;
-          case "activity":
-            setActivity(event.terminalId, event.hasRunningSubprocess, event.childCommandLabel);
-            break;
-          case "closed":
-            setStatus(event.terminalId, "closed");
-            break;
+  /** Apply one event to this registry: output into the replay buffer and live
+   *  sinks, lifecycle into the reactive strip state. The live listener and
+   *  `spawn`'s replay of events buffered before adoption both come through
+   *  here, so an early chunk lands in the transcript exactly once. */
+  function routeEvent(event: TerminalEvent): void {
+    if (!owned.has(event.terminalId)) return;
+    switch (event.type) {
+      case "started":
+        // The manager re-emits `started` on every re-attach; only re-seed
+        // when this snapshot is newer than the one already in the buffer.
+        if ((lastSeededSequence.get(event.terminalId) ?? -1) < event.sequence) {
+          seedBuffer(event.terminalId, event.snapshot.history);
         }
-      });
+        lastSeededSequence.set(event.terminalId, event.sequence);
+        setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
+        setStatus(event.terminalId, event.snapshot.status);
+        break;
+      case "restarted":
+        // Explicit reset — always re-seed, whatever the buffer holds.
+        seedBuffer(event.terminalId, event.snapshot.history);
+        lastSeededSequence.set(event.terminalId, event.sequence);
+        setActivity(event.terminalId, event.snapshot.hasRunningSubprocess, event.snapshot.childCommandLabel);
+        setStatus(event.terminalId, event.snapshot.status);
+        break;
+      case "output":
+        appendOutput(event.terminalId, event.data);
+        // Flow-control ack: the main process pauses/resumes the PTY at
+        // 100KB/5KB watermarks. Fire-and-forget — a lost ack must never
+        // break the stream, so no await and no throw.
+        void eventApi?.ack({ terminalId: event.terminalId, byteCount: event.data.length });
+        break;
+      case "exited":
+        setStatus(event.terminalId, "exited");
+        break;
+      case "error":
+        setStatus(event.terminalId, "error");
+        break;
+      case "activity":
+        setActivity(event.terminalId, event.hasRunningSubprocess, event.childCommandLabel);
+        break;
+      case "closed":
+        setStatus(event.terminalId, "closed");
+        break;
     }
+  }
+
+  const eventApi = bridge();
+  let detach: (() => void) | null = null;
+  if (import.meta.client && eventApi) {
+    detach = eventApi.onEvent(routeEvent);
   }
 
   function makeAttach(terminalId: string) {
@@ -272,8 +280,21 @@ export function useTerminal(options: UseTerminalOptions) {
     if (openSession) {
       try {
         const opened = await openSession(provisionalId, session.cwd);
-        if ("snapshot" in opened) adoptId(opened.terminalId);
-        applySnapshot("snapshot" in opened ? opened.snapshot : opened);
+        if ("snapshot" in opened) {
+          adoptId(opened.terminalId);
+          applySnapshot(opened.snapshot);
+          // Events the opener held while the main-generated id was unknown:
+          // the live listener had no ownership yet, so they never reached a
+          // buffer. The snapshot already covers everything up to its sequence;
+          // newer events go through the live routing path, each exactly once.
+          for (const event of opened.replay ?? []) {
+            if (event.terminalId !== opened.terminalId) continue;
+            if (event.sequence <= opened.snapshot.sequence) continue;
+            routeEvent(event);
+          }
+        } else {
+          applySnapshot(opened);
+        }
       } catch (cause) {
         setStatus(terminalId, "error");
         error = cause;
