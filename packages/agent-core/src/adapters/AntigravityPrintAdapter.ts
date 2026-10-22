@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -59,6 +59,7 @@ import type {
 } from "../types.js";
 import { inlineSkills } from "../skillInvocation.js";
 import { freezeSubagentDuration } from "../subagentDuration.js";
+import { spawnLaunch, type LaunchDeps } from "../windowsLaunch.js";
 
 // Antigravity adapter — drives Google's `agy` CLI in print mode: one fresh
 // process per turn (`agy -p`), the transcript it writes under
@@ -768,18 +769,39 @@ export function buildKoneHookConfig(
   };
 }
 
-/** Run a short agy helper (plugin install / models) to completion. */
+/** Run a short agy helper (plugin install / models) to completion. `launch`
+ *  injects the platform and spawn the launch is resolved for/with (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
 export async function runAntigravityHelperProcess(
   command: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    launch?: LaunchDeps;
+  } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+      command,
+      args,
+      {
+        cwd: options.cwd,
+        // A helper that was given no env inherits this process's, exactly as a
+        // bare spawn would; the resolution reads its PATH either way.
+        env: options.env ?? process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+      options.launch,
+    );
+    if (!launched.ok) {
+      // The failure a child's "error" event would have reported, without a
+      // child — a missing CLI, or an argv cmd.exe cannot carry.
+      reject(launched.error);
+      return;
+    }
+    const child = launched.child;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -791,7 +813,10 @@ export async function runAntigravityHelperProcess(
       callback();
     };
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+      // On Windows the child is the cmd.exe wrapper, so a bare SIGKILL would
+      // orphan the CLI it started; killTree reaps the whole tree with taskkill.
+      if (process.platform === "win32") void killTree(child.pid);
+      else child.kill("SIGKILL");
       finish(() =>
         reject(new Error(`Antigravity helper timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`)),
       );
@@ -1283,14 +1308,28 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
 
     let child: ChildProcess;
     try {
-      child = spawn(session.binary, args, {
-        cwd: session.cwd,
-        env: await buildAntigravityTurnEnvironment(session, eventFile, bootstrapToken),
-        // Own process group on POSIX so killTree can reap the tool subprocesses.
-        detached: process.platform !== "win32",
-        // stdin closed: print mode must never block on an interactive prompt.
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const launched = spawnLaunch(
+        session.binary,
+        args,
+        {
+          cwd: session.cwd,
+          env: await buildAntigravityTurnEnvironment(session, eventFile, bootstrapToken),
+          // Own process group on POSIX so killTree can reap the tool subprocesses.
+          detached: process.platform !== "win32",
+          // stdin closed: print mode must never block on an interactive prompt.
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      if (!launched.ok) {
+        // A launch that cannot happen — the CLI is missing, or the prompt's own
+        // newlines cannot ride cmd.exe — fails the turn with the reason, the
+        // way a spawn error does, rather than crashing or hanging on a shim
+        // that never started.
+        await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+        this.failTurn(session, turnId, launched.error, "Failed to launch Antigravity CLI.");
+        return { threadId: input.threadId, turnId };
+      }
+      child = launched.child;
     } catch (error) {
       await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
       this.failTurn(session, turnId, error, "Failed to launch Antigravity CLI.");
