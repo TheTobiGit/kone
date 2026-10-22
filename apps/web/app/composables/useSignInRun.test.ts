@@ -82,6 +82,14 @@ type HarnessOptions = {
    *  before the main process captured the snapshot). Emitted as an `output`
    *  event whose sequence is at or below the snapshot's. */
   preloaded?: string;
+  /** Output emitted in the gap the review found: as a microtask queued after
+   *  the opener's continuation has drained its buffer, but before `spawn`
+   *  resumes and adopts the id. The emit is scheduled off the start answer, so
+   *  it lands in that gap with or without `startGate`. */
+  gapOutput?: string;
+  /** Install the terminal registry's live listener, as a renderer would (Bun
+   *  has no `import.meta.client`). */
+  client?: boolean;
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -147,7 +155,21 @@ function harness(options: HarnessOptions = {}) {
           sequence,
         }),
       };
-      return options.startGate ? options.startGate().then(() => result) : Promise.resolve(result);
+      const answer = options.startGate ? options.startGate().then(() => result) : Promise.resolve(result);
+      const gap = options.gapOutput;
+      if (!gap) return answer;
+      // The window between the opener returning and `spawn` adopting: the first
+      // microtask lands behind the opener's await continuation (it has already
+      // drained), the second ahead of `spawn`'s continuation (it has not
+      // adopted yet). Nothing owns the id there unless handoff is atomic.
+      return answer.then((settled) => {
+        void Promise.resolve().then(() =>
+          Promise.resolve().then(() => {
+            emit({ terminalId, type: "output", sequence: ++sequence, data: gap });
+          }),
+        );
+        return settled;
+      });
     },
     check: () => {
       checks += 1;
@@ -158,7 +180,7 @@ function harness(options: HarnessOptions = {}) {
 
   installDevBridge({ ...createDevBridge(), terminal, providerSignIn });
 
-  const signIn = useSignInRun({ provider: "cursor", label: "Cursor" });
+  const signIn = useSignInRun({ provider: "cursor", label: "Cursor", client: options.client });
 
   return {
     signIn,
@@ -264,6 +286,58 @@ describe("useSignInRun", () => {
     // It arrived in snapshot.history; its event (sequence <= snapshot.sequence)
     // must not be replayed into the transcript on top of it.
     expect(occurrences(shown, "Open https://example.com/login")).toBe(1);
+  });
+
+  test("output between the opener returning and id adoption reaches the transcript", async () => {
+    const h = harness({
+      client: true,
+      preloaded: "BANNER\r\n",
+      gapOutput: "Open https://example.com/login\r\n",
+    });
+
+    await h.signIn.run();
+
+    // The card saw the URL — it is in the early buffer the opener drains...
+    expect(h.signIn.phase.value).toBe("waiting");
+    const shown = transcript(h)();
+    // ...but the registry must not lose it: adoption and the drain have to be
+    // one step, or this event is owned by nobody.
+    expect(occurrences(shown, "Open https://example.com/login")).toBe(1);
+    // The snapshot seeded the buffer; the replay must not add it again.
+    expect(occurrences(shown, "BANNER")).toBe(1);
+  });
+
+  test("output after adoption is routed live, exactly once", async () => {
+    const h = harness({ client: true, preloaded: "BANNER\r\n" });
+    await h.signIn.run();
+
+    const shown = transcript(h);
+    h.output("Open https://example.com/live\r\n");
+
+    expect(h.signIn.phase.value).toBe("waiting");
+    expect(occurrences(shown(), "Open https://example.com/live")).toBe(1);
+    expect(occurrences(shown(), "BANNER")).toBe(1);
+  });
+
+  test("a run disposed while start resolves adopts nothing", async () => {
+    const gate = latch();
+    const h = harness({
+      client: true,
+      startGate: () => gate.wait,
+      gapOutput: "Open https://example.com/login\r\n",
+    });
+
+    const starting = h.signIn.run();
+    await settle();
+    await h.signIn.dispose();
+    gate.release();
+    await starting;
+
+    // The card is gone: the late id is closed rather than adopted, and its
+    // output must not move a state machine nobody is watching.
+    expect(h.signIn.phase.value).toBe("starting");
+    expect(h.signIn.session.value).toBeNull();
+    expect(h.closes.map((close) => close.terminalId)).toEqual(["signin-test-1"]);
   });
 
   test("exit 0 runs a check and verifies", async () => {

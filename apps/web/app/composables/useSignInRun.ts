@@ -92,6 +92,10 @@ export type UseSignInRunOptions = {
   provider: ProviderKind;
   /** The provider's display name, for the check-failure fallbacks. */
   label: string;
+  /** Test seam, handed to the terminal registry: whether `import.meta.client`
+   *  would be true there. Bun is neither server nor renderer, so a test that
+   *  needs the registry's live event listener has to say so. */
+  client?: boolean;
 };
 
 /** Longest check message the status line will carry before it is cut. */
@@ -157,7 +161,7 @@ export function useSignInRun(options: UseSignInRunOptions) {
     write,
     resize,
     close,
-  } = useTerminal({ cwd: () => command.value?.cwd ?? "~" });
+  } = useTerminal({ cwd: () => command.value?.cwd ?? "~", client: options.client });
 
   const sessionKey = ref<string | null>(null);
   const session = computed<TerminalSession | null>(
@@ -174,7 +178,8 @@ export function useSignInRun(options: UseSignInRunOptions) {
   let checkToken = 0;
   let detach: (() => void) | null = null;
   /** The main-generated PTY id for the run, known only after `start` resolves.
-   *  Events that arrive before then are buffered and replayed once it does. */
+   *  Events that arrive before then are buffered, then drained in the same
+   *  synchronous step the registry adopts the id, so none falls between. */
   let ptyId: string | null = null;
   /** Events received while the start IPC was resolving. Small + short-lived:
    *  only the id is missing; the buffer is dropped as soon as it is known. */
@@ -222,8 +227,8 @@ export function useSignInRun(options: UseSignInRunOptions) {
     return events;
   }
 
-  /** Feed held events for `id` to the state machine, once each. The opener and
-   *  the post-adoption flush both use this, so nothing is observed twice. */
+  /** Feed held events for `id` to the state machine, once each. The opener's
+   *  drain is the only caller, and it empties the buffer as it runs. */
   function observeEarly(id: string, events: TerminalEvent[]): void {
     for (const event of events) {
       if (event.terminalId === id) handleEvent(event);
@@ -403,13 +408,24 @@ export function useSignInRun(options: UseSignInRunOptions) {
       if (!result.ok) throw new Error(result.message);
       const terminalId = result.terminalId ?? provisionalId;
       command.value = result.command;
-      // The renderer cannot attach to the id until `spawn` adopts it, so the
-      // registry replays these itself (`replay`). Hand it everything buffered
-      // and observe the same events here, so the card and the transcript agree.
-      // Output the snapshot already carries is filtered out by sequence there.
-      const early = takeEarly();
-      observeEarly(terminalId, early);
-      return { terminalId, snapshot: result.snapshot, replay: early };
+      // Nothing is drained here: an event landing after this returns would still
+      // find `ptyId` unset and the registry without ownership, and would be lost
+      // to the transcript. `spawn` calls `replay` in the same synchronous step
+      // that adopts the id, so the handoff is atomic: this listener starts
+      // handling the id directly, the registry owns every later event, and the
+      // held ones go to the card here and back to the registry for the
+      // transcript. A run the user already ended observes nothing.
+      return {
+        terminalId,
+        snapshot: result.snapshot,
+        replay: () => {
+          if (disposed || token !== runToken) return [];
+          ptyId = terminalId;
+          const early = takeEarly();
+          observeEarly(terminalId, early);
+          return early;
+        },
+      };
     });
     if (disposed || token !== runToken) {
       // A newer run (or a close) took over while this one was spawning.
@@ -427,11 +443,11 @@ export function useSignInRun(options: UseSignInRunOptions) {
       return;
     }
 
-    // The registry owns the adopted id now, so the listener can stop buffering.
-    // Anything still held arrived between the opener returning and adoption
-    // (the registry routed those live; here they are observed by the card).
+    // The opener's drain already adopted the id and handed the card everything
+    // it had buffered, in the same step the registry took ownership. This only
+    // covers a start that never reached that step; the error path returned
+    // above and a superseded run returned before it.
     ptyId = started.terminalId;
-    observeEarly(ptyId, takeEarly());
 
     // The PTY may already have printed its URL while `start` was resolving;
     // never walk that back to "running".
