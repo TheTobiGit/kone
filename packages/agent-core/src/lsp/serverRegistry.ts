@@ -6,6 +6,11 @@
 
 import path from "node:path";
 
+import {
+  findWindowsLaunchableIn,
+  hasWindowsLaunchExtension,
+  windowsLaunchExtensions,
+} from "../windowsLaunch.js";
 import { asInt, isJsonList, isRecord, jsonText } from "./json.js";
 import type { LspJsonObject, LspJsonValue, ServerConfig } from "./types.js";
 
@@ -102,23 +107,31 @@ export interface ServerBinaryDeps {
   lookupOnPath(command: string): string | null;
 }
 
-/** Candidate shim names for one directory's node_modules/.bin. Windows lays
- *  down .cmd shims next to the extensionless entry, so both spellings count
- *  there; everywhere else the bare name is the whole story. */
-function binNames(command: string, platform: string): readonly string[] {
-  if (platform === "win32") return [command, `${command}.cmd`];
-  return [command];
+/** Candidate shim names for one directory's node_modules/.bin. An npm install on
+ *  Windows lays down `name.cmd` beside an extensionless shell script and a
+ *  `.ps1`, and only the batch shim is something a spawn can start — so the
+ *  Windows candidates are the launchable completions in PATHEXT order, never the
+ *  bare name (which finds the script) and never the `.ps1` (no interpreter).
+ *  A command that already carries a launchable suffix is its own candidate.
+ *  Everywhere else the bare name is the whole story. */
+function binNames(command: string, platform: string, env: NodeJS.ProcessEnv): readonly string[] {
+  if (platform !== "win32") return [command];
+  if (hasWindowsLaunchExtension(command)) return [command];
+  return windowsLaunchExtensions(env).map((extension) => `${command}${extension}`);
 }
 
 /** Every node_modules/.bin slot from cwd up to the filesystem root, nearest
- *  first. Exported so tests can pin the windows spelling without a windows
- *  machine; resolveServerBinary below always passes the live platform. */
+ *  first — the launchable spellings of the command in each, see `binNames`.
+ *  `env` supplies PATHEXT for the Windows ordering. Exported so tests can pin
+ *  the windows spelling without a windows machine; resolveServerBinary below
+ *  always passes the live platform. */
 export function localBinCandidates(
   cwd: string,
   command: string,
   platform: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
-  const names = binNames(command, platform);
+  const names = binNames(command, platform, env);
   const candidates: string[] = [];
   let current: string | null = path.resolve(cwd);
   while (current !== null) {
@@ -137,22 +150,39 @@ function isPathCommand(command: string): boolean {
   return command.includes("/") || command.includes(path.sep);
 }
 
-/** Resolve a server's command to an executable path: project-local bins
- *  first (walking up from cwd, so a monorepo root's install wins over PATH),
- *  then PATH. Path-shaped commands resolve against cwd and never consult
- *  PATH. Null when nothing on the machine provides the server. */
+/** Resolve a server's command to a file that can be started: project-local
+ *  bins first (walking up from cwd, so a monorepo root's install wins over
+ *  PATH), then PATH. Path-shaped commands resolve against cwd and never consult
+ *  PATH. Null when nothing on the machine provides the server.
+ *
+ *  `platform` decides the Windows spelling of that question (injected so a
+ *  Linux host can exercise it). On Windows a path-shaped command without a
+ *  launchable suffix is completed in its own directory the way cmd.exe would
+ *  complete it — an extensionless `tools/language-server` is not a program, but
+ *  the `.cmd` beside it is — and an existence check cannot answer for it.
+ *  Off Windows the command is a file path, checked as it always was. */
 export function resolveServerBinary(
   server: ServerConfig,
   cwd: string,
   deps: ServerBinaryDeps,
+  platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (isPathCommand(server.command)) {
     const candidate = path.isAbsolute(server.command)
       ? server.command
       : path.join(path.resolve(cwd), server.command);
-    return deps.existsSync(candidate) ? candidate : null;
+    if (platform !== "win32") return deps.existsSync(candidate) ? candidate : null;
+    // Same completion cmd.exe would give a bare command, in the command's own
+    // directory: the extensionless file beside the `.cmd`/`.exe` is not a
+    // program, so existsSync is the wrong question here.
+    const launchable = findWindowsLaunchableIn(
+      path.dirname(candidate),
+      path.basename(candidate),
+      process.env,
+    );
+    return launchable?.found ?? null;
   }
-  for (const candidate of localBinCandidates(cwd, server.command, process.platform)) {
+  for (const candidate of localBinCandidates(cwd, server.command, platform)) {
     if (deps.existsSync(candidate)) return candidate;
   }
   return deps.lookupOnPath(server.command);

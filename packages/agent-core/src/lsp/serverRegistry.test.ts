@@ -1,6 +1,7 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-
-import { describe, expect, test } from "bun:test";
 
 import {
   ALL_DEFAULT_SERVERS,
@@ -20,6 +21,49 @@ import type { ServerBinaryDeps } from "./serverRegistry.js";
 import type { ServerConfig } from "./types.js";
 
 const TYPESCRIPT = "typescript-language-server";
+
+// Windows resolution reads a real directory (an npm install's sibling set is a
+// fact about the disk, not about the injected deps), so the win32 cases below
+// build throwaway trees. Nothing is ever spawned here; a `.cmd` is plain text.
+
+const roots: string[] = [];
+
+afterAll(() => {
+  for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+});
+
+/** A fresh temp root, removed when the file's tests finish. */
+function tempRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kone-lsp-registry-"));
+  roots.push(root);
+  return root;
+}
+
+/** A directory under a temp root, created as needed. */
+function subDir(root: string, ...parts: string[]): string {
+  const dir = path.join(root, ...parts);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** A fake binary: empty text is enough because nothing here is started. */
+function makeFile(dir: string, name: string): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, "");
+  return file;
+}
+
+/** Windows compares filenames without case while this host does not, so the
+ *  injected seam of a win32 case has to compare without case too: the walk asks
+ *  for the PATHEXT spelling (`name.CMD`) and the install on disk may spell it
+ *  `name.cmd`. */
+function caseInsensitiveDeps(present: readonly string[]): ServerBinaryDeps {
+  const known = new Set(present.map((candidate) => candidate.toLowerCase()));
+  return {
+    existsSync: (candidate) => known.has(candidate.toLowerCase()),
+    lookupOnPath: () => null,
+  };
+}
 
 function fakeDeps(
   present: readonly string[],
@@ -239,12 +283,100 @@ describe("localBinCandidates", () => {
     expect(candidates[candidates.length - 1]).toBe("/node_modules/.bin/" + TYPESCRIPT);
   });
 
-  test("adds .cmd shims on windows only", () => {
-    const windows = localBinCandidates("/proj", TYPESCRIPT, "win32");
-    expect(windows).toContain("/proj/node_modules/.bin/" + TYPESCRIPT);
-    expect(windows).toContain("/proj/node_modules/.bin/" + TYPESCRIPT + ".cmd");
-    const posix = localBinCandidates("/proj", TYPESCRIPT, "darwin");
-    expect(posix).not.toContain("/proj/node_modules/.bin/" + TYPESCRIPT + ".cmd");
+  test("on windows lists the launchable completions in PATHEXT order, never the sh script", () => {
+    // This replaces an older expectation that pinned [name, name.cmd]. A bare
+    // name first IS the bug: it let npm's extensionless sh script — which sits
+    // beside the .cmd in every npm bin dir — win over the only file Windows can
+    // start. The .ps1 is never a candidate either, even though PATHEXT lists it.
+    const env = { PATHEXT: ".COM;.EXE;.BAT;.CMD;.PS1" };
+    const bin = path.join("/proj", "node_modules", ".bin");
+    const windows = localBinCandidates("/proj", TYPESCRIPT, "win32", env);
+    expect(windows.slice(0, 4)).toEqual([
+      path.join(bin, `${TYPESCRIPT}.COM`),
+      path.join(bin, `${TYPESCRIPT}.EXE`),
+      path.join(bin, `${TYPESCRIPT}.BAT`),
+      path.join(bin, `${TYPESCRIPT}.CMD`),
+    ]);
+    expect(windows).not.toContain(path.join(bin, TYPESCRIPT));
+    expect(windows.some((candidate) => candidate.toLowerCase().endsWith(".ps1"))).toBe(false);
+  });
+
+  test("on windows a command already carrying a launchable suffix is not completed", () => {
+    const windows = localBinCandidates("/proj", "gopls.exe", "win32", {
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    });
+    // The nearest directory's slot is the name itself: no `gopls.exe.cmd`, and
+    // no bare `gopls` either.
+    expect(windows[0]).toBe(path.join("/proj", "node_modules", ".bin", "gopls.exe"));
+    expect(windows.every((candidate) => candidate.endsWith("gopls.exe"))).toBe(true);
+  });
+
+  test("off windows the bare name is still the whole story", () => {
+    const posix = localBinCandidates("/proj", TYPESCRIPT, "darwin", {
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    });
+    expect(posix[0]).toBe(path.join("/proj", "node_modules", ".bin", TYPESCRIPT));
+    expect(posix.every((candidate) => path.basename(candidate) === TYPESCRIPT)).toBe(true);
+  });
+});
+
+describe("resolveServerBinary on windows", () => {
+  test("resolves the .cmd shim from a project's node_modules/.bin", () => {
+    const root = tempRoot();
+    const bin = subDir(root, "node_modules", ".bin");
+    const script = makeFile(bin, TYPESCRIPT);
+    makeFile(bin, `${TYPESCRIPT}.ps1`);
+    const cmd = makeFile(bin, `${TYPESCRIPT}.cmd`);
+
+    // Both files exist, exactly as npm installs them: the extensionless sh
+    // script and the `.cmd` beside it. Only the shim can be started, so it is
+    // the only acceptable answer.
+    const resolved = resolveServerBinary(
+      server(),
+      root,
+      caseInsensitiveDeps([script, cmd]),
+      "win32",
+    );
+    // The candidate's spelling comes from PATHEXT (`.CMD` by default) while the
+    // install on disk is `.cmd`; Windows treats those as one file, which is why
+    // the assertion compares without case. What matters is that the shim — not
+    // the extensionless script beside it — is the answer.
+    expect(resolved?.toLowerCase()).toBe(cmd.toLowerCase());
+  });
+
+  test("completes an extensionless path-shaped command in its own directory", () => {
+    const root = tempRoot();
+    const tools = subDir(root, "tools");
+    makeFile(tools, "lsp-server");
+    // A deps seam that would answer "yes, that file exists" for anything: the
+    // extensionless configured path must still not be handed back, because
+    // Windows cannot start it and existsSync is the wrong question there.
+    const everyPathExists: ServerBinaryDeps = { existsSync: () => true, lookupOnPath: () => null };
+    const pathCommand = server({ command: "tools/lsp-server" });
+
+    expect(resolveServerBinary(pathCommand, root, everyPathExists, "win32")).toBeNull();
+
+    const cmd = makeFile(tools, "lsp-server.cmd");
+    expect(resolveServerBinary(pathCommand, root, everyPathExists, "win32")).toBe(cmd);
+  });
+
+  test("off windows both resolutions are unchanged", () => {
+    const root = tempRoot();
+    const bin = subDir(root, "node_modules", ".bin");
+    makeFile(bin, TYPESCRIPT);
+    const tools = subDir(root, "tools");
+    makeFile(tools, "lsp-server");
+    // The same "everything exists" seam: off Windows the extensionless path and
+    // the extensionless .bin entry are what the resolver has always returned.
+    const everyPathExists: ServerBinaryDeps = { existsSync: () => true, lookupOnPath: () => null };
+
+    expect(resolveServerBinary(server(), root, everyPathExists, "darwin")).toBe(
+      path.join(bin, TYPESCRIPT),
+    );
+    const pathCommand = server({ command: "tools/lsp-server" });
+    expect(resolveServerBinary(pathCommand, root, everyPathExists, "darwin")).toBe(
+      path.join(tools, "lsp-server"),
+    );
   });
 });
 

@@ -1,7 +1,6 @@
-import { spawn } from "node:child_process";
-
 import { buildAgentEnv } from "./processEnv.js";
 import type { ProviderStatus } from "./types.js";
+import { spawnLaunch, type LaunchDeps } from "./windowsLaunch.js";
 
 export const OPENCODE_BINARY = "opencode";
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
@@ -29,7 +28,14 @@ function compareVersions(left: string, right: string): number {
 export function classifyOpenCodeSpawnFailure(cause: unknown): ProviderStatus {
   const message = cause instanceof Error ? cause.message : String(cause);
   const lower = message.toLowerCase();
-  if (lower.includes("enoent") || lower.includes("notfound")) {
+  // A launch that could not resolve at all (windowsLaunch.ts) carries the
+  // missing-ness in its `code` rather than in a "spawn opencode ENOENT"
+  // message, so both are read: the same failure still means "not installed".
+  // SAFETY: a spawn failure — the child's "error" or the launch seam's
+  // stand-in for it — is Node's ErrnoException; the `code` string is all this
+  // reads.
+  const code = cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined;
+  if (code === "ENOENT" || lower.includes("enoent") || lower.includes("notfound")) {
     return { provider: "opencode", label: "OpenCode", available: false, authStatus: "unknown", readiness: "not-installed", message: "OpenCode CLI (`opencode`) is not installed or not on PATH." };
   }
   if (lower.includes("quarantine")) {
@@ -41,12 +47,33 @@ export function classifyOpenCodeSpawnFailure(cause: unknown): ProviderStatus {
   return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", message: "OpenCode could not be started." };
 }
 
-export async function probeOpenCodeVersion(): Promise<{ version?: string; error?: unknown }> {
+/** Read the CLI's version by running `opencode --version`. Resolves `{ error }`
+ *  for anything that stops the command from running — a launch the shared seam
+ *  cannot resolve (not on PATH on Windows, a shim it cannot start) surfaces the
+ *  same way a child's "error" event does, with the ENOENT code marking
+ *  "nothing there to run". `launch` injects the platform and spawn the launch
+ *  is resolved for/with (see windowsLaunch.ts's `spawnLaunch`); production
+ *  leaves it out. */
+export async function probeOpenCodeVersion(
+  launch?: LaunchDeps,
+): Promise<{ version?: string; error?: unknown }> {
   const env = await buildOpenCodeEnv();
   return new Promise((resolve) => {
-    const child = spawn(OPENCODE_BINARY, ["--version"], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const launched = spawnLaunch(
+      OPENCODE_BINARY,
+      ["--version"],
+      { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      launch,
+    );
+    if (!launched.ok) {
+      // The failure a child's "error" event would have reported, without a
+      // child: the caller classifies it exactly like a spawn error.
+      resolve({ error: launched.error });
+      return;
+    }
+    const child = launched.child;
     let stdout = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.once("error", (error) => resolve({ error }));
     child.once("close", () => resolve({ version: parseOpenCodeVersion(stdout) }));
   });

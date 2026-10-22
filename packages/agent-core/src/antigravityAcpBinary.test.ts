@@ -127,3 +127,117 @@ describe("resolveAntigravityAcpBinary", () => {
     expect(resolved?.executablePath).toBe(fs.realpathSync(exe));
   });
 });
+
+describe("resolveAntigravityAcpBinary on Windows", () => {
+  // A win32 lookup walks only the suffixes Windows can start, in a real
+  // directory: the install layout below is written to disk, never spawned.
+
+  const PATHEXT = ".COM;.EXE;.BAT;.CMD;.PS1";
+
+  /** npm's Windows install shape: the `.cmd` Windows starts, an extensionless sh
+   *  script it cannot, and a `.ps1` with no interpreter. */
+  function installNpmSiblings(dir: string, name: string): void {
+    fs.writeFileSync(path.join(dir, name), "#!/bin/sh\nexit 1\n");
+    fs.writeFileSync(path.join(dir, `${name}.cmd`), "@echo off\r\n");
+    fs.writeFileSync(path.join(dir, `${name}.ps1`), "# not launchable\n");
+  }
+
+  test("a bare name resolves the PATH .cmd with the harness beside it", () => {
+    const dir = tempDir();
+    installNpmSiblings(dir, "agy");
+    const harness = path.join(dir, "localharness_external.exe");
+    fs.writeFileSync(harness, "");
+    const resolved = resolveAntigravityAcpBinary({
+      userDataDir: tempDir(),
+      binaryPath: "agy",
+      env: { PATH: dir, PATHEXT },
+      platform: "win32",
+    });
+    expect(resolved?.source).toBe("override");
+    expect(resolved?.executablePath).toBe(path.join(dir, "agy.cmd"));
+    expect(resolved?.harnessPath).toBe(harness);
+  });
+
+  test("an extensionless configured path completes to its .cmd sibling", () => {
+    const dir = tempDir();
+    installNpmSiblings(dir, "agy");
+    const resolved = resolveAntigravityAcpBinary({
+      userDataDir: tempDir(),
+      binaryPath: path.join(dir, "agy"),
+      env: { PATH: "", PATHEXT },
+      platform: "win32",
+    });
+    expect(resolved?.source).toBe("override");
+    expect(resolved?.executablePath).toBe(path.join(dir, "agy.cmd"));
+    expect(resolved?.harnessPath).toBe(path.join(dir, "localharness_external.exe"));
+  });
+
+  test("a configured .ps1 with nothing launchable beside it resolves to null", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "agy.ps1"), "# not launchable\n");
+    expect(
+      resolveAntigravityAcpBinary({
+        userDataDir: tempDir(),
+        binaryPath: path.join(dir, "agy.ps1"),
+        env: { PATH: "", PATHEXT },
+        platform: "win32",
+      }),
+    ).toBeNull();
+  });
+
+  test("the default name probe finds a .cmd install as the last resort", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "agy_acp_server.cmd"), "@echo off\r\n");
+    fs.writeFileSync(path.join(dir, "agy_acp_server.ps1"), "# not launchable\n");
+    const resolved = resolveAntigravityAcpBinary({
+      userDataDir: tempDir(),
+      env: { PATH: dir, PATHEXT },
+      platform: "win32",
+    });
+    expect(resolved?.source).toBe("path");
+    expect(resolved?.executablePath).toBe(path.join(dir, "agy_acp_server.cmd"));
+    expect(resolved?.harnessPath).toBe(path.join(dir, "localharness_external.exe"));
+  });
+
+  test("the default name probe refuses a PATH holding only the sh script and .ps1", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "agy_acp_server"), "#!/bin/sh\nexit 1\n");
+    fs.writeFileSync(path.join(dir, "agy_acp_server.ps1"), "# not launchable\n");
+    // Neither is a program Windows can start, so there is no transport — the
+    // caller falls back to print mode instead of launching a file that fails.
+    expect(
+      resolveAntigravityAcpBinary({
+        userDataDir: tempDir(),
+        env: { PATH: dir, PATHEXT },
+        platform: "win32",
+      }),
+    ).toBeNull();
+  });
+
+  test("off Windows a configured path is still taken as given", () => {
+    const dir = tempDir();
+    const extensionless = makeExecutable(dir, "agy");
+    fs.writeFileSync(path.join(dir, "agy.cmd"), "@echo off\r\n");
+    // The extensionless file exists, so it is the answer — no suffix completion.
+    const resolved = resolveAntigravityAcpBinary({
+      userDataDir: tempDir(),
+      binaryPath: extensionless,
+      env: { PATH: "" },
+      platform: "darwin",
+    });
+    expect(resolved?.executablePath).toBe(path.resolve(extensionless));
+
+    // A lone .cmd sibling is not a completion off Windows: nothing exists at the
+    // configured path, so the answer stays null.
+    const other = tempDir();
+    fs.writeFileSync(path.join(other, "agy.cmd"), "@echo off\r\n");
+    expect(
+      resolveAntigravityAcpBinary({
+        userDataDir: tempDir(),
+        binaryPath: path.join(other, "agy"),
+        env: { PATH: "" },
+        platform: "darwin",
+      }),
+    ).toBeNull();
+  });
+});

@@ -1,8 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { killTree } from "../spawn.js";
+import { spawnLaunch, type LaunchDeps } from "../windowsLaunch.js";
 import { decodeDiagnostic } from "./decode.js";
 import { isJsonList, isJsonNumber, isRecord, jsonText, positiveInt } from "./json.js";
 import type {
@@ -129,20 +130,35 @@ export type LspSpawnFn = (
   opts: { cwd: string },
 ) => ChildProcessWithoutNullStreams;
 
-function defaultSpawn(
+// The production spawn: ask the shared Windows rules what to start, then start
+// exactly that. A language server installed by npm on Windows is a `.cmd` shim,
+// which CreateProcess refuses and spawn cannot find from the bare name, so the
+// resolved target is what runs — through cmd.exe when it is a batch file.
+// `deps` injects the platform and the spawn so a test can assert the exact
+// launch; callers leave it out. A launch that cannot happen throws the Error a
+// failed spawn would have reported (see `start` for how that surfaces).
+export function defaultSpawn(
   binary: string,
   args: readonly string[],
   opts: { cwd: string },
+  deps: LaunchDeps = {},
 ): ChildProcessWithoutNullStreams {
-  return spawn(binary, args, {
-    cwd: opts.cwd,
-    env: process.env,
-    windowsHide: true,
-    // Own process group on POSIX so shutdown signals the whole tree, not
-    // just the server parent.
-    detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+    binary,
+    args,
+    {
+      cwd: opts.cwd,
+      env: process.env,
+      windowsHide: true,
+      // Own process group on POSIX so shutdown signals the whole tree, not
+      // just the server parent.
+      detached: (deps.platform ?? process.platform) !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+    deps,
+  );
+  if (!launched.ok) throw launched.error;
+  return launched.child;
 }
 
 export interface LspClientOptions {
@@ -267,23 +283,8 @@ export class LspClient implements LspClientHandle {
     if (this.child !== null) {
       throw new LspClientError(`language server "${this.serverName}" is already started`);
     }
-    const child = this.spawnProcess(binary, args, { cwd: rootPath });
-    this.child = child;
     this.projectRoot = rootPath;
     this.settings = init?.settings ?? null;
-    child.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
-    // Stderr carries server logs, never frames: drain it so a chatty server
-    // cannot block on a full pipe, and keep nothing.
-    child.stderr.on("data", () => {
-      // Drained and discarded; the comment above is the whole policy.
-    });
-    child.stdin.on("error", () => this.handleExit());
-    child.on("error", (error: Error) => {
-      this.spawnFailure = error.message;
-      this.handleExit();
-    });
-    child.on("close", () => this.handleExit());
-
     const rootUri = pathToFileURL(rootPath).toString();
     const capabilities: LspJsonObject = {
       textDocument: {
@@ -312,13 +313,33 @@ export class LspClient implements LspClientHandle {
       params.initializationOptions = init.initializationOptions;
     }
     try {
+      // A launch kone refuses — nothing startable at the resolved path, or an
+      // argv cmd.exe cannot carry — throws here instead of emitting an "error"
+      // event: no child exists to emit it. The catch below reports it exactly as
+      // that handler would, so both failures reach the caller the same way.
+      const child = this.spawnProcess(binary, args, { cwd: rootPath });
+      this.child = child;
+      child.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
+      // Stderr carries server logs, never frames: drain it so a chatty server
+      // cannot block on a full pipe, and keep nothing.
+      child.stderr.on("data", () => {
+        // Drained and discarded; the comment above is the whole policy.
+      });
+      child.stdin.on("error", () => this.handleExit());
+      child.on("error", (error: Error) => {
+        this.spawnFailure = error.message;
+        this.handleExit();
+      });
+      child.on("close", () => this.handleExit());
+
       const timeoutMs = positiveInt(init?.initializeTimeoutMs, this.defaultTimeoutMs);
       const result = await this.sendRequest("initialize", params, timeoutMs, null);
       this.initializeResult = isRecord(result) ? result : null;
       this.sendNotification("initialized", {});
     } catch (error) {
-      // The handshake failed (timeout, error response, dead child): kill the
-      // process before surfacing, so the caller never inherits an orphan.
+      // The handshake failed (timeout, error response, dead child, refused
+      // launch): kill the process before surfacing, so the caller never
+      // inherits an orphan.
       await this.close();
       const detail = error instanceof Error ? error.message : "unknown error";
       const spawnDetail = this.spawnFailure ?? detail;
