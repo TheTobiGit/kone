@@ -23,6 +23,10 @@ type TerminalClaim = {
   owner: TerminalOwner;
   /** Unique per accepted sign-in request (main-generated). */
   token: string;
+  /** Cleanup the claiming run installs for the claim's lifetime — detaching the
+   *  watcher it keeps while it holds the terminal, say. Runs exactly once,
+   *  whichever path drops the claim. */
+  onRelease?: () => void;
 };
 
 const claims = new Map<string, TerminalClaim>();
@@ -42,17 +46,41 @@ export function claimTerminal(
 }
 
 /** Drop the claim only if THIS run still holds it. A refused or stale request
- *  passing a different token is a no-op. */
+ *  passing a different token is a no-op (and never touches a newer claim). */
 export function releaseTerminal(terminalId: string, token: string): void {
-  if (claims.get(terminalId)?.token !== token) return;
-  claims.delete(terminalId);
+  const claim = claims.get(terminalId);
+  if (claim?.token !== token) return;
+  dropClaim(terminalId, claim);
 }
 
 /** The one non-token release path: an explicit close of a terminal the IPC
  *  handler has already authorized `owner` to act on. */
 export function releaseClosedTerminal(terminalId: string, owner: TerminalOwner): void {
-  if (claims.get(terminalId)?.owner !== owner) return;
+  const claim = claims.get(terminalId);
+  if (claim?.owner !== owner) return;
+  dropClaim(terminalId, claim);
+}
+
+/** Attach a release hook to the claim held under `token`. Returns false when
+ *  that claim is already gone, so a stale run installs nothing for it. The hook
+ *  runs exactly once, when either release path drops the claim: a run can undo
+ *  what it installed for the claim without predicting which path wins. */
+export function onTerminalReleased(
+  terminalId: string,
+  token: string,
+  onRelease: () => void,
+): boolean {
+  const claim = claims.get(terminalId);
+  if (claim?.token !== token) return false;
+  claim.onRelease = onRelease;
+  return true;
+}
+
+/** Delete a claim, then run its hook. The delete comes first so a hook that
+ *  releases again (or throws) can't see, or resurrect, its own claim. */
+function dropClaim(terminalId: string, claim: TerminalClaim): void {
   claims.delete(terminalId);
+  claim.onRelease?.();
 }
 
 /** The window a terminal belongs to, or null for a shared/ordinary terminal.

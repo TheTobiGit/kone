@@ -12,7 +12,11 @@ import { buildAgentEnv } from "@kone/agent-core/processEnv.js";
 import type { ProviderKind } from "@kone/agent-core/types.js";
 import type { TerminalManager } from "../modules/terminal/TerminalManager.js";
 import type { TerminalSessionSnapshot } from "../modules/terminal/index.js";
-import { claimTerminal, releaseTerminal } from "../modules/terminal/ownership.js";
+import {
+  claimTerminal,
+  onTerminalReleased,
+  releaseTerminal,
+} from "../modules/terminal/ownership.js";
 
 // ── In-app provider sign-in: main-process controller ────────────────────────
 // The renderer asks for a provider, never a command: the login subcommand comes
@@ -210,14 +214,21 @@ class SignInRun {
       }
       // The session is gone but its transcript stays private to this window.
       // One self-removing watcher releases the claim when that window dies; a
-      // normal close releases it through the terminal IPC path instead, and
-      // this listener then becomes a harmless no-op (the token no longer
-      // matches a newer claim).
+      // normal close releases it through the terminal IPC path instead. The
+      // claim owns the watcher's detach, so whichever path releases first
+      // leaves no `destroyed` listener (and this run) behind on the sender.
       if (this.sender.isDestroyed()) {
         releaseTerminal(this.terminalId, this.token);
-      } else {
-        this.sender.once("destroyed", () => releaseTerminal(this.terminalId, this.token));
+        return;
       }
+      const onDestroyed = (): void => releaseTerminal(this.terminalId, this.token);
+      const watchesClaim = onTerminalReleased(this.terminalId, this.token, () =>
+        this.sender.off("destroyed", onDestroyed),
+      );
+      // The claim was released while this run waited in the queue, so there is
+      // nothing left for the watcher to guard.
+      if (!watchesClaim) return;
+      this.sender.once("destroyed", onDestroyed);
       return;
     }
     void this.manager

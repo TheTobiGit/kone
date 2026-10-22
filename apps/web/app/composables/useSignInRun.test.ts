@@ -23,7 +23,10 @@ const COMMAND: ProviderSignInCommand = {
   finish: "browser",
 };
 
-function snapshot(terminalId: string): TerminalSessionSnapshot {
+function snapshot(
+  terminalId: string,
+  overrides: Partial<TerminalSessionSnapshot> = {},
+): TerminalSessionSnapshot {
   return {
     terminalId,
     pid: 1,
@@ -37,6 +40,7 @@ function snapshot(terminalId: string): TerminalSessionSnapshot {
     exitSignal: null,
     hasRunningSubprocess: false,
     childCommandLabel: null,
+    ...overrides,
   };
 }
 
@@ -74,6 +78,10 @@ type HarnessOptions = {
   startGate?: () => Promise<void>;
   /** When set, `check` holds its answer until this latch resolves. */
   checkGate?: () => Promise<void>;
+  /** Output already folded into the snapshot `start` returns (it was printed
+   *  before the main process captured the snapshot). Emitted as an `output`
+   *  event whose sequence is at or below the snapshot's. */
+  preloaded?: string;
 };
 
 function harness(options: HarnessOptions = {}) {
@@ -120,11 +128,24 @@ function harness(options: HarnessOptions = {}) {
         return Promise.resolve({ ok: false, command, message: options.startMessage });
       }
       currentId = terminalId;
+      // Output printed before the snapshot was captured is in its history and
+      // carries a sequence at or below the snapshot's.
+      if (options.preloaded !== undefined) {
+        emit({
+          terminalId,
+          type: "output",
+          sequence: ++sequence,
+          data: options.preloaded,
+        });
+      }
       const result = {
         ok: true as const,
         terminalId,
         command,
-        snapshot: snapshot(terminalId),
+        snapshot: snapshot(terminalId, {
+          history: options.preloaded ?? "",
+          sequence,
+        }),
       };
       return options.startGate ? options.startGate().then(() => result) : Promise.resolve(result);
     },
@@ -164,6 +185,28 @@ function harness(options: HarnessOptions = {}) {
  *  exit path, so its result lands a turn later. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Attach a fake xterm sink to the run's session and return a reader for what
+ *  the attached transcript would hold: the replayed buffer plus live writes. */
+function transcript(h: ReturnType<typeof harness>): () => string {
+  const session = h.signIn.session.value;
+  if (!session) throw new Error("no session attached");
+  let text = "";
+  session.attach({
+    write: (data) => {
+      text += data;
+    },
+    reset: () => {
+      text = "";
+    },
+  });
+  return () => text;
+}
+
+/** How many times `needle` occurs in `text`, without overlapping matches. */
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
 // Every test installs its own stand-in, so none sees another's listeners.
 beforeEach(() => installDevBridge(null));
 
@@ -181,6 +224,46 @@ describe("useSignInRun", () => {
 
     h.output("Open this URL in your browser to sign in:\r\n  \x1b[4;36mhttps://cursor.com/login?x=1\x1b[0m\r\n");
     expect(h.signIn.state.value).toEqual({ phase: "waiting" });
+  });
+
+  test("output that lands before start() resolves reaches the transcript", async () => {
+    const gate = latch();
+    const h = harness({ startGate: () => gate.wait });
+
+    const starting = h.signIn.run();
+    await settle();
+    expect(h.signIn.phase.value).toBe("starting");
+
+    // The login URL prints after main captured the snapshot but before the
+    // start IPC resolves: the card already sees it (below), and the attached
+    // transcript must not lose it.
+    h.output("Open https://example.com/login\r\n");
+    gate.release();
+    await starting;
+
+    expect(h.signIn.phase.value).toBe("waiting");
+    const shown = transcript(h)();
+    expect(shown).toContain("Open https://example.com/login");
+    expect(occurrences(shown, "Open https://example.com/login")).toBe(1);
+  });
+
+  test("output already in the snapshot history is not shown twice", async () => {
+    const gate = latch();
+    const h = harness({
+      startGate: () => gate.wait,
+      preloaded: "Open https://example.com/login\r\n",
+    });
+
+    const starting = h.signIn.run();
+    await settle();
+    gate.release();
+    await starting;
+
+    expect(h.signIn.phase.value).toBe("waiting");
+    const shown = transcript(h)();
+    // It arrived in snapshot.history; its event (sequence <= snapshot.sequence)
+    // must not be replayed into the transcript on top of it.
+    expect(occurrences(shown, "Open https://example.com/login")).toBe(1);
   });
 
   test("exit 0 runs a check and verifies", async () => {
