@@ -55,7 +55,8 @@ const signIn = useSignInRun({ provider: props.provider, label });
 const { state, command, copied, display, finish, live, session, settled } = signIn;
 
 const { shown, closing, dismiss } = useModalExit();
-const { closed } = useProviderSignIn();
+const { closed, ticket } = useProviderSignIn();
+const myTicket = ticket();
 const { cue } = useSound();
 
 const cardEl = ref<HTMLElement | null>(null);
@@ -130,7 +131,7 @@ function requestClose(): void {
   // Kill the CLI now rather than after the exit plays: a login process must
   // not outlive the card that started it.
   void signIn.dispose();
-  dismiss(() => closed());
+  dismiss(() => closed(myTicket));
 }
 
 function onKeydown(event: KeyboardEvent): void {

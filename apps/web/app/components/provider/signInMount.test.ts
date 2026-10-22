@@ -112,7 +112,7 @@ test("the card hands its contained mode to the one shell that draws the scrim", 
 test("the card keeps its focus trap and capture-phase Escape", () => {
   const modalSource = source("../provider/ProviderSignInModal.vue");
   expect(modalSource).toContain('window.addEventListener("keydown", onKeydown, true)');
-  expect(modalSource).toContain("dismiss(() => closed())");
+  expect(modalSource).toContain("dismiss(() => closed(myTicket))");
 });
 
 test("the page shell hosts the app-level modal for the composer's tray", () => {
