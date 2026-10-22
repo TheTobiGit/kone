@@ -10,10 +10,10 @@ import { resolveClineBinary } from "./clineHome.js";
 import { resolveCursorBinary } from "./cursorHome.js";
 import { resolveDroidBinary } from "./droidHome.js";
 import {
+  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findOnPathEntry,
   findWindowsLaunchableIn,
   findWindowsLaunchableOnPath,
-  pathExtensions,
 } from "./processEnv.js";
 import { defaultProviderBinary } from "./providerMaintenance.js";
 import { ProviderKindSchema } from "./types.js";
@@ -212,21 +212,25 @@ function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean 
   }
 }
 
+/** The suffixes a Windows launch accepts, as a message spells them out:
+ *  ".exe, .com, .cmd or .bat". */
+function expectedWindowsLaunchSuffixes(): string {
+  const extensions = SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS;
+  return `${extensions.slice(0, -1).join(", ")} or ${extensions[extensions.length - 1]}`;
+}
+
 /** The sentence for "this exists, but not as a program Windows can start". The
- *  expected list is the user's own PATHEXT, so the message matches what
- *  resolution actually tried. */
-function notLaunchableOnWindows(file: string, env: NodeJS.ProcessEnv): string {
-  return `${file} isn't something Windows can run (expected one of ${pathExtensions(env).join(", ")}).`;
+ *  expected list is the fixed set node-pty can start, not the user's PATHEXT: a
+ *  `.ps1` the user's PATHEXT happens to list is still not launchable, so
+ *  quoting PATHEXT back at them would be a lie. */
+function notLaunchableOnWindows(file: string): string {
+  return `${file} isn't something Windows can run (expected ${expectedWindowsLaunchSuffixes()}).`;
 }
 
 /** The same for a bare name found on PATH: naming where it was found saves the
  *  user a `where codex` to work out which install the message is about. */
-function notLaunchableOnPathOnWindows(
-  file: string,
-  found: string,
-  env: NodeJS.ProcessEnv,
-): string {
-  return `${file} was found on your PATH at ${found}, but it isn't something Windows can run (expected one of ${pathExtensions(env).join(", ")}).`;
+function notLaunchableOnPathOnWindows(file: string, found: string): string {
+  return `${file} was found on your PATH at ${found}, but it isn't something Windows can run (expected ${expectedWindowsLaunchSuffixes()}).`;
 }
 
 /** The first PATH entry that answers to `file`'s name but is not launchable —
@@ -260,13 +264,16 @@ function findUnlaunchableOnWindowsPath(file: string, env: NodeJS.ProcessEnv): st
   return null;
 }
 
-/** A configured path on Windows. A name that already carries a PATHEXT
- *  extension is used exactly as configured; anything else — extensionless, or
- *  a non-PATHEXT suffix like `.ps1` — gets what cmd.exe gives a bare command:
- *  each PATHEXT extension appended in order, first existing file winning. That
- *  is how a user who pointed kone at npm's `codex` still signs in: the runnable
- *  `codex.cmd` beside it is what node-pty can start. The file is never launched
- *  as configured when Windows cannot start it. */
+/** A configured path on Windows. A name that already ends in a supported
+ *  suffix (`.exe`, `.com`, `.cmd`, `.bat`) is used exactly as configured,
+ *  whatever PATHEXT says — that is the Program Files case, where an explicit
+ *  `codex.exe` must not depend on the user's PATHEXT listing `.EXE` again.
+ *  Anything else — extensionless, a dotted name, or an unsupported suffix like
+ *  `.ps1` — gets what cmd.exe gives a bare command: each supported PATHEXT
+ *  extension appended in order, first existing file winning. That is how a user
+ *  who pointed kone at npm's `codex` still signs in: the runnable `codex.cmd`
+ *  beside it is what node-pty can start. The file is never launched as
+ *  configured when Windows cannot start it. */
 function locateConfiguredOnWindows(
   file: string,
   env: NodeJS.ProcessEnv,
@@ -277,17 +284,18 @@ function locateConfiguredOnWindows(
   // The configured file is there even though nothing launchable is: saying
   // "doesn't exist" would send the user looking for a missing install.
   if (fs.existsSync(resolved)) {
-    return { ok: false, message: notLaunchableOnWindows(file, env) };
+    return { ok: false, message: notLaunchableOnWindows(file) };
   }
   return { ok: false, message: `${file} doesn't exist.` };
 }
 
 /** Windows resolution, where "found" is not the same as "can be started". A
- *  bare name is looked up only among PATHEXT files (`findWindowsLaunchableOnPath`
- *  — never the extensionless npm sh script); a configured path may be
- *  extensionless and is then completed through PATHEXT. Anything that exists
- *  but is not launchable is a sentence, never a spawn: CreateProcess would fail
- *  and the user would see a terminal error instead of the reason. */
+ *  bare name is looked up only among launchable suffixes
+ *  (`findWindowsLaunchableOnPath` — never the extensionless npm sh script); a
+ *  configured path may be extensionless, or carry a suffix Windows cannot run,
+ *  and is then completed through the supported PATHEXT entries. Anything that
+ *  exists but is not launchable is a sentence, never a spawn: CreateProcess
+ *  would fail and the user would see a terminal error instead of the reason. */
 function locateOnWindows(
   file: string,
   env: NodeJS.ProcessEnv,
@@ -297,7 +305,7 @@ function locateOnWindows(
   if (!hit) {
     const unlaunchable = findUnlaunchableOnWindowsPath(file, env);
     if (unlaunchable) {
-      return { ok: false, message: notLaunchableOnPathOnWindows(file, unlaunchable, env) };
+      return { ok: false, message: notLaunchableOnPathOnWindows(file, unlaunchable) };
     }
     return { ok: false, message: `${file} isn't on your PATH.` };
   }

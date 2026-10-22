@@ -627,6 +627,108 @@ describe("resolveProviderSignInLaunch", () => {
     expect(launch.args).toBe(`/d /s /c "${cmd} ^^^"login^^^""`);
   });
 
+  // npm's full sibling set with a PATHEXT that also lists .PS1: the supported
+  // suffix must win, whichever npm install location the shim came from.
+  test("a PATHEXT listing .PS1 still resolves the .cmd shim of the sibling set", () => {
+    for (const parts of [
+      ["win-ps1-pathext-bin", "node_modules", ".bin"],
+      ["win-ps1-pathext-bin", "AppData", "Roaming", "npm"],
+    ]) {
+      const dir = binDir(...parts);
+      shim(dir, "codex");
+      const file = shim(dir, "codex.cmd");
+      shim(dir, "codex.ps1");
+
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: {},
+        env: { PATH: dir, PATHEXT: ".PS1;.CMD", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+        platform: "win32",
+      });
+
+      expect(launch.ok).toBe(true);
+      if (!launch.ok) throw new Error(launch.message);
+      // .PS1 is not something CreateProcess can start, so it is never picked and
+      // the .cmd goes through ComSpec. Hand-derived literal: no spaces here, so
+      // only the argument needs escaping.
+      expect(launch.file).toBe("C:\\Windows\\System32\\cmd.exe");
+      expect(launch.args).toBe(`/d /s /c "${file} ^^^"login^^^""`);
+    }
+  });
+
+  test("a configured .exe is launched as-is even when PATHEXT omits .EXE", () => {
+    const dir = binDir("win-explicit-exe-pathext");
+    const file = shim(dir, "codex.exe");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: file } },
+      env: { PATH: temp, PATHEXT: ".CMD", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    // A supported suffix is the whole answer: PATHEXT only orders the guesses
+    // for a name that has none.
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+  });
+
+  test("a configured .cmd still goes through ComSpec when PATHEXT omits .CMD", () => {
+    const dir = binDir("win-explicit-cmd-pathext");
+    const file = shim(dir, "codex.cmd");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: file } },
+      env: { PATH: temp, PATHEXT: ".EXE", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(launch.args).toBe(`/d /s /c "${file} ^^^"login^^^""`);
+  });
+
+  test("a configured .ps1 is refused even when PATHEXT lists .PS1", () => {
+    const dir = binDir("win-explicit-ps1-pathext");
+    const file = shim(dir, "codex.ps1");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: file } },
+      env: { PATH: temp, PATHEXT: ".PS1;.CMD", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(false);
+    if (launch.ok) throw new Error("expected a failure");
+    expect(launch.message).toContain(file);
+    expect(launch.message).toContain("isn't something Windows can run");
+    // Nothing was resolved to spawn.
+    expect("file" in launch).toBe(false);
+    expect("args" in launch).toBe(false);
+  });
+
+  test("a bare .exe on PATH is found even when PATHEXT omits .EXE", () => {
+    const dir = binDir("win-bare-exe-pathext");
+    const file = shim(dir, "codex.exe");
+
+    const launch = resolveProviderSignInLaunch({
+      provider: "codex",
+      settings: { codex: { binaryPath: "codex.exe" } },
+      env: { PATH: dir, PATHEXT: ".CMD", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      platform: "win32",
+    });
+
+    expect(launch.ok).toBe(true);
+    if (!launch.ok) throw new Error(launch.message);
+    expect(launch.file).toBe(file);
+    expect(launch.args).toEqual(["login"]);
+  });
+
   test("a configured path Windows can't run says so instead of launching it", () => {
     const dir = binDir("win-explicit-bare");
     const bare = shim(dir, "codex");

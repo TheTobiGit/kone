@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findOnPath,
   findWindowsLaunchableIn,
   findWindowsLaunchableOnPath,
   mergeWindowsPath,
   pathExtensions,
   windowsCliDirs,
+  windowsLaunchExtensions,
 } from "./processEnv.js";
 
 function tempDir(): string {
@@ -99,6 +101,32 @@ describe("pathExtensions", () => {
   });
 });
 
+describe("windowsLaunchExtensions", () => {
+  test("the supported suffixes are the ones Windows can start directly", () => {
+    expect([...SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS]).toEqual([".exe", ".com", ".cmd", ".bat"]);
+  });
+
+  test("keeps only the supported suffixes, in PATHEXT order", () => {
+    expect(windowsLaunchExtensions({ PATHEXT: ".PS1;.CMD" })).toEqual([".CMD"]);
+    expect(windowsLaunchExtensions({ PATHEXT: ".BAT;.VBS;.EXE" })).toEqual([".BAT", ".EXE"]);
+  });
+
+  test("compares case-insensitively under any PATHEXT key casing", () => {
+    expect(windowsLaunchExtensions({ PathExt: ".ps1;.CmD" })).toEqual([".CmD"]);
+    expect(windowsLaunchExtensions({ pathext: ".Ps1;.Exe" })).toEqual([".Exe"]);
+  });
+
+  test("falls back to cmd.exe's default order when PATHEXT lists none", () => {
+    expect(windowsLaunchExtensions({})).toEqual([".COM", ".EXE", ".BAT", ".CMD"]);
+    expect(windowsLaunchExtensions({ PATHEXT: ".PS1;.VBS" })).toEqual([
+      ".COM",
+      ".EXE",
+      ".BAT",
+      ".CMD",
+    ]);
+  });
+});
+
 describe("findWindowsLaunchableIn", () => {
   function makeFile(dir: string, name: string): string {
     const file = path.join(dir, name);
@@ -127,6 +155,34 @@ describe("findWindowsLaunchableIn", () => {
     const dir = tempDir();
     expect(findWindowsLaunchableIn(dir, "codex", {})).toBeNull();
     expect(findWindowsLaunchableIn(path.join(dir, "missing"), "codex", {})).toBeNull();
+  });
+
+  test("a .PS1 in PATHEXT is never a launch candidate", () => {
+    const dir = tempDir();
+    makeFile(dir, "codex");
+    makeFile(dir, "codex.ps1");
+    const cmd = makeFile(dir, "codex.cmd");
+
+    expect(findWindowsLaunchableIn(dir, "codex", { PATHEXT: ".PS1;.CMD" })?.found).toBe(cmd);
+    expect(findWindowsLaunchableIn(dir, "codex.ps1", { PATHEXT: ".PS1;.CMD" })).toBeNull();
+  });
+
+  test("an explicit supported suffix is used as-is whatever PATHEXT says", () => {
+    const dir = tempDir();
+    const exe = makeFile(dir, "codex.exe");
+    const cmd = makeFile(dir, "codex.cmd");
+
+    expect(findWindowsLaunchableIn(dir, "codex.exe", { PATHEXT: ".CMD" })?.found).toBe(exe);
+    expect(findWindowsLaunchableIn(dir, "codex.cmd", { PATHEXT: ".EXE" })?.found).toBe(cmd);
+  });
+
+  test("a dotted name without a supported suffix is still completed", () => {
+    const dir = tempDir();
+    const completed = makeFile(dir, "foo.bar.cmd");
+
+    expect(findWindowsLaunchableIn(dir, "foo.bar", { PATHEXT: ".PS1;.CMD" })?.found).toBe(
+      completed,
+    );
   });
 });
 
@@ -180,6 +236,15 @@ describe("findWindowsLaunchableOnPath", () => {
 
     expect(findWindowsLaunchableOnPath("codex.cmd", { PATH: dir })?.found).toBe(cmd);
     expect(findWindowsLaunchableOnPath("codex.exe", { PATH: dir })).toBeNull();
+  });
+
+  test("a bare .exe is found even when PATHEXT omits it", () => {
+    const dir = tempDir();
+    const exe = makeFile(dir, "codex.exe");
+
+    expect(findWindowsLaunchableOnPath("codex.exe", { PATH: dir, PATHEXT: ".CMD" })?.found).toBe(
+      exe,
+    );
   });
 
   test("an extensionless or .ps1-only match is not launchable", () => {
