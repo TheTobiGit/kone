@@ -227,6 +227,46 @@ describe("snoozeWhenLimited", () => {
   });
 });
 
+describe("a thread that fell back to another provider", () => {
+  // The thread was started on Claude, then routed to Codex, which hit the
+  // limit: Codex's toggles apply, not the original provider's.
+  test("the limiting provider's toggles decide the snooze and the resume", async () => {
+    const id = "toggle-fallback-limit";
+    store.ensureThread({ threadId: id, provider: "claudeAgent", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    patchProviderSettings("codex", { resumeAtReset: false, snoozeWhenLimited: true });
+    const resetAt = Date.now() + 60_000;
+
+    svc.setThreadLimited(id, resetAt, "codex");
+
+    expect(store.threadMeta(id)?.snoozedUntil).toBe(resetAt);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+
+  test("the due-time recheck reads the limiting provider's resumeAtReset", async () => {
+    const id = "toggle-fallback-due";
+    store.ensureThread({ threadId: id, provider: "claudeAgent", projectPath: "/tmp" });
+    const adapter = new Adapter();
+    const svc = build(adapter);
+    const dispatcher = initThreadDispatcher({ service: svc, store, broadcast: () => {} });
+    svc.setThreadLimited(id, Date.now() + 60_000, "codex");
+    const [row] = store.listContinuationsForThread(id);
+    expect(row).toBeDefined();
+    patchProviderSettings("codex", { resumeAtReset: false });
+    // Bring the pending row due now, keeping what it recorded.
+    store.cancelContinuationsForThread(id);
+    store.scheduleContinuation({ threadId: id, kind: "limit-reset", dueAt: 0, payloadJson: row?.payloadJson });
+
+    await dispatcher.dispatchDueContinuations();
+
+    expect(adapter.sent).toEqual([]);
+    expect(store.listContinuationsForThread(id)).toEqual([]);
+    await svc.stopAll();
+  });
+});
+
 describe("provider settings through the service", () => {
   test("a patch of both toggles is what the snapshot reads back", async () => {
     const adapter = new Adapter();

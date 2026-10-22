@@ -49,7 +49,7 @@ import type {
   TurnSendOptions,
   TurnStartResult,
 } from "./types.js";
-import { StartCancelled, turnLabel } from "./types.js";
+import { ProviderKindSchema, StartCancelled, turnLabel } from "./types.js";
 import { getIrcMailbox, type IrcMailbox } from "./gateway/tools/irc.js";
 import {
   describeCopiedFiles,
@@ -142,6 +142,25 @@ const ContinuationPayloadSchema = z.object({
   prompt: z.string().min(1),
   recordedAt: z.number().optional(),
 });
+
+/** What a limit-reset row records: the provider that hit the limit, whose
+ *  resumeAtReset the due-time recheck reads. Rows from before it was recorded
+ *  read as none. */
+const LimitResumePayloadSchema = z.object({ provider: ProviderKindSchema });
+
+/** The provider a limit-reset row recorded, or null for an older row. */
+function limitResumeProvider(payloadJson: string | null | undefined): ProviderKind | null {
+  if (!payloadJson) return null;
+  let raw: unknown;
+  try {
+    // SAFETY: JSON.parse yields only plain JSON values, which the schema parses.
+    raw = JSON.parse(payloadJson) as unknown;
+  } catch {
+    return null;
+  }
+  const parsed = LimitResumePayloadSchema.safeParse(raw);
+  return parsed.success ? parsed.data.provider : null;
+}
 
 function parseContinuationPayload(
   json: string | null,
@@ -1164,8 +1183,11 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       // resume is stale.
       if ((meta.limitedAt ?? null) === null) return { cancel: "limit-cleared" };
       // Read fresh: the toggle can be switched off while the resume waits out
-      // a long reset.
-      if (!resumeAtResetFor(meta.provider)) return { cancel: "resume-off" };
+      // a long reset. The provider that hit the limit owns the toggle; rows
+      // from before it was recorded fall back to the thread's provider.
+      if (!resumeAtResetFor(limitResumeProvider(row.payloadJson) ?? meta.provider)) {
+        return { cancel: "resume-off" };
+      }
       return { prompt: LIMIT_RESUME_PROMPT };
     }
     const payload = parseContinuationPayload(row.payloadJson);
