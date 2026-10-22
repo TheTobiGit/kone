@@ -241,6 +241,9 @@ function quarantine(file: string, reason: string): SettingsEnvelope {
   return defaultEnvelope();
 }
 
+/** The best-effort write for the migration write-back on first read: an upgrade
+ *  that cannot be saved just happens again on the next read. User writes go
+ *  through {@link commit}, which surfaces the failure. */
 function persist(envelope: SettingsEnvelope): void {
   try {
     writeFileAtomicSync(settingsFilePath(), JSON.stringify(envelope, null, 2));
@@ -326,23 +329,32 @@ export function onProviderSettingsChanged(
   };
 }
 
-/** The single write path: advance the revision, persist, then announce. Every
- *  setter routes through here, so a renderer's revision is a faithful count of
- *  the settings it has yet to see. */
+/** The single write path: persist, then advance the revision and announce.
+ *  Every setter routes through here, so a renderer's revision is a faithful
+ *  count of the settings it has yet to see.
+ *
+ *  The file is the source of truth, so it is written FIRST: a write that fails
+ *  leaves the cache, the revision and every listener untouched and throws, and
+ *  the caller's rejection then agrees with what a reload will read. */
 function commit(
   settings: ProviderSettingsMap,
   flags: { legacyRendererImported?: boolean } = {},
 ): SettingsEnvelope {
   const current = readEnvelope();
-  cache = {
+  const next: SettingsEnvelope = {
     version: CURRENT_VERSION,
     revision: current.revision + 1,
     settings,
     legacyRendererImported: flags.legacyRendererImported ?? current.legacyRendererImported,
   };
-  // In-memory is authoritative even if the disk write fails, so the UI still
-  // reflects the change for the rest of the session.
-  persist(cache);
+  try {
+    writeFileAtomicSync(settingsFilePath(), JSON.stringify(next, null, 2));
+  } catch (error) {
+    throw new Error(
+      `Provider settings could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  cache = next;
   const snapshot = snapshotOf(cache);
   for (const listener of listeners) {
     try {
@@ -369,6 +381,27 @@ export function writeProviderSettings(
   if (clean) next[provider] = clean;
   else delete next[provider];
   return commit(next).settings;
+}
+
+/** Merge just the fields a renderer changed onto the provider's CURRENT entry
+ *  and persist the result. `setProviderSettings` replaces the entry, so two
+ *  windows editing different fields of one provider would undo each other; a
+ *  patch is built from what the window changed, not from its snapshot. A field
+ *  whose value is `undefined` is removed. Returns the updated full map. */
+export function patchProviderSettings(
+  provider: ProviderKind,
+  patch: ProviderConfig,
+): ProviderSettingsMap {
+  // A provider with no entry is fully enabled, so a patch creates that entry
+  // rather than a half-populated one.
+  const merged: ProviderConfig = { ...(readProviderSettings()[provider] ?? { enabled: true }) };
+  for (const key of ProviderConfigWire.keyof().options) {
+    if (!(key in patch)) continue;
+    const value = patch[key];
+    if (value === undefined) delete merged[key];
+    else Object.assign(merged, { [key]: value });
+  }
+  return writeProviderSettings(provider, merged);
 }
 
 /** Whether a provider is enabled in app settings (opt-out; default is true). */

@@ -92,6 +92,7 @@ import {
   importLegacyRendererSettings,
   isProviderEnabled,
   onProviderSettingsChanged as subscribeProviderSettings,
+  patchProviderSettings as patchProviderSettingsInStore,
   readProviderSettings,
   readProviderSettingsSnapshot,
   setProviderHandoffTokenCap as persistProviderHandoffTokenCap,
@@ -1094,6 +1095,21 @@ export class AgentService {
       void this.discover();
     }
     return next;
+  }
+
+  /** Merge one provider's changed fields (an `undefined` value clears that
+   *  field) into what main last wrote, and apply the result to its live adapter
+   *  exactly as setProviderSettings does. A renderer sends only what it
+   *  changed, so two windows never undo each other. Returns the mirror the
+   *  renderers read. */
+  patchProviderSettings(provider: ProviderKind, patch: ProviderConfig): ProviderSettingsSnapshot {
+    const wasEnabled = isProviderEnabled(provider);
+    const next = patchProviderSettingsInStore(provider, patch);
+    this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
+    if (wasEnabled !== isProviderEnabled(provider, next)) {
+      void this.discover();
+    }
+    return this.getProviderSettingsSnapshot();
   }
 
   /** Persist one provider's handoff history cap (in tokens). Returns the full

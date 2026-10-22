@@ -768,6 +768,11 @@ export function registerAgentIpc(): void {
     (_event, provider: ProviderKind, config: ProviderConfig) =>
       svc.setProviderSettings(provider, config),
   );
+  ipcMain.handle(
+    "agent:patch-settings",
+    (_event, provider: ProviderKind, patch: ProviderConfig) =>
+      svc.patchProviderSettings(provider, patch),
+  );
 
   // The renderer mirror of the settings file: a snapshot plus a subscription
   // (agent:settings-changed) rather than a copy it has to keep in sync. The

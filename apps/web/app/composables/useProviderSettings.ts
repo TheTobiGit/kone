@@ -37,7 +37,12 @@ const LEGACY_HIDDEN_KEY = "kone.models.hidden";
 type SettingsBridge = Partial<
   Pick<
     KoneAgentApi,
-    "getSettings" | "setSettings" | "getSettingsSnapshot" | "importLegacySettings" | "onSettingsChanged"
+    | "getSettings"
+    | "setSettings"
+    | "patchSettings"
+    | "getSettingsSnapshot"
+    | "importLegacySettings"
+    | "onSettingsChanged"
   >
 >;
 
@@ -101,9 +106,11 @@ function bridge(): SettingsBridge | undefined {
 }
 
 /** Apply a snapshot from main, newest wins. A push can overtake the reply to a
- *  read, so anything at or below the revision already applied is stale. */
-function apply(snapshot: ProviderSettingsSnapshot): void {
-  if (snapshot.revision <= revision.value) return;
+ *  read, so anything at or below the revision already applied is stale — unless
+ *  the caller re-read main after a failed write, where the file legitimately
+ *  never moved. */
+function apply(snapshot: ProviderSettingsSnapshot, force = false): void {
+  if (!force && snapshot.revision <= revision.value) return;
   settings.value = snapshot.settings;
   revision.value = snapshot.revision;
 }
@@ -151,24 +158,31 @@ export function useProviderSettings() {
   async function load(force = false): Promise<void> {
     if (loaded && !force) return;
     const api = bridge();
+    // An import that didn't land keeps the legacy keys readable for a later
+    // load(); nothing retries on its own.
+    let settled = true;
     if (api?.getSettingsSnapshot) {
       listen(api);
       try {
         const snapshot = await api.getSettingsSnapshot();
-        if (snapshot.legacyImportPending) {
-          if (api.importLegacySettings) {
-            apply(await api.importLegacySettings(readLegacySettings()));
-            dropLegacySettings();
-          } else {
-            // No importer to hand it to: show what main has and leave the keys
-            // for a build that can.
-            apply(snapshot);
+        if (snapshot.legacyImportPending && api.importLegacySettings) {
+          // Show main's store until the import is saved, so the pane never
+          // shows choices the file doesn't have.
+          apply(snapshot);
+          try {
+            const imported = await api.importLegacySettings(readLegacySettings());
+            apply(imported);
+            if (imported.legacyImportPending) settled = false;
+            else dropLegacySettings();
+          } catch {
+            // Not saved: the keys are still the only copy of those choices.
+            settled = false;
           }
         } else {
-          // Another window's import already landed. Leftovers are stale copies
-          // of the store, not settings to keep.
           apply(snapshot);
-          dropLegacySettings();
+          // Pending with no importer means a build that can still needs the
+          // keys; once imported, leftovers are stale copies of the store.
+          if (!snapshot.legacyImportPending) dropLegacySettings();
         }
       } catch {
         // Keep the current mirror; the next push or reload settles it.
@@ -181,7 +195,7 @@ export function useProviderSettings() {
         // Keep the current mirror.
       }
     }
-    loaded = true;
+    loaded = settled;
   }
 
   /** The configured binary path for a provider, or "" when it runs on default. */
@@ -190,13 +204,31 @@ export function useProviderSettings() {
   }
 
   /** Persist one provider's change: show it now, write through the bridge, and
-   *  let the push that follows confirm it. */
+   *  let the push that follows confirm it. Only the changed fields reach main,
+   *  so a second window editing another field never gets undone. */
   async function write(provider: ProviderKind, patch: ProviderConfig): Promise<void> {
     const next = { ...settings.value[provider], ...patch };
     settings.value = { ...settings.value, [provider]: next };
 
     const api = bridge();
+    if (api?.patchSettings) {
+      try {
+        apply(await api.patchSettings(provider, patch));
+      } catch {
+        // Nothing was saved, so the revision didn't move either: force the read
+        // back past the guard to take the optimism off the pane.
+        if (api.getSettingsSnapshot) {
+          try {
+            apply(await api.getSettingsSnapshot(), true);
+          } catch {
+            // Unreadable too; the next push or reload settles it.
+          }
+        }
+      }
+      return;
+    }
     if (!api?.setSettings) return;
+    // A preload from before patchSettings: the whole entry is all it can take.
     try {
       const written = await api.setSettings(provider, next);
       // Without the push, the reply to the write is the only authoritative copy.
