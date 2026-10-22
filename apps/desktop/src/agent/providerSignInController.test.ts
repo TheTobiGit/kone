@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { ProviderStatus } from "@kone/agent-core/types.js";
+import type { ProviderKind, ProviderStatus } from "@kone/agent-core/types.js";
 import {
   createProviderSignInController,
   type SignInNavigationDetails,
@@ -14,9 +14,9 @@ import { terminalOwner } from "../modules/terminal/ownership.js";
 import type { TerminalOpenInput, TerminalSessionSnapshot } from "../modules/terminal/types.js";
 
 // The sign-in request lifecycle, driven through fake WebContents and a fake
-// terminal manager: ownership is claimed at acceptance, a queued request that
-// loses its document never spawns, and every listener is released on every
-// outcome.
+// terminal manager: ids are main-generated, ownership is claimed at acceptance
+// under a per-run token, a queued request that loses its document never spawns,
+// and every listener is released on every outcome.
 
 const temp = mkdtempSync(path.join(os.tmpdir(), "kone-signin-ipc-"));
 const binary = path.join(temp, "fake-codex");
@@ -126,8 +126,15 @@ function fakeManager(): SignInTerminalManager & {
   };
 }
 
-function controllerFor(manager: SignInTerminalManager) {
-  return createProviderSignInController({
+/** A deterministic id factory for one controller; tests that assert on ids use
+ *  this, while the "main generates ids" test uses the real default. */
+function ids(...values: string[]): () => string {
+  let index = 0;
+  return () => values[index++] ?? `signin-extra-${index}`;
+}
+
+function controllerFor(manager: SignInTerminalManager, terminalIdFactory?: () => string) {
+  const base = {
     manager,
     svc: {
       getProviderSettings: () => ({ codex: { binaryPath: binary } }),
@@ -135,25 +142,35 @@ function controllerFor(manager: SignInTerminalManager) {
     },
     // Skip the login-shell probe; the resolver only needs PATH.
     buildEnv: () => Promise.resolve({ PATH: temp }),
-  });
+  };
+  return createProviderSignInController(
+    terminalIdFactory ? { ...base, terminalIdFactory } : base,
+  );
 }
 
-function start(controller: ReturnType<typeof controllerFor>, terminalId: string, sender: SignInSender) {
-  return controller.start({ provider: "codex", terminalId }, sender);
+function start(
+  controller: ReturnType<typeof controllerFor>,
+  sender: SignInSender,
+  provider: ProviderKind = "codex",
+) {
+  return controller.start({ provider }, sender);
 }
 
 describe("provider sign-in request lifecycle", () => {
   test("accepting a start claims the terminal for its window before the spawn", async () => {
     const manager = fakeManager();
     const sender = fakeSender();
-    const controller = controllerFor(manager);
+    const controller = controllerFor(manager, ids("signin-1"));
 
-    const pending = start(controller, "signin-1", sender);
+    const pending = start(controller, sender);
     expect(terminalOwner("signin-1")).toBe(sender);
     const result = await pending;
 
     expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.terminalId).toBe("signin-1");
     expect(manager.spawns).toHaveLength(1);
+    expect(manager.spawns[0]?.input.terminalId).toBe("signin-1");
     // Sign-in's env is complete: it must replace, not merge.
     expect(manager.spawns[0]?.completeEnv).toBe(true);
     // The run keeps its lifecycle listeners until the session ends.
@@ -162,7 +179,8 @@ describe("provider sign-in request lifecycle", () => {
 
     manager.endSession("signin-1");
     expect(sender.navigationListeners()).toBe(0);
-    expect(sender.destroyedListeners()).toBe(0);
+    // One self-removing claim-release watcher remains for the kept claim.
+    expect(sender.destroyedListeners()).toBe(1);
     // The exited terminal — and its in-memory transcript — still belongs to
     // its window until that window closes it.
     expect(terminalOwner("signin-1")).toBe(sender);
@@ -170,11 +188,33 @@ describe("provider sign-in request lifecycle", () => {
     expect(terminalOwner("signin-1")).toBeNull();
   });
 
-  test("a reload after the spawn kills the live login immediately", async () => {
+  test("ids are main-generated, unique, and any renderer-supplied id is ignored", async () => {
     const manager = fakeManager();
     const sender = fakeSender();
     const controller = controllerFor(manager);
-    const result = await start(controller, "signin-1", sender);
+
+    const first = await controller.start({ provider: "codex", terminalId: "renderer-choice" }, sender);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.message);
+    expect(first.terminalId).toMatch(/^signin-[0-9a-f-]{36}$/);
+    expect(first.terminalId).not.toBe("renderer-choice");
+    expect(terminalOwner("renderer-choice")).toBeNull();
+    expect(manager.spawns[0]?.input.terminalId).toBe(first.terminalId);
+
+    manager.endSession(first.terminalId);
+    sender.destroy();
+
+    const second = await controller.start({ provider: "codex" }, fakeSender());
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error(second.message);
+    expect(second.terminalId).not.toBe(first.terminalId);
+  });
+
+  test("a reload after the spawn kills the live login immediately", async () => {
+    const manager = fakeManager();
+    const sender = fakeSender();
+    const controller = controllerFor(manager, ids("signin-1"));
+    const result = await start(controller, sender);
     expect(result.ok).toBe(true);
 
     sender.reload();
@@ -208,12 +248,13 @@ describe("provider sign-in request lifecycle", () => {
         }
         return { PATH: temp };
       },
+      terminalIdFactory: ids("signin-1", "signin-2"),
     });
 
     // The first start holds the queue inside its env read; the second is
     // accepted (and watched) while it waits.
-    const one = start(controller, "signin-1", first);
-    const two = start(controller, "signin-2", second);
+    const one = start(controller, first);
+    const two = start(controller, second);
     expect(terminalOwner("signin-2")).toBe(second);
     expect(second.navigationListeners()).toBe(1);
 
@@ -259,10 +300,11 @@ describe("provider sign-in request lifecycle", () => {
         }
         return { PATH: temp };
       },
+      terminalIdFactory: ids("signin-1", "signin-2"),
     });
 
-    const one = start(controller, "signin-1", first);
-    const two = start(controller, "signin-2", second);
+    const one = start(controller, first);
+    const two = start(controller, second);
     second.destroy();
     releaseEnv();
 
@@ -284,7 +326,7 @@ describe("provider sign-in request lifecycle", () => {
     sender.destroy();
     const controller = controllerFor(manager);
 
-    const result = await start(controller, "signin-1", sender);
+    const result = await start(controller, sender);
 
     expect(result.ok).toBe(false);
     expect(manager.spawns).toEqual([]);

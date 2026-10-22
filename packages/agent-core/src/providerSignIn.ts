@@ -41,20 +41,23 @@ export type ProviderSignInCommand = {
   finish: ProviderSignInFinish;
 };
 
-/** A renderer's request to start a login in a PTY it minted. Mirrors the
- *  renderer contract. */
+/** A renderer's request to start a login. The PTY id is MAIN-generated (see
+ *  providerSignInController), so the renderer names only the provider and the
+ *  initial grid; any `terminalId` here is IGNORED (kept optional for the
+ *  browser-only dev stand-in). */
 export type ProviderSignInStartInput = {
   provider: ProviderKind;
-  terminalId: string;
+  /** @deprecated Ignored by the main process; sign-in ids are main-generated. */
+  terminalId?: string;
   cols?: number;
   rows?: number;
 };
 
 /** Runtime schema for a start request — the IPC boundary's one gate. Only a
- *  known provider and a non-empty renderer-minted PTY id get through. */
+ *  known provider and optional grid size get through; an unknown `terminalId`
+ *  is stripped, never trusted. */
 export const ProviderSignInStartInputSchema: z.ZodType<ProviderSignInStartInput> = z.object({
   provider: ProviderKindSchema,
-  terminalId: z.string().trim().min(1),
   cols: z.number().int().positive().optional(),
   rows: z.number().int().positive().optional(),
 });
@@ -232,22 +235,55 @@ function signInEnv(base: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+/** Words that a POSIX shell runs unchanged: no whitespace, quoting, expansion
+ *  or control characters. Kept deliberately narrow (`$`, backtick, `'`, `"`,
+ *  `;`, `&`, `(`, `)`, `|`, globs and `~`/`=`/`%` expansions all quote). */
+const SAFE_POSIX_WORD = /^[A-Za-z0-9_@:./-]+$/;
+/** The same for PowerShell: a Windows path's backslashes and drive colon are
+ *  ordinary, but `$`, quotes, spaces and cmd/PowerShell metacharacters are not. */
+const SAFE_WINDOWS_WORD = /^[A-Za-z0-9_@:./\\-]+$/;
+
 /** Shell-quote one word for the command the user sees and copies. Spawning
  *  never parses this text — node-pty gets the executable and argv array
  *  directly — but a configured `binaryPath` may contain spaces, quotes or
  *  metacharacters, and an unquoted display would paste as a different command
- *  (or run the wrong thing). Simple tokens stay bare so the common case reads
+ *  (or run the wrong thing). Simple words stay bare so the common case reads
  *  exactly as before.
  *
- *  POSIX shells get single quotes with the `'\''` escape; Windows gets double
- *  quotes with embedded quotes backslash-escaped. */
+ *  POSIX: single quotes, with an embedded `'` written as `'\''`. Nothing inside
+ *  single quotes is expanded — `$`, backticks and `"` stay literal.
+ *  Windows/PowerShell: single quotes too, with `'` doubled. PowerShell does not
+ *  expand `$` inside single quotes either. */
 export function shellQuote(value: string, platform: NodeJS.Platform = process.platform): string {
   if (platform === "win32") {
-    if (/^[A-Za-z0-9_@%+=:,./\\-]+$/.test(value)) return value;
-    return `"${value.replace(/"/g, '\\"')}"`;
+    if (SAFE_WINDOWS_WORD.test(value)) return value;
+    return `'${value.replace(/'/g, "''")}'`;
   }
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  if (SAFE_POSIX_WORD.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The command-position word. PowerShell needs the call operator `&` before a
+ *  quoted executable path, otherwise a leading `'C:\…'` is a string
+ *  expression, not a program to run. POSIX needs nothing extra. */
+export function shellQuoteExecutable(
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const quoted = shellQuote(file, platform);
+  if (platform === "win32" && quoted !== file) return `& ${quoted}`;
+  return quoted;
+}
+
+/** The complete copy/paste line: executable in command position, then argv. */
+export function formatLoginCommand(
+  file: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return [shellQuoteExecutable(file, platform), ...args.map((arg) => shellQuote(arg, platform))].join(
+    " ",
+  );
 }
 
 /** Build the dialog's command row from a provider's login spec — the one place
@@ -256,13 +292,11 @@ function commandFromSpec(
   provider: ProviderKind,
   spec: LoginSpec,
   settings: ProviderSettingsMap,
+  platform: NodeJS.Platform,
 ): ProviderSignInCommand {
-  const display = [binaryFor(provider, settings), ...spec.args]
-    .map((part) => shellQuote(part))
-    .join(" ");
   return {
     provider,
-    display,
+    display: formatLoginCommand(binaryFor(provider, settings), spec.args, platform),
     cwd: "~",
     finish: spec.finish,
   };
@@ -281,10 +315,11 @@ function signInBanner(command: ProviderSignInCommand): string {
 export function resolveProviderSignInCommand(
   provider: ProviderKind,
   settings: ProviderSettingsMap,
+  platform: NodeJS.Platform = process.platform,
 ): ProviderSignInCommand | null {
   const spec = LOGIN_COMMANDS[provider];
   if (!spec) return null;
-  return commandFromSpec(provider, spec, settings);
+  return commandFromSpec(provider, spec, settings, platform);
 }
 
 /** Resolve everything needed to spawn the login: the executable, its args, the
@@ -295,6 +330,8 @@ export function resolveProviderSignInLaunch(input: {
   provider: ProviderKind;
   settings: ProviderSettingsMap;
   env: NodeJS.ProcessEnv;
+  /** For the display/copy line only; the platform that will paste it. */
+  platform?: NodeJS.Platform;
 }): ProviderSignInLaunch {
   const spec = LOGIN_COMMANDS[input.provider];
   if (!spec) {
@@ -304,7 +341,12 @@ export function resolveProviderSignInLaunch(input: {
       message: "Droid signs in on its first run — it has no login command.",
     };
   }
-  const command = commandFromSpec(input.provider, spec, input.settings);
+  const command = commandFromSpec(
+    input.provider,
+    spec,
+    input.settings,
+    input.platform ?? process.platform,
+  );
 
   const file = launchBinary(input.provider, input.settings, input.env);
   const located = locateBinary(file, input.env);

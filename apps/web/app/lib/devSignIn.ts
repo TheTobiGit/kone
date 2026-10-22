@@ -299,8 +299,11 @@ export function createDevProviderSignIn(
         });
       }
 
+      // The real main process mints sign-in ids; the demo does the same so the
+      // renderer always attaches to the id the PTY reports, never one it sent.
+      const terminalId = `signin-dev-${crypto.randomUUID()}`;
       const pty: DevSignInPty = { provider: input.provider, live: true, timers: [] };
-      terminals.set(input.terminalId, {
+      terminals.set(terminalId, {
         sequence: 0,
         cwd: command.cwd,
         cols: input.cols ?? 80,
@@ -317,7 +320,7 @@ export function createDevProviderSignIn(
       // The first line lands late enough that "running" is still on screen when
       // the preview has already gone.
       const at = (ms: number, line: string): void => {
-        pty.timers.push(setTimeout(() => output(input.terminalId, line), ms));
+        pty.timers.push(setTimeout(() => output(terminalId, line), ms));
       };
       at(400, `\x1b[2m${command.cwd}\x1b[0m\r\n\x1b[32m❯\x1b[0m ${command.display}\r\n\r\n`);
       at(1_200, "Starting login process...\r\n\r\n");
@@ -329,14 +332,14 @@ export function createDevProviderSignIn(
       if (fixture === "exit-error") {
         pty.timers.push(
           setTimeout(() => {
-            output(input.terminalId, "\r\nerror: login request expired\r\n");
-            const shell = terminals.get(input.terminalId);
-            if (shell) finish(input.terminalId, shell, 1);
+            output(terminalId, "\r\nerror: login request expired\r\n");
+            const shell = terminals.get(terminalId);
+            if (shell) finish(terminalId, shell, 1);
           }, 4_200),
         );
       }
 
-      return Promise.resolve({ ok: true, command, snapshot: snapshotOf(input.terminalId) });
+      return Promise.resolve({ ok: true, terminalId, command, snapshot: snapshotOf(terminalId) });
     },
     check: async (provider) => {
       // A real check shells out to the CLI and waits for its answer; the beat

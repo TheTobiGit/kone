@@ -1,5 +1,5 @@
 import type { TerminalManager } from "./TerminalManager.js";
-import { canUseTerminal, releaseTerminal, terminalOwner } from "./ownership.js";
+import { canUseTerminal, releaseClosedTerminal, terminalOwner } from "./ownership.js";
 import type {
   TerminalAckInput,
   TerminalCloseInput,
@@ -89,7 +89,8 @@ export function createTerminalIpc(manager: TerminalManager): TerminalIpc {
       await manager.close(input);
       // The transcript is gone with the session; drop the claim so the id is
       // an ordinary one again (and no WebContents reference is retained).
-      releaseTerminal(input.terminalId, sender);
+      // Authorization above is what makes this close path safe.
+      releaseClosedTerminal(input.terminalId, sender);
     },
     restart: (sender, input) => {
       assertCanUse(sender, input.terminalId);

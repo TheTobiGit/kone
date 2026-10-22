@@ -4,6 +4,7 @@ import type {
   ProviderKind,
   ProviderSignInCommand,
   ProviderStatus,
+  TerminalEvent,
 } from "~/types/desktop";
 import { useTerminal, type TerminalSession } from "./useTerminal";
 import { desktopBridge, needsDesktop } from "~/utils/desktopBridge";
@@ -172,6 +173,13 @@ export function useSignInRun(options: UseSignInRunOptions) {
   let runToken = 0;
   let checkToken = 0;
   let detach: (() => void) | null = null;
+  /** The main-generated PTY id for the run, known only after `start` resolves.
+   *  Events that arrive before then are buffered and replayed once it does. */
+  let ptyId: string | null = null;
+  /** Events received while the start IPC was resolving. Small + short-lived:
+   *  only the id is missing; the buffer is dropped as soon as it is known. */
+  let earlyEvents: TerminalEvent[] = [];
+  let earlyOutputBytes = 0;
   /** Visible output of this run, ANSI-stripped and capped, for URL detection. */
   let seen = "";
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -181,18 +189,53 @@ export function useSignInRun(options: UseSignInRunOptions) {
    *  card back to "running" over a dead PTY. */
   let exitAwaitsStart = false;
 
-  function attachPty(id: string, token: number): void {
+  function handleEvent(event: TerminalEvent): void {
+    if (event.type === "output") {
+      observe(event.data);
+    } else if (event.type === "exited") {
+      onExit(event.exitCode ?? null, event.signal ?? null);
+    } else if (event.type === "closed") {
+      onClosed();
+    }
+  }
+
+  /** Hold events until `start` tells us the main-generated id. Only the id is
+   *  missing, so the window is short; output is capped and control events are
+   *  always kept, because an early `exited` is exactly what the state machine
+   *  must not miss. */
+  function bufferEarly(event: TerminalEvent): void {
+    earlyEvents.push(event);
+    if (event.type === "output") earlyOutputBytes += event.data.length;
+    while (earlyOutputBytes > 64 * 1024) {
+      const index = earlyEvents.findIndex((candidate) => candidate.type === "output");
+      if (index < 0) break;
+      const [dropped] = earlyEvents.splice(index, 1);
+      if (dropped?.type === "output") earlyOutputBytes -= dropped.data.length;
+    }
+  }
+
+  function flushEarly(id: string): void {
+    const events = earlyEvents;
+    earlyEvents = [];
+    earlyOutputBytes = 0;
+    for (const event of events) {
+      if (event.terminalId === id) handleEvent(event);
+    }
+  }
+
+  function attachPty(token: number): void {
     const api = desktopBridge()?.terminal;
     if (!api) return;
+    earlyEvents = [];
+    earlyOutputBytes = 0;
     detach = api.onEvent((event) => {
-      if (event.terminalId !== id || token !== runToken) return;
-      if (event.type === "output") {
-        observe(event.data);
-      } else if (event.type === "exited") {
-        onExit(event.exitCode ?? null, event.signal ?? null);
-      } else if (event.type === "closed") {
-        onClosed();
+      if (token !== runToken) return;
+      if (ptyId === null) {
+        bufferEarly(event);
+        return;
       }
+      if (event.terminalId !== ptyId) return;
+      handleEvent(event);
     });
   }
 
@@ -298,6 +341,9 @@ export function useSignInRun(options: UseSignInRunOptions) {
   async function closePty(): Promise<void> {
     detach?.();
     detach = null;
+    ptyId = null;
+    earlyEvents = [];
+    earlyOutputBytes = 0;
     seen = "";
     process.value = { state: "none" };
     const key = sessionKey.value;
@@ -340,13 +386,19 @@ export function useSignInRun(options: UseSignInRunOptions) {
       return;
     }
 
-    const started = await spawn(async (id) => {
-      // Subscribe before `start` so the very first output chunk is seen.
-      attachPty(id, token);
-      const result = await api.start({ provider, terminalId: id });
+    const started = await spawn(async (provisionalId) => {
+      // Subscribe before `start` so the first output chunk after the id is
+      // known is seen. The id itself is minted in main and returned below; the
+      // provisional one is sent only so the browser dev stand-in (which has no
+      // main process) still has something to name its fake PTY.
+      attachPty(token);
+      const result = await api.start({ provider, terminalId: provisionalId });
       if (!result.ok) throw new Error(result.message);
+      const terminalId = result.terminalId ?? provisionalId;
+      ptyId = terminalId;
+      flushEarly(terminalId);
       command.value = result.command;
-      return result.snapshot;
+      return { terminalId, snapshot: result.snapshot };
     });
     if (disposed || token !== runToken) {
       // A newer run (or a close) took over while this one was spawning.

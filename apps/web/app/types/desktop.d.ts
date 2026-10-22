@@ -3656,15 +3656,23 @@ export type ProviderSignInCommand = {
 
 export type ProviderSignInStartInput = {
   provider: ProviderKind;
-  /** Renderer-minted PTY id, same space as TerminalOpenInput.terminalId. Output,
-   *  exit, write, resize and close all go through the ordinary terminal:* IPC. */
+  /** @deprecated Ignored by the main process: sign-in PTY ids are main-generated.
+   *  The renderer still supplies a provisional id for the dev stand-in. */
   terminalId: string;
+  /** Initial grid. */
   cols?: number;
   rows?: number;
 };
 
 export type ProviderSignInStart =
-  | { ok: true; command: ProviderSignInCommand; snapshot: TerminalSessionSnapshot }
+  | {
+      ok: true;
+      /** Main-generated PTY id the renderer attaches to. Present from the real
+       *  main process; the browser dev stand-in may omit it. */
+      terminalId?: string;
+      command: ProviderSignInCommand;
+      snapshot: TerminalSessionSnapshot;
+    }
   | {
       ok: false;
       /** Null when this provider has no login subcommand at all (Droid). */
