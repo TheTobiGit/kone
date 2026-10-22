@@ -3143,7 +3143,7 @@ export class AgentService {
             resetAt = cachedLimitResetFor(event.provider, now);
           }
           if (resetAt !== null || isQuotaOrRateLimitError(event.message)) {
-            this.setThreadLimited(threadId, resetAt);
+            this.setThreadLimited(threadId, resetAt, event.provider);
           }
         }
         // A turn settling frees the one-live-turn slot: promote the next
@@ -4062,13 +4062,15 @@ export class AgentService {
    *  gave none. A reset schedules a resume unless the provider's resumeAtReset
    *  is off; no reset schedules nothing, so the thread stays limited and the
    *  queue holds until a manual resume or the user sends. The provider's
-   *  snoozeWhenLimited also snoozes the thread until the reset. Announces
+   *  snoozeWhenLimited also snoozes the thread until the reset. `limitedBy` is
+   *  the provider that hit the limit; its toggles apply even when the thread
+   *  has fallen back from the provider it started on. Announces
    *  thread.limit.updated so lists move. */
-  setThreadLimited(threadId: string, resetAt: number | null): void {
+  setThreadLimited(threadId: string, resetAt: number | null, limitedBy?: ProviderKind): void {
     const history = this.historyStore;
     if (!history) return;
     const meta = history.threadMeta(threadId);
-    const provider = meta?.provider ?? this.routing.get(threadId);
+    const provider = limitedBy ?? this.routing.get(threadId) ?? meta?.provider;
     if (!provider) return;
     history.setLimited(threadId, resetAt);
     // After the mark, so the snooze lands on a thread that reads as limited.
@@ -4077,7 +4079,7 @@ export class AgentService {
       const until = snoozeUntilReset(resetAt, Date.now());
       if (until !== null) this.setThreadSnooze(threadId, until);
     }
-    this.scheduleLimitResume(threadId, resetAt, resumeAtResetFor(provider));
+    this.scheduleLimitResume(threadId, resetAt, provider);
     const at = Date.now();
     this.dispatch({
       type: "thread.limit.updated",
@@ -4128,18 +4130,20 @@ export class AgentService {
   private scheduleLimitResume(
     threadId: string,
     resetAt: number | null,
-    resume: boolean,
+    provider: ProviderKind,
   ): void {
     const store = this.continuationStore;
     if (!store) return;
     try {
       store.cancelContinuationsForThread(threadId);
-      if (!resume || resetAt === null) return;
+      if (!resumeAtResetFor(provider) || resetAt === null) return;
       store.scheduleContinuation({
         threadId,
         kind: LIMIT_RESUME_CONTINUATION_KIND,
         dueAt: resetAt,
-        payloadJson: JSON.stringify({ resetAt }),
+        // The due-time recheck reads this provider's toggle, not the thread's
+        // original one.
+        payloadJson: JSON.stringify({ resetAt, provider }),
       });
     } catch (err) {
       console.warn(`[agent] could not schedule the limit resume for ${threadId}:`, err);
@@ -4834,7 +4838,7 @@ export class AgentService {
     // burning attempts and then failing. The resume-at-reset (or a manual
     // resume) clears the mark and drains.
     if (isQuotaOrRateLimitError(error)) {
-      this.setThreadLimited(threadId, limitResetFromError(error, Date.now()));
+      this.setThreadLimited(threadId, limitResetFromError(error, Date.now()), provider);
       this.releaseThen(threadId, store, row.queueId, "queued", () => {
         this.announceQueuedState(threadId, row, "queued", { error });
         if (provider) {
