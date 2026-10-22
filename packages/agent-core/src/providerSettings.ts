@@ -46,6 +46,10 @@ const ProviderConfigWire = z.object({
   // A malformed list reads as "nothing hidden" rather than losing the rest of
   // the provider's settings with it.
   hiddenModels: z.array(z.string()).catch([]).optional(),
+  // Usage-limit behaviour. A junk value reads as the default rather than
+  // dropping the provider's other settings.
+  resumeAtReset: z.boolean().optional().catch(undefined),
+  snoozeWhenLimited: z.boolean().optional().catch(undefined),
 });
 
 /** Any settings shape on disk: provider id → an object. Field-level junk inside
@@ -153,6 +157,8 @@ function sanitize(raw: JsonValue | null | undefined): ProviderSettingsMap {
     }
     const hiddenModels = cleanHiddenModels(entry.hiddenModels);
     if (hiddenModels) clean.hiddenModels = hiddenModels;
+    if (entry.resumeAtReset !== undefined) clean.resumeAtReset = entry.resumeAtReset;
+    if (entry.snoozeWhenLimited !== undefined) clean.snoozeWhenLimited = entry.snoozeWhenLimited;
     // `enabled` is always set (decoded to true when absent), so every entry
     // that reaches this point is worth keeping.
     out[provider] = clean;
@@ -443,6 +449,25 @@ export function setProviderHandoffTokenCap(
     ...current,
     handoffTokenCap: clampHandoffTokenCap(cap),
   });
+}
+
+/** Whether a thread limited on this provider resumes itself at the provider's
+ *  reset (opt-out; default true). Read at the moment main acts, so a change
+ *  applies to the next limit and to resumes already scheduled. */
+export function resumeAtResetFor(
+  provider: ProviderKind,
+  settings: ProviderSettingsMap = readProviderSettings(),
+): boolean {
+  return settings[provider]?.resumeAtReset !== false;
+}
+
+/** Whether a thread limited on this provider is snoozed until the reset
+ *  (opt-in; default false). */
+export function snoozeWhenLimitedFor(
+  provider: ProviderKind,
+  settings: ProviderSettingsMap = readProviderSettings(),
+): boolean {
+  return settings[provider]?.snoozeWhenLimited === true;
 }
 
 /** Throw the canonical "provider is disabled" error unless the provider is
