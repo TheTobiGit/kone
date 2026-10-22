@@ -158,8 +158,8 @@ export function useProviderSettings() {
   async function load(force = false): Promise<void> {
     if (loaded && !force) return;
     const api = bridge();
-    // An import that didn't land keeps the legacy keys readable for a later
-    // load(); nothing retries on its own.
+    // A read or import that didn't land leaves this load unsettled, so the
+    // next load() tries again; nothing retries on its own.
     let settled = true;
     if (api?.getSettingsSnapshot) {
       listen(api);
@@ -185,14 +185,16 @@ export function useProviderSettings() {
           if (!snapshot.legacyImportPending) dropLegacySettings();
         }
       } catch {
-        // Keep the current mirror; the next push or reload settles it.
+        // Keep the current mirror; the next push or load() settles it.
+        settled = false;
       }
     } else if (api?.getSettings) {
       // Preload without the snapshot calls: no revision, no pushes.
       try {
         settings.value = await api.getSettings();
       } catch {
-        // Keep the current mirror.
+        // Keep the current mirror; the next load() tries again.
+        settled = false;
       }
     }
     loaded = settled;

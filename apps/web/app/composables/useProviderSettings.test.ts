@@ -22,6 +22,8 @@ function installBridge(opts: {
   failPatches?: number;
   /** Fail this many imports, as a store that couldn't be written would. */
   failImports?: number;
+  /** Fail this many snapshot reads, as a startup IPC hiccup would. */
+  failSnapshots?: number;
 }) {
   let current: ProviderSettingsSnapshot = {
     revision: opts.revision ?? 1,
@@ -30,6 +32,7 @@ function installBridge(opts: {
   };
   let failPatches = opts.failPatches ?? 0;
   let failImports = opts.failImports ?? 0;
+  let failSnapshots = opts.failSnapshots ?? 0;
   const listeners = new Set<(snapshot: ProviderSettingsSnapshot) => void>();
   // Snapshots served before the store itself, so a second "window" can start
   // from what it read before the first one wrote.
@@ -70,7 +73,13 @@ function installBridge(opts: {
     },
   };
   if (!opts.legacyApi) {
-    agent.getSettingsSnapshot = () => Promise.resolve(served.shift() ?? current);
+    agent.getSettingsSnapshot = () => {
+      if (failSnapshots > 0) {
+        failSnapshots -= 1;
+        return Promise.reject(new Error("ipc not ready"));
+      }
+      return Promise.resolve(served.shift() ?? current);
+    };
     agent.patchSettings = (provider, patch) => {
       patchCalls.push({ provider, patch: { ...patch } });
       if (failPatches > 0) {
@@ -304,6 +313,19 @@ describe("useProviderSettings: main-process mirror", () => {
       provider: "codex",
       config: { enabled: false, binaryPath: "/opt/codex" },
     });
+  });
+});
+
+describe("useProviderSettings: failed first read", () => {
+  test("a snapshot read that fails is retried by the next load", async () => {
+    installStorage({});
+    installBridge({ revision: 3, settings: { codex: { enabled: false } }, failSnapshots: 1 });
+    const settings = useProviderSettings();
+    await settings.load();
+    expect(settings.isEnabled("codex")).toBe(true);
+
+    await settings.load();
+    expect(settings.isEnabled("codex")).toBe(false);
   });
 });
 
