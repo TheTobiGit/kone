@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
-import type { PathHit } from "./processEnv.js";
+import { pathEnvKey, type PathHit } from "./processEnv.js";
 
 // What kone may actually start on Windows, and how.
 //
@@ -148,14 +148,11 @@ export function findWindowsLaunchableIn(
   return null;
 }
 
-/** The PATH entries a Windows launch searches, in order. Windows env keys are
- *  case-insensitive while a JS object's are not, and a spread `process.env` on
- *  Windows usually carries `Path` — so the PATH key is read under any casing,
- *  with an exact `PATH` preferred when the caller supplied both. Empty entries
- *  (a trailing `;` is common) are dropped. */
+/** The PATH entries a Windows launch searches, in order, read from whichever
+ *  key holds PATH (`pathEnvKey`: a spread `process.env` on Windows usually
+ *  carries `Path`). Empty entries (a trailing `;` is common) are dropped. */
 function windowsPathEntries(env: NodeJS.ProcessEnv): string[] {
-  const value = env.PATH ?? Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1];
-  return (value ?? "").split(";").filter(Boolean);
+  return (env[pathEnvKey(env, "win32")] ?? "").split(";").filter(Boolean);
 }
 
 /** Find a bare name among the files Windows can actually START. For each PATH
