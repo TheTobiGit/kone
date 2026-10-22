@@ -9,15 +9,11 @@ import { resolveClaudeInstallation } from "./claudeHome.js";
 import { resolveClineBinary } from "./clineHome.js";
 import { resolveCursorBinary } from "./cursorHome.js";
 import { resolveDroidBinary } from "./droidHome.js";
-import {
-  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
-  findOnPathEntry,
-  findWindowsLaunchableIn,
-  findWindowsLaunchableOnPath,
-} from "./processEnv.js";
+import { findOnPathEntry } from "./processEnv.js";
 import { defaultProviderBinary } from "./providerMaintenance.js";
 import { ProviderKindSchema } from "./types.js";
 import type { ProviderKind, ProviderSettingsMap } from "./types.js";
+import { ptyArgs, resolveLaunch } from "./windowsLaunch.js";
 
 // In-app provider sign-in: the ONE place that decides what command "Sign in"
 // runs for a provider CLI. The renderer never names a command — it names a
@@ -75,7 +71,7 @@ export type ProviderSignInLaunch =
       ok: true;
       /** Executable node-pty spawns, resolved: an absolute path for a custom
        *  binary, a PATH hit as found for a bare name. On Windows a `.cmd`/`.bat`
-       *  target is replaced by cmd.exe itself — see `cmdLaunch`. */
+       *  target is replaced by cmd.exe itself — see `resolveLaunch`. */
       file: string;
       /** The argv. A pre-built STRING is the Windows batch case: cmd.exe gets
        *  one already-escaped command line, which node-pty appends verbatim,
@@ -97,10 +93,6 @@ type LoginSpec = {
   args: string[];
   finish: ProviderSignInFinish;
 };
-
-/** What node-pty is handed for one spawn: the executable and either an argv
- *  array or (the Windows batch case) one pre-built command line. */
-type SpawnTarget = { file: string; args: string[] | string };
 
 // Env decisions, per provider, are deliberate and narrow: every login starts
 // from kone's agent env and only has kone's own browser sentinels removed (the
@@ -198,236 +190,47 @@ function launchBinary(
   return binaryFor(provider, settings);
 }
 
-/** Whether `filePath` is a real file the OS can execute. `platform` is the
- *  launch's platform, not the host's: a Windows target has no executable bit,
- *  so the X_OK check is skipped for win32 however the resolver is being run
- *  (the tests exercise the Windows path from Linux). */
-function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {
+/** Whether `filePath` is a real file this OS can execute. The sign-in dialog
+ *  reports a missing or non-executable binary up front; a plain spawn would
+ *  only fail later. Windows launches never reach here — `resolveLaunch` owns
+ *  them — so the POSIX executable bit is always the right check. */
+function isExecutableFile(filePath: string): boolean {
   try {
     if (!fs.statSync(filePath).isFile()) return false;
-    if (platform !== "win32") fs.accessSync(filePath, fs.constants.X_OK);
+    fs.accessSync(filePath, fs.constants.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 
-/** The suffixes a Windows launch accepts, as a message spells them out:
- *  ".exe, .com, .cmd or .bat". */
-function expectedWindowsLaunchSuffixes(): string {
-  const extensions = SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS;
-  return `${extensions.slice(0, -1).join(", ")} or ${extensions[extensions.length - 1]}`;
-}
-
-/** The sentence for "this exists, but not as a program Windows can start". The
- *  expected list is the fixed set node-pty can start, not the user's PATHEXT: a
- *  `.ps1` the user's PATHEXT happens to list is still not launchable, so
- *  quoting PATHEXT back at them would be a lie. */
-function notLaunchableOnWindows(file: string): string {
-  return `${file} isn't something Windows can run (expected ${expectedWindowsLaunchSuffixes()}).`;
-}
-
-/** The same for a bare name found on PATH: naming where it was found saves the
- *  user a `where codex` to work out which install the message is about. */
-function notLaunchableOnPathOnWindows(file: string, found: string): string {
-  return `${file} was found on your PATH at ${found}, but it isn't something Windows can run (expected ${expectedWindowsLaunchSuffixes()}).`;
-}
-
-/** The first PATH entry that answers to `file`'s name but is not launchable —
- *  the extensionless sh script npm's cmd-shim writes, or its `.ps1` sibling.
- *  Only consulted when the launchable lookup already failed, so the directory
- *  read costs nothing until a sign-in is refused; it exists purely to turn
- *  "isn't on your PATH" into the truth ("it's there, Windows just can't run
- *  it"). Entries are sorted so the sentence names the same file every time. */
-function findUnlaunchableOnWindowsPath(file: string, env: NodeJS.ProcessEnv): string | null {
-  const stem = path.basename(file).toLowerCase();
-  for (const dir of (env.PATH ?? "").split(";").filter(Boolean)) {
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(dir).sort();
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const lower = entry.toLowerCase();
-      // `codex` itself, or a sibling sharing its stem (`codex.ps1`).
-      if (lower !== stem && !lower.startsWith(`${stem}.`)) continue;
-      const candidate = path.join(dir, entry);
-      try {
-        if (!fs.statSync(candidate).isFile()) continue;
-      } catch {
-        continue;
-      }
-      return candidate;
-    }
-  }
-  return null;
-}
-
-/** A configured path on Windows. A name that already ends in a supported
- *  suffix (`.exe`, `.com`, `.cmd`, `.bat`) is used exactly as configured,
- *  whatever PATHEXT says — that is the Program Files case, where an explicit
- *  `codex.exe` must not depend on the user's PATHEXT listing `.EXE` again.
- *  Anything else — extensionless, a dotted name, or an unsupported suffix like
- *  `.ps1` — gets what cmd.exe gives a bare command: each supported PATHEXT
- *  extension appended in order, first existing file winning. That is how a user
- *  who pointed kone at npm's `codex` still signs in: the runnable `codex.cmd`
- *  beside it is what node-pty can start. The file is never launched as
- *  configured when Windows cannot start it. */
-function locateConfiguredOnWindows(
-  file: string,
-  env: NodeJS.ProcessEnv,
-): { ok: true; found: string } | { ok: false; message: string } {
-  const resolved = path.resolve(file);
-  const hit = findWindowsLaunchableIn(path.dirname(resolved), path.basename(resolved), env);
-  if (hit) return { ok: true, found: hit.found };
-  // The configured file is there even though nothing launchable is: saying
-  // "doesn't exist" would send the user looking for a missing install.
-  if (fs.existsSync(resolved)) {
-    return { ok: false, message: notLaunchableOnWindows(file) };
-  }
-  return { ok: false, message: `${file} doesn't exist.` };
-}
-
-/** Windows resolution, where "found" is not the same as "can be started". A
- *  bare name is looked up only among launchable suffixes
- *  (`findWindowsLaunchableOnPath` — never the extensionless npm sh script); a
- *  configured path may be extensionless, or carry a suffix Windows cannot run,
- *  and is then completed through the supported PATHEXT entries. Anything that
- *  exists but is not launchable is a sentence, never a spawn: CreateProcess
- *  would fail and the user would see a terminal error instead of the reason. */
-function locateOnWindows(
-  file: string,
-  env: NodeJS.ProcessEnv,
-): { ok: true; found: string } | { ok: false; message: string } {
-  if (hasPathSeparator(file)) return locateConfiguredOnWindows(file, env);
-  const hit = findWindowsLaunchableOnPath(file, env);
-  if (!hit) {
-    const unlaunchable = findUnlaunchableOnWindowsPath(file, env);
-    if (unlaunchable) {
-      return { ok: false, message: notLaunchableOnPathOnWindows(file, unlaunchable) };
-    }
-    return { ok: false, message: `${file} isn't on your PATH.` };
-  }
-  // Belt and braces: the lookup already insists on a regular file, and win32
-  // has no executable bit to check.
-  if (!isExecutableFile(hit.found, "win32")) {
-    return { ok: false, message: `${file} isn't executable.` };
-  }
-  return { ok: true, found: hit.found };
-}
-
-/** The RESOLVED executable for a configured or default binary name, or the
- *  sentence saying why there is none. The requested name is only for the
- *  message; what comes back is the absolute path node-pty should spawn, so a
- *  PATH hit can never be re-resolved to something else (or to a shell shim
- *  that isn't the file we just validated). */
+/** The RESOLVED executable for a configured or default binary name on a
+ *  non-Windows platform, or the sentence saying why there is none. The
+ *  requested name is only for the message; what comes back is the absolute path
+ *  node-pty should spawn, so a PATH hit can never be re-resolved to something
+ *  else (or to a shell shim that isn't the file we just validated). Windows
+ *  resolution lives in windowsLaunch's `resolveLaunch`, which knows what
+ *  CreateProcess can start; this keeps the POSIX rules a plain spawn does not
+ *  apply itself (the executable bit). */
 function locateBinary(
   file: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): { ok: true; found: string } | { ok: false; message: string } {
-  if (platform === "win32") return locateOnWindows(file, env);
   if (hasPathSeparator(file)) {
     const resolved = path.resolve(file);
     if (!fs.existsSync(resolved)) return { ok: false, message: `${file} doesn't exist.` };
-    if (!isExecutableFile(resolved, platform)) {
+    if (!isExecutableFile(resolved)) {
       return { ok: false, message: `${file} isn't executable.` };
     }
     return { ok: true, found: resolved };
   }
   const hit = findOnPathEntry(file, env, platform);
   if (!hit) return { ok: false, message: `${file} isn't on your PATH.` };
-  if (!isExecutableFile(hit.found, platform)) {
+  if (!isExecutableFile(hit.found)) {
     return { ok: false, message: `${file} isn't executable.` };
   }
   return { ok: true, found: hit.found };
-}
-
-// ── Windows batch shims ─────────────────────────────────────────────────────
-// npm installs a CLI on Windows as a `.cmd` shim (next to a `.ps1`), not as an
-// executable: a batch file is text the command interpreter reads, and
-// CreateProcess cannot start one — node-pty's spawn would fail with EINVAL.
-// So a resolved `.cmd`/`.bat` is replaced by the command interpreter, with the
-// script as the first word of a single command line. The escaping below is
-// cross-spawn's (lib/util/escape.js), which exists for exactly this case; Node
-// documents the same requirement ("Spawning .bat and .cmd files on Windows").
-
-/** What cmd.exe treats specially outside quotes. `^` is in the set, so the
- *  second escaping pass for batch targets also escapes the first pass's
- *  carets — that is intended, not double work (see `escapeCmdArgument`). */
-const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
-
-/** One argument as cmd.exe should see it, following cross-spawn's algorithm
- *  (itself based on https://qntm.org/cmd):
- *
- *  1. Backslashes before an embedded `"` are doubled and the quote escaped,
- *     and trailing backslashes are doubled — otherwise the closing quote we
- *     add next would be escaped by them.
- *  2. The whole argument is wrapped in quotes, so spaces and `&`/`|`/`;` stay
- *     one word.
- *  3. Every metacharacter is caret-escaped. `doubleEscapeMetaChars` does it a
- *     second time for a `.cmd`/`.bat` target: cmd.exe reads the line once, and
- *     the batch file's own re-parse (which the shim does when it forwards to
- *     node) would otherwise consume the carets. cross-spawn only does this for
- *     `node_modules\.bin\*.cmd`, but a global npm shim (`%APPDATA%\npm\codex.cmd`)
- *     forwards `%*` the same way, so every batch target here gets it. */
-export function escapeCmdArgument(argument: string, doubleEscapeMetaChars = false): string {
-  let escaped = argument.replace(/(?=(\\+?)?)\1"/g, "$1$1\\\"");
-  escaped = escaped.replace(/(?=(\\+?)?)\1$/, "$1$1");
-  escaped = `"${escaped}"`;
-  escaped = escaped.replace(CMD_META_CHARS, "^$1");
-  if (doubleEscapeMetaChars) escaped = escaped.replace(CMD_META_CHARS, "^$1");
-  return escaped;
-}
-
-/** The script path in command position. cross-spawn escapes metacharacters
- *  (spaces included) but adds no quotes: the `/d /s /c "…"` wrapper already
- *  delimits the line, and quotes here would nest inside that. */
-export function escapeCmdCommand(command: string): string {
-  return command.replace(CMD_META_CHARS, "^$1");
-}
-
-/** The command interpreter to run a batch shim: `ComSpec` under any casing
- *  (`ComSpec`, `COMSPEC`, `comspec` — Windows env keys are case-insensitive, a
- *  JS object is not), else the conventional `cmd.exe` on PATH. */
-function commandInterpreter(env: NodeJS.ProcessEnv): string {
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === "comspec" && value) return value;
-  }
-  return "cmd.exe";
-}
-
-/** What node-pty should actually spawn for a resolved executable path. Windows
- *  `.cmd`/`.bat` targets go through cmd.exe; everything else — a native `.exe`
- *  on Windows, any binary elsewhere — is spawned directly with its argv.
- *
- *  The batch case returns args as one STRING on purpose. node-pty's Windows
- *  path appends a string to the command line untouched, but re-quotes an argv
- *  ARRAY for CommandLineToArgvW, which escapes the `"` we built and would
- *  strip the carets cmd.exe has to see. The interpreter flags:
- *    • `/d` — skip AutoRun commands, so the user's registry can't inject a
- *      command ahead of the login.
- *    • `/s` — take the command line verbatim, stripping only the outer pair of
- *      quotes (hence the extra wrapping quotes around the whole line).
- *    • `/c` — run it and exit. */
-function cmdLaunch(
-  platform: NodeJS.Platform,
-  file: string,
-  args: readonly string[],
-  env: NodeJS.ProcessEnv,
-): SpawnTarget {
-  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(file)) {
-    return { file, args: [...args] };
-  }
-  const commandLine = [
-    escapeCmdCommand(file),
-    ...args.map((arg) => escapeCmdArgument(arg, true)),
-  ].join(" ");
-  return {
-    file: commandInterpreter(env),
-    args: `/d /s /c "${commandLine}"`,
-  };
 }
 
 /** kone's own "there is no browser" sentinels. They are right for sessions and
@@ -464,8 +267,8 @@ const SAFE_WINDOWS_WORD = /^[A-Za-z0-9_@:./\\-]+$/;
 
 /** Shell-quote one word for the command the user sees and copies. Spawning
  *  never parses this text — node-pty gets the executable plus argv, or (for a
- *  Windows batch shim) the cmd.exe line built by `cmdLaunch`, which has its own
- *  escaping. A configured `binaryPath` may contain spaces, quotes or
+ *  Windows batch shim) the cmd.exe line built by `resolveLaunch`, which has its
+ *  own escaping. A configured `binaryPath` may contain spaces, quotes or
  *  metacharacters, and an unquoted display would paste as a different command
  *  (or run the wrong thing). Simple words stay bare so the common case reads
  *  exactly as before.
@@ -542,6 +345,27 @@ export function resolveProviderSignInCommand(
   return commandFromSpec(provider, spec, settings, platform);
 }
 
+/** The successful launch both platform branches return: what node-pty spawns,
+ *  the home cwd a login may write in, the credential-safe env and the banner
+ *  that shows the command. One builder so the Windows and POSIX paths cannot
+ *  drift apart in the fields they set. */
+function signInLaunch(
+  command: ProviderSignInCommand,
+  file: string,
+  args: string[] | string,
+  env: NodeJS.ProcessEnv,
+): Extract<ProviderSignInLaunch, { ok: true }> {
+  return {
+    ok: true,
+    file,
+    args,
+    cwd: os.homedir(),
+    env: signInEnv(env),
+    banner: signInBanner(command),
+    command,
+  };
+}
+
 /** Resolve everything needed to spawn the login: the executable, its args, the
  *  home directory and the credential-safe env. A missing executable is a
  *  returned sentence, never a throw — it is the expected shape of "this CLI
@@ -565,19 +389,20 @@ export function resolveProviderSignInLaunch(input: {
     };
   }
   const command = commandFromSpec(input.provider, spec, input.settings, platform);
-
   const file = launchBinary(input.provider, input.settings, input.env);
+
+  // Windows resolution is shared with every other launch kone does: it knows
+  // that npm's bare name is really a `.cmd` shim and that a batch target needs
+  // ComSpec (and node-pty needs that command line as one string, see ptyArgs).
+  if (platform === "win32") {
+    const launch = resolveLaunch(file, spec.args, { env: input.env, platform });
+    if (!launch.ok) return { ok: false, command, message: launch.message };
+    return signInLaunch(command, launch.file, ptyArgs(launch), input.env);
+  }
+
+  // Elsewhere a plain spawn is enough, but the dialog still wants a sentence
+  // for a missing or non-executable file, which spawn only reports later.
   const located = locateBinary(file, input.env, platform);
   if (!located.ok) return { ok: false, command, message: located.message };
-  const target = cmdLaunch(platform, located.found, spec.args, input.env);
-
-  return {
-    ok: true,
-    file: target.file,
-    args: target.args,
-    cwd: os.homedir(),
-    env: signInEnv(input.env),
-    banner: signInBanner(command),
-    command,
-  };
+  return signInLaunch(command, located.found, [...spec.args], input.env);
 }

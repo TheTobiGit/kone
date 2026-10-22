@@ -4,8 +4,6 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  escapeCmdArgument,
-  escapeCmdCommand,
   formatLoginCommand,
   resolveProviderSignInCommand,
   resolveProviderSignInLaunch,
@@ -13,6 +11,7 @@ import {
   shellQuoteExecutable,
 } from "./providerSignIn.js";
 import type { ProviderKind, ProviderSettingsMap } from "./types.js";
+import { escapeCmdArgument, escapeCmdCommand } from "./windowsLaunch.js";
 
 // These tests never spawn anything: the resolver is pure except for the
 // executable lookup, which points at a temp dir. No real CLI is involved and no

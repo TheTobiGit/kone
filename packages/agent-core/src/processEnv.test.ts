@@ -4,15 +4,21 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findOnPath,
+  findOnPathEntry,
+  mergeWindowsPath,
+  pathEnvKey,
+  windowsCliDirs,
+  windowsEnvKey,
+} from "./processEnv.js";
+import {
+  SUPPORTED_WINDOWS_LAUNCH_EXTENSIONS,
   findWindowsLaunchableIn,
   findWindowsLaunchableOnPath,
-  mergeWindowsPath,
   pathExtensions,
-  windowsCliDirs,
+  resolveLaunch,
   windowsLaunchExtensions,
-} from "./processEnv.js";
+} from "./windowsLaunch.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "kone-process-env-"));
@@ -51,6 +57,35 @@ describe("mergeWindowsPath", () => {
     );
   });
 
+  test("merges into the Path key Windows actually uses, never a second PATH", () => {
+    // A spread process.env on Windows carries `Path`; writing `PATH` beside it
+    // left two variables, one of them holding only the known dirs.
+    const env = mergeWindowsPath({
+      USERPROFILE: "C:\\Users\\testuser",
+      Path: "C:\\Windows\\System32;C:\\Users\\testuser\\AppData\\Roaming\\npm",
+    });
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["Path"]);
+    expect(env.Path).toBe(
+      "C:\\Windows\\System32;C:\\Users\\testuser\\AppData\\Roaming\\npm;" +
+        "C:\\Users\\testuser\\.local\\bin;C:\\Users\\testuser\\.bun\\bin;" +
+        "C:\\Users\\testuser\\scoop\\shims",
+    );
+  });
+
+  test("pathEnvKey folds case on Windows only", () => {
+    expect(pathEnvKey({ Path: "x" }, "win32")).toBe("Path");
+    expect(pathEnvKey({ Path: "x", PATH: "y" }, "win32")).toBe("PATH");
+    expect(pathEnvKey({}, "win32")).toBe("PATH");
+    expect(pathEnvKey({ Path: "x" }, "linux")).toBe("PATH");
+  });
+
+  test("findOnPathEntry reads a Windows Path key", () => {
+    const dir = tempDir();
+    const exe = makeExecutable(dir, "codex.exe");
+    expect(findOnPathEntry("codex", { Path: dir }, "win32")?.found).toBe(exe);
+    expect(findOnPathEntry("codex.exe", { Path: dir }, "darwin")).toBeNull();
+  });
+
   test("handles an empty or missing PATH", () => {
     const env = mergeWindowsPath({ USERPROFILE: "C:\\Users\\testuser" });
     expect(env.PATH).toBe(
@@ -65,6 +100,79 @@ describe("mergeWindowsPath", () => {
     expect(base.PATH).toBeUndefined();
     expect(env).not.toBe(base);
     expect(env.PATH).toContain(".local\\bin");
+  });
+});
+
+// Windows env keys are case-insensitive, so an env object can hold the same
+// variable twice (`Path` and `PaTH`). Node keeps exactly one of them for the
+// child: lib/child_process.js (normalizeSpawnArguments) sorts the keys and keeps
+// the first per case-insensitive name. Whatever kone resolves a launch against
+// has to be that same one, or the resolver and the child disagree about PATH.
+
+/** Node's rule, restated as the oracle: the key the child would receive. */
+function nodeKeptKey(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return Object.keys(env)
+    .sort()
+    .find((key) => key.toUpperCase() === name.toUpperCase());
+}
+
+describe("duplicate env key casing on Windows", () => {
+  test("pathEnvKey picks the key Node passes to the child, whatever the insertion order", () => {
+    expect(pathEnvKey({ Path: "a", PaTH: "b" }, "win32")).toBe("PaTH");
+    expect(pathEnvKey({ PaTH: "b", Path: "a" }, "win32")).toBe("PaTH");
+    expect(pathEnvKey({ path: "x", Path: "y" }, "win32")).toBe("Path");
+    expect(pathEnvKey({ Path: "y", PATH: "z" }, "win32")).toBe("PATH");
+    expect(pathEnvKey({ Path: "a", PaTH: "b" }, "linux")).toBe("PATH");
+  });
+
+  test("pathEnvKey agrees with Node's rule for every ordering of the variants", () => {
+    const variants = ["path", "Path", "PaTH", "pATH"];
+    for (const first of variants) {
+      const env = Object.fromEntries(
+        [first, ...variants.filter((key) => key !== first)].map((key) => [key, key]),
+      );
+      expect(pathEnvKey(env, "win32")).toBe(nodeKeptKey(env, "PATH")!);
+    }
+  });
+
+  test("windowsEnvKey names the kept key for any variable, or nothing", () => {
+    expect(windowsEnvKey({ pathext: ".EXE", PathExt: ".CMD" }, "PATHEXT")).toBe("PathExt");
+    expect(windowsEnvKey({ comspec: "b", ComSpec: "a" }, "ComSpec")).toBe("ComSpec");
+    expect(windowsEnvKey({ Other: "x" }, "SystemRoot")).toBeUndefined();
+  });
+
+  test("mergeWindowsPath leaves one PATH key: the value Node would have passed, merged", () => {
+    const env = mergeWindowsPath({
+      USERPROFILE: "C:\\Users\\u",
+      Path: "C:\\valid",
+      PaTH: "C:\\other",
+    });
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["PaTH"]);
+    expect(env.PaTH).toBe(
+      "C:\\other;C:\\Users\\u\\.local\\bin;C:\\Users\\u\\.bun\\bin;C:\\Users\\u\\scoop\\shims",
+    );
+  });
+
+  test("findOnPathEntry reads the key Node keeps", () => {
+    const kept = tempDir();
+    const dropped = tempDir();
+    const exe = makeExecutable(kept, "codex.exe");
+    makeExecutable(dropped, "codex.exe");
+    expect(findOnPathEntry("codex", { Path: dropped, PaTH: kept }, "win32")?.found).toBe(exe);
+  });
+
+  test("PATHEXT is read from the key Node keeps", () => {
+    expect(pathExtensions({ Pathext: ".EXE", PATHEXT: ".CMD" })).toEqual([".CMD"]);
+  });
+
+  test("ComSpec is read from the key Node keeps", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "codex.cmd"), "@echo off\r\n");
+    const launch = resolveLaunch("codex", [], {
+      env: { PATH: dir, comspec: "C:\\wrong\\cmd.exe", ComSpec: "C:\\right\\cmd.exe" },
+      platform: "win32",
+    });
+    expect(launch.ok && launch.file).toBe("C:\\right\\cmd.exe");
   });
 });
 

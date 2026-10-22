@@ -1,5 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { createInterface } from "node:readline";
+
+import { spawnLaunch, taskkillPath, type LaunchDeps } from "./windowsLaunch.js";
 
 // Shared subprocess plumbing for agent adapters — the agent-layer analogue of
 // git/core.ts. Agent CLIs are long-lived and spawn their own child tools, so we
@@ -31,7 +33,9 @@ export type StreamingRun = {
 };
 
 /** Spawn `command args` in `cwd`, streaming stdout/stderr line-by-line to the
- *  callbacks as they flush, while also accumulating the full text. */
+ *  callbacks as they flush, while also accumulating the full text. `launch`
+ *  injects the platform and the spawn the launch is resolved for/with (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
 export function runStreaming(
   command: string,
   args: string[],
@@ -40,18 +44,34 @@ export function runStreaming(
     env: NodeJS.ProcessEnv;
     onStdoutLine?: (line: string) => void;
     onStderrLine?: (line: string) => void;
+    launch?: LaunchDeps;
   },
 ): StreamingRun {
-  const child = spawn(command, args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    windowsHide: true,
-    // Own process group on POSIX so killTree can signal the group (-pid) and
-    // reap the tool subprocesses the agent forks, not just the parent.
-    detached: process.platform !== "win32",
-    // stdin closed: print mode must never block on an interactive prompt.
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+    command,
+    args,
+    {
+      cwd: opts.cwd,
+      env: opts.env,
+      windowsHide: true,
+      // Own process group on POSIX so killTree can signal the group (-pid) and
+      // reap the tool subprocesses the agent forks, not just the parent.
+      detached: (opts.launch?.platform ?? process.platform) !== "win32",
+      // stdin closed: print mode must never block on an interactive prompt.
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+    opts.launch,
+  );
+  if (!launched.ok) {
+    // A launch that could not start (no such CLI, or a shim Windows cannot run)
+    // behaves exactly like the "error" event below: the reason lands in stderr,
+    // there is no exit code, and there is no child to kill.
+    return {
+      done: Promise.resolve({ code: null, stdout: "", stderr: `${launched.error.message}\n` }),
+      kill: () => {},
+    };
+  }
+  const child = launched.child;
 
   let stdout = "";
   let stderr = "";
@@ -151,6 +171,89 @@ function waitWhileAlive(pid: number, timeoutMs: number): Promise<boolean> {
   });
 }
 
+// How long taskkill gets to end a tree before kill falls back to the direct pid.
+const TASKKILL_TIMEOUT_MS = 5_000;
+
+/** The part of a taskkill child that killTree uses. */
+export type TaskkillChild = {
+  once(event: "error", listener: (error: Error) => void): void;
+  once(event: "exit", listener: (code: number | null) => void): void;
+  kill(): boolean;
+};
+
+/** How killTree starts taskkill: child_process's spawn, narrowed to what it uses. */
+export type TaskkillSpawn = (
+  file: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => TaskkillChild;
+
+/** What killTree needs from the machine it runs on, injected so the Windows
+ *  teardown can be exercised from any host. Every field defaults to the real
+ *  thing; production callers pass nothing. */
+export type KillTreeDeps = {
+  platform?: NodeJS.Platform;
+  /** The env System32 is located from (SystemRoot / windir). */
+  env?: NodeJS.ProcessEnv;
+  spawn?: TaskkillSpawn;
+  /** The direct kill used when taskkill fails. */
+  kill?: (pid: number) => void;
+  timeoutMs?: number;
+  warn?: (message: string) => void;
+};
+
+/** Why taskkill did not end the tree, or null when it did. Spawned by absolute
+ *  path, bounded by a timeout, and judged by its exit code: an error, a
+ *  non-zero exit and a hang are all failures. */
+function runTaskkill(pid: number, deps: KillTreeDeps): Promise<string | null> {
+  const timeoutMs = deps.timeoutMs ?? TASKKILL_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    let tasked: TaskkillChild;
+    try {
+      tasked = (deps.spawn ?? spawn)(
+        taskkillPath(deps.env ?? process.env),
+        ["/pid", String(pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore" },
+      );
+    } catch (error) {
+      resolve(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    let settled = false;
+    const settle = (failure: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(failure);
+    };
+    const timer = setTimeout(() => {
+      tasked.kill();
+      settle(`taskkill did not finish within ${timeoutMs}ms`);
+    }, timeoutMs);
+    timer.unref?.();
+    tasked.once("error", (error) => settle(error.message));
+    tasked.once("exit", (code) => settle(code === 0 ? null : `taskkill exited with ${code}`));
+  });
+}
+
+/** The Windows teardown: taskkill /T /F reaps the whole tree (the pid is often
+ *  cmd.exe's, wrapping a `.cmd` shim, so killing it alone would orphan the
+ *  CLI). If taskkill cannot do it, the direct pid is still killed — the
+ *  teardown the callers had before they went through taskkill — and the
+ *  failure is logged, unless the pid turns out to be gone already. */
+async function killTreeOnWindows(pid: number, deps: KillTreeDeps): Promise<void> {
+  const failure = await runTaskkill(pid, deps);
+  if (failure === null) return;
+  let outcome = "killed it directly, so its subprocesses may outlive it";
+  try {
+    (deps.kill ?? ((target: number) => process.kill(target)))(pid);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return;
+    outcome = `and the direct kill failed too (${error instanceof Error ? error.message : String(error)})`;
+  }
+  (deps.warn ?? console.warn)(`[spawn] taskkill could not end process ${pid} (${failure}); ${outcome}`);
+}
+
 /** Kill a process and the tool subprocesses it spawned, resolving only once
  *  the process is actually gone — not merely signaled. Agent CLIs fork shells
  *  and tools; a plain SIGTERM to the parent can orphan them. A caller that
@@ -159,14 +262,10 @@ function waitWhileAlive(pid: number, timeoutMs: number): Promise<boolean> {
  *  firing SIGKILL on a timer and returning immediately left a window where
  *  the old and new child could both hold the same CLI's on-disk session
  *  store. */
-export async function killTree(pid: number | undefined): Promise<void> {
+export async function killTree(pid: number | undefined, deps: KillTreeDeps = {}): Promise<void> {
   if (pid === undefined) return;
-  if (process.platform === "win32") {
-    await new Promise<void>((resolve) => {
-      const tasked = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
-      tasked.once("exit", () => resolve());
-      tasked.once("error", () => resolve());
-    });
+  if ((deps.platform ?? process.platform) === "win32") {
+    await killTreeOnWindows(pid, deps);
     return;
   }
   if (!isProcessAlive(pid)) return;
@@ -213,20 +312,41 @@ export type ProbeResult = {
  *  hangs until the timeout. For quick, bounded probes (`--version` and the
  *  like) — never for turns. Each stream is capped at 1 MiB and a timed-out
  *  probe tears down the child's whole process group, escalating SIGTERM to
- *  SIGKILL. */
+ *  SIGKILL. `launch` injects the platform and spawn the resolution uses (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
 export function probeResult(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs = 30_000,
+  launch?: LaunchDeps,
 ): Promise<ProbeResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      env,
-      windowsHide: true,
-      // stdin closed so the CLI can't block waiting on it.
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+      command,
+      args,
+      {
+        env,
+        windowsHide: true,
+        // stdin closed so the CLI can't block waiting on it.
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+      launch,
+    );
+    if (!launched.ok) {
+      // The failure a child's "error" event would have reported, without a
+      // child: ENOENT means nothing is there to run, anything else (a shim
+      // Windows cannot start, an argv cmd.exe cannot carry) is a failure.
+      resolve({
+        outcome: launched.error.code === "ENOENT" ? "missing" : "failure",
+        stdout: "",
+        stderr: "",
+        code: null,
+        error: launched.error,
+      });
+      return;
+    }
+    const child = launched.child;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -276,14 +396,16 @@ export function probeResult(
  *  (some agent CLIs exit non-zero yet produce their real result).
  *
  *  Prefer `probeResult` where the *reason* a probe failed changes what the user
- *  should be told; this wrapper cannot tell a missing binary from a wedged one. */
+ *  should be told; this wrapper cannot tell a missing binary from a wedged one.
+ *  `launch` is passed straight through to `probeResult`. */
 export function probe(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs = 30_000,
+  launch?: LaunchDeps,
 ): Promise<string | null> {
-  return probeResult(command, args, env, timeoutMs).then((result) => {
+  return probeResult(command, args, env, timeoutMs, launch).then((result) => {
     if (result.outcome === "missing" || result.outcome === "failure") return null;
     // A timeout that captured nothing is indistinguishable from a dead binary
     // through this signature — the reason `probeResult` exists.

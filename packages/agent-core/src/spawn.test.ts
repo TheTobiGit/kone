@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { createLaunchFixture, recordingSpawn } from "./testing/win32Launch.js";
+import { escapeCmdCommand, spawnLaunch, taskkillPath } from "./windowsLaunch.js";
 
 // The gateway-injection suites stub spawn.ts by its resolved absolute path with
 // mock.module (their `probe` returns "ok" so no real CLI is spawned), and bun
@@ -12,11 +16,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // when both land in the same worker (a standalone run never hits it). Importing
 // "./spawn.js" here would resolve to that stub. Instead, load the REAL module
 // from a temp copy of the source — a unique resolved path no mock can intercept.
-// spawn.ts has no relative imports, so a plain copy needs no rewrite.
+// spawn.ts has one relative import now (./windowsLaunch.js), rewritten to the
+// real file's URL: windowsLaunch is never stubbed, so it stays real either way.
 const SPAWN_SOURCE = fileURLToPath(new URL("./spawn.ts", import.meta.url));
+const WINDOWS_LAUNCH_SOURCE = pathToFileURL(fileURLToPath(new URL("./windowsLaunch.ts", import.meta.url)))
+  .href;
 
 async function loadRealSpawnModule(): Promise<typeof import("./spawn.js")> {
-  const source = readFileSync(SPAWN_SOURCE, "utf8");
+  const source = readFileSync(SPAWN_SOURCE, "utf8").replace(
+    'from "./windowsLaunch.js"',
+    `from ${JSON.stringify(WINDOWS_LAUNCH_SOURCE)}`,
+  );
   const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-real-"));
   const copy = path.join(dir, "spawn.ts");
   writeFileSync(copy, source);
@@ -25,7 +35,7 @@ async function loadRealSpawnModule(): Promise<typeof import("./spawn.js")> {
   return (await import(pathToFileURL(copy).href)) as typeof import("./spawn.js");
 }
 
-const { probe, probeResult, killTree } = await loadRealSpawnModule();
+const { probe, probeResult, killTree, runStreaming } = await loadRealSpawnModule();
 
 describe("probe", () => {
   test("resolves with the accumulated stdout for a quick command", async () => {
@@ -175,5 +185,383 @@ describe("killTree", () => {
     const start = Date.now();
     await killTree(child.pid!);
     expect(Date.now() - start).toBeLessThan(200);
+  });
+});
+
+// ── Windows teardown ────────────────────────────────────────────────────────
+// On Windows killTree hands the tree to taskkill. Bare `taskkill` is a PATH
+// lookup, and a provider whose PATH lacks System32 used to "succeed" at
+// teardown while staying alive. These tests inject win32 and a fake spawn, so
+// the taskkill run is scripted and nothing real is killed.
+
+type TaskkillSpawn = NonNullable<Parameters<typeof killTree>[1]>["spawn"];
+
+/** A spawn stand-in whose taskkill child does whatever `script` makes it do,
+ *  with the launches it saw and whether each child was killed. */
+function fakeTaskkill(script: (child: EventEmitter) => void) {
+  const calls: { file: string; args: readonly string[]; options: SpawnOptions }[] = [];
+  const killed: boolean[] = [];
+  const fake: TaskkillSpawn = (file, args, options) => {
+    calls.push({ file, args, options });
+    const index = killed.push(false) - 1;
+    const child = Object.assign(new EventEmitter(), {
+      kill: () => {
+        killed[index] = true;
+        return true;
+      },
+    });
+    queueMicrotask(() => script(child));
+    return child;
+  };
+  return { calls, killed, spawn: fake };
+}
+
+/** A kill stand-in that records the pids it was asked to end. */
+function recordingKill(fail?: NodeJS.ErrnoException) {
+  const killed: number[] = [];
+  return {
+    killed,
+    kill: (pid: number) => {
+      killed.push(pid);
+      if (fail) throw fail;
+    },
+  };
+}
+
+describe("taskkillPath", () => {
+  test("is System32's taskkill under SystemRoot, windir, or C:\\Windows", () => {
+    expect(taskkillPath({ SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\taskkill.exe");
+    expect(taskkillPath({ SYSTEMROOT: "D:\\Win" })).toBe("D:\\Win\\System32\\taskkill.exe");
+    expect(taskkillPath({ windir: "E:\\W" })).toBe("E:\\W\\System32\\taskkill.exe");
+    expect(taskkillPath({})).toBe("C:\\Windows\\System32\\taskkill.exe");
+  });
+});
+
+describe("killTree on Windows", () => {
+  const env = { SystemRoot: "C:\\Windows" };
+
+  test("runs System32's taskkill on the tree and stops there when it succeeds", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 0, null));
+    const fallback = recordingKill();
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(taskkill.calls).toEqual([
+      {
+        file: "C:\\Windows\\System32\\taskkill.exe",
+        args: ["/pid", "4242", "/T", "/F"],
+        options: { windowsHide: true, stdio: "ignore" },
+      },
+    ]);
+    expect(fallback.killed).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("kills the pid directly, and says so, when taskkill cannot be started", async () => {
+    const missing: NodeJS.ErrnoException = Object.assign(new Error("spawn taskkill ENOENT"), {
+      code: "ENOENT",
+    });
+    const taskkill = fakeTaskkill((child) => child.emit("error", missing));
+    const fallback = recordingKill();
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(fallback.killed).toEqual([4242]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("4242");
+  });
+
+  test("kills the pid directly when taskkill exits non-zero", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 1, null));
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: () => {},
+    });
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("kills the pid directly when spawning taskkill throws", async () => {
+    const throwing: TaskkillSpawn = () => {
+      throw new Error("spawn EPERM");
+    };
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: throwing,
+      kill: fallback.kill,
+      warn: () => {},
+    });
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("gives up on a taskkill that hangs, ends it, and kills the pid directly", async () => {
+    const taskkill = fakeTaskkill(() => {});
+    const fallback = recordingKill();
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      timeoutMs: 20,
+      warn: () => {},
+    });
+    expect(taskkill.killed).toEqual([true]);
+    expect(fallback.killed).toEqual([4242]);
+  });
+
+  test("a pid that is already gone is not a warning", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 128, null));
+    const gone: NodeJS.ErrnoException = Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    const fallback = recordingKill(gone);
+    const warnings: string[] = [];
+    await killTree(4242, {
+      platform: "win32",
+      env,
+      spawn: taskkill.spawn,
+      kill: fallback.kill,
+      warn: (message) => warnings.push(message),
+    });
+    expect(fallback.killed).toEqual([4242]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("off Windows taskkill is never run", async () => {
+    const taskkill = fakeTaskkill((child) => child.emit("exit", 0, null));
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    await killTree(child.pid!, { platform: "linux", spawn: taskkill.spawn });
+    expect(taskkill.calls).toEqual([]);
+  });
+});
+
+// ── Windows launch resolution ───────────────────────────────────────────────
+// The real adapters spawn their CLI by bare name through these helpers. On
+// Windows an npm install is a `.cmd` shim, so the launch has to be resolved and
+// wrapped before spawn sees it; off Windows it must be byte-for-byte what it
+// always was. The spawn below is recorded rather than run, so the assertions
+// can be exact about the argv and options the helper hands over.
+
+/** The argv fragment a batch shim launch appends for one argument, written out
+ *  the way cmd.exe has to see it (double-escaped, because the shim re-parses). */
+function escapedArgForCmd(argument: string): string {
+  return `^^^"${argument}^^^"`;
+}
+
+describe("runStreaming Windows launch", () => {
+  test("resolves an npm .cmd shim through ComSpec, keeping cwd/env/stdio", async () => {
+    const fixture = createLaunchFixture();
+    fixture.installNpmSiblings("x");
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const run = runStreaming("x", ["--version"], {
+      cwd: fixture.root,
+      env,
+      launch: { platform: "win32", spawn: fakeSpawn },
+    });
+    const result = await run.done;
+    expect(result.code).toBe(0);
+    expect(calls).toEqual([
+      {
+        file: fixture.comspec,
+        args: [
+          "/d",
+          "/s",
+          "/c",
+          `"${escapeCmdCommand(path.join(fixture.binDir, "x.cmd"))} ${escapedArgForCmd("--version")}"`,
+        ],
+        options: {
+          cwd: fixture.root,
+          env,
+          windowsHide: true,
+          // A fake win32 host: no process group of its own.
+          detached: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsVerbatimArguments: true,
+        },
+      },
+    ]);
+    expect(Object.keys(calls[0]!.options)).toEqual([
+      "cwd",
+      "env",
+      "windowsHide",
+      "detached",
+      "stdio",
+      "windowsVerbatimArguments",
+    ]);
+  });
+
+  test("a launch that cannot happen lands in stderr with no exit code and a no-op kill", async () => {
+    const fixture = createLaunchFixture();
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const run = runStreaming("__kone_no_such_binary__", [], {
+      cwd: fixture.root,
+      env,
+      launch: { platform: "win32", spawn: fakeSpawn },
+    });
+    const result = await run.done;
+    expect(result).toEqual({
+      code: null,
+      stdout: "",
+      stderr: "__kone_no_such_binary__ isn't on your PATH.\n",
+    });
+    expect(() => run.kill()).not.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  test("off Windows the bare command and argv are spawned exactly as before", async () => {
+    const fixture = createLaunchFixture();
+    const env = { KONE_TEST: "1" };
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const run = runStreaming("x", ["--version"], {
+      cwd: fixture.root,
+      env,
+      launch: { platform: "linux", spawn: fakeSpawn },
+    });
+    await run.done;
+    expect(calls).toEqual([
+      {
+        file: "x",
+        args: ["--version"],
+        options: {
+          cwd: fixture.root,
+          env,
+          windowsHide: true,
+          // The same literal object as before this change: no cwd resolution,
+          // no wrapping, and no windowsVerbatimArguments key.
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      },
+    ]);
+    expect(Object.keys(calls[0]!.options)).toEqual([
+      "cwd",
+      "env",
+      "windowsHide",
+      "detached",
+      "stdio",
+    ]);
+  });
+});
+
+describe("probeResult Windows launch", () => {
+  test("a native .exe is spawned directly, with no verbatim-arguments key", async () => {
+    const fixture = createLaunchFixture();
+    const exe = path.join(fixture.binDir, "x.exe");
+    writeFileSync(exe, "not a real image\n");
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn("process.stdout.write('0.0.1')");
+    const result = await probeResult("x", ["--version"], env, 5_000, {
+      platform: "win32",
+      spawn: fakeSpawn,
+    });
+    expect(result.outcome).toBe("ok");
+    expect(result.stdout).toBe("0.0.1");
+    expect(calls).toEqual([
+      {
+        file: exe,
+        args: ["--version"],
+        options: { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      },
+    ]);
+    expect("windowsVerbatimArguments" in calls[0]!.options).toBe(false);
+  });
+
+  test("reports a missing Windows binary as \"missing\" without spawning", async () => {
+    const fixture = createLaunchFixture();
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const result = await probeResult("__kone_no_such_binary__", [], env, 5_000, {
+      platform: "win32",
+      spawn: fakeSpawn,
+    });
+    expect(result.outcome).toBe("missing");
+    expect(result.code).toBeNull();
+    expect(result.error?.code).toBe("ENOENT");
+    expect(result.error?.path).toBe("__kone_no_such_binary__");
+    expect(calls).toEqual([]);
+  });
+
+  test("reports a .ps1-only install as a failure that says what Windows can run", async () => {
+    const fixture = createLaunchFixture();
+    writeFileSync(path.join(fixture.binDir, "y.ps1"), "# not launchable\n");
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const result = await probeResult("y", ["--version"], env, 5_000, {
+      platform: "win32",
+      spawn: fakeSpawn,
+    });
+    expect(result.outcome).toBe("failure");
+    expect(result.error?.code).toBe("EINVAL");
+    expect(result.error?.message).toContain("isn't something Windows can run");
+    expect(calls).toEqual([]);
+  });
+
+  test("off Windows the bare command and argv are spawned exactly as before", async () => {
+    const { calls, spawn: fakeSpawn } = recordingSpawn("process.stdout.write('1.2.3')");
+    const result = await probeResult("x", ["--version"], { KONE_TEST: "1" }, 5_000, {
+      platform: "linux",
+      spawn: fakeSpawn,
+    });
+    expect(result.outcome).toBe("ok");
+    // The literal object probeResult has always passed: no cwd, no detached,
+    // and no windowsVerbatimArguments key.
+    expect(calls).toEqual([
+      {
+        file: "x",
+        args: ["--version"],
+        options: { env: { KONE_TEST: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      },
+    ]);
+    expect(Object.keys(calls[0]!.options)).toEqual(["env", "windowsHide", "stdio"]);
+  });
+});
+
+describe("spawnLaunch", () => {
+  test("off Windows spawns the command and argv untouched", async () => {
+    const options = { env: { KONE_TEST: "1" }, stdio: ["ignore", "pipe", "pipe"] as const };
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const result = spawnLaunch("x", ["--version"], { ...options, stdio: [...options.stdio] }, {
+      platform: "linux",
+      spawn: fakeSpawn,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      {
+        file: "x",
+        args: ["--version"],
+        options: { env: options.env, stdio: ["ignore", "pipe", "pipe"] },
+      },
+    ]);
+  });
+
+  test("returns the launch failure as the Error a failed spawn would have raised", () => {
+    const fixture = createLaunchFixture();
+    const env = fixture.env({ windows: true });
+    const { calls, spawn: fakeSpawn } = recordingSpawn();
+    const result = spawnLaunch("__kone_no_such_binary__", ["--version"], { env }, {
+      platform: "win32",
+      spawn: fakeSpawn,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected the launch to fail");
+    expect(result.error.code).toBe("ENOENT");
+    expect(result.error.path).toBe("__kone_no_such_binary__");
+    expect(calls).toEqual([]);
   });
 });
