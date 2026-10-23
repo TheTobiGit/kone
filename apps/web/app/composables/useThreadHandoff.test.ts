@@ -77,6 +77,37 @@ describe("createHandoff", () => {
     expect(b.joined).toBe(true);
   });
 
+  test("hands off to the source's own provider and model without resuming it", async () => {
+    const { inputs } = installBridge();
+    const result = await createHandoff({
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      // The source runs this exact provider/model/effort.
+      target: { provider: "codex", model: "gpt-x", effort: "high" },
+    });
+    expect(result).toMatchObject({ status: "created", joined: false });
+    expect(inputs).toHaveLength(1);
+    const sent = inputs[0]!;
+    // A fresh renderer-minted thread id — the source thread is never returned
+    // or resumed by a same-provider/model handoff.
+    expect(sent.threadId).toBe(result.threadId);
+    expect(sent.threadId).not.toBe("t-src");
+    expect(sent.target).toEqual({ provider: "codex", model: "gpt-x", effort: "high" });
+  });
+
+  test("rapid identical same-provider/model clicks join one flight", async () => {
+    const { inputs } = installBridge();
+    const options = {
+      sourceThreadId: "t-src",
+      kind: "handoff" as const,
+      target: { provider: "codex" as const, model: "gpt-x" },
+    };
+    const [a, b] = await Promise.all([createHandoff(options), createHandoff(options)]);
+    expect(inputs).toHaveLength(1);
+    expect(a.threadId).toBe(b.threadId);
+    expect(b.joined).toBe(true);
+  });
+
   test("without a bridge it still resolves so the join semantics hold", async () => {
     windowHolder.window = {};
     const result = await createHandoff({
