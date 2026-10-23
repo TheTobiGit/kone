@@ -882,7 +882,12 @@ export class AgentService {
         ? { ...status, enabled: statusEnabled(status), supportsThreadCompaction }
         : { ...disabledProviderStatus(status.provider, status.label), supportsThreadCompaction };
     });
-    return { ...surface, statuses };
+    const models = { ...surface.models };
+    for (const provider of PROVIDER_KIND_VALUES) {
+      const merged = this.withCustomModels(provider, models[provider] ?? []);
+      if (merged.length > 0) models[provider] = merged;
+    }
+    return { ...surface, statuses, models };
   }
 
   /** Queue one provider-probe round behind the previous one. Success or
@@ -1025,7 +1030,7 @@ export class AgentService {
     for (const slug of slugs) {
       if (seen.has(slug)) continue;
       seen.add(slug);
-      extras.push({ id: slug, label: slug });
+      extras.push({ id: slug, label: slug, custom: true });
     }
     return [...models, ...extras];
   }
@@ -1196,6 +1201,7 @@ export class AgentService {
     const nextEntry = next[provider];
     this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
     if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
       void this.stopSessionsForProvider(provider);
       void this.discover();
     }
@@ -1213,6 +1219,7 @@ export class AgentService {
     const nextEntry = next[provider];
     this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
     if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
       void this.stopSessionsForProvider(provider);
       void this.discover();
     }

@@ -101,6 +101,11 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.acp.setConfig(config);
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.print.invalidateDiscoveryCaches?.();
+    this.acp.invalidateDiscoveryCaches();
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {

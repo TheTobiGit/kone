@@ -919,7 +919,7 @@ watch(
         next[provider as ProviderKind] = buildModelCatalog(list, provider as ProviderKind);
       }
     }
-    catalogs.value = { ...catalogs.value, ...next };
+    catalogs.value = next;
     // Reconcile the live pick. A refresh can drop the model the user is on (a
     // CLI upgrade retired it), and leaving a now-unknown id in place is exactly
     // the desync the desktop guards had to catch — clear it here so the composer

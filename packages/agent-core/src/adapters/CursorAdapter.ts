@@ -802,6 +802,11 @@ export class CursorAdapter implements ProviderAdapter {
     this.modelContextWindows.clear();
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.modelContextWindows.clear();
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {

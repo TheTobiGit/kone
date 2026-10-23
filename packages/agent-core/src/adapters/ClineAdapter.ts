@@ -327,6 +327,11 @@ export class ClineAdapter implements ProviderAdapter {
     this.modelsCache = null;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.featuredCache = null;
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {

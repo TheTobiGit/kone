@@ -249,8 +249,7 @@ function withoutBrowserSuppressors(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *  map node-pty takes, with kone's own browser sentinels removed. Nothing is
  *  added and no home/config-dir variable is rewritten — see the per-provider
  *  notes above LOGIN_COMMANDS for why inheriting them is the right call. */
-function signInEnv(provider: ProviderKind, base: NodeJS.ProcessEnv, settings: ProviderSettingsMap): Record<string, string> {
-  const env = buildProviderChildEnv(provider, withoutBrowserSuppressors(base), settings);
+function signInEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) out[key] = value;
@@ -355,14 +354,13 @@ function signInLaunch(
   file: string,
   args: string[] | string,
   env: NodeJS.ProcessEnv,
-  settings: ProviderSettingsMap,
 ): Extract<ProviderSignInLaunch, { ok: true }> {
   return {
     ok: true,
     file,
     args,
     cwd: os.homedir(),
-    env: signInEnv(command.provider, env, settings),
+    env: signInEnv(env),
     banner: signInBanner(command),
     command,
   };
@@ -390,21 +388,21 @@ export function resolveProviderSignInLaunch(input: {
       message: "Droid signs in on its first run — it has no login command.",
     };
   }
+  const childEnv = buildProviderChildEnv(
+    input.provider,
+    withoutBrowserSuppressors(input.env),
+    input.settings,
+  );
   const command = commandFromSpec(input.provider, spec, input.settings, platform);
-  const file = launchBinary(input.provider, input.settings, input.env);
+  const file = launchBinary(input.provider, input.settings, childEnv);
 
-  // Windows resolution is shared with every other launch kone does: it knows
-  // that npm's bare name is really a `.cmd` shim and that a batch target needs
-  // ComSpec (and node-pty needs that command line as one string, see ptyArgs).
   if (platform === "win32") {
-    const launch = resolveLaunch(file, spec.args, { env: input.env, platform });
+    const launch = resolveLaunch(file, spec.args, { env: childEnv, platform });
     if (!launch.ok) return { ok: false, command, message: launch.message };
-    return signInLaunch(command, launch.file, ptyArgs(launch), input.env, input.settings);
+    return signInLaunch(command, launch.file, ptyArgs(launch), childEnv);
   }
 
-  // Elsewhere a plain spawn is enough, but the dialog still wants a sentence
-  // for a missing or non-executable file, which spawn only reports later.
-  const located = locateBinary(file, input.env, platform);
+  const located = locateBinary(file, childEnv, platform);
   if (!located.ok) return { ok: false, command, message: located.message };
-  return signInLaunch(command, located.found, [...spec.args], input.env, input.settings);
+  return signInLaunch(command, located.found, [...spec.args], childEnv);
 }

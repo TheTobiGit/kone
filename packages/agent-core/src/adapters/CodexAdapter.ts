@@ -866,6 +866,10 @@ export class CodexAdapter implements ProviderAdapter {
     this.modelsCache = null;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {

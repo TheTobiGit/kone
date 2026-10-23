@@ -90,6 +90,7 @@ export type ProviderStatus = {
 /** A model the provider can run, from its own `list models` surface. */
 export type ModelDescriptor = {
   /** Stable id passed back on a turn (what the CLI's --model flag expects). */
+  custom?: boolean;
   id: string;
   label: string;
   /** Provider-reported native context capacity, when available. */
