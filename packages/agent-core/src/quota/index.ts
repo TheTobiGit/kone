@@ -1,11 +1,11 @@
 import { detectAntigravityCredential, fetchAntigravityQuota } from "./antigravity.js";
 import { detectClaudeCredential, fetchClaudeQuota } from "./claude.js";
-import { fetchCodexQuota } from "./codex.js";
+import { detectCodexCredential, fetchCodexQuota } from "./codex.js";
 import { fetchCursorQuota, detectCursorCredential } from "./cursor.js";
 import { detectDroidCredential, fetchDroidQuota } from "./droid.js";
 import { fetchOpenCodeQuota, detectOpenCodeDatabase } from "./opencode.js";
 import { createRateLimitResilience } from "./rateLimitResilience.js";
-import { readSecureFile, sanitizeError } from "./security.js";
+import { sanitizeError } from "./security.js";
 import { emptyReport } from "./types.js";
 import type { QuotaCapableProvider, QuotaProviderReport } from "./types.js";
 
@@ -53,9 +53,6 @@ const CACHE_TTL_MS = 60_000;
 // uncached so a fresh login (or a repaired credential) shows the moment it lands.
 const DEGRADED_CACHE_TTL_MS = 15_000;
 
-const CODEX_AUTH_PATH = `${process.env.HOME ?? ""}/.codex/auth.json`;
-const CODEX_OPENAI_AUTH_PATH = `${process.env.HOME ?? ""}/Library/Application Support/com.openai.codex/auth.json`;
-
 type CacheEntry = { at: number; report: QuotaProviderReport; ttlMs: number };
 const cache = new Map<QuotaCapableProvider, CacheEntry>();
 
@@ -81,12 +78,24 @@ export function quotaCapableProviders(): QuotaCapableProvider[] {
   return ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 }
 
-/** Drop the in-memory quota cache, any in-flight read, and all remembered
- *  rate-limit state. Tests use this so one case cannot leak into the next. */
-export function resetQuotaStateForTests(): void {
+/** Drop cached quota state for one provider (e.g. when its homeDir, env, or
+ *  sign-in changes) or for all providers when omitted. */
+export function invalidateProviderQuotaCache(provider?: QuotaCapableProvider): void {
+  if (provider) {
+    cache.delete(provider);
+    inFlight.delete(provider);
+    resilience.forget(provider);
+    return;
+  }
   cache.clear();
   inFlight.clear();
   resilience.reset();
+}
+
+/** Drop the in-memory quota cache, any in-flight read, and all remembered
+ *  rate-limit state. Tests use this so one case cannot leak into the next. */
+export function resetQuotaStateForTests(): void {
+  invalidateProviderQuotaCache();
 }
 
 /** The provider's own reset time from a report, epoch millis, only when at
@@ -151,8 +160,7 @@ export async function detectProviderCredential(provider: QuotaCapableProvider): 
     if (provider === "claudeAgent") return await detectClaudeCredential();
     if (provider === "antigravity") return await detectAntigravityCredential();
     if (provider === "droid") return await detectDroidCredential();
-    if ((await readSecureFile(CODEX_AUTH_PATH, 64 * 1024)) !== null) return true;
-    return (await readSecureFile(CODEX_OPENAI_AUTH_PATH, 64 * 1024).catch(() => null)) !== null;
+    return await detectCodexCredential();
   } catch (error) {
     // A permissions/symlink refusal reads the same as "nothing to connect to"
     // here — fetchProviderQuota is what surfaces the real accessDenied.

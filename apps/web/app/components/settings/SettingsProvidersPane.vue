@@ -166,8 +166,7 @@ async function recheck() {
   await Promise.all([refresh(true), limits.loadLimits()]);
 }
 
-async function recheckSingleProvider() {
-  const provider = current.value.provider;
+async function recheckSingleProvider(provider: ProviderKind = current.value.provider) {
   cue("press");
   await providers.checkProvider(provider);
   await upkeep.check({ force: true, checkLatest: providerSettings.updateChecks.value });
@@ -269,21 +268,18 @@ function openSignInFromBar() {
   signIn.open(current.value.provider, "pane");
 }
 
-async function saveBinary(path: string) {
-  const provider = current.value.provider;
+async function saveBinary(provider: ProviderKind, path: string) {
   await providerSettings.setBinaryPath(provider, path);
   cue("saved");
   void upkeep.check({ force: true, checkLatest: providerSettings.updateChecks.value });
 }
 
-async function saveHome(path: string) {
-  const provider = current.value.provider;
+async function saveHome(provider: ProviderKind, path: string) {
   await providerSettings.setHomeDir(provider, path);
   cue("saved");
 }
 
-async function saveEnv(vars: ProviderEnvVar[]) {
-  const provider = current.value.provider;
+async function saveEnv(provider: ProviderKind, vars: ProviderEnvVar[]) {
   await providerSettings.setEnvVars(provider, vars);
   cue("saved");
 }
@@ -584,7 +580,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           @save-binary="saveBinary"
           @save-home="saveHome"
           @save-env="saveEnv"
-          @dismiss-run="upkeep.dismissRun(current.provider)"
+          @dismiss-run="(p) => upkeep.dismissRun(p)"
         />
 
         <div class="pp__rightcol">

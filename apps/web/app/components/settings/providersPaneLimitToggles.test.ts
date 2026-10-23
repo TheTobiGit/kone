@@ -151,3 +151,19 @@ test("the fused pane composes ProviderCardDeck, ProviderIdentityBar, ProviderRun
   // No redundant "Copy the sign-in command" row in the pane:
   expect(source()).not.toContain("Copy the sign-in command");
 });
+
+test("ProviderRuntimeEnvSection captures the provider before awaiting binary validation and passes provider in save events", () => {
+  const runtimeSrc = readFileSync(
+    new URL("./providers/ProviderRuntimeEnvSection.vue", import.meta.url),
+    "utf8",
+  );
+  // commitBinaryEdit must capture const provider = props.row.provider before await and emit("saveBinary", provider, next)
+  expect(runtimeSrc).toContain('emit("saveBinary", provider, next)');
+  expect(runtimeSrc).toContain('emit("saveHome", provider,');
+  expect(runtimeSrc).toContain('emit("saveEnv", provider,');
+
+  const paneSrc = source();
+  expect(paneSrc).toContain("async function saveBinary(provider: ProviderKind, path: string)");
+  expect(paneSrc).toContain("async function saveHome(provider: ProviderKind, path: string)");
+  expect(paneSrc).toContain("async function saveEnv(provider: ProviderKind, vars: ProviderEnvVar[])");
+});

@@ -405,11 +405,11 @@ export class ClineAdapter implements ProviderAdapter {
     });
     try {
       await rpc.call<ClineAcpRecord>("initialize", CLINE_INITIALIZE_PARAMS, INITIALIZE_TIMEOUT_MS);
-      const response = await rpc.call<ClineAcpRecord>(
-        "session/new",
-        { cwd: tmpdir(), mcpServers: [] },
-        SESSION_SETUP_TIMEOUT_MS,
-      );
+      const response = await this.openSession(rpc, "session/new", {
+        cwd: tmpdir(),
+        mcpServers: [],
+        env,
+      });
       return clineModelCatalog(response, parseClineConfigOptions(readValue(response, "configOptions")));
     } catch {
       return [];
@@ -529,6 +529,7 @@ export class ClineAdapter implements ProviderAdapter {
             resume: input.resume,
             cwd: input.cwd,
             mcpServers,
+            env,
           });
           session.conversationId = input.resume;
           session.resumedFrom = input.resume;
@@ -542,7 +543,7 @@ export class ClineAdapter implements ProviderAdapter {
       }
       if (!response) {
         try {
-          response = await this.openSession(rpc, "session/new", { cwd: input.cwd, mcpServers });
+          response = await this.openSession(rpc, "session/new", { cwd: input.cwd, mcpServers, env });
         } catch (error) {
           // A server that can't parse the gateway's stdio entry refuses the
           // whole session with "invalid params". Losing the app tools beats
@@ -552,7 +553,7 @@ export class ClineAdapter implements ProviderAdapter {
           if (!refusedMcp) throw error;
           this.warn(session, "Cline rejected the kone MCP server; continuing without app tools", errorText(error));
           session.gatewayConnection = undefined;
-          response = await this.openSession(rpc, "session/new", { cwd: input.cwd, mcpServers: [] });
+          response = await this.openSession(rpc, "session/new", { cwd: input.cwd, mcpServers: [], env });
         }
         const sessionId = readString(response, "sessionId");
         if (!sessionId) throw new Error("session/new response did not include a session id.");
@@ -741,7 +742,7 @@ export class ClineAdapter implements ProviderAdapter {
   private async openSession(
     rpc: JsonRpcClient,
     method: "session/new" | "session/load",
-    open: { resume?: string; cwd: string; mcpServers: AcpMcpServer[] },
+    open: { resume?: string; cwd: string; mcpServers: AcpMcpServer[]; env?: NodeJS.ProcessEnv },
   ): Promise<ClineAcpRecord> {
     const { cwd, mcpServers } = open;
     const attempt = () =>
@@ -752,7 +753,7 @@ export class ClineAdapter implements ProviderAdapter {
       return await attempt();
     } catch (cause) {
       if (!isClineAuthRequired(cause)) throw cause;
-      if (!process.env.CLINE_API_KEY?.trim()) throw new Error(CLINE_SIGN_IN_MESSAGE, { cause });
+      if (!(open.env ?? process.env).CLINE_API_KEY?.trim()) throw new Error(CLINE_SIGN_IN_MESSAGE, { cause });
       try {
         await rpc.call("authenticate", { methodId: CLINE_API_KEY_AUTH_METHOD }, AUTHENTICATE_TIMEOUT_MS);
         return await attempt();

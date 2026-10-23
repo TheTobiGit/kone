@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
-import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
+import { cachedLimitResetFor, invalidateProviderQuotaCache, isQuotaCapableProvider } from "./quota/index.js";
 import {
   resolveModelWithFallback,
   type ModelCandidate,
@@ -986,6 +986,7 @@ export class AgentService {
       previous &&
       (previous.authStatus !== folded.authStatus || previous.readiness !== folded.readiness)
     ) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
       void this.stopSessionsForProvider(provider);
     }
     const merged = cached.some((status) => status.provider === provider)
@@ -1212,6 +1213,7 @@ export class AgentService {
     const nextEntry = next[provider];
     this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
     if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
       this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
       void this.stopSessionsForProvider(provider);
       void this.discover();
@@ -1230,6 +1232,7 @@ export class AgentService {
     const nextEntry = next[provider];
     this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
     if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
       this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
       void this.stopSessionsForProvider(provider);
       void this.discover();
