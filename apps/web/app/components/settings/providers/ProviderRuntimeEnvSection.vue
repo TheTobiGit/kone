@@ -18,7 +18,7 @@ import {
   RefreshIcon,
   SquareUnlock01Icon,
 } from "@hugeicons/core-free-icons";
-import type { ProviderBinaryCheckResult, ProviderEnvVar } from "~/types/desktop";
+import type { ProviderBinaryCheckResult, ProviderEnvVar, ProviderKind } from "~/types/desktop";
 import { INSTALL_SOURCE_LABEL, hasUpdate, type ProviderPaneRow } from "./types";
 
 const props = defineProps<{
@@ -32,11 +32,11 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  recheckHealth: [];
-  saveBinary: [path: string];
-  saveHome: [path: string];
-  saveEnv: [vars: ProviderEnvVar[]];
-  dismissRun: [];
+  recheckHealth: [provider: ProviderKind];
+  saveBinary: [provider: ProviderKind, path: string];
+  saveHome: [provider: ProviderKind, path: string];
+  saveEnv: [provider: ProviderKind, vars: ProviderEnvVar[]];
+  dismissRun: [provider: ProviderKind];
 }>();
 
 const providerSettings = useProviderSettings();
@@ -59,6 +59,7 @@ watch(
   () => props.row.provider,
   () => {
     editingBinary.value = false;
+    checkingBinary.value = false;
     binaryDraft.value = props.binaryOverride;
     binaryCheck.value = null;
     editingHome.value = false;
@@ -128,21 +129,25 @@ function startBinaryEdit() {
 }
 
 async function commitBinaryEdit() {
+  const provider = props.row.provider;
   const next = binaryDraft.value.trim();
   checkingBinary.value = true;
   try {
-    const res = await providerSettings.checkBinary(props.row.provider, next);
-    if (res) binaryCheck.value = res;
-    emit("saveBinary", next);
+    const res = await providerSettings.checkBinary(provider, next);
+    if (props.row.provider === provider && res) binaryCheck.value = res;
+    emit("saveBinary", provider, next);
   } finally {
-    checkingBinary.value = false;
-    editingBinary.value = false;
+    if (props.row.provider === provider) {
+      checkingBinary.value = false;
+      editingBinary.value = false;
+    }
   }
 }
 
 function resetBinary() {
+  const provider = props.row.provider;
   binaryCheck.value = null;
-  emit("saveBinary", "");
+  emit("saveBinary", provider, "");
   editingBinary.value = false;
 }
 
@@ -152,21 +157,23 @@ function startHomeEdit() {
 }
 
 function commitHomeEdit() {
+  const provider = props.row.provider;
   const next = homeDraft.value.trim();
   const isDefault = next === props.row.meta.defaultHome;
-  emit("saveHome", isDefault ? "" : next);
+  emit("saveHome", provider, isDefault ? "" : next);
   editingHome.value = false;
 }
 
 function resetHome() {
-  emit("saveHome", "");
+  const provider = props.row.provider;
+  emit("saveHome", provider, "");
   editingHome.value = false;
 }
 
 function recheck() {
   if (rechecking.value) return;
   rechecking.value = true;
-  emit("recheckHealth");
+  emit("recheckHealth", props.row.provider);
   setTimeout(() => {
     rechecking.value = false;
   }, 700);
@@ -181,26 +188,29 @@ async function openAddVar() {
 }
 
 function commitNewVar() {
+  const provider = props.row.provider;
   const k = newKey.value.trim();
   if (k) {
     const entry: ProviderEnvVar = { name: k, value: newVal.value };
     if (newSecret.value) entry.secret = true;
     const next = [...props.envVars.filter((v) => v.name !== k), entry];
-    emit("saveEnv", next);
+    emit("saveEnv", provider, next);
   }
   addingVar.value = false;
 }
 
 function toggleSecret(index: number) {
+  const provider = props.row.provider;
   const next = props.envVars.map((v, i) =>
     i === index ? { ...v, secret: !v.secret } : { ...v },
   );
-  emit("saveEnv", next);
+  emit("saveEnv", provider, next);
 }
 
 function removeVar(index: number) {
+  const provider = props.row.provider;
   const next = props.envVars.filter((_, i) => i !== index);
-  emit("saveEnv", next);
+  emit("saveEnv", provider, next);
 }
 </script>
 
@@ -413,7 +423,7 @@ function removeVar(index: number) {
             type="button"
             class="pp__dismiss"
             :tabindex="open ? 0 : -1"
-            @click="emit('dismissRun')"
+            @click="emit('dismissRun', row.provider)"
           >
             Dismiss
           </button>

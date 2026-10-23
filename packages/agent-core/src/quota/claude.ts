@@ -1,3 +1,5 @@
+import { resolveClaudeConfigDir } from "../claudeHome.js";
+import { buildProviderChildEnv } from "../providerChildEnv.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -66,12 +68,19 @@ export type ClaudeDeps = {
   keychain?: () => Promise<KeychainOutcome>;
 };
 
-const defaults: ClaudeDeps = {
-  fetch: globalThis.fetch,
-  credentialPath: path.join(os.homedir(), ".claude", ".credentials.json"),
-  readFile: readSecureFile,
-  now: Date.now,
-};
+function defaultClaudeDeps() {
+  const env = buildProviderChildEnv("claudeAgent");
+  const defaultDir = path.join(os.homedir(), ".claude");
+  const resolvedDir = resolveClaudeConfigDir(env);
+  const customHome = path.resolve(resolvedDir) !== path.resolve(defaultDir);
+  return {
+    fetch: globalThis.fetch,
+    credentialPath: path.join(resolvedDir, ".credentials.json"),
+    readFile: readSecureFile,
+    now: Date.now,
+    customHome,
+  };
+}
 
 function parseCredential(raw: string): ClaudeCredential | null {
   // Claude Code's own credential file is sometimes line-wrapped pretty-printed
@@ -131,9 +140,12 @@ export async function readClaudeKeychain(): Promise<KeychainOutcome> {
  *  file miss must fall through to a keychain probe before the card may say
  *  "no local sign-in found". Never throws — every miss reads as "not
  *  connected", the same way the file path always has. */
-export async function detectClaudeCredential(): Promise<boolean> {
+export async function detectClaudeCredential(options: Partial<ClaudeDeps> = {}): Promise<boolean> {
   try {
-    if ((await credentialFromFile(defaults)) !== null) return true;
+    const base = defaultClaudeDeps();
+    const deps = { ...base, ...options };
+    if ((await credentialFromFile(deps)) !== null) return true;
+    if (base.customHome && !options.keychain && !options.credentialPath) return false;
     return detectKeychainItem(KEYCHAIN_SERVICE, claudeKeychainAccounts());
   } catch {
     return false;
@@ -237,9 +249,12 @@ export type ClaudeQuotaResult = { report: QuotaProviderReport; retryAfterSeconds
 export async function fetchClaudeQuota(
   options: Partial<ClaudeDeps> & { signal?: AbortSignal; allowKeychain?: boolean } = {},
 ): Promise<ClaudeQuotaResult> {
-  const deps = { ...defaults, ...options };
+  const base = defaultClaudeDeps();
+  const deps = { ...base, ...options };
+  const allowKeychain =
+    (options.allowKeychain ?? false) && (!base.customHome || Boolean(options.keychain) || Boolean(options.credentialPath));
   try {
-    const initial = await resolveCredential(deps, options.allowKeychain ?? false);
+    const initial = await resolveCredential(deps, allowKeychain);
     if (initial.denied) {
       return { report: emptyReport("claudeAgent", "accessDenied", "macOS Keychain access was denied for Claude Code's saved login.") };
     }
@@ -251,7 +266,7 @@ export async function fetchClaudeQuota(
       // credential once rather than calling a near-expiry token and eating a
       // 401. Re-resolves the same sources as the initial read, so a keychain-
       // only login isn't stuck reporting a stale file that no longer exists.
-      const reread = await resolveCredential(deps, options.allowKeychain ?? false);
+      const reread = await resolveCredential(deps, allowKeychain);
       if (!reread.credential || reread.credential.accessToken === credential.accessToken) {
         return { report: emptyReport("claudeAgent", "transientFailure", "Claude Code's saved login is about to expire — reopen Claude Code to refresh it.") };
       }
@@ -260,7 +275,7 @@ export async function fetchClaudeQuota(
 
     let response = await request(credential.accessToken, deps, options.signal);
     if (response.status === 401) {
-      const reread = await resolveCredential(deps, options.allowKeychain ?? false);
+      const reread = await resolveCredential(deps, allowKeychain);
       if (!reread.credential || reread.credential.accessToken === credential.accessToken) {
         return { report: emptyReport("claudeAgent", "transientFailure", "Claude rejected the saved login.") };
       }

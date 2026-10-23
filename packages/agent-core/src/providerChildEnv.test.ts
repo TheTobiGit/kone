@@ -25,6 +25,7 @@ beforeEach(() => {
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
+  resetProviderSettingsForTests();
 });
 
 describe("providerSettings extended fields (L2, M3, M4, H5)", () => {
@@ -374,5 +375,69 @@ describe("PR #24 review fixes", () => {
     expect(discoverCount).toBeGreaterThan(beforeDiscovers);
 
     await svc.stopAll();
+  });
+});
+
+describe("PR #24 round-2 review fixes", () => {
+  test("resolveDroidAuthMethodId uses the passed provider env rather than process.env", async () => {
+    const { resolveDroidAuthMethodId } = await import("./adapters/DroidAdapter.js");
+    const init = {
+      authMethods: [{ id: "device-pairing" }, { id: "factory-api-key" }],
+    };
+    expect(resolveDroidAuthMethodId(init, {})).toBe("device-pairing");
+    expect(resolveDroidAuthMethodId(init, { FACTORY_API_KEY: "fk-from-provider-env" })).toBe(
+      "factory-api-key",
+    );
+  });
+
+  test("quota credential detection and fetching honour configured provider homeDir and env, and settings changes invalidate quota cache", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { detectCodexCredential, fetchCodexQuota } = await import("./quota/codex.js");
+    const { detectClaudeCredential } = await import("./quota/claude.js");
+    const { detectDroidCredential, resolveFactoryApiKey } = await import("./quota/droid.js");
+
+    const emptyCodexHome = mkdtempSync(path.join(os.tmpdir(), "kone-quota-codex-empty-"));
+    const emptyClaudeHome = mkdtempSync(path.join(os.tmpdir(), "kone-quota-claude-empty-"));
+    const customDroidHome = mkdtempSync(path.join(os.tmpdir(), "kone-quota-droid-"));
+
+    try {
+      mkdirSync(emptyCodexHome, { recursive: true });
+      mkdirSync(emptyClaudeHome, { recursive: true });
+      mkdirSync(customDroidHome, { recursive: true });
+
+      // Point codex and claudeAgent at empty custom homes -> must NOT read ~/.codex or ~/.claude:
+      patchProviderSettings("codex", { homeDir: emptyCodexHome });
+      patchProviderSettings("claudeAgent", { homeDir: emptyClaudeHome });
+      expect(await detectCodexCredential()).toBe(false);
+      const codexQuota = await fetchCodexQuota();
+      expect(codexQuota.report.connection).toBe("disconnected");
+      expect(await detectClaudeCredential()).toBe(false);
+
+      // Now write a valid credential into emptyCodexHome and emptyClaudeHome:
+      writeFileSync(
+        path.join(emptyCodexHome, "auth.json"),
+        JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "tok-1" } }),
+        { mode: 0o600 },
+      );
+      writeFileSync(
+        path.join(emptyClaudeHome, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "cl-tok-1" } }),
+        { mode: 0o600 },
+      );
+      expect(await detectCodexCredential()).toBe(true);
+      expect(await detectClaudeCredential()).toBe(true);
+
+      // Droid reads FACTORY_API_KEY from provider env settings or custom DROID_HOME/.env:
+      patchProviderSettings("droid", {
+        homeDir: customDroidHome,
+        env: [{ name: "FACTORY_API_KEY", value: "fk-settings-env" }],
+      });
+      expect(await resolveFactoryApiKey()).toBe("fk-settings-env");
+      expect(await detectDroidCredential()).toBe(true);
+    } finally {
+      rmSync(emptyCodexHome, { recursive: true, force: true });
+      rmSync(emptyClaudeHome, { recursive: true, force: true });
+      rmSync(customDroidHome, { recursive: true, force: true });
+    }
   });
 });
