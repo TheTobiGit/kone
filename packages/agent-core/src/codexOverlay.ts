@@ -6,6 +6,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readSync,
   readdirSync,
   statSync,
@@ -59,6 +60,8 @@ export type CodexOverlayInput = {
   endpointUrl: string;
   /** Overrides for tests. Defaults resolve the real Codex home and kone's
    *  per-user data directory. */
+  /** Provider environment to resolve CODEX_HOME from when sourceHome is omitted. */
+  env?: NodeJS.ProcessEnv;
   sourceHome?: string;
   overlayHome?: string;
   /** Stands in for the symlink call, so a test can refuse links the way
@@ -181,10 +184,41 @@ function linkEntry(
 /** Build (or rebuild) the overlay home and return its path — the value to put
  *  in the child's CODEX_HOME. Throws only when the overlay root itself cannot
  *  be created; callers treat that as "no gateway this session". */
+function pruneStaleOverlayEntries(overlayHome: string, sourceHome: string): void {
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(overlayHome);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry === "config.toml") continue;
+    const targetPath = path.join(overlayHome, entry);
+    try {
+      const stat = lstatSync(targetPath);
+      if (stat.isSymbolicLink()) {
+        const linkTarget = path.resolve(overlayHome, readlinkSync(targetPath));
+        const expectedSource = path.resolve(sourceHome, entry);
+        if (linkTarget !== expectedSource || !existsSync(expectedSource)) {
+          unlinkSync(targetPath);
+        }
+      } else if (entry === "auth.json" && stat.isFile()) {
+        // When symlinks are unavailable (Windows without elevation), auth.json is
+        // copied; drop the copy before rebuilding so a changed sourceHome (or a
+        // signed-out new home) never keeps the previous home's credentials.
+        unlinkSync(targetPath);
+      }
+    } catch {
+      // Ignore entries that disappeared concurrently.
+    }
+  }
+}
+
 export function prepareCodexHomeOverlay(input: CodexOverlayInput): string {
-  const sourceHome = input.sourceHome ?? resolveCodexHome();
+  const sourceHome = path.resolve(input.sourceHome ?? resolveCodexHome(input.env));
   const overlayHome = input.overlayHome ?? userDataPath("codex-home-overlay");
   mkdirSync(overlayHome, { recursive: true });
+  pruneStaleOverlayEntries(overlayHome, sourceHome);
   unlinkForeignSidecars(overlayHome);
 
   let entries: string[] = [];

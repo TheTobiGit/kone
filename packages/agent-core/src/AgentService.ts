@@ -132,6 +132,7 @@ import type {
   GlobalProviderSettingsPatch,
   ProviderBinaryCheckResult,
   ProviderConfig,
+  ProviderEnvVar,
   ProviderKind,
   ProviderModelsRefreshResult,
   ProviderMaintenance,
@@ -1168,6 +1169,16 @@ export class AgentService {
     return threads.length;
   }
 
+  private envPairsEqual(
+    before: readonly ProviderEnvVar[] | undefined,
+    after: readonly ProviderEnvVar[] | undefined,
+  ): boolean {
+    const a = before ?? [];
+    const b = after ?? [];
+    if (a.length !== b.length) return false;
+    return a.every((item, i) => item.name === b[i]?.name && item.value === b[i]?.value);
+  }
+
   private didRuntimeSettingsChange(
     before: ProviderConfig | undefined,
     after: ProviderConfig | undefined,
@@ -1175,7 +1186,7 @@ export class AgentService {
     if ((before?.enabled ?? true) !== (after?.enabled ?? true)) return true;
     if ((before?.binaryPath ?? "") !== (after?.binaryPath ?? "")) return true;
     if ((before?.homeDir ?? "") !== (after?.homeDir ?? "")) return true;
-    if (JSON.stringify(before?.env ?? []) !== JSON.stringify(after?.env ?? [])) return true;
+    if (!this.envPairsEqual(before?.env, after?.env)) return true;
     return false;
   }
 

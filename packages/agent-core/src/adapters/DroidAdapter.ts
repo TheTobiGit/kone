@@ -605,7 +605,7 @@ export class DroidAdapter implements ProviderAdapter {
       };
     }
 
-    const auth = await detectDroidAuth();
+    const auth = await detectDroidAuth(env);
     if (!auth.authenticated) {
       return {
         provider: this.provider,
