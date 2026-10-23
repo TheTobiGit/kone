@@ -241,7 +241,7 @@ function quarantine(file: string, reason: string): SettingsEnvelope {
 
 function persist(envelope: SettingsEnvelope): void {
   try {
-    writeFileAtomicSync(settingsFilePath(), JSON.stringify(envelope, null, 2));
+    writeFileAtomicSync(settingsFilePath(), JSON.stringify(envelope, null, 2), { mode: 0o600 });
   } catch (error) {
     console.error("[providerSettings] failed to write provider-settings.json:", error);
   }
@@ -338,7 +338,7 @@ function commit(
   if (nextInterval !== undefined) next.healthCheckIntervalSec = nextInterval;
 
   try {
-    writeFileAtomicSync(settingsFilePath(), JSON.stringify(next, null, 2));
+    writeFileAtomicSync(settingsFilePath(), JSON.stringify(next, null, 2), { mode: 0o600 });
   } catch (error) {
     throw new Error(
       `Provider settings could not be saved: ${error instanceof Error ? error.message : String(error)}`,

@@ -61,6 +61,11 @@ const cache = new Map<QuotaCapableProvider, CacheEntry>();
  *  because the startup warm and the pane's own open can ask for the same
  *  provider within the same tick. */
 const inFlight = new Map<QuotaCapableProvider, Promise<QuotaProviderReport>>();
+const quotaGeneration = new Map<QuotaCapableProvider, number>();
+
+function currentQuotaGeneration(provider: QuotaCapableProvider): number {
+  return quotaGeneration.get(provider) ?? 0;
+}
 
 const resilience = createRateLimitResilience();
 
@@ -82,10 +87,14 @@ export function quotaCapableProviders(): QuotaCapableProvider[] {
  *  sign-in changes) or for all providers when omitted. */
 export function invalidateProviderQuotaCache(provider?: QuotaCapableProvider): void {
   if (provider) {
+    quotaGeneration.set(provider, currentQuotaGeneration(provider) + 1);
     cache.delete(provider);
     inFlight.delete(provider);
     resilience.forget(provider);
     return;
+  }
+  for (const p of quotaCapableProviders()) {
+    quotaGeneration.set(p, currentQuotaGeneration(p) + 1);
   }
   cache.clear();
   inFlight.clear();
@@ -191,7 +200,10 @@ export async function fetchProviderQuota(
   const pending = inFlight.get(provider);
   if (pending) return pending;
 
-  const run = runProviderQuota(provider, opts).finally(() => inFlight.delete(provider));
+  const generation = currentQuotaGeneration(provider);
+  const run = runProviderQuota(provider, opts, generation).finally(() => {
+    if (inFlight.get(provider) === run) inFlight.delete(provider);
+  });
   inFlight.set(provider, run);
   return run;
 }
@@ -199,9 +211,12 @@ export async function fetchProviderQuota(
 async function runProviderQuota(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean },
+  generation: number,
 ): Promise<QuotaProviderReport> {
+  const isCurrent = () => currentQuotaGeneration(provider) === generation;
   try {
     const result = await fetchFor(provider, opts);
+    if (!isCurrent()) return result.report;
 
     if (result.retryAfterSeconds !== undefined) {
       // A 429: begin the cooldown and serve the last clean snapshot (flagged
@@ -256,6 +271,13 @@ async function runProviderQuota(
     // is a last-resort guard so a defect there still can't escape
     // fetchProviderQuota's "always resolves to a report" contract.
     console.warn(`Provider quota unavailable: ${sanitizeError(error)}`);
+    if (!isCurrent()) {
+      return emptyReport(
+        provider,
+        "transientFailure",
+        "Something went wrong reading this provider's usage.",
+      );
+    }
     cache.delete(provider);
     const served =
       resilience.serveOnFailure(
