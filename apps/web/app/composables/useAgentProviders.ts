@@ -233,11 +233,50 @@ export function useAgentProviders() {
     }
   }
 
+  /** Force a fresh model catalog probe for `provider`, updating `modelCache`
+   *  and returning any discovery error string for the pane. */
+  async function refreshModels(
+    provider: ProviderKind,
+  ): Promise<{ models: ModelDescriptor[]; error: string | null }> {
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.refreshModels) {
+      try {
+        const res = await preload.refreshModels(provider);
+        if (res.models.length) {
+          modelCache.value = { ...modelCache.value, [provider]: res.models };
+        }
+        return { models: res.models, error: res.error ?? null };
+      } catch (error) {
+        return {
+          models: modelCache.value[provider] ?? [],
+          error: peelIpcError(error, "Could not refresh models"),
+        };
+      }
+    }
+    const list = await models(provider, true);
+    return { models: list, error: null };
+  }
+
+  /** Re-probe a single provider's health immediately. */
+  async function checkProvider(provider: ProviderKind): Promise<ProviderStatus | null> {
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.checkProvider) {
+      try {
+        const next = await preload.checkProvider(provider);
+        statuses.value = statuses.value.some((s) => s.provider === provider)
+          ? statuses.value.map((s) => (s.provider === provider ? next : s))
+          : [...statuses.value, next];
+        return next;
+      } catch {
+        return byProvider(provider).value;
+      }
+    }
+    await discover(true);
+    return byProvider(provider).value;
+  }
+
   return {
     statuses,
-    /** The raw per-provider catalogs, reactive — surfaces that derive from them
-     *  (the picker's model list) watch this so a background `refresh()` lands
-     *  without a reload. */
     modelCache,
     ready,
     loading,
@@ -247,6 +286,8 @@ export function useAgentProviders() {
     sendAvailability,
     discover,
     models,
+    refreshModels,
+    checkProvider,
     hydrate,
     refresh,
     prepare,
