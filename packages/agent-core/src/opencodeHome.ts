@@ -12,7 +12,7 @@ export function parseOpenCodeVersion(stdout: string): string | undefined {
 }
 
 export async function buildOpenCodeEnv(): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "opencode" );
   return { ...env, OPENCODE_CONFIG_CONTENT: "{}" };
 }
 

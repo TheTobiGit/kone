@@ -919,7 +919,7 @@ watch(
         next[provider as ProviderKind] = buildModelCatalog(list, provider as ProviderKind);
       }
     }
-    catalogs.value = { ...catalogs.value, ...next };
+    catalogs.value = next;
     // Reconcile the live pick. A refresh can drop the model the user is on (a
     // CLI upgrade retired it), and leaving a now-unknown id in place is exactly
     // the desync the desktop guards had to catch — clear it here so the composer
@@ -944,9 +944,13 @@ const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
 // Ready providers the user hasn't switched off in settings. The enable toggle is
 // a pure picker-rail filter (it never tears down a running session), so both the
 // rail and the boot pick read this rather than `providers.ready` directly.
-const enabledReady = computed(() =>
-  providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
-);
+const enabledReady = computed(() => {
+  const allowed = providers.ready.value.filter((s) =>
+    providerSettings.isShownInPicker(s.provider),
+  );
+  const order = providerSettings.orderProviders(allowed.map((s) => s.provider));
+  return [...allowed].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+});
 
 // The provider rail the handoff picker shows — one ready, enabled provider per
 // catalog. Each catalog is filtered through the same model-visibility rule the

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -488,5 +488,20 @@ describe("providerSettings legacy renderer import", () => {
     } finally {
       unsubscribe();
     }
+  });
+});
+
+describe("providerSettings file permissions", () => {
+  it("persists provider-settings.json with owner-only 0600 permissions on POSIX, even when replacing a 0644 file", () => {
+    if (process.platform === "win32") return;
+    const file = path.join(dir, "provider-settings.json");
+    writeFileSync(file, JSON.stringify({ version: 1, revision: 1, settings: {} }), { mode: 0o644 });
+    chmodSync(file, 0o644);
+    expect(statSync(file).mode & 0o777).toBe(0o644);
+
+    patchProviderSettings("codex", {
+      env: [{ name: "OPENAI_API_KEY", value: "sk-secret", secret: true }],
+    });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 });

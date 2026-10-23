@@ -64,7 +64,16 @@ function fsyncDirectorySync(dirPath: string): void {
  *  failure; the destination keeps its previous contents in that case. Callers
  *  that treat persistence as best-effort wrap this in try/catch, exactly as
  *  they did the in-place write it replaces. */
-export function writeFileAtomicSync(filePath: string, contents: string | Uint8Array): void {
+export type AtomicWriteOptions = {
+  /** POSIX file permissions for the created temp file (e.g. `0o600`). */
+  mode?: number;
+};
+
+export function writeFileAtomicSync(
+  filePath: string,
+  contents: string | Uint8Array,
+  options?: AtomicWriteOptions,
+): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = tempPathFor(filePath);
   let fd: number | undefined;
@@ -75,7 +84,11 @@ export function writeFileAtomicSync(filePath: string, contents: string | Uint8Ar
     fd = fs.openSync(
       tempPath,
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      options?.mode ?? 0o666,
     );
+    if (options?.mode !== undefined && process.platform !== "win32") {
+      fs.fchmodSync(fd, options.mode);
+    }
     fs.writeFileSync(fd, contents);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -101,7 +114,11 @@ export function writeFileAtomicSync(filePath: string, contents: string | Uint8Ar
 
 /** Async counterpart of {@link writeFileAtomicSync} for call sites that
  *  already await their persistence. */
-export async function writeFileAtomic(filePath: string, contents: string | Uint8Array): Promise<void> {
+export async function writeFileAtomic(
+  filePath: string,
+  contents: string | Uint8Array,
+  options?: AtomicWriteOptions,
+): Promise<void> {
   return withFileMutationQueue(filePath, async () => {
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     const tempPath = tempPathFor(filePath);
@@ -110,7 +127,11 @@ export async function writeFileAtomic(filePath: string, contents: string | Uint8
       handle = await fs.promises.open(
         tempPath,
         fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+        options?.mode ?? 0o666,
       );
+      if (options?.mode !== undefined && process.platform !== "win32") {
+        await handle.chmod(options.mode);
+      }
       await handle.writeFile(contents);
       await handle.sync();
       await handle.close();

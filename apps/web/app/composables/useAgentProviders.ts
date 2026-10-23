@@ -1,3 +1,4 @@
+import { useProviderSettings } from "~/composables/useProviderSettings";
 import { computed, ref } from "vue";
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "~/types/desktop";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
@@ -21,7 +22,43 @@ let probed = false;
 // Prettified model lists, cached per provider at module scope. Populated on the
 // first `models()` call (or eagerly by `prepare()` at app open) so entering a
 // project reads a warm list instead of re-shelling out to the CLI.
-const modelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+const rawModelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+const ALL_PROVIDERS: ProviderKind[] = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "droid",
+  "antigravity",
+  "cline",
+];
+
+function stripCustom(list: readonly ModelDescriptor[]): ModelDescriptor[] {
+  return list.filter((d) => !d.custom);
+}
+
+const modelCache = computed<Partial<Record<ProviderKind, ModelDescriptor[]>>>({
+  get() {
+    const ps = useProviderSettings();
+    const out: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
+    for (const p of ALL_PROVIDERS) {
+      const base = stripCustom(rawModelCache.value[p] ?? []);
+      const merged = ps.withCustomModels(p, base);
+      if (merged.length) out[p] = merged;
+    }
+    return out;
+  },
+  set(next) {
+    const clean: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (v) {
+        // SAFETY: next is keyed by ProviderKind.
+        clean[k as ProviderKind] = stripCustom(v);
+      }
+    }
+    rawModelCache.value = clean;
+  },
+});
 let preparing: Promise<void> | null = null;
 let refreshing: Promise<void> | null = null;
 let hydrating: Promise<void> | null = null;
@@ -115,8 +152,9 @@ export function useAgentProviders() {
    *  re-guessing a name from the id. Cached at module scope after the first
    *  fetch (bypass with `force`). */
   async function models(provider: ProviderKind, force = false): Promise<ModelDescriptor[]> {
-    const cached = modelCache.value[provider];
-    if (cached && !force) return cached;
+    const ps = useProviderSettings();
+    const cached = rawModelCache.value[provider];
+    if (cached?.length && !force) return ps.withCustomModels(provider, cached);
     const api = bridge();
     let raw: ModelDescriptor[];
     if (!api) raw = [];
@@ -129,8 +167,11 @@ export function useAgentProviders() {
     }
     // Only cache a real list — an empty result means the CLI errored or wasn't
     // reachable, and we want the next call to retry rather than serve the miss.
-    if (raw.length) modelCache.value = { ...modelCache.value, [provider]: raw };
-    return raw;
+    const base = stripCustom(raw);
+    if (base.length) {
+      rawModelCache.value = { ...rawModelCache.value, [provider]: base };
+    }
+    return ps.withCustomModels(provider, base.length ? base : (rawModelCache.value[provider] ?? []));
   }
 
   /** Seed statuses + catalogs from the main process's disk snapshot. This spawns
@@ -157,9 +198,11 @@ export function useAgentProviders() {
           // corrects it in the background.
           probed = true;
         }
-        const seeded = Object.entries(snapshot.models).filter(([, list]) => list?.length);
+        const seeded = Object.entries(snapshot.models)
+          .map(([k, list]) => [k, stripCustom(list ?? [])] as const)
+          .filter(([, list]) => list.length > 0);
         if (seeded.length) {
-          modelCache.value = { ...Object.fromEntries(seeded), ...modelCache.value };
+          rawModelCache.value = { ...Object.fromEntries(seeded), ...rawModelCache.value };
         }
       } catch {
         // No snapshot is a soft failure — `refresh()` still has to run.
@@ -198,8 +241,10 @@ export function useAgentProviders() {
         probed = true;
         confirmed.value = true;
       }
-      const fresh = Object.entries(snapshot.models).filter(([, list]) => list?.length);
-      if (fresh.length) modelCache.value = { ...modelCache.value, ...Object.fromEntries(fresh) };
+      const fresh = Object.entries(snapshot.models)
+        .map(([k, list]) => [k, stripCustom(list ?? [])] as const)
+        .filter(([, list]) => list.length > 0);
+      if (fresh.length) rawModelCache.value = { ...rawModelCache.value, ...Object.fromEntries(fresh) };
     })();
     try {
       await refreshing;
@@ -233,11 +278,51 @@ export function useAgentProviders() {
     }
   }
 
+  /** Force a fresh model catalog probe for `provider`, updating `modelCache`
+   *  and returning any discovery error string for the pane. */
+  async function refreshModels(
+    provider: ProviderKind,
+  ): Promise<{ models: ModelDescriptor[]; error: string | null }> {
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.refreshModels) {
+      try {
+        const res = await preload.refreshModels(provider);
+        const base = stripCustom(res.models);
+        if (base.length) {
+          rawModelCache.value = { ...rawModelCache.value, [provider]: base };
+        }
+        return { models: res.models, error: res.error ?? null };
+      } catch (error) {
+        return {
+          models: modelCache.value[provider] ?? [],
+          error: peelIpcError(error, "Could not refresh models"),
+        };
+      }
+    }
+    const list = await models(provider, true);
+    return { models: list, error: null };
+  }
+
+  /** Re-probe a single provider's health immediately. */
+  async function checkProvider(provider: ProviderKind): Promise<ProviderStatus | null> {
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.checkProvider) {
+      try {
+        const next = await preload.checkProvider(provider);
+        statuses.value = statuses.value.some((s) => s.provider === provider)
+          ? statuses.value.map((s) => (s.provider === provider ? next : s))
+          : [...statuses.value, next];
+        return next;
+      } catch {
+        return byProvider(provider).value;
+      }
+    }
+    await discover(true);
+    return byProvider(provider).value;
+  }
+
   return {
     statuses,
-    /** The raw per-provider catalogs, reactive — surfaces that derive from them
-     *  (the picker's model list) watch this so a background `refresh()` lands
-     *  without a reload. */
     modelCache,
     ready,
     loading,
@@ -247,6 +332,8 @@ export function useAgentProviders() {
     sendAvailability,
     discover,
     models,
+    refreshModels,
+    checkProvider,
     hydrate,
     refresh,
     prepare,
