@@ -929,6 +929,12 @@ export type ProviderStatus = {
 /** The user's persisted per-provider install settings (mirrors
  *  packages/agent-core/src/types.ts). Credential-free by design — only how to
  *  reach the CLI the user already installed + logged into. */
+export type ProviderEnvVar = {
+  name: string;
+  value: string;
+  secret?: boolean;
+};
+
 export type ProviderConfig = {
   /** Override the CLI executable (absolute path or a name on PATH). Empty falls
    *  back to the adapter default (`codex` / `opencode`); ignored by providers
@@ -936,18 +942,47 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Whether the provider is shown in the model picker when enabled (default:
+   *  true). Separate from `enabled`. */
+  showInPicker?: boolean;
   /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
    *  this provider (default 16000; clamped 1024–64000). */
   handoffTokenCap?: number;
   /** Model family keys hidden from the picker for this provider (opt-out;
    *  absent/empty means every model is shown). */
   hiddenModels?: string[];
+  /** User-added custom model slugs for this provider. */
+  customModels?: string[];
+  /** Optional override for the provider CLI's home / config directory. */
+  homeDir?: string;
+  /** Per-provider environment variables passed to spawned CLI processes. */
+  env?: ProviderEnvVar[];
   /** Resume a thread limited on this provider at the provider's reset
    *  (default: true). Off still marks the thread limited. */
   resumeAtReset?: boolean;
   /** Snooze a thread limited on this provider until the reset (default:
    *  false). Needs a known reset; none means no snooze. */
   snoozeWhenLimited?: boolean;
+};
+
+export type GlobalProviderSettingsPatch = {
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
+};
+
+export type ProviderBinaryCheckResult = {
+  provider: ProviderKind;
+  binary: string | null;
+  ok: boolean;
+  version: string | null;
+  resolvedPath: string | null;
+  error?: string;
+};
+
+export type ProviderModelsRefreshResult = {
+  provider: ProviderKind;
+  models: ModelDescriptor[];
+  error?: string;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -962,6 +997,8 @@ export type ProviderSettingsSnapshot = {
   /** True until the renderer's legacy localStorage values have been imported
    *  once. */
   legacyImportPending: boolean;
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
 };
 
 /** The pre-store values a renderer may still hold in localStorage, sent up once
@@ -3313,6 +3350,17 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     patch: ProviderConfig,
   ) => Promise<ProviderSettingsSnapshot>;
+  patchGlobalSettings: (
+    patch: GlobalProviderSettingsPatch,
+  ) => Promise<ProviderSettingsSnapshot>;
+  checkProviderBinary: (
+    provider: ProviderKind,
+    binaryPath?: string,
+  ) => Promise<ProviderBinaryCheckResult>;
+  refreshModels: (
+    provider: ProviderKind,
+  ) => Promise<ProviderModelsRefreshResult>;
+  checkProvider: (provider: ProviderKind) => Promise<ProviderStatus>;
   /** The whole settings store plus its revision — the renderer mirrors this
    *  rather than keeping a copy of its own. */
   getSettingsSnapshot: () => Promise<ProviderSettingsSnapshot>;

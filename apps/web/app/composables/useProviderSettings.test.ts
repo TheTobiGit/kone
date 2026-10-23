@@ -57,6 +57,7 @@ function installBridge(opts: {
     getSettings: () => Promise<ProviderSettingsMap>;
     setSettings: (provider: ProviderKind, config: ProviderConfig) => Promise<ProviderSettingsMap>;
     patchSettings?: (provider: ProviderKind, patch: ProviderConfig) => Promise<ProviderSettingsSnapshot>;
+    patchGlobalSettings?: (patch: { providerOrder?: ProviderKind[]; healthCheckIntervalSec?: number }) => Promise<ProviderSettingsSnapshot>;
     getSettingsSnapshot?: () => Promise<ProviderSettingsSnapshot>;
     importLegacySettings?: (
       legacy: LegacyRendererProviderSettings,
@@ -92,6 +93,19 @@ function installBridge(opts: {
         if (value === undefined) Reflect.deleteProperty(merged, key);
       }
       return Promise.resolve(commit({ ...current.settings, [provider]: merged }));
+    };
+    agent.patchGlobalSettings = (patch) => {
+      const next: ProviderSettingsSnapshot = {
+        ...current,
+        revision: current.revision + 1,
+      };
+      if (patch.providerOrder !== undefined) next.providerOrder = patch.providerOrder;
+      if (patch.healthCheckIntervalSec !== undefined) {
+        next.healthCheckIntervalSec = patch.healthCheckIntervalSec;
+      }
+      current = next;
+      announce(current);
+      return Promise.resolve(current);
     };
     agent.importLegacySettings = (legacy) => {
       importCalls.push(legacy);
@@ -535,5 +549,61 @@ describe("useProviderSettings: browser fallback", () => {
     expect(settings.isEnabled("codex")).toBe(false);
     expect(settings.isModelHidden("codex", "gpt-5")).toBe(true);
     expect(writes).toEqual([]);
+  });
+});
+
+describe("useProviderSettings: extended provider & global settings", () => {
+  test("showInPicker, handoffTokenCap, customModels, homeDir, and env round-trip via patchSettings", async () => {
+    installStorage({});
+    const bridge = installBridge({ revision: 1 });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    expect(settings.isShownInPicker("codex")).toBe(true);
+    await settings.setShownInPicker("codex", false);
+    expect(settings.isShownInPicker("codex")).toBe(false);
+    expect(settings.isEnabled("codex")).toBe(true);
+
+    expect(settings.handoffTokenCap("codex")).toBe(16_000);
+    await settings.setHandoffTokenCap("codex", 24_000);
+    expect(settings.handoffTokenCap("codex")).toBe(24_000);
+
+    await settings.addCustomModel("codex", "o3-pro");
+    expect(settings.customModels("codex")).toEqual(["o3-pro"]);
+    await settings.removeCustomModel("codex", "o3-pro");
+    expect(settings.customModels("codex")).toEqual([]);
+
+    await settings.setHomeDir("codex", "~/.codex-work");
+    expect(settings.homeDir("codex")).toBe("~/.codex-work");
+
+    await settings.setEnvVars("codex", [
+      { name: "OPENAI_BASE_URL", value: "https://api.example.com/v1" },
+    ]);
+    expect(settings.envVars("codex")).toEqual([
+      { name: "OPENAI_BASE_URL", value: "https://api.example.com/v1" },
+    ]);
+    expect(bridge.patchCalls.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("providerOrder and healthCheckIntervalSec update via moveProvider / setHealthCheckIntervalSec", async () => {
+    installStorage({});
+    installBridge({ revision: 1 });
+    const settings = useProviderSettings();
+    await settings.load();
+
+    const ordered = settings.orderProviders(["codex", "claudeAgent", "cursor", "opencode"]);
+    expect(ordered).toEqual(["codex", "claudeAgent", "cursor", "opencode"]);
+
+    await settings.moveProvider("claudeAgent", -1, ["codex", "claudeAgent", "cursor", "opencode"]);
+    expect(settings.orderProviders(["codex", "claudeAgent", "cursor", "opencode"])).toEqual([
+      "claudeAgent",
+      "codex",
+      "cursor",
+      "opencode",
+    ]);
+
+    expect(settings.healthCheckIntervalSec.value).toBe(300);
+    await settings.setHealthCheckIntervalSec(60);
+    expect(settings.healthCheckIntervalSec.value).toBe(60);
   });
 });

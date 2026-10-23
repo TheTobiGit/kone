@@ -944,9 +944,13 @@ const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
 // Ready providers the user hasn't switched off in settings. The enable toggle is
 // a pure picker-rail filter (it never tears down a running session), so both the
 // rail and the boot pick read this rather than `providers.ready` directly.
-const enabledReady = computed(() =>
-  providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
-);
+const enabledReady = computed(() => {
+  const allowed = providers.ready.value.filter((s) =>
+    providerSettings.isShownInPicker(s.provider),
+  );
+  const order = providerSettings.orderProviders(allowed.map((s) => s.provider));
+  return [...allowed].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+});
 
 // The provider rail the handoff picker shows — one ready, enabled provider per
 // catalog. Each catalog is filtered through the same model-visibility rule the

@@ -134,3 +134,20 @@ test("each switch reads and writes through the provider-settings composable", ()
   expect(script).toContain("setSnoozeWhenLimited(");
   expect(script).not.toContain("patchSettings(");
 });
+
+test("the fused pane composes ProviderCardDeck, ProviderIdentityBar, ProviderRuntimeEnvSection, Limits, and ProviderModelsSection", () => {
+  const pane = template();
+  expect(elements([pane], "ProviderCardDeck")).toHaveLength(1);
+  expect(elements([pane], "ProviderIdentityBar")).toHaveLength(1);
+  expect(elements([pane], "ProviderRuntimeEnvSection")).toHaveLength(1);
+  expect(elements([pane], "ProviderModelsSection")).toHaveLength(1);
+
+  const limits = limitsSection(pane);
+  const capInput = elements([limits], "input").find(
+    (el) => attribute(el, "aria-label") === "Handoff token cap",
+  );
+  expect(capInput).toBeDefined();
+
+  // No redundant "Copy the sign-in command" row in the pane:
+  expect(source()).not.toContain("Copy the sign-in command");
+});
