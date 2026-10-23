@@ -547,6 +547,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     this.version = null;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.version = null;
+  }
+
   async discover(): Promise<ProviderStatus> {
     const env = await buildOpenCodeEnv(); const result = await probeResult(this.binary, ["--version"], env, 5_000);
     // A version probe that never came back says nothing about the install — the

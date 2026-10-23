@@ -1,3 +1,5 @@
+import { buildProviderChildEnv } from "./providerChildEnv.js";
+import type { ProviderKind } from "./types.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -107,29 +109,33 @@ export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.
  *  merge is the known install dirs instead of a shell probe. */
 export async function buildAgentEnv(
   base: NodeJS.ProcessEnv = process.env,
+  provider?: ProviderKind,
 ): Promise<NodeJS.ProcessEnv> {
-  if (process.platform === "win32") return mergeWindowsPath(base);
-  const env: NodeJS.ProcessEnv = { ...base };
-  const shellPath = await loginShellPath();
-  if (shellPath) {
-    const seen = new Set((env.PATH ?? "").split(":").filter(Boolean));
-    const merged = [...seen];
-    for (const dir of shellPath.split(":")) {
-      if (dir && !seen.has(dir)) {
-        seen.add(dir);
-        merged.push(dir);
+  let env: NodeJS.ProcessEnv;
+  if (process.platform === "win32") {
+    env = mergeWindowsPath(base);
+  } else {
+    env = { ...base };
+    const shellPath = await loginShellPath();
+    if (shellPath) {
+      const seen = new Set((env.PATH ?? "").split(":").filter(Boolean));
+      const merged = [...seen];
+      for (const dir of shellPath.split(":")) {
+        if (dir && !seen.has(dir)) {
+          seen.add(dir);
+          merged.push(dir);
+        }
       }
-    }
-    // Common install dirs, in case the shell probe missed them.
-    for (const dir of [`${os.homedir()}/.local/bin`, `${os.homedir()}/.bun/bin`]) {
-      if (!seen.has(dir)) {
-        seen.add(dir);
-        merged.push(dir);
+      for (const dir of [`${os.homedir()}/.local/bin`, `${os.homedir()}/.bun/bin`]) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          merged.push(dir);
+        }
       }
+      env.PATH = merged.join(":");
     }
-    env.PATH = merged.join(":");
   }
-  return env;
+  return provider ? buildProviderChildEnv(provider, env) : env;
 }
 
 // ── PATH lookup ──────────────────────────────────────────────────────────────

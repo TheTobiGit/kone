@@ -345,6 +345,11 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     this.modelsCacheIsSeed = false;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.modelsCacheIsSeed = false;
+  }
+
   /** The ACP server to spawn, or null when no transport is available — the
    *  caller (facade) falls back to print mode. */
   resolveBinary(): AntigravityAcpResolvedBinary | null {
@@ -370,7 +375,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
         authStatus: "unknown",
         readiness: "not-installed",
         message:
-          "Antigravity ACP server not found. Install it from the Providers settings pane, or run `agy` once to use print mode.",
+          "Antigravity ACP server not found. Install the Antigravity CLI (`agy`), or run `agy` once to use print mode.",
       };
     }
 

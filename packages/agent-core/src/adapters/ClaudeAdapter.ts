@@ -329,7 +329,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  evidence discovery has about whether the binary exists at all. Dropping it
    *  here is what left a missing `claude` indistinguishable from a slow one. */
   private async probeVersion(): Promise<{ version?: string; result: ProbeResult }> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "claudeAgent" );
     // Ask the same binary sessions spawn, so the status row's version is the
     // one whose model catalog the picker shows.
     const executable = resolveClaudeExecutable({ env }) ?? "claude";

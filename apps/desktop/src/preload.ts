@@ -65,14 +65,17 @@ import type {
   HandInRecord,
   HandInResult,
   InteractionMode,
+  GlobalProviderSettingsPatch,
   LegacyRendererProviderSettings,
   ModelDescriptor,
   PreviewTurnCheckpointResult,
   ProfileStats,
+  ProviderBinaryCheckResult,
   ProviderSurfaceSnapshot,
   ProviderConfig,
   ProviderKind,
   ProviderMaintenance,
+  ProviderModelsRefreshResult,
   ProviderSettingsMap,
   ProviderSettingsSnapshot,
   ProviderSignInCommand,
@@ -560,6 +563,14 @@ const api = {
      *  an `undefined` value clears that field. */
     patchSettings: (provider: ProviderKind, patch: ProviderConfig): Promise<ProviderSettingsSnapshot> =>
       ipcRenderer.invoke("agent:patch-settings", provider, patch),
+    patchGlobalSettings: (patch: GlobalProviderSettingsPatch): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:patch-global-settings", patch),
+    checkProviderBinary: (provider: ProviderKind, binaryPath?: string): Promise<ProviderBinaryCheckResult> =>
+      ipcRenderer.invoke("agent:check-provider-binary", provider, binaryPath),
+    refreshModels: (provider: ProviderKind): Promise<ProviderModelsRefreshResult> =>
+      ipcRenderer.invoke("agent:refresh-models", provider),
+    checkProvider: (provider: ProviderKind): Promise<ProviderStatus> =>
+      ipcRenderer.invoke("agent:check-provider", provider),
     /** The whole settings store plus its revision — the renderer mirrors this
      *  instead of keeping a copy of its own. */
     getSettingsSnapshot: (): Promise<ProviderSettingsSnapshot> =>

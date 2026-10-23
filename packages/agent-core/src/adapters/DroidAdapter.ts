@@ -582,6 +582,11 @@ export class DroidAdapter implements ProviderAdapter {
     this.modelsCacheIsSeed = false;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.modelsCacheIsSeed = false;
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {
@@ -600,7 +605,7 @@ export class DroidAdapter implements ProviderAdapter {
       };
     }
 
-    const auth = await detectDroidAuth();
+    const auth = await detectDroidAuth(env);
     if (!auth.authenticated) {
       return {
         provider: this.provider,
@@ -679,7 +684,7 @@ export class DroidAdapter implements ProviderAdapter {
         DROID_INITIALIZE_PARAMS,
         INITIALIZE_TIMEOUT_MS,
       );
-      await this.authenticateRpc(rpc, initializeResult);
+      await this.authenticateRpc(rpc, initializeResult, env);
       const response = await rpc.call<DroidAcpRecord>(
         "session/new",
         { cwd: homedir(), mcpServers: [] },
@@ -816,7 +821,7 @@ export class DroidAdapter implements ProviderAdapter {
         DROID_INITIALIZE_PARAMS,
         INITIALIZE_TIMEOUT_MS,
       );
-      await this.authenticateRpc(rpc, initializeResult);
+      await this.authenticateRpc(rpc, initializeResult, env);
 
       // The kone gateway (docs/mcp-gateway-design.md §4): droid manages MCP
       // servers through its own persistent CLI config (`droid mcp add`), not
@@ -1050,7 +1055,8 @@ export class DroidAdapter implements ProviderAdapter {
     // Drop the per-session kone MCP entry from droid's persistent config so a
     // revoked token never lingers. Best-effort.
     const name = koneMcpServerName(threadId);
-    const cleanup = probe(this.binary, ["mcp", "remove", name], process.env, DROID_CLEANUP_TIMEOUT_MS);
+    const env = await buildDroidEnv().catch(() => process.env);
+    const cleanup = probe(this.binary, ["mcp", "remove", name], env, DROID_CLEANUP_TIMEOUT_MS);
     // Teardown gate: startSession replaces this session the moment stopSession
     // returns, and the replacement's own `droid mcp remove`/`add`
     // (registerGatewayMcp) plus its fresh child both touch droid's single
@@ -1144,8 +1150,12 @@ export class DroidAdapter implements ProviderAdapter {
    *  safe to run on every start. A hard failure here is the real "not logged
    *  in" signal and must surface. The method id comes from the live handshake:
    *  API key when FACTORY_API_KEY is set, else device pairing. */
-  private async authenticateRpc(rpc: JsonRpcClient, initializeResult: DroidAcpRecord): Promise<void> {
-    const methodId = resolveDroidAuthMethodId(initializeResult);
+  private async authenticateRpc(
+    rpc: JsonRpcClient,
+    initializeResult: DroidAcpRecord,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<void> {
+    const methodId = resolveDroidAuthMethodId(initializeResult, env);
     if (!methodId) {
       throw new Error(
         "Droid ACP is not authenticated. Run `droid` once to sign in (device pairing), or set FACTORY_API_KEY.",
@@ -1648,13 +1658,16 @@ export class DroidAdapter implements ProviderAdapter {
  *  when FACTORY_API_KEY is set in the server env (it would be pointless to
  *  open a pairing flow kone can't complete), else device pairing. Undefined
  *  when neither is offered. */
-export function resolveDroidAuthMethodId(initializeResult: DroidAcpRecord): string | undefined {
+export function resolveDroidAuthMethodId(
+  initializeResult: DroidAcpRecord,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   const methods = new Set(
     droidArray(readValue(initializeResult, "authMethods"))
       .map((method) => readString(method, "id"))
       .filter((id): id is string => id !== undefined),
   );
-  if (process.env.FACTORY_API_KEY?.trim() && methods.has(DROID_API_KEY_AUTH_METHOD)) {
+  if (env.FACTORY_API_KEY?.trim() && methods.has(DROID_API_KEY_AUTH_METHOD)) {
     return DROID_API_KEY_AUTH_METHOD;
   }
   if (methods.has(DROID_DEVICE_PAIRING_AUTH_METHOD)) {

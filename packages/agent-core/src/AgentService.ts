@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
-import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
+import { cachedLimitResetFor, invalidateProviderQuotaCache, isQuotaCapableProvider } from "./quota/index.js";
 import {
   resolveModelWithFallback,
   type ModelCandidate,
@@ -86,12 +86,16 @@ import {
   statusEnabled,
 } from "./providerHealth.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
+import { probeResult } from "./spawn.js";
 import {
   assertProviderEnabled,
+  customModelsFor,
   handoffTokenCapFor,
+  healthCheckIntervalSecFor,
   importLegacyRendererSettings,
   isProviderEnabled,
   onProviderSettingsChanged as subscribeProviderSettings,
+  patchGlobalProviderSettings as patchGlobalProviderSettingsInStore,
   patchProviderSettings as patchProviderSettingsInStore,
   readProviderSettings,
   readProviderSettingsSnapshot,
@@ -125,8 +129,12 @@ import type {
   LegacyRendererProviderSettings,
   ModelDescriptor,
   ProviderAdapter,
+  GlobalProviderSettingsPatch,
+  ProviderBinaryCheckResult,
   ProviderConfig,
+  ProviderEnvVar,
   ProviderKind,
+  ProviderModelsRefreshResult,
   ProviderMaintenance,
   ProviderSettingsMap,
   ProviderSettingsSnapshot,
@@ -715,6 +723,7 @@ export class AgentService {
    *  construction so a quiet app still settles, first pass off a one-shot
    *  delay, cleared on stopAll. */
   private pullRequestTimer: ReturnType<typeof setInterval> | null = null;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private pullRequestStartTimer: ReturnType<typeof setTimeout> | null = null;
   /** The sweep currently running, so a second tick skips instead of selecting
    *  the same threads and double-settling them. */
@@ -757,6 +766,7 @@ export class AgentService {
     for (const [provider, adapter] of this.adapters) {
       adapter.setConfig?.(settings[provider] ?? {});
     }
+    this.scheduleHealthTimer();
     for (const [provider, models] of Object.entries(readProviderCache().models)) {
       if (models?.length) {
         // SAFETY: the provider cache is keyed by ProviderKind at write time.
@@ -873,7 +883,12 @@ export class AgentService {
         ? { ...status, enabled: statusEnabled(status), supportsThreadCompaction }
         : { ...disabledProviderStatus(status.provider, status.label), supportsThreadCompaction };
     });
-    return { ...surface, statuses };
+    const models = { ...surface.models };
+    for (const provider of PROVIDER_KIND_VALUES) {
+      const merged = this.withCustomModels(provider, models[provider] ?? []);
+      if (merged.length > 0) models[provider] = merged;
+    }
+    return { ...surface, statuses, models };
   }
 
   /** Queue one provider-probe round behind the previous one. Success or
@@ -966,6 +981,14 @@ export class AgentService {
     const cached = readProviderCache().statuses;
     const [folded] = stabilizeProviderStatuses(cached, [probed]);
     if (!folded) throw new Error(`No provider status for ${provider}.`);
+    const previous = cached.find((status) => status.provider === provider);
+    if (
+      previous &&
+      (previous.authStatus !== folded.authStatus || previous.readiness !== folded.readiness)
+    ) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
+      void this.stopSessionsForProvider(provider);
+    }
     const merged = cached.some((status) => status.provider === provider)
       ? cached.map((status) => (status.provider === provider ? folded : status))
       : [...cached, folded];
@@ -997,13 +1020,59 @@ export class AgentService {
     }
   }
 
+  /** Merge user-configured custom model slugs into a provider's model list. */
+  private withCustomModels(
+    provider: ProviderKind,
+    models: readonly ModelDescriptor[],
+  ): ModelDescriptor[] {
+    const slugs = customModelsFor(provider);
+    if (slugs.length === 0) return [...models];
+    const seen = new Set(models.map((m) => m.id));
+    const extras: ModelDescriptor[] = [];
+    for (const slug of slugs) {
+      if (seen.has(slug)) continue;
+      seen.add(slug);
+      extras.push({ id: slug, label: slug, custom: true });
+    }
+    return [...models, ...extras];
+  }
+
   async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
     const models = await this.adapter(provider).listModels();
     if (models.length) {
       this.catalogs.set(provider, models);
       cacheModels(provider, models);
     }
-    return models;
+    return this.withCustomModels(provider, models);
+  }
+
+  /** Force a fresh model catalog probe for `provider`, keeping the last
+   *  known non-empty catalog when the probe fails or returns empty, and
+   *  surfacing any discovery error string to the UI. */
+  async refreshProviderModels(provider: ProviderKind): Promise<ProviderModelsRefreshResult> {
+    const adapter = this.adapter(provider);
+    adapter.invalidateDiscoveryCaches?.();
+    const fallback =
+      this.catalogs.get(provider) ?? readProviderCache().models[provider] ?? [];
+    try {
+      const probed = await adapter.listModels();
+      if (probed.length > 0) {
+        this.catalogs.set(provider, probed);
+        cacheModels(provider, probed);
+        return { provider, models: this.withCustomModels(provider, probed) };
+      }
+      return {
+        provider,
+        models: this.withCustomModels(provider, fallback),
+        error: "Provider returned no models.",
+      };
+    } catch (error) {
+      return {
+        provider,
+        models: this.withCustomModels(provider, fallback),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /** Refresh the whole surface in the background at app open: discover, then
@@ -1088,12 +1157,68 @@ export class AgentService {
   /** Persist one provider's install settings and apply them to its live adapter
    *  so the next discover / session picks up the change without a restart.
    *  Returns the full updated map. */
+  /** Stop every active session currently routed to `provider` (e.g. when its
+   *  binary path, home directory, environment, or sign-in state changes). */
+  async stopSessionsForProvider(provider: ProviderKind): Promise<number> {
+    const threads = new Set<string>();
+    for (const [threadId, routed] of this.routing) {
+      if (routed === provider) threads.add(threadId);
+    }
+    for (const [threadId, input] of this.sessionInputs) {
+      if (input.provider === provider) threads.add(threadId);
+    }
+    await Promise.all(
+      [...threads].map((threadId) => this.stopSession(threadId).catch(() => {})),
+    );
+    return threads.size;
+  }
+
+  private envPairsEqual(
+    before: readonly ProviderEnvVar[] | undefined,
+    after: readonly ProviderEnvVar[] | undefined,
+  ): boolean {
+    const a = before ?? [];
+    const b = after ?? [];
+    if (a.length !== b.length) return false;
+    return a.every((item, i) => item.name === b[i]?.name && item.value === b[i]?.value);
+  }
+
+  private didRuntimeSettingsChange(
+    before: ProviderConfig | undefined,
+    after: ProviderConfig | undefined,
+  ): boolean {
+    if ((before?.enabled ?? true) !== (after?.enabled ?? true)) return true;
+    if ((before?.binaryPath ?? "") !== (after?.binaryPath ?? "")) return true;
+    if ((before?.homeDir ?? "") !== (after?.homeDir ?? "")) return true;
+    if (!this.envPairsEqual(before?.env, after?.env)) return true;
+    return false;
+  }
+
+  private scheduleHealthTimer(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+    if (this.options.retentionSweepMs === 0) return;
+    const sec = healthCheckIntervalSecFor();
+    if (sec <= 0) return;
+    const timer = setInterval(() => {
+      void this.discover().catch(() => {});
+    }, sec * 1_000);
+    timer.unref?.();
+    this.healthCheckTimer = timer;
+  }
+
   setProviderSettings(provider: ProviderKind, config: ProviderConfig): ProviderSettingsMap {
     const prevSettings = readProviderSettings();
-    const wasEnabled = isProviderEnabled(provider, prevSettings);
+    const prevEntry = prevSettings[provider];
     const next = writeProviderSettings(provider, config);
-    this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
-    if (wasEnabled !== isProviderEnabled(provider, next)) {
+    const nextEntry = next[provider];
+    this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
+    if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
+      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
+      void this.stopSessionsForProvider(provider);
       void this.discover();
     }
     return next;
@@ -1105,13 +1230,85 @@ export class AgentService {
    *  changed, so two windows never undo each other. Returns the mirror the
    *  renderers read. */
   patchProviderSettings(provider: ProviderKind, patch: ProviderConfig): ProviderSettingsSnapshot {
-    const wasEnabled = isProviderEnabled(provider);
+    const prevEntry = readProviderSettings()[provider];
     const next = patchProviderSettingsInStore(provider, patch);
-    this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
-    if (wasEnabled !== isProviderEnabled(provider, next)) {
+    const nextEntry = next[provider];
+    this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
+    if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
+      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
+      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
+      void this.stopSessionsForProvider(provider);
       void this.discover();
     }
     return this.getProviderSettingsSnapshot();
+  }
+
+  /** Update top-level provider settings (`providerOrder`, `healthCheckIntervalSec`)
+   *  and reschedule the background health timer when the interval changes. */
+  patchGlobalProviderSettings(patch: GlobalProviderSettingsPatch): ProviderSettingsSnapshot {
+    const snapshot = patchGlobalProviderSettingsInStore(patch);
+    if ("healthCheckIntervalSec" in patch) {
+      this.scheduleHealthTimer();
+    }
+    return snapshot;
+  }
+
+  /** Immediately validate a provider's CLI binary path (`--version` probe) and
+   *  return its resolved path and version. */
+  async checkProviderBinary(
+    provider: ProviderKind,
+    binaryPath?: string,
+  ): Promise<ProviderBinaryCheckResult> {
+    const env = await buildAgentEnv(process.env, provider);
+    const settings = readProviderSettings();
+    const override =
+      binaryPath !== undefined ? binaryPath.trim() || undefined : settings[provider]?.binaryPath;
+    const maint = await resolveProviderMaintenance({
+      provider,
+      binaryOverride: override,
+      env,
+      checkLatest: false,
+    });
+    if (!maint.binary) {
+      return {
+        provider,
+        binary: null,
+        ok: true,
+        version: this.knownVersion(provider),
+        resolvedPath: null,
+      };
+    }
+    if (!maint.resolvedPath) {
+      return {
+        provider,
+        binary: maint.binary,
+        ok: false,
+        version: null,
+        resolvedPath: null,
+        error: "Not found",
+      };
+    }
+    const probe = await probeResult(maint.resolvedPath, ["--version"], env, 8_000);
+    if (probe.outcome === "missing" || probe.outcome === "failure" || probe.outcome === "timeout") {
+      return {
+        provider,
+        binary: maint.binary,
+        ok: false,
+        version: null,
+        resolvedPath: maint.resolvedPath,
+        error: probe.outcome === "timeout" ? "Timed out" : "Not found",
+      };
+    }
+    const combined = [probe.stdout, probe.stderr].join(' ').trim();
+    const verMatch = combined.match(/\bv?(\d+\.\d+(?:\.\d+)?[\w.-]*)\b/);
+    const version = verMatch?.[1] ?? (combined.split(/\r?\n/)[0]?.trim() || null);
+    return {
+      provider,
+      binary: maint.binary,
+      ok: true,
+      version,
+      resolvedPath: maint.resolvedPath,
+    };
   }
 
   /** Persist one provider's handoff history cap (in tokens). Returns the full
@@ -1465,10 +1662,10 @@ export class AgentService {
     checkLatest?: boolean;
     force?: boolean;
   }): Promise<ProviderMaintenance[]> {
-    const env = await buildAgentEnv();
     const settings = readProviderSettings();
     return Promise.all(
-      [...this.adapters.keys()].map((provider) => {
+      [...this.adapters.keys()].map(async (provider) => {
+        const env = await buildAgentEnv(undefined, provider);
         const input: Parameters<typeof resolveProviderMaintenance>[0] = {
           provider,
           currentVersion: this.knownVersion(provider),
@@ -1489,7 +1686,7 @@ export class AgentService {
    *  date" is a real outcome, and calling it success invites the user to wonder
    *  why nothing happened. */
   async updateProvider(provider: ProviderKind): Promise<ProviderUpdateResult> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, provider);
     const settings = readProviderSettings();
     const override = settings[provider]?.binaryPath;
     const before = this.knownVersion(provider);
@@ -1556,6 +1753,7 @@ export class AgentService {
    *  catalog is non-empty, so a failed probe never strips a legitimate model. */
   private validModelFor(provider: ProviderKind, model: string | undefined): string | undefined {
     if (!model) return model;
+    if (customModelsFor(provider).includes(model)) return model;
     const catalog = this.catalogFor(provider);
     if (!catalog) return model;
     if (catalog.some((m) => m.id === model)) return model;
@@ -2982,8 +3180,17 @@ export class AgentService {
     // A session torn down before its first turn consumes any pending startup
     // interrupt with it.
     this.startInterrupted.delete(threadId);
+    if (this.startingSessions.has(threadId)) {
+      this.startStopRequested.add(threadId);
+    }
     const provider = this.routing.get(threadId);
-    if (!provider) return;
+    if (!provider) {
+      const pendingProvider = this.sessionInputs.get(threadId)?.provider;
+      if (pendingProvider && options?.preserveQueue !== true) {
+        this.cancelQueuedForStop(threadId, pendingProvider);
+      }
+      return;
+    }
     this.endAsked.add(threadId);
     // Cancel queued follow-ups BEFORE the teardown: a row must never promote
     // into a session that is being torn down (a drain racing the stop could
@@ -5160,6 +5367,10 @@ export class AgentService {
   /** Tear down everything — called on app quit so no agent subprocess is left. */
   async stopAll(): Promise<void> {
     for (const threadId of this.routing.keys()) this.userQuestions.cancel(threadId);
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
     if (this.wedgeTimer) {
       clearInterval(this.wedgeTimer);
       this.wedgeTimer = null;

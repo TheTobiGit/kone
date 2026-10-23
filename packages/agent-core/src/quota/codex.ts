@@ -1,3 +1,5 @@
+import { resolveCodexHome } from "../codexHome.js";
+import { buildProviderChildEnv } from "../providerChildEnv.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -98,14 +100,32 @@ export type CodexDeps = {
   now: () => number;
 };
 
-const defaults: CodexDeps = {
-  fetch: globalThis.fetch,
-  authPath: path.join(os.homedir(), ".codex", "auth.json"),
-  openaiAuthPath: path.join(os.homedir(), "Library", "Application Support", "com.openai.codex", "auth.json"),
-  readFile: readSecureFile,
-  writeFile: atomicWriteSecureFile,
-  now: Date.now,
-};
+function defaultCodexDeps(): CodexDeps {
+  const env = buildProviderChildEnv("codex");
+  const defaultHome = path.join(os.homedir(), ".codex");
+  const resolvedHome = resolveCodexHome(env);
+  const isCustomHome = path.resolve(resolvedHome) !== path.resolve(defaultHome);
+  return {
+    fetch: globalThis.fetch,
+    authPath: path.join(resolvedHome, "auth.json"),
+    openaiAuthPath: isCustomHome
+      ? path.join(resolvedHome, ".no-openai-app-support-fallback")
+      : path.join(os.homedir(), "Library", "Application Support", "com.openai.codex", "auth.json"),
+    readFile: readSecureFile,
+    writeFile: atomicWriteSecureFile,
+    now: Date.now,
+  };
+}
+
+export async function detectCodexCredential(options: Partial<CodexDeps> = {}): Promise<boolean> {
+  try {
+    const deps = { ...defaultCodexDeps(), ...options };
+    if ((await deps.readFile(deps.authPath, 64 * 1024)) !== null) return true;
+    return (await deps.readFile(deps.openaiAuthPath, 64 * 1024).catch(() => null)) !== null;
+  } catch {
+    return false;
+  }
+}
 
 /** A resolved Codex credential plus how much of its lifecycle we own. Only
  *  the Codex CLI's own `auth.json` is `writable` — we may rotate and write it
@@ -367,7 +387,7 @@ export type CodexQuotaResult = { report: QuotaProviderReport; retryAfterSeconds?
  *  first (see discoverSource). Never throws — every path resolves to a
  *  report; the caller (index.ts) layers the cache/backoff on top of this. */
 export async function fetchCodexQuota(options: Partial<CodexDeps> & { signal?: AbortSignal } = {}): Promise<CodexQuotaResult> {
-  const deps = { ...defaults, ...options };
+  const deps = { ...defaultCodexDeps(), ...options };
   try {
     const source = await discoverSource(deps);
     if (!source) return { report: emptyReport("codex", "disconnected", "Not connected — run `codex login` first.") };

@@ -14,8 +14,9 @@ import { fileURLToPath } from "node:url";
 import { emptyReport, percent as percentValue } from "./types.js";
 import type { QuotaProviderReport } from "./types.js";
 
-let mode: "ok" | "ratelimited" | "disconnected" | "networkError" = "ok";
+let mode: "ok" | "ratelimited" | "disconnected" | "networkError" | "deferred" = "ok";
 let calls = 0;
+let deferredQueue: Array<(res: { report: QuotaProviderReport; retryAfterSeconds?: number }) => void> = [];
 
 // index.ts re-exports opencode.ts, which imports node:sqlite (an
 // Electron-runtime built-in this bun can't load) — stand it in for bun:sqlite
@@ -57,6 +58,7 @@ function connectedReport(): QuotaProviderReport {
 }
 
 mock.module(fileURLToPath(new URL("./codex.ts", import.meta.url)), () => ({
+  detectCodexCredential: async () => true,
   fetchCodexQuota: async (_opts: { signal?: AbortSignal }): Promise<{
     report: QuotaProviderReport;
     retryAfterSeconds?: number;
@@ -78,6 +80,11 @@ mock.module(fileURLToPath(new URL("./codex.ts", import.meta.url)), () => ({
         report: emptyReport("codex", "transientFailure", "Could not reach Codex's usage endpoint."),
       };
     }
+    if (mode === "deferred") {
+      return new Promise((resolve) => {
+        deferredQueue.push(resolve);
+      });
+    }
     if (mode === "disconnected") {
       return { report: emptyReport("codex", "disconnected", "No Codex credential found.") };
     }
@@ -85,7 +92,7 @@ mock.module(fileURLToPath(new URL("./codex.ts", import.meta.url)), () => ({
   },
 }));
 
-const { fetchProviderQuota, resetQuotaStateForTests } = await import("./index.js");
+const { fetchProviderQuota, invalidateProviderQuotaCache, resetQuotaStateForTests } = await import("./index.js");
 
 describe("fetchProviderQuota 429 resilience", () => {
   beforeEach(() => {
@@ -217,5 +224,33 @@ describe("fetchProviderQuota 429 resilience", () => {
     const recovered = await fetchProviderQuota("codex", { force: true });
     expect(recovered.connection).toBe("connected");
     expect(recovered.windows).toHaveLength(1);
+  });
+
+  test("an in-flight request invalidated by a settings/home change cannot overwrite a newer account's cached report", async () => {
+    mode = "deferred";
+    deferredQueue = [];
+
+    // Start request A (for old account A):
+    const reqA = fetchProviderQuota("codex");
+    expect(deferredQueue).toHaveLength(1);
+
+    // Invalidate cache (e.g. user changed CODEX_HOME to account B) and start request B:
+    invalidateProviderQuotaCache("codex");
+    const reqB = fetchProviderQuota("codex");
+    expect(deferredQueue).toHaveLength(2);
+
+    // Account B resolves first with planLabel "Team B":
+    const reportB = { ...connectedReport(), planLabel: "Team B" };
+    deferredQueue[1]!({ report: reportB });
+    expect((await reqB).planLabel).toBe("Team B");
+
+    // Stale request A finishes later with planLabel "Plus A":
+    const reportA = { ...connectedReport(), planLabel: "Plus A" };
+    deferredQueue[0]!({ report: reportA });
+    await reqA;
+
+    // Subsequent cached read must still serve Account B ("Team B"), never stale Account A:
+    const cached = await fetchProviderQuota("codex");
+    expect(cached.planLabel).toBe("Team B");
   });
 });

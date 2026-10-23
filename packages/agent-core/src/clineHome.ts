@@ -31,7 +31,7 @@ const CLINE_BROWSERLESS_ENV = {
  *  flips CLIs into a non-interactive posture that suppresses parts of a real
  *  user turn. Probes get the stricter env below instead. */
 export async function buildClineEnv(): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "cline" );
   return { ...env, ...CLINE_BROWSERLESS_ENV };
 }
 

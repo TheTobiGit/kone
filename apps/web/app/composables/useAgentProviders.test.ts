@@ -85,3 +85,21 @@ test("a provider change from the main process lands without prepare()", () => {
     expect(providers.ready.value.map((status) => status.provider)).toEqual(["cursor"]);
   });
 });
+
+test("adding and removing the sole custom model updates modelCache immediately", async () => {
+  const { resetProviderSettingsForTests, useProviderSettings } = await import(
+    "./useProviderSettings"
+  );
+  resetProviderSettingsForTests();
+  const ps = useProviderSettings();
+  const providers = useAgentProviders();
+  providers.modelCache.value = {};
+
+  await ps.addCustomModel("codex", "o3-pro");
+  expect(providers.modelCache.value.codex?.map((m) => m.id)).toEqual(["o3-pro"]);
+
+  // Simulate IPC returning the custom model in rawModelCache, then removing it:
+  providers.modelCache.value = { codex: [{ id: "o3-pro", label: "o3-pro", custom: true }] };
+  await ps.removeCustomModel("codex", "o3-pro");
+  expect(providers.modelCache.value.codex ?? []).toEqual([]);
+});

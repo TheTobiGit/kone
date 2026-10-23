@@ -322,7 +322,7 @@ async function generateWithCodex(input: {
     await fs.writeFile(schemaPath, JSON.stringify(TITLE_SCHEMA), "utf8");
     await fs.writeFile(outputPath, "", "utf8");
 
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "codex");
     const stdout = await runCli({
       command: "codex",
       args: [
@@ -476,7 +476,7 @@ async function generateWithAntigravity(input: {
   prompt: string;
   launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "antigravity");
   return runCli({
     command: ANTGRAVITY_BINARY,
     args: [

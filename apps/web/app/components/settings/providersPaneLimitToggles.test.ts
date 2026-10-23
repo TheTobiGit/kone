@@ -134,3 +134,36 @@ test("each switch reads and writes through the provider-settings composable", ()
   expect(script).toContain("setSnoozeWhenLimited(");
   expect(script).not.toContain("patchSettings(");
 });
+
+test("the fused pane composes ProviderCardDeck, ProviderIdentityBar, ProviderRuntimeEnvSection, Limits, and ProviderModelsSection", () => {
+  const pane = template();
+  expect(elements([pane], "ProviderCardDeck")).toHaveLength(1);
+  expect(elements([pane], "ProviderIdentityBar")).toHaveLength(1);
+  expect(elements([pane], "ProviderRuntimeEnvSection")).toHaveLength(1);
+  expect(elements([pane], "ProviderModelsSection")).toHaveLength(1);
+
+  const limits = limitsSection(pane);
+  const capInput = elements([limits], "input").find(
+    (el) => attribute(el, "aria-label") === "Handoff token cap",
+  );
+  expect(capInput).toBeDefined();
+
+  // No redundant "Copy the sign-in command" row in the pane:
+  expect(source()).not.toContain("Copy the sign-in command");
+});
+
+test("ProviderRuntimeEnvSection captures the provider before awaiting binary validation and passes provider in save events", () => {
+  const runtimeSrc = readFileSync(
+    new URL("./providers/ProviderRuntimeEnvSection.vue", import.meta.url),
+    "utf8",
+  );
+  // commitBinaryEdit must capture const provider = props.row.provider before await and emit("saveBinary", provider, next)
+  expect(runtimeSrc).toContain('emit("saveBinary", provider, next)');
+  expect(runtimeSrc).toContain('emit("saveHome", provider,');
+  expect(runtimeSrc).toContain('emit("saveEnv", provider,');
+
+  const paneSrc = source();
+  expect(paneSrc).toContain("async function saveBinary(provider: ProviderKind, path: string)");
+  expect(paneSrc).toContain("async function saveHome(provider: ProviderKind, path: string)");
+  expect(paneSrc).toContain("async function saveEnv(provider: ProviderKind, vars: ProviderEnvVar[])");
+});
