@@ -240,7 +240,7 @@ export const MOCK_HEALTH = {
 /** Custom models the user added by id. */
 export const MOCK_CUSTOM_MODELS = {
   opencode: ["openrouter/qwen3-coder-plus"],
-  codex: [],
+  codex: ["o3-pro"],
   claudeAgent: [],
   cursor: [],
   droid: [],

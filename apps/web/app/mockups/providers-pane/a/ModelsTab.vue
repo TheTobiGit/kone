@@ -12,16 +12,26 @@ import { sessionBrand } from "~/utils/modelCatalog";
 
 const props = defineProps<{ pane: MockProvidersPane }>();
 
+const added = ref<string[]>([]);
 const removed = ref<string[]>([]);
-const customModels = computed(() =>
-  (MOCK_CUSTOM_MODELS[props.pane.current.value.provider] ?? []).filter(
-    (id) => !removed.value.includes(id),
-  ),
-);
+const adding = ref(false);
+const draft = ref("");
+
+const customModels = computed(() => {
+  const base = MOCK_CUSTOM_MODELS[props.pane.current.value.provider] ?? [];
+  return [...base, ...added.value].filter((id) => !removed.value.includes(id));
+});
 
 function brandFor(id: string) {
   const row = props.pane.current.value;
   return sessionBrand(row.provider, row.meta.brand, id);
+}
+
+function submitCustom() {
+  const id = draft.value.trim();
+  if (id && !customModels.value.includes(id)) added.value.push(id);
+  draft.value = "";
+  adding.value = false;
 }
 
 // Inert: the spinner answers the press, nothing is fetched.
@@ -57,15 +67,13 @@ onBeforeUnmount(() => {
             aria-hidden="true"
           />
         </button>
-        <button type="button" class="pp__btn">
+        <button type="button" class="pp__btn" @click="adding = !adding">
           <HugeiconsIcon :icon="PlusSignIcon" :size="12" :stroke-width="2" aria-hidden="true" />
           Add model
         </button>
       </template>
 
       <template #after>
-        <!-- Slot content keeps this component's scope, not MockModels', so the row
-             repeats the list's own recipe rather than borrowing its class. -->
         <li v-for="id in customModels" :key="id" class="pa__customrow">
           <ProviderLogo :brand="brandFor(id)" :size="16" class="pa__custommark" />
           <span class="pa__customid">{{ id }}</span>
@@ -77,6 +85,22 @@ onBeforeUnmount(() => {
           >
             <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
           </button>
+        </li>
+
+        <li v-if="adding" class="pa__customrow">
+          <ProviderLogo :brand="pane.current.value.meta.brand" :size="16" class="pa__custommark" />
+          <input
+            v-model="draft"
+            type="text"
+            class="pp__input pa__custominput"
+            spellcheck="false"
+            autocapitalize="off"
+            autocorrect="off"
+            placeholder="model-id"
+            aria-label="Custom model id"
+            @keydown.enter.prevent="submitCustom"
+          />
+          <button type="button" class="pp__btn pp__btn--outline" @click="submitCustom">Add</button>
         </li>
       </template>
     </MockModels>
@@ -99,8 +123,6 @@ onBeforeUnmount(() => {
 .pa__iconbtn {
   padding-inline: 7px;
 }
-/* A model the user added by id, in the list's own row register: mark, id, and
-   the one control that takes it away. */
 .pa__customrow {
   display: flex;
   align-items: center;
@@ -112,8 +134,6 @@ onBeforeUnmount(() => {
 .pa__custommark {
   flex-shrink: 0;
 }
-/* The id itself is the name, so it wears the mono face the rest of the pane
-   gives to things kone has to spell exactly. */
 .pa__customid {
   flex: 1 1 auto;
   min-width: 0;
@@ -124,5 +144,9 @@ onBeforeUnmount(() => {
   color: var(--ink-soft);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pa__custominput {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 </style>

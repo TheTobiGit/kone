@@ -37,6 +37,9 @@ const channel = computed(() => INSTALL_SOURCE_LABEL[upkeep.value?.installSource 
 // as the real field does it.
 const binaryDraft = ref("");
 
+const INTERVALS = ["5m", "15m", "1m", "Off"] as const;
+const intervalIdx = ref(0);
+const interval = computed(() => INTERVALS[intervalIdx.value] ?? "5m");
 const rechecking = ref(false);
 const copied = ref(false);
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -129,6 +132,14 @@ onBeforeUnmount(() => {
           <span class="pa__dot" :class="`pa__dot--${health.state}`" aria-hidden="true" />
           <span class="pa__healthlabel">{{ health.label }}</span>
           <span class="pa__healthtime">{{ health.checked }}</span>
+          <button
+            type="button"
+            class="pp__btn pa__interval"
+            aria-label="Health check interval"
+            @click="intervalIdx = (intervalIdx + 1) % INTERVALS.length"
+          >
+            Every {{ interval }}
+          </button>
           <button type="button" class="pp__btn" @click="recheck">
             <HugeiconsIcon
               :icon="RefreshIcon"
@@ -213,6 +224,10 @@ onBeforeUnmount(() => {
             </dd>
           </div>
         </dl>
+
+        <button v-if="newer" type="button" class="pp__btn pp__btn--outline pa__upbtn">
+          Update to {{ upkeep?.latestVersion }}
+        </button>
       </section>
     </div>
   </div>
@@ -319,5 +334,15 @@ onBeforeUnmount(() => {
 }
 .pa__health .pp__btn {
   margin-left: 2px;
+}
+.pa__interval {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.pa__upbtn {
+  align-self: flex-start;
+  margin-top: 4px;
 }
 </style>

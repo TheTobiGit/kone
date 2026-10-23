@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // Direction A — Account: the provider's accounts as a strip (the active one
-// marked), then the one command that signs it in. Inert: choosing a tile is
-// local state only, nothing is signed in or out.
+// marked), then sign-in status, login command, and sign-in / sign-out actions.
 import { computed, onBeforeUnmount, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -9,19 +8,26 @@ import {
   ComputerTerminal01Icon,
   Copy01Icon,
   PlusSignIcon,
+  UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
 import { MOCK_ACCOUNTS } from "~/mockups/providers-pane/sample";
 import type { MockProvidersPane } from "~/mockups/providers-pane/useMockProvidersPane";
 
 const props = defineProps<{ pane: MockProvidersPane }>();
 
-const accounts = computed(() => MOCK_ACCOUNTS[props.pane.current.value.provider] ?? []);
+const row = computed(() => props.pane.current.value);
+const ready = computed(() => row.value.status?.readiness === "ready");
+const accounts = computed(() => MOCK_ACCOUNTS[row.value.provider] ?? []);
 const chosen = ref<string | null>(null);
 const activeId = computed(() => chosen.value ?? accounts.value.find((a) => a.active)?.id ?? null);
+const activeAccount = computed(() => accounts.value.find((a) => a.id === activeId.value) ?? null);
+const statusLabel = computed(() => {
+  if (!ready.value) return "Not signed in";
+  if (activeAccount.value) return `${activeAccount.value.label} · ${activeAccount.value.detail}`;
+  return row.value.status?.authLabel ?? "Signed in";
+});
 const login = computed(() => props.pane.loginDisplay.value);
-const signInLabel = computed(() =>
-  props.pane.current.value.status?.readiness === "ready" ? "Sign in again" : "Sign in",
-);
+const signInLabel = computed(() => (ready.value ? "Sign in again" : "Sign in"));
 
 const copied = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,8 +80,18 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="pa__signin">
-      <dl v-if="login" class="pp__facts">
+      <dl class="pp__facts">
         <div class="pp__factsrow">
+          <dt>
+            <HugeiconsIcon :icon="UserCheck01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+            Status
+          </dt>
+          <dd class="pp__factsval--plain" :class="{ 'pp__factsval--warn': !ready }">
+            {{ statusLabel }}
+          </dd>
+        </div>
+
+        <div v-if="login" class="pp__factsrow">
           <dt>
             <HugeiconsIcon
               :icon="ComputerTerminal01Icon"
@@ -100,7 +116,10 @@ onBeforeUnmount(() => {
         </div>
       </dl>
 
-      <button type="button" class="pp__btn pp__btn--outline">{{ signInLabel }}</button>
+      <div class="pa__authacts">
+        <button type="button" class="pp__btn pp__btn--outline">{{ signInLabel }}</button>
+        <button v-if="ready" type="button" class="pp__btn">Sign out</button>
+      </div>
     </div>
   </div>
 </template>
@@ -188,9 +207,14 @@ onBeforeUnmount(() => {
 .pa__signin {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 14px;
   max-width: 520px;
   margin-top: 22px;
+}
+.pa__authacts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>
