@@ -1160,14 +1160,17 @@ export class AgentService {
   /** Stop every active session currently routed to `provider` (e.g. when its
    *  binary path, home directory, environment, or sign-in state changes). */
   async stopSessionsForProvider(provider: ProviderKind): Promise<number> {
-    const threads: string[] = [];
+    const threads = new Set<string>();
     for (const [threadId, routed] of this.routing) {
-      if (routed === provider) threads.push(threadId);
+      if (routed === provider) threads.add(threadId);
+    }
+    for (const [threadId, input] of this.sessionInputs) {
+      if (input.provider === provider) threads.add(threadId);
     }
     await Promise.all(
-      threads.map((threadId) => this.stopSession(threadId).catch(() => {})),
+      [...threads].map((threadId) => this.stopSession(threadId).catch(() => {})),
     );
-    return threads.length;
+    return threads.size;
   }
 
   private envPairsEqual(
@@ -1659,10 +1662,10 @@ export class AgentService {
     checkLatest?: boolean;
     force?: boolean;
   }): Promise<ProviderMaintenance[]> {
-    const env = await buildAgentEnv();
     const settings = readProviderSettings();
     return Promise.all(
-      [...this.adapters.keys()].map((provider) => {
+      [...this.adapters.keys()].map(async (provider) => {
+        const env = await buildAgentEnv(undefined, provider);
         const input: Parameters<typeof resolveProviderMaintenance>[0] = {
           provider,
           currentVersion: this.knownVersion(provider),
@@ -1683,7 +1686,7 @@ export class AgentService {
    *  date" is a real outcome, and calling it success invites the user to wonder
    *  why nothing happened. */
   async updateProvider(provider: ProviderKind): Promise<ProviderUpdateResult> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, provider);
     const settings = readProviderSettings();
     const override = settings[provider]?.binaryPath;
     const before = this.knownVersion(provider);
@@ -3177,8 +3180,17 @@ export class AgentService {
     // A session torn down before its first turn consumes any pending startup
     // interrupt with it.
     this.startInterrupted.delete(threadId);
+    if (this.startingSessions.has(threadId)) {
+      this.startStopRequested.add(threadId);
+    }
     const provider = this.routing.get(threadId);
-    if (!provider) return;
+    if (!provider) {
+      const pendingProvider = this.sessionInputs.get(threadId)?.provider;
+      if (pendingProvider && options?.preserveQueue !== true) {
+        this.cancelQueuedForStop(threadId, pendingProvider);
+      }
+      return;
+    }
     this.endAsked.add(threadId);
     // Cancel queued follow-ups BEFORE the teardown: a row must never promote
     // into a session that is being torn down (a drain racing the stop could
