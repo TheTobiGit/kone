@@ -901,7 +901,7 @@ export class CodexAdapter implements ProviderAdapter {
       };
     }
 
-    const auth = readCodexAuth();
+    const auth = readCodexAuth(env);
     if (!auth.authenticated) {
       return {
         provider: this.provider,
@@ -978,7 +978,7 @@ export class CodexAdapter implements ProviderAdapter {
     let gatewayConnection = input.gatewayConnection;
     if (gatewayConnection) {
       try {
-        const overlayHome = prepareCodexHomeOverlay({ endpointUrl: gatewayConnection.url });
+        const overlayHome = prepareCodexHomeOverlay({ endpointUrl: gatewayConnection.url, env });
         spawnEnv = {
           ...env,
           CODEX_HOME: overlayHome,

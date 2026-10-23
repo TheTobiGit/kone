@@ -255,3 +255,124 @@ describe("resolveProviderSignInLaunch with provider env overrides", () => {
     }
   });
 });
+
+describe("PR #24 review fixes", () => {
+  test("CodexAdapter.discover() reads auth from the provider's configured homeDir and env", async () => {
+    const { chmodSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { CodexAdapter } = await import("./adapters/CodexAdapter.js");
+    const fakeHome = mkdtempSync(path.join(os.tmpdir(), "kone-codex-custom-home-"));
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "kone-codex-fake-bin-"));
+    const fakeBin = path.join(binDir, "codex");
+    writeFileSync(fakeBin, "#!/bin/sh\necho 'codex 0.48.0'\n");
+    chmodSync(fakeBin, 0o755);
+
+    try {
+      // 1. An empty configured homeDir must report unauthenticated even if ~/.codex is logged in:
+      mkdirSync(fakeHome, { recursive: true });
+      patchProviderSettings("codex", {
+        binaryPath: fakeBin,
+        homeDir: fakeHome,
+      });
+
+      const adapter = new CodexAdapter(() => {});
+      adapter.setConfig({ binaryPath: fakeBin, homeDir: fakeHome });
+      const unauthStatus = await adapter.discover();
+      expect(unauthStatus.authStatus).toBe("unauthenticated");
+      expect(unauthStatus.readiness).toBe("needs-login");
+
+      // 2. Writing an API-key auth.json into fakeHome makes discover() report API Key:
+      writeFileSync(
+        path.join(fakeHome, "auth.json"),
+        JSON.stringify({ OPENAI_API_KEY: "sk-custom" }),
+      );
+      const authedStatus = await adapter.discover();
+      expect(authedStatus.authStatus).toBe("authenticated");
+      expect(authedStatus.readiness).toBe("ready");
+      expect(authedStatus.authLabel).toBe("API Key");
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  test("toggling secret display metadata on an env var does not stop active sessions or re-probe", async () => {
+    const { AgentService } = await import("./AgentService.js");
+    let discoverCount = 0;
+    const stoppedThreads: string[] = [];
+
+    const fakeAdapter = {
+      provider: "codex" as const,
+      capabilities: {
+        sessionModelSwitch: "unsupported" as const,
+        streamsText: false,
+        supportsToolEvents: false,
+        supportsResume: true,
+        supportsModelList: false,
+        supportsSubagents: false,
+      },
+      async discover() {
+        discoverCount += 1;
+        return {
+          provider: "codex" as const,
+          label: "Codex",
+          available: true,
+          authStatus: "authenticated" as const,
+          readiness: "ready" as const,
+        };
+      },
+      async listModels() {
+        return [];
+      },
+      async startSession(input: { threadId: string; provider: "codex"; cwd: string }) {
+        return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" as const };
+      },
+      async sendTurn(input: { threadId: string }) {
+        return { threadId: input.threadId, turnId: "t-1" };
+      },
+      async interruptTurn() {},
+      async stopSession(threadId: string) {
+        stoppedThreads.push(threadId);
+      },
+      async stopAll() {},
+      async respondToRequest() {},
+      async respondToUserInput() {
+        return { owned: false as const };
+      },
+      async listSessions() {
+        return [];
+      },
+      async hasSession() {
+        return true;
+      },
+    };
+
+    patchProviderSettings("codex", {
+      env: [{ name: "OPENAI_API_KEY", value: "sk-123", secret: false }],
+    });
+    const svc = new AgentService({
+      retentionSweepMs: 0,
+      stopTotalTimeoutMs: 50,
+      adapters: () => [fakeAdapter],
+    });
+    await svc.startSession({ threadId: "t-keep-alive", provider: "codex", cwd: "/tmp" });
+    const beforeDiscovers = discoverCount;
+
+    // Flip only `secret: true` on the same name/value pair:
+    svc.patchProviderSettings("codex", {
+      env: [{ name: "OPENAI_API_KEY", value: "sk-123", secret: true }],
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(stoppedThreads).toEqual([]);
+    expect(discoverCount).toBe(beforeDiscovers);
+
+    // Changing the actual value DOES stop the session and re-probe:
+    svc.patchProviderSettings("codex", {
+      env: [{ name: "OPENAI_API_KEY", value: "sk-456", secret: true }],
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(stoppedThreads).toEqual(["t-keep-alive"]);
+    expect(discoverCount).toBeGreaterThan(beforeDiscovers);
+
+    await svc.stopAll();
+  });
+});

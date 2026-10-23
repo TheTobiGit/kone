@@ -350,7 +350,7 @@ export class ClineAdapter implements ProviderAdapter {
       };
     }
 
-    const auth = await detectClineAuth();
+    const auth = await detectClineAuth(env);
     if (!auth.authenticated) {
       return {
         provider: this.provider,
