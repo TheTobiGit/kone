@@ -1065,6 +1065,8 @@ export type ProviderUpdateResult = {
 export type ModelDescriptor = {
   id: string;
   label: string;
+  /** True when added by the user via customModels rather than discovered from the CLI. */
+  custom?: boolean;
   /** Provider-reported native context capacity, when available. */
   contextWindowTokens?: number;
   /** Real reasoning-effort ids this model supports (Codex's `model/list`

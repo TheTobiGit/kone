@@ -582,6 +582,11 @@ export class DroidAdapter implements ProviderAdapter {
     this.modelsCacheIsSeed = false;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.modelsCacheIsSeed = false;
+  }
+
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {

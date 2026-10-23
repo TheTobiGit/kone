@@ -90,7 +90,7 @@ const channelLabel = computed(
 
 const behind = computed(() => hasUpdate(props.row.status, props.row.upkeep));
 
-const healthState = computed((): { tone: "ok" | "warn" | "fail"; label: string } => {
+const healthState = computed(() => {
   const s = props.row.status;
   if (!s) return { tone: "warn", label: "Checking…" };
   if (s.readiness === "ready") return { tone: "ok", label: "Healthy" };
@@ -100,7 +100,7 @@ const healthState = computed((): { tone: "ok" | "warn" | "fail"; label: string }
   return { tone: "fail", label: "Unavailable" };
 });
 
-const pathBadge = computed((): { ok: boolean; label: string } | null => {
+const pathBadge = computed(() => {
   if (binaryCheck.value) {
     return {
       ok: binaryCheck.value.ok,

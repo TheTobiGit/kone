@@ -366,12 +366,14 @@ async function handleRefreshModels() {
 }
 
 async function handleAddCustomModel(slug: string) {
-  await providerSettings.addCustomModel(current.value.provider, slug);
+  const provider = current.value.provider;
+  await providerSettings.addCustomModel(provider, slug);
   cue("saved");
 }
 
 async function handleRemoveCustomModel(slug: string) {
-  await providerSettings.removeCustomModel(current.value.provider, slug);
+  const provider = current.value.provider;
+  await providerSettings.removeCustomModel(provider, slug);
 }
 
 // ── limit behaviour & handoff cap ─────────────────────────────────────────────

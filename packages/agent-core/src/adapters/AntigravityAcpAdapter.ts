@@ -345,6 +345,11 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     this.modelsCacheIsSeed = false;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.modelsCacheIsSeed = false;
+  }
+
   /** The ACP server to spawn, or null when no transport is available — the
    *  caller (facade) falls back to print mode. */
   resolveBinary(): AntigravityAcpResolvedBinary | null {

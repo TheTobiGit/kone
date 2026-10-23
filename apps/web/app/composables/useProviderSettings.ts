@@ -6,6 +6,7 @@ import type {
   KoneAgentApi,
   LegacyRendererProviderSettings,
   ProviderBinaryCheckResult,
+  ModelDescriptor,
   ProviderConfig,
   ProviderEnvVar,
   ProviderKind,
@@ -312,6 +313,23 @@ export function useProviderSettings() {
     return list?.length ? [...list] : [];
   }
 
+  /** Merge user-configured custom model slugs into a provider's descriptor list. */
+  function withCustomModels(
+    provider: ProviderKind,
+    descriptors: readonly ModelDescriptor[],
+  ): ModelDescriptor[] {
+    const slugs = customModels(provider);
+    if (!slugs.length) return [...descriptors];
+    const seen = new Set(descriptors.map((d) => d.id));
+    const extras: ModelDescriptor[] = [];
+    for (const slug of slugs) {
+      if (seen.has(slug)) continue;
+      seen.add(slug);
+      extras.push({ id: slug, label: slug, custom: true });
+    }
+    return [...descriptors, ...extras];
+  }
+
   async function addCustomModel(provider: ProviderKind, slug: string): Promise<void> {
     const trimmed = slug.trim();
     if (!trimmed) return;
@@ -417,6 +435,7 @@ export function useProviderSettings() {
     handoffTokenCap,
     setHandoffTokenCap,
     customModels,
+    withCustomModels,
     addCustomModel,
     removeCustomModel,
     homeDir,

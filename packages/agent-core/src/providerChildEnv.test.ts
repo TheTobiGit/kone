@@ -225,3 +225,33 @@ describe("AgentService provider features (M2, M3, M4, M5)", () => {
     await svc.stopAll();
   });
 });
+
+describe("resolveProviderSignInLaunch with provider env overrides", () => {
+  test("locates the executable using a PATH override from the provider's configured env", async () => {
+    const { chmodSync, writeFileSync } = await import("node:fs");
+    const { resolveProviderSignInLaunch } = await import("./providerSignIn.js");
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "kone-signin-env-bin-"));
+    const fakeCodex = path.join(binDir, "codex");
+    writeFileSync(fakeCodex, "#!/bin/sh\nexit 0\n");
+    chmodSync(fakeCodex, 0o755);
+
+    try {
+      const settings = patchProviderSettings("codex", {
+        env: [{ name: "PATH", value: binDir }],
+      });
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings,
+        env: { PATH: "/nonexistent" },
+        platform: "linux",
+      });
+      expect(launch.ok).toBe(true);
+      if (launch.ok) {
+        expect(launch.file).toBe(fakeCodex);
+        expect(launch.env.PATH).toBe(binDir);
+      }
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});

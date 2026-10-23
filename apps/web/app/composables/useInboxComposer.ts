@@ -119,7 +119,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
       for (const [provider, list] of Object.entries(raw)) {
         if (list?.length) next[toProviderKind(provider)] = buildModelCatalog(list, toProviderKind(provider));
       }
-      catalogs.value = { ...catalogs.value, ...next };
+      catalogs.value = next;
     },
     { immediate: true },
   );
