@@ -1,3 +1,4 @@
+import { customModelsFor } from "../providerSettings.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 
@@ -570,7 +571,7 @@ export class ClineAdapter implements ProviderAdapter {
       const catalog = clineModelCatalog(response, session.configOptions);
       if (catalog.length > 0 && this.modelsCache === null) this.modelsCache = Promise.resolve(catalog);
       const settable = mergeClineFeaturedModels(catalog, await featured);
-      session.modelIds = new Set(settable.map((model) => model.id));
+      session.modelIds = new Set([...settable.map((model) => model.id), ...customModelsFor("cline")]);
 
       await this.applyActMode(session, response);
       if (input.model) await this.applyModel(session, input.model);
@@ -791,7 +792,7 @@ export class ClineAdapter implements ProviderAdapter {
    *  session on its current one and says so. The response carries the refreshed
    *  config matrix (fact 4), which is adopted directly. */
   private async applyModel(session: ClineSession, model: string): Promise<void> {
-    if (session.modelIds.size > 0 && !session.modelIds.has(model)) {
+    if (session.modelIds.size > 0 && !session.modelIds.has(model) && !customModelsFor("cline").includes(model)) {
       this.warn(session, `Cline has no model "${model}"`, "staying on the session's current model");
       return;
     }

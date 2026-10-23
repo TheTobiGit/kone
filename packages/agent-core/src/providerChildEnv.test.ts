@@ -441,3 +441,106 @@ describe("PR #24 round-2 review fixes", () => {
     }
   });
 });
+
+describe("PR #24 round-3 review fixes", () => {
+  test("changing runtime settings while a session is mid-startup cancels the pending start and tears it down", async () => {
+    const { AgentService } = await import("./AgentService.js");
+    const { StartCancelled } = await import("./types.js");
+    let finishConnect: (() => void) | null = null;
+    const stoppedThreads: string[] = [];
+
+    const slowStartAdapter = {
+      provider: "codex" as const,
+      capabilities: {
+        sessionModelSwitch: "unsupported" as const,
+        streamsText: false,
+        supportsToolEvents: false,
+        supportsResume: true,
+        supportsModelList: false,
+        supportsSubagents: false,
+      },
+      async discover() {
+        return {
+          provider: "codex" as const,
+          label: "Codex",
+          available: true,
+          authStatus: "authenticated" as const,
+          readiness: "ready" as const,
+        };
+      },
+      async listModels() {
+        return [];
+      },
+      async startSession(input: { threadId: string; provider: "codex"; cwd: string }) {
+        await new Promise<void>((resolve) => {
+          finishConnect = resolve;
+        });
+        return { threadId: input.threadId, provider: input.provider, cwd: input.cwd, status: "ready" as const };
+      },
+      async sendTurn(input: { threadId: string }) {
+        return { threadId: input.threadId, turnId: "t-1" };
+      },
+      async interruptTurn() {},
+      async stopSession(threadId: string) {
+        stoppedThreads.push(threadId);
+      },
+      async stopAll() {},
+      async respondToRequest() {},
+      async respondToUserInput() {
+        return { owned: false as const };
+      },
+      async listSessions() {
+        return [];
+      },
+      async hasSession() {
+        return true;
+      },
+    };
+
+    const svc = new AgentService({
+      retentionSweepMs: 0,
+      stopTotalTimeoutMs: 50,
+      adapters: () => [slowStartAdapter],
+    });
+
+    // Start connecting a session (not yet in routing):
+    const startPromise = svc.startSession({ threadId: "t-pending-start", provider: "codex", cwd: "/tmp" });
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Change homeDir while startSession is still connecting:
+    svc.patchProviderSettings("codex", { homeDir: "~/.codex-switched" });
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Now let the adapter finish connecting:
+    finishConnect!();
+    await expect(startPromise).rejects.toBeInstanceOf(StartCancelled);
+    expect(stoppedThreads).toContain("t-pending-start");
+
+    await svc.stopAll();
+  });
+
+  test("providerMaintenance resolves a provider's CLI using its configured env PATH override", async () => {
+    const { chmodSync, writeFileSync } = await import("node:fs");
+    const { AgentService } = await import("./AgentService.js");
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "kone-maint-env-bin-"));
+    const fakeCodex = path.join(binDir, "codex");
+    writeFileSync(fakeCodex, "#!/bin/sh\nexit 0\n");
+    chmodSync(fakeCodex, 0o755);
+
+    try {
+      patchProviderSettings("codex", {
+        env: [{ name: "PATH", value: binDir }],
+      });
+      const svc = new AgentService({
+        retentionSweepMs: 0,
+        stopTotalTimeoutMs: 50,
+      });
+      const maint = await svc.providerMaintenance({ checkLatest: false });
+      const codexMaint = maint.find((m) => m.provider === "codex");
+      expect(codexMaint?.resolvedPath).toBe(fakeCodex);
+      await svc.stopAll();
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});
