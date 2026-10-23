@@ -869,7 +869,7 @@ export class CodexAdapter implements ProviderAdapter {
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "codex" );
     const result = await probeResult(this.binary, ["--version"], env, 5_000);
     // Some CLIs print their version on stderr; read both rather than picking one.
     const version = parseCodexCliVersion(`${result.stdout}\n${result.stderr}`) ?? undefined;
@@ -936,7 +936,7 @@ export class CodexAdapter implements ProviderAdapter {
    *  for it. Result is cached for the adapter's lifetime (kone's warmup plugin
    *  calls this once at app open). */
   private async fetchModels(): Promise<ModelDescriptor[]> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "codex" );
     const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: homedir(), env, label: CODEX_RPC_LABEL });
     try {
       await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
@@ -961,7 +961,7 @@ export class CodexAdapter implements ProviderAdapter {
     // lingers holding the workspace. OpenCodeAdapter has always done this.
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "codex" );
 
     // Gateway sessions spawn against kone's private CODEX_HOME overlay, which
     // registers the kone MCP server for this process only (the bearer token

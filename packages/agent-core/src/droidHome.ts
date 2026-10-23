@@ -36,7 +36,7 @@ const DROID_BROWSERLESS_ENV = {
  *  flips CLIs into a non-interactive posture that suppresses parts of a real
  *  user turn. Probes get the stricter env below instead. */
 export async function buildDroidEnv(): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "droid" );
   return { ...env, ...DROID_BROWSERLESS_ENV };
 }
 
@@ -56,8 +56,8 @@ export function parseDroidVersion(stdout: string): string | undefined {
 }
 
 /** Where Factory keeps its per-user state (settings, custom models, auth). */
-export function droidHomeDir(): string {
-  return path.join(os.homedir(), ".factory");
+export function droidHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.DROID_HOME?.trim() || path.join(os.homedir(), ".factory");
 }
 
 /** Credential files the CLI writes once a device-pairing login completes. We
@@ -77,7 +77,7 @@ export async function detectDroidAuth(
   }
   for (const name of DROID_CREDENTIAL_FILES) {
     try {
-      await fs.access(path.join(droidHomeDir(), name));
+      await fs.access(path.join(droidHomeDir(env), name));
       return { authenticated: true, label: "Factory Login" };
     } catch {
       // Not this one — try the next credential file.

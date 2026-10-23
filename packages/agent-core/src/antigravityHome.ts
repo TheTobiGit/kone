@@ -24,7 +24,7 @@ export async function buildAntigravityEnv(
   eventFile: string,
   base?: NodeJS.ProcessEnv,
 ): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv(base);
+  const env = await buildAgentEnv(base, "antigravity");
   return {
     ...env,
     KONE_ANTIGRAVITY_EVENTS: eventFile,
@@ -35,7 +35,7 @@ export async function buildAntigravityEnv(
 /** Env for short, bounded probes (`--version` / `models`) — headless and
  *  non-interactive so nothing can block waiting on a human. */
 export async function buildAntigravityProbeEnv(): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "antigravity");
   return { ...env, CI: "true", DEBIAN_FRONTEND: "noninteractive" };
 }
 

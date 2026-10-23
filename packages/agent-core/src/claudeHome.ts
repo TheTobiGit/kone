@@ -288,7 +288,7 @@ export function hasLocalOAuthLogin(env: NodeJS.ProcessEnv = process.env): boolea
  *  wins over a leaked key. The SDK's `env` option REPLACES the child env, so we
  *  must pass a complete environment, not a patch. */
 export async function buildClaudeEnv(base: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv(base);
+  const env = await buildAgentEnv(base, "claudeAgent");
   if (hasLocalOAuthLogin(env) && !hasExternalAuthOverride(env)) {
     for (const key of DIRECT_CREDENTIAL_KEYS) delete env[key];
   }

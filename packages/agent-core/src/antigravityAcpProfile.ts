@@ -229,7 +229,7 @@ export async function buildAntigravityAcpEnv(
   harnessPath: string,
   baseEnv?: NodeJS.ProcessEnv,
 ): Promise<NodeJS.ProcessEnv> {
-  const base = await buildAgentEnv(baseEnv);
+  const base = await buildAgentEnv(baseEnv, "antigravity");
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || REMOVED_ENV_KEYS.has(key.toUpperCase())) continue;
