@@ -2503,19 +2503,23 @@ export interface ProviderAdapter {
  *  subscription" holds: kone never stores credentials — only how to reach the
  *  CLI the user already installed + logged into. An empty/absent field means
  *  "use the adapter's built-in default" (e.g. resolve `codex` on PATH). */
+export type ProviderEnvVar = {
+  name: string;
+  value: string;
+  secret?: boolean;
+};
+
 export type ProviderConfig = {
   /** Override the CLI executable — an absolute path or a name on PATH. Empty
    *  falls back to the adapter's default (`codex` / `opencode`). Ignored by
    *  providers with no external binary (Claude). */
   binaryPath?: string;
-  /** Antigravity ACP sign-in method (`oauth-personal` / `oauth-business`).
-   *  Empty means the adapter default (personal Google account). */
-  antigravityAuthMethod?: string;
-  /** Gemini Enterprise license scope for the `oauth-business` method. */
-  antigravityGcpProject?: string;
-  antigravityGcpLocation?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Whether the provider is shown in the model picker when enabled (default:
+   *  true). Separate from `enabled`, so a provider can stay enabled for
+   *  existing threads while hidden from the picker rail. */
+  showInPicker?: boolean;
   /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays into
    *  a session on this provider. The budget is still sized down from the target
    *  model's window, native usage, the new prompt and headroom; this only caps
@@ -2524,6 +2528,12 @@ export type ProviderConfig = {
   /** Model family keys hidden from the picker for this provider (opt-out;
    *  absent/empty means every model is shown). */
   hiddenModels?: string[];
+  /** User-added custom model slugs for this provider. */
+  customModels?: string[];
+  /** Optional override for the provider CLI's home / config directory. */
+  homeDir?: string;
+  /** Per-provider environment variables passed to spawned CLI processes. */
+  env?: ProviderEnvVar[];
   /** Resume a thread limited on this provider at the provider's reset
    *  (default: true). Off still marks the thread limited. */
   resumeAtReset?: boolean;
@@ -2535,6 +2545,29 @@ export type ProviderConfig = {
 /** Persisted install settings for every provider, keyed by provider. */
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
 
+/** Top-level provider settings fields shared across providers. */
+export type GlobalProviderSettingsPatch = {
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
+};
+
+/** Outcome of probing a provider's CLI binary path immediately. */
+export type ProviderBinaryCheckResult = {
+  provider: ProviderKind;
+  binary: string | null;
+  ok: boolean;
+  version: string | null;
+  resolvedPath: string | null;
+  error?: string;
+};
+
+/** Outcome of explicitly refreshing a provider's model catalog. */
+export type ProviderModelsRefreshResult = {
+  provider: ProviderKind;
+  models: ModelDescriptor[];
+  error?: string;
+};
+
 /** The whole provider-settings store as a renderer receives it — the main
  *  process's file is the only source of truth, and every write is pushed. */
 export type ProviderSettingsSnapshot = {
@@ -2545,6 +2578,10 @@ export type ProviderSettingsSnapshot = {
   /** True until the renderer's legacy localStorage values have been imported
    *  once. */
   legacyImportPending: boolean;
+  /** User-configured provider order for the deck and model picker. */
+  providerOrder?: ProviderKind[];
+  /** Background health check interval in seconds (0 = disabled; default 300). */
+  healthCheckIntervalSec?: number;
 };
 
 /** The pre-store values a renderer may still hold in localStorage, sent up once

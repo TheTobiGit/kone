@@ -370,7 +370,7 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
         authStatus: "unknown",
         readiness: "not-installed",
         message:
-          "Antigravity ACP server not found. Install it from the Providers settings pane, or run `agy` once to use print mode.",
+          "Antigravity ACP server not found. Install the Antigravity CLI (`agy`), or run `agy` once to use print mode.",
       };
     }
 

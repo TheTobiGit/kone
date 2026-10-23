@@ -103,6 +103,7 @@ import type {
   CreateSideChatInput,
   ForkThreadAtBlockInput,
   InteractionMode,
+  GlobalProviderSettingsPatch,
   LegacyRendererProviderSettings,
   ProviderConfig,
   ProviderKind,
@@ -772,6 +773,24 @@ export function registerAgentIpc(): void {
     "agent:patch-settings",
     (_event, provider: ProviderKind, patch: ProviderConfig) =>
       svc.patchProviderSettings(provider, patch),
+  );
+  ipcMain.handle(
+    "agent:patch-global-settings",
+    (_event, patch: GlobalProviderSettingsPatch) =>
+      svc.patchGlobalProviderSettings(patch),
+  );
+  ipcMain.handle(
+    "agent:check-provider-binary",
+    (_event, provider: ProviderKind, binaryPath?: string) =>
+      svc.checkProviderBinary(provider, binaryPath),
+  );
+  ipcMain.handle(
+    "agent:refresh-models",
+    (_event, provider: ProviderKind) => svc.refreshProviderModels(provider),
+  );
+  ipcMain.handle(
+    "agent:check-provider",
+    (_event, provider: ProviderKind) => svc.checkProvider(provider),
   );
 
   // The renderer mirror of the settings file: a snapshot plus a subscription

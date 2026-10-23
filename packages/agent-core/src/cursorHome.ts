@@ -32,7 +32,7 @@ const CURSOR_BROWSERLESS_ENV = {
  *  flips the CLI into a non-interactive posture that suppresses parts of a real
  *  user turn. Probes get the stricter env below instead. */
 export async function buildCursorEnv(): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "cursor" );
   return { ...env, ...CURSOR_BROWSERLESS_ENV };
 }
 

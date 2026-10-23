@@ -1,3 +1,4 @@
+import { buildProviderChildEnv } from "./providerChildEnv.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -248,8 +249,8 @@ function withoutBrowserSuppressors(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *  map node-pty takes, with kone's own browser sentinels removed. Nothing is
  *  added and no home/config-dir variable is rewritten — see the per-provider
  *  notes above LOGIN_COMMANDS for why inheriting them is the right call. */
-function signInEnv(base: NodeJS.ProcessEnv): Record<string, string> {
-  const env = withoutBrowserSuppressors(base);
+function signInEnv(provider: ProviderKind, base: NodeJS.ProcessEnv, settings: ProviderSettingsMap): Record<string, string> {
+  const env = buildProviderChildEnv(provider, withoutBrowserSuppressors(base), settings);
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) out[key] = value;
@@ -354,13 +355,14 @@ function signInLaunch(
   file: string,
   args: string[] | string,
   env: NodeJS.ProcessEnv,
+  settings: ProviderSettingsMap,
 ): Extract<ProviderSignInLaunch, { ok: true }> {
   return {
     ok: true,
     file,
     args,
     cwd: os.homedir(),
-    env: signInEnv(env),
+    env: signInEnv(command.provider, env, settings),
     banner: signInBanner(command),
     command,
   };
@@ -397,12 +399,12 @@ export function resolveProviderSignInLaunch(input: {
   if (platform === "win32") {
     const launch = resolveLaunch(file, spec.args, { env: input.env, platform });
     if (!launch.ok) return { ok: false, command, message: launch.message };
-    return signInLaunch(command, launch.file, ptyArgs(launch), input.env);
+    return signInLaunch(command, launch.file, ptyArgs(launch), input.env, input.settings);
   }
 
   // Elsewhere a plain spawn is enough, but the dialog still wants a sentence
   // for a missing or non-executable file, which spawn only reports later.
   const located = locateBinary(file, input.env, platform);
   if (!located.ok) return { ok: false, command, message: located.message };
-  return signInLaunch(command, located.found, [...spec.args], input.env);
+  return signInLaunch(command, located.found, [...spec.args], input.env, input.settings);
 }
