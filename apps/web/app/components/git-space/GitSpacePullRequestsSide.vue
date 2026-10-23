@@ -10,9 +10,16 @@ import { PR_STANDS, prStandOf, type PrStand, type PrStandInfo } from "~/utils/pr
 // open longest. Every drawing is also a filter, but the filters belong to the
 // list: this only says which one was picked, and the list decides what that
 // hides.
+//
+// While the list is still on its way from GitHub the column is drawn pending:
+// the labels are real, because they never depend on the data, and every number
+// and drawing is a blank slot in the plan's dotted hand. When the list lands
+// only those slots fill, so nothing on the page swaps for something else.
 
 const props = defineProps<{
   prs: GitHubPullRequest[];
+  /** The list hasn't landed yet: draw the slots, not the numbers. */
+  pending?: boolean;
   myLogin: string | null;
   standFilter: PrStand | null;
   waitingFilter: string | null;
@@ -89,6 +96,10 @@ const oldest = computed(() => {
 });
 const oldestPeak = computed(() => Math.max(1, ...oldest.value.map((o) => o.days)));
 
+/** How many slots each drawing holds while pending: about what a busy
+ *  repository fills, so the column is near its landed height. */
+const SLOTS = { stands: 4, waiting: 3, ages: OLDEST_SHOWN };
+
 function initial(name: string) {
   return name[0]?.toUpperCase() ?? "";
 }
@@ -98,7 +109,7 @@ function plural(n: number, word: string): string {
 </script>
 
 <template>
-  <aside class="gsp__side">
+  <aside class="gsp__side" :class="{ 'gsp__side--pending': pending }" :aria-busy="pending">
     <label class="gsp__search gsp__block" style="--i: 0">
       <HugeiconsIcon :icon="Search01Icon" :size="14" :stroke-width="1.8" />
       <input
@@ -115,10 +126,17 @@ function plural(n: number, word: string): string {
         <span class="gsp__label-name">Where they stand</span>
       </div>
       <div class="gsp__big">
-        <span class="gsp__big-num">{{ readyCount }}</span>
-        <span class="gsp__big-of">of {{ openCount }} ready to merge</span>
+        <span v-if="pending" class="gsp__slot gsp__slot--big" />
+        <span v-else class="gsp__big-num gsp__land">{{ readyCount }}</span>
+        <span class="gsp__big-of">
+          of
+          <span v-if="pending" class="gsp__slot" />
+          <span v-else class="gsp__land">{{ openCount }}</span>
+          ready to merge
+        </span>
       </div>
-      <div class="gsp__stack" role="presentation">
+      <div v-if="pending" class="gsp__stack gsp__stack--plan" role="presentation" />
+      <div v-else class="gsp__stack" role="presentation">
         <i
           v-for="s in stands"
           :key="s.id"
@@ -127,12 +145,19 @@ function plural(n: number, word: string): string {
           :style="{ flexGrow: s.count, background: s.tone }"
         />
       </div>
-      <div class="gsp__legend">
+      <div v-if="pending" class="gsp__legend" aria-hidden="true">
+        <span v-for="n in SLOTS.stands" :key="n" class="gsp__key gsp__key--plan" :style="{ '--n': n }">
+          <i class="gsp__key-dot gsp__ring-plan" />
+          <i class="gsp__base-plan" />
+          <span class="gsp__slot" />
+        </span>
+      </div>
+      <div v-else class="gsp__legend">
         <button
           v-for="s in stands"
           :key="s.id"
           type="button"
-          class="gsp__key"
+          class="gsp__key gsp__land"
           :class="{ 'gsp__key--on': standFilter === s.id, 'gsp__key--dim': standFilter && standFilter !== s.id }"
           :aria-pressed="standFilter === s.id"
           @click="emit('pickStand', s.id)"
@@ -144,17 +169,25 @@ function plural(n: number, word: string): string {
       </div>
     </div>
 
-    <div v-if="waitingOn.length" class="gsp__block" style="--i: 2">
+    <div v-if="pending || waitingOn.length" class="gsp__block" style="--i: 2">
       <div class="gsp__label">
         <span class="gsp__label-name">Waiting on</span>
-        <span class="gsp__label-count">{{ waitingOn.length }}</span>
+        <span v-if="!pending" class="gsp__label-count gsp__land">{{ waitingOn.length }}</span>
       </div>
-      <div class="gsp__waiting">
+      <div v-if="pending" class="gsp__waiting" aria-hidden="true">
+        <span v-for="n in SLOTS.waiting" :key="n" class="gsp__wait gsp__key--plan" :style="{ '--n': n }">
+          <i class="gsp__face gsp__face--md gsp__ring-plan" />
+          <i class="gsp__base-plan gsp__base-plan--name" />
+          <span class="gsp__wait-track gsp__track-plan" />
+          <span class="gsp__slot" />
+        </span>
+      </div>
+      <div v-else class="gsp__waiting">
         <button
           v-for="(w, n) in waitingOn"
           :key="w.login"
           type="button"
-          class="gsp__wait"
+          class="gsp__wait gsp__land"
           :class="{ 'gsp__wait--on': waitingFilter === w.login, 'gsp__wait--dim': waitingFilter && waitingFilter !== w.login }"
           :style="{ '--n': n }"
           :aria-pressed="waitingFilter === w.login"
@@ -171,7 +204,8 @@ function plural(n: number, word: string): string {
           <span class="gsp__key-count">{{ w.count }}</span>
         </button>
       </div>
-      <p class="gsp__sub">
+      <i v-if="pending" class="gsp__base-plan gsp__base-plan--sub" />
+      <p v-else class="gsp__sub gsp__land">
         <template v-if="myWaiting">
           <b>{{ plural(myWaiting, "review") }}</b>{{ " " }}{{ myWaiting === 1 ? "is" : "are" }} waiting on you.
         </template>
@@ -179,16 +213,23 @@ function plural(n: number, word: string): string {
       </p>
     </div>
 
-    <div v-if="oldest.length" class="gsp__block" style="--i: 3">
+    <div v-if="pending || oldest.length" class="gsp__block" style="--i: 3">
       <div class="gsp__label">
         <span class="gsp__label-name">Open longest</span>
       </div>
-      <div class="gsp__ages">
+      <div v-if="pending" class="gsp__ages" aria-hidden="true">
+        <span v-for="n in SLOTS.ages" :key="n" class="gsp__age gsp__key--plan" :style="{ '--n': n }">
+          <span class="gsp__age-num gsp__num-plan">#–––</span>
+          <span class="gsp__age-track gsp__track-plan" />
+          <span class="gsp__slot" />
+        </span>
+      </div>
+      <div v-else class="gsp__ages">
         <button
           v-for="(o, n) in oldest"
           :key="o.pr.number"
           type="button"
-          class="gsp__age"
+          class="gsp__age gsp__land"
           :title="o.pr.title"
           @click="openRow($event, o.pr.number)"
         >
@@ -218,14 +259,21 @@ function plural(n: number, word: string): string {
   animation: gsp-in var(--gs-t-enter) var(--gs-ease) backwards;
   animation-delay: calc(min(var(--i, 0), 7) * var(--gs-stagger) * 3);
 }
+/* What fills a slot when the list lands settles on the same beat as the
+   list's rows, so the whole page settles at once. It starts part of the way
+   in rather than from nothing: the slot it replaces goes in that frame, and
+   from nothing the column would read as blank for a beat. */
+.gsp__land {
+  animation: gsp-land var(--gs-t-enter) var(--gs-ease) backwards;
+}
+@keyframes gsp-land {
+  from {
+    opacity: 0.4;
+  }
+}
 @keyframes gsp-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
   }
 }
 @keyframes gsp-grow {
@@ -334,8 +382,7 @@ function plural(n: number, word: string): string {
   gap: 2px;
   height: 10px;
   transform-origin: left center;
-  animation: gsp-grow 640ms var(--gs-ease) backwards;
-  animation-delay: 260ms;
+  animation: gsp-grow var(--gs-t-enter) var(--gs-ease) backwards;
 }
 .gsp__stack-seg {
   flex-basis: 0;
@@ -420,8 +467,8 @@ function plural(n: number, word: string): string {
   border-radius: 3px;
   background-color: color-mix(in srgb, var(--ink) 30%, transparent);
   transform-origin: left center;
-  animation: gsp-grow 600ms var(--gs-ease) backwards;
-  animation-delay: calc(300ms + var(--n, 0) * 60ms);
+  animation: gsp-grow var(--gs-t-enter) var(--gs-ease) backwards;
+  animation-delay: calc(var(--n, 0) * var(--gs-stagger));
 }
 .gsp__age-num {
   width: 40px;
@@ -430,6 +477,74 @@ function plural(n: number, word: string): string {
   font-size: 11.5px;
   color: var(--ink-soft);
 }
+/* ── pending: the slots, in the list plan's dotted hand ───────────────────── */
+.gsp__side--pending {
+  --gsp-plan: color-mix(in srgb, var(--ink) 30%, transparent);
+  --gsp-plan-soft: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.gsp__slot {
+  display: inline-block;
+  width: 14px;
+  height: 0.9em;
+  border-bottom: 1px dashed var(--gsp-plan);
+}
+.gsp__slot--big {
+  width: 24px;
+  height: 26px;
+}
+.gsp__key--plan .gsp__slot {
+  flex-shrink: 0;
+  width: 12px;
+  height: 11px;
+  margin-bottom: 4px;
+  align-self: flex-end;
+}
+.gsp__key--plan {
+  cursor: default;
+}
+.gsp__key--plan:hover {
+  background-color: transparent;
+}
+.gsp__stack--plan {
+  border: 1px dashed var(--gsp-plan);
+  border-radius: 3px;
+}
+.gsp__ring-plan {
+  background-color: transparent;
+  border: 1px dashed var(--gsp-plan);
+  animation: gsp-in var(--gs-t-small) var(--gs-ease) backwards;
+  animation-delay: calc(var(--n, 0) * 60ms);
+}
+/* A baseline the name will sit on: dotted and drawn in, like the list's. */
+.gsp__base-plan {
+  display: block;
+  flex: 1 1 auto;
+  align-self: flex-end;
+  height: 1px;
+  margin-bottom: 8px;
+  background-image: linear-gradient(to right, var(--gsp-plan) 50%, transparent 50%);
+  background-size: 4px 1px;
+  transform-origin: left center;
+  animation: gsp-grow 560ms var(--gs-ease) backwards;
+  animation-delay: calc(120ms + var(--n, 0) * 60ms);
+}
+.gsp__base-plan--name {
+  flex: 0 0 92px;
+}
+.gsp__base-plan--sub {
+  width: 70%;
+  margin: 20px 0 0;
+  background-image: linear-gradient(to right, var(--gsp-plan-soft) 50%, transparent 50%);
+}
+.gsp__track-plan {
+  box-sizing: border-box;
+  border: 1px dashed var(--gsp-plan-soft);
+  border-radius: 3px;
+}
+.gsp__num-plan {
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
 @media (max-width: 1180px) {
   .gsp__side {
     position: static;
@@ -444,6 +559,9 @@ function plural(n: number, word: string): string {
 }
 @media (prefers-reduced-motion: reduce) {
   .gsp__block,
+  .gsp__land,
+  .gsp__ring-plan,
+  .gsp__base-plan,
   .gsp__stack,
   .gsp__wait-fill,
   .gsp__age-fill {
