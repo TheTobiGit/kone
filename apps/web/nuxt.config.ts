@@ -59,6 +59,11 @@ const themeBootScript = {
   tagPosition: "head",
 } as const;
 
+// Layout mockups (pages/mockups, app/mockups) are design review tools: served by
+// `nuxt dev`, or by a build that opts in with KONE_MOCKUPS=1, and otherwise
+// dropped from the route table so no shipped build can reach or bundle them.
+const withMockups = process.env.KONE_MOCKUPS === "1";
+
 const appConfig = isDesktop
   ? { head: { script: [themeBootScript] }, baseURL: "./", buildAssetsDir: "_nuxt/" }
   : { head: { script: [themeBootScript] } };
@@ -66,7 +71,17 @@ const appConfig = isDesktop
 export default defineNuxtConfig({
   compatibilityDate: "latest",
   devtools: { enabled: false },
-  modules: ["@nuxt/fonts"],
+  modules: [
+    "@nuxt/fonts",
+    (_options, nuxt) => {
+      if (nuxt.options.dev || withMockups) return;
+      nuxt.hook("pages:extend", (pages) => {
+        for (let i = pages.length - 1; i >= 0; i--) {
+          if (pages[i]?.path.startsWith("/mockups")) pages.splice(i, 1);
+        }
+      });
+    },
+  ],
   // Ignore nxui barrels so Nuxt only auto-registers the `.vue` files.
   components: [
     {
