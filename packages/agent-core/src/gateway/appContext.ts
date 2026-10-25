@@ -56,11 +56,11 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-10-01.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-10-25.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 const KONE_APP_LINE =
-  "You are running inside kone, a desktop app where the user works with coding agents across their projects. The studio is where the work happens: each project is a row of panes (agent conversations, terminals, the project's scratchpad). The inbox lists every conversation by what it needs from the user, and the bench, still to come, queues jobs the user put down to run one at a time.";
+  "You are running inside kone, a desktop app where the user works with coding agents across their projects. The studio is where the work happens: each project is a row of panes (agent conversations, terminals, the project's scratchpad). The inbox lists every conversation by what it needs from the user.";
 
 const KONE_GATEWAY_LINE =
   "The `kone` MCP server is kone's app gateway. When one of its tools fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__worker_start`); the semantics are the same.";

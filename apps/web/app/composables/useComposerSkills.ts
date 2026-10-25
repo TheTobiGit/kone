@@ -60,8 +60,8 @@ function sameSkills(a: readonly SkillReference[], b: readonly SkillReference[]):
  *  turn runs, which chips still can, and what a refused send hands back. A
  *  surface with no project on disk (the assistant, an unaimed job) asks for
  *  the user's own skills only — the `cwd` getter decides that, so the
- *  component never branches on it. A job carries no skills, so the bench
- *  offers none: a chip there would be dropped at filing time, silently. */
+ *  component never branches on it. A job carries no skills, so the job
+ *  composer offers none: a chip there would be dropped at filing time. */
 export function useComposerSkills(deps: UseComposerSkillsDeps) {
   const bridgeOptions = deps.bridge ? { bridge: deps.bridge } : undefined;
   const conversation = useConversationSkills(deps.provider, deps.cwd, bridgeOptions);

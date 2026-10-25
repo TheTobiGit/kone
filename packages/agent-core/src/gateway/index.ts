@@ -215,7 +215,7 @@ export interface GatewayInput {
   readProjects?: () => readonly ProjectRosterEntry[] | null;
   /** Re-arm scheduled work after a gateway tool changes a schedule. */
   scheduleChanged?: () => void;
-  /** Wake the bench after a schedule tool files an immediate job. */
+  /** Drain the project after a schedule tool files an immediate job. */
   drainProject?: (projectPath: string) => void;
   /** Starts and drives threads — the same dispatcher the renderer's own "new
    *  thread" path forwards to, so a thread the assistant opens is an ordinary

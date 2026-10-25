@@ -141,7 +141,7 @@ let service: AgentService | null = null;
 /** The gateway instance (lazily created with the service). */
 let gateway: GatewayHandle | null = null;
 
-/** The bench runner, built alongside the dispatcher it drives. Null until
+/** The queue runner, built alongside the dispatcher it drives. Null until
  *  registerAgentIpc runs, so the event tap below tolerates its absence rather
  *  than assuming a boot order. */
 let jobRunner: JobRunner | null = null;
@@ -175,17 +175,6 @@ const STREAM_ONLY_EVENT_TYPES: ReadonlySet<RuntimeEvent["type"]> = new Set<Runti
   "thread.inbox-changed",
   "thread.tasks-updated",
 ]);
-
-/** The bench runner, once registerAgentIpc has built it. Resolved lazily by
- *  the bench IPC handlers rather than handed to them at registration: the two
- *  modules are registered independently and neither should have to know which
- *  went first. Null means the agent layer is not up, and a queued job simply
- *  waits for the next drain. */
-export function getJobRunner(): JobRunner | null {
-  return jobRunner;
-}
-
-export function getScheduleRunner(): ScheduleRunner | null { return scheduleRunner; }
 
 /** Rename a thread's generated worktree branch after its title. Refuses when
  *  the branch has an upstream or already heads a pull request: moving either
@@ -331,7 +320,7 @@ export function registerAgentIpc(): void {
   dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
-  // The bench runner: queued jobs become threads through the same dispatcher
+  // The queue runner: queued jobs become threads through the same dispatcher
   // every other thread goes through, so a job behaves exactly like a thread
   // someone started by hand — it is only the deciding that is automatic.
   jobRunner = new JobRunner({

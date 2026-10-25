@@ -660,7 +660,7 @@ function migration0008ItemTextChunks(db: DatabaseSync): void {
  *
  *  A job is NOT a thread. A thread is one *attempt* at a job, which is why
  *  the two tables exist rather than a status column on `threads`. The split is
- *  what makes the three things the bench is for possible at all: a draft is
+ *  what makes the three things a queue is for possible at all: a draft is
  *  a job with no runs, a retry is a second run against the same job, and a
  *  job that was started, interrupted and picked up again keeps one identity
  *  across both threads. A status column on `threads` could express none of
@@ -1290,7 +1290,7 @@ function migration0032Continuations(db: DatabaseSync): void {
   `);
 }
 
-/** Persist cron schedules beside the bench queue and mark generated jobs so
+/** Persist cron schedules beside the job queue and mark generated jobs so
  *  schedule overlap checks can follow the exact job row. */
 function migration0033Schedules(db: DatabaseSync): void {
   db.exec(`

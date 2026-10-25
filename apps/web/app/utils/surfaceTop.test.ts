@@ -5,7 +5,6 @@ const NOTHING: SurfaceSnapshot = {
   launcherModal: false,
   intentMenu: false,
   assistant: false,
-  bench: false,
   inbox: false,
   studio: false,
   settings: false,
@@ -29,7 +28,6 @@ describe("resolveTop", () => {
     expect(resolveTop(open("intentMenu"))).toBe("intent-menu");
     expect(resolveTop(open("assistant"))).toBe("assistant");
     expect(resolveTop(open("settings"))).toBe("settings");
-    expect(resolveTop(open("bench"))).toBe("bench");
     expect(resolveTop(open("inbox"))).toBe("inbox");
     expect(resolveTop(open("studio"))).toBe("studio");
   });
@@ -40,8 +38,7 @@ describe("resolveTop", () => {
   test("the settings drawer outranks every portal underneath it", () => {
     expect(resolveTop(open("settings", "studio"))).toBe("settings");
     expect(resolveTop(open("settings", "inbox"))).toBe("settings");
-    expect(resolveTop(open("settings", "bench"))).toBe("settings");
-    expect(resolveTop(open("settings", "studio", "inbox", "bench"))).toBe("settings");
+    expect(resolveTop(open("settings", "studio", "inbox"))).toBe("settings");
   });
 
   // Tier 4 is fixed over the whole viewport rather than inside the stage, so it
@@ -54,9 +51,6 @@ describe("resolveTop", () => {
 
   test("portals keep the painting order among themselves", () => {
     expect(resolveTop(open("studio", "inbox"))).toBe("inbox");
-    expect(resolveTop(open("studio", "bench"))).toBe("bench");
-    expect(resolveTop(open("inbox", "bench"))).toBe("bench");
-    expect(resolveTop(open("studio", "inbox", "bench"))).toBe("bench");
   });
 
   test("the launcher modal answers before the menu, and the menu before the card", () => {
