@@ -6,7 +6,6 @@ import type {
   AgentRecord,
   ConversationSearchHit,
   ConversationSearchOptions,
-  JobRow,
   QueuedTurnRow,
   ScratchpadRecord,
   StoredStudioLayout,
@@ -110,21 +109,6 @@ import type {
   ScratchpadSaveInput,
   ScratchpadSaveResult,
 } from "./modules/scratchpad/index.js";
-import type {
-  BenchCreateInput,
-  BenchJobDetail,
-  BenchJobIdInput,
-  BenchListInput,
-  BenchQueueInput,
-  BenchReorderInput,
-  BenchUpdateInput,
-  ScheduleCreateInput,
-  ScheduleIdInput,
-  ScheduleListInput,
-  ScheduleRow,
-  ScheduleRunNowResult,
-  ScheduleUpdateInput,
-} from "./modules/bench/index.js";
 import type { JevRouteInput, JevRouteResult, JevStatus } from "./modules/jev/index.js";
 import type {
   RosterBindInput,
@@ -978,41 +962,6 @@ const api = {
       ipcRenderer.invoke("scratchpad:save", input),
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),
-  },
-  bench: {
-    list: (input: BenchListInput): Promise<JobRow[]> => ipcRenderer.invoke("bench:list", input),
-    detail: (input: BenchJobIdInput): Promise<BenchJobDetail | null> =>
-      ipcRenderer.invoke("bench:detail", input),
-    create: (input: BenchCreateInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:create", input),
-    update: (input: BenchUpdateInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:update", input),
-    setQueued: (input: BenchQueueInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:set-queued", input),
-    requeue: (input: BenchJobIdInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:requeue", input),
-    reorder: (input: BenchReorderInput): Promise<boolean> =>
-      ipcRenderer.invoke("bench:reorder", input),
-    delete: (input: BenchJobIdInput): Promise<boolean> =>
-      ipcRenderer.invoke("bench:delete", input),
-  },
-  schedules: {
-    list: (input: ScheduleListInput): Promise<ScheduleRow[]> =>
-      ipcRenderer.invoke("schedules:list", input),
-    get: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:get", input),
-    create: (input: ScheduleCreateInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:create", input),
-    update: (input: ScheduleUpdateInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:update", input),
-    pause: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:pause", input),
-    resume: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:resume", input),
-    runNow: (input: ScheduleIdInput): Promise<ScheduleRunNowResult> =>
-      ipcRenderer.invoke("schedules:run-now", input),
-    delete: (input: ScheduleIdInput): Promise<boolean> =>
-      ipcRenderer.invoke("schedules:delete", input),
   },
   jev: {
     status: (): Promise<JevStatus> => ipcRenderer.invoke("jev:status"),

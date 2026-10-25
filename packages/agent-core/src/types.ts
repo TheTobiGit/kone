@@ -1822,7 +1822,7 @@ export type RuntimeEventSource =
  *  and still recognize one that arrives out of turn. */
 export type ThreadWorkspaceStep = "fetch" | "create" | "link" | "start";
 
-/** Where a job sits on the bench. Declared here rather than beside the job row
+/** Where a job sits on the queue. Declared here rather than beside the job row
  *  because the runtime event carries it and conversationStoreTypes already
  *  imports this module — the other direction would close a cycle. */
 export type JobStatus =
@@ -2104,8 +2104,8 @@ export type RuntimeEvent =
       smoothing?: boolean;
       ligatures?: boolean;
     })
-  // A project's bench changed: a job was filed, claimed, settled, or swept.
-  // Carries only what changed and where, never the row — the bench re-reads
+  // A project's queue changed: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — a listener re-reads
   // the project's list, so the store stays the single copy of the queue and a
   // stale payload can never disagree with the order the runner will take.
   //

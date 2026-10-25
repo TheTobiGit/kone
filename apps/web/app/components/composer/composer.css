@@ -1,7 +1,7 @@
 /* The composer card's chrome, shared by every surface that writes a prompt.
  *
- * Two composers grew from one: the thread composer and the bench's job
- * composer. Of 741 style lines they differed in 67, which meant every focus
+ * Two composers grew from one: the thread composer and the job composer.
+ * Of 741 style lines they differed in 67, which meant every focus
  * ring, chip radius and tray tweak was two edits, and the second one was going
  * to get missed. This file is the 674 they agree on.
  *

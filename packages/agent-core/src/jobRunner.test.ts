@@ -363,12 +363,12 @@ describe("boot recovery", () => {
   });
 });
 
-/** One bench announcement, flattened to the fields a test asserts on. */
+/** One queue announcement, flattened to the fields a test asserts on. */
 type RecordedAnnouncement = { jobId?: string; status?: string; threadId: string };
 
 describe("announcing", () => {
   /** A runner wired to a recorder instead of the broadcast, so a test can read
-   *  exactly what the bench would have been told. */
+   *  exactly what a listener would have been told. */
   function recordingRunner(store: ConversationStoreType, threadIds: string[] = []) {
     const fake = fakeDispatcher(store);
     const events: RecordedAnnouncement[] = [];

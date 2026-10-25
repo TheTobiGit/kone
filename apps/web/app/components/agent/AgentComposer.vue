@@ -91,8 +91,8 @@ import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 // the parent stays oblivious to whether a provider bakes it into ids or a flag.
 
 const props = defineProps<{
-  /** Which surface this is: a turn spoken into a thread, or a job filed on the
-   *  bench. It selects the affordance set and nothing else — the name field,
+  /** Which surface this is: a turn spoken into a thread, or a job filed onto
+   *  the queue. It selects the affordance set and nothing else — the name field,
    *  the park control and the project picker on a job; the queued-turn strip,
    *  the stop square and the thread label on a turn.
    *
@@ -323,7 +323,7 @@ const providerMarks = OFFERED_PROVIDERS.map((provider) => PROVIDER_BRAND[provide
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 
-/** A job is written on a bench that spans every project, so being aimed at one
+/** A job is written for a queue that spans every project, so being aimed at one
  *  is something it acquires rather than something it inherits from the surface
  *  it was opened on. A turn is always spoken inside a project already open. */
 const isJob = computed(() => props.kind === "job");
@@ -1601,8 +1601,8 @@ defineExpose({ wake, setDraft, focus });
         <span class="tray__label">{{ routingNote }}</span>
       </span>
       <!-- Where it runs. A picker on a job and a label on a turn: a turn is
-           spoken inside a project that is already open, but a job is written on
-           a bench that spans all of them, so being aimed is something it
+           spoken inside a project that is already open, but a job is written
+           for a queue that spans all of them, so being aimed is something it
            acquires. Unset is the state a fresh job opens in, and it names
            itself as the thing still missing rather than rendering nothing. -->
       <button

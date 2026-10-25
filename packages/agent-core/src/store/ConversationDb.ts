@@ -138,7 +138,7 @@ export class ConversationDb {
       // claim and promote/release) belongs to no live process — release it
       // back to 'queued' so the next drain retries instead of skipping it.
       this.releaseOrphanedClaims(db);
-      // Fifth pass: a bench job stranded mid-start (a crash between the claim
+      // Fifth pass: a queued job stranded mid-start (a crash between the claim
       // and the thread coming up) belongs to no live process either. Unlike
       // the runner's lease sweep this ignores the lease entirely — at the
       // first open of a fresh process there IS no live runner, so every claim

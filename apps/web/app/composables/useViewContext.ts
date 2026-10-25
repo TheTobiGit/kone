@@ -1,8 +1,8 @@
 // useViewContext — each surface says what it is showing.
 //
 // The assistant is summoned over the whole app and needs to know what is on
-// screen. No one component knows that: the page, the three portals and the
-// drawer each keep what they are showing in their own local state (the inbox's
+// screen. No one component knows that: the page, the portals and the drawer
+// each keep what they are showing in their own local state (the inbox's
 // picked thread, a studio row's columns, the project page's open diff). So each
 // one publishes a *facet* — a getter describing itself in the shared
 // `ViewLayer` vocabulary — for as long as it is mounted, and the view plugin
@@ -28,7 +28,6 @@ export const VIEW_FACET_ORDER = [
   "search",
   "menu",
   "settings",
-  "bench",
   "inbox",
   "studio",
   "project",
@@ -41,7 +40,7 @@ export type ViewFacetId = (typeof VIEW_FACET_ORDER)[number];
  *  not visible. The settings drawer is not one — the stage slides aside to show
  *  it, so both are on screen — and neither are the dialogs and the palette,
  *  which sit over a scrim with the page showing through. */
-export const OPAQUE_FACETS: ReadonlySet<ViewFacetId> = new Set(["bench", "inbox", "studio", "project", "home"]);
+export const OPAQUE_FACETS: ReadonlySet<ViewFacetId> = new Set(["inbox", "studio", "project", "home"]);
 
 type FacetReader = () => ViewLayer | null;
 type RowPanesReader = () => ViewPane[];

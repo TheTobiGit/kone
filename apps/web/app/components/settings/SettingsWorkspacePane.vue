@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import { InboxIcon, SparklesIcon, Task01Icon } from "@hugeicons/core-free-icons";
+import { InboxIcon, SparklesIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 
 // A workspace's settings page before it has any settings: the place is held
-// so the list reads as the four workspaces kone has, and the page says so
-// plainly rather than inventing a control to fill it.
+// so the list reads as the workspaces kone has, and the page says so plainly
+// rather than inventing a control to fill it.
 
-export type EmptyWorkspace = "inbox" | "bench" | "assistant";
+export type EmptyWorkspace = "inbox" | "assistant";
 
 const props = defineProps<{ open: boolean; workspace: EmptyWorkspace }>();
 defineEmits<{ back: [] }>();
 
 const META = {
   inbox: { name: "Inbox", icon: InboxIcon },
-  bench: { name: "Bench", icon: Task01Icon },
   assistant: { name: "Assistant", icon: SparklesIcon },
 } satisfies Record<EmptyWorkspace, { name: string; icon: unknown }>;
 

@@ -19,9 +19,9 @@
 //   seen but not used, and the surface that answers has to be the one the user
 //   can actually reach. The portals sat above it once, back when the veil
 //   rendered underneath them and work carried on while settings was revealed.
-//   Tier 2 — bench, inbox, studio. Full-viewport portals inside the stage, in
-//   the painting order usePortals keeps (PORTAL_STACK): the studio is the work
-//   surface and the other two paint over it.
+//   Tier 2 — inbox, studio. Full-viewport portals inside the stage, in the
+//   painting order usePortals keeps (PORTAL_STACK): the studio is the work
+//   surface and the inbox paints over it.
 //   Tier 1 — stage. The base page, on top only when nothing else is up.
 
 /** Every layer that can own the viewport, frontmost first. */
@@ -30,7 +30,6 @@ export type SurfaceId =
   | "intent-menu"
   | "assistant"
   | "settings"
-  | "bench"
   | "inbox"
   | "studio"
   | "stage";
@@ -42,7 +41,6 @@ export interface SurfaceSnapshot {
   launcherModal: boolean;
   intentMenu: boolean;
   assistant: boolean;
-  bench: boolean;
   inbox: boolean;
   studio: boolean;
   settings: boolean;
@@ -56,7 +54,6 @@ export function resolveTop(snapshot: SurfaceSnapshot): SurfaceId {
   if (snapshot.intentMenu) return "intent-menu";
   if (snapshot.assistant) return "assistant";
   if (snapshot.settings) return "settings";
-  if (snapshot.bench) return "bench";
   if (snapshot.inbox) return "inbox";
   if (snapshot.studio) return "studio";
   return "stage";

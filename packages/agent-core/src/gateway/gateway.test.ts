@@ -579,7 +579,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_update_provider",
       "app_switch_provider",
       "app_get_view",
-      // Phase 8 schedule tools belong to the assistant's bench controls.
+      // Phase 8 schedule tools belong to the assistant's queue controls.
       "app_list_schedules",
       "app_create_schedule",
       "app_update_schedule",
