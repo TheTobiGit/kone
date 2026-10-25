@@ -217,7 +217,6 @@ const {
   dismiss,
   toggleStudio,
   toggleInbox,
-  toggleBench,
   portalState,
   pendingThreadJump,
   jumpToThread,
@@ -227,7 +226,6 @@ const {
 // portalState on every render.
 const studioState = computed(() => portalState("studio"));
 const inboxState = computed(() => portalState("inbox"));
-const benchState = computed(() => portalState("bench"));
 // The page under the plane, so a row's request for something the page owns (a
 // file's diff) can be handed down to it.
 const pageRef = ref<{
@@ -278,7 +276,6 @@ const surfaceTop = computed<SurfaceId>(() =>
     launcherModal: isLauncherModalOpen.value,
     intentMenu: intent.isOpen.value,
     assistant: assistantOpen.value,
-    bench: activePortal.value === "bench",
     inbox: activePortal.value === "inbox",
     studio: activePortal.value === "studio",
     settings: settingsOpen.value,
@@ -334,12 +331,6 @@ function onSurfaceHotkey(e: KeyboardEvent) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
     toggleInbox();
-    return;
-  }
-  if (matchesShortcut("open-bench", e)) {
-    if (isLauncherModalOpen.value) return;
-    e.preventDefault();
-    toggleBench();
     return;
   }
   // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so
@@ -501,23 +492,13 @@ function onAttentionOpen(projectPath: string, threadId: string) {
           @close="() => dismiss('inbox')"
           @jump-consumed="clearThreadJump"
         />
-
-        <!-- The bench, over both. Mounted once like its siblings: the queue it
-             holds belongs to a project, but the portal outlives any one page,
-             and a job keeps running whether or not its project is on screen. -->
-        <BenchAppBench
-          :state="benchState"
-          :surface-top="surfaceTop"
-          @close="() => dismiss('bench')"
-        />
-
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer. It sits
            above everything the stage holds — the page (z-30), the studio plane
-           (z-40), the pill stack and the inbox (z-45), the bench (z-46) — so a
-           tap on the shoved-aside work dismisses the drawer instead of landing
-           on the work underneath. A drawer that can only be left by keyboard is
+           (z-40), the pill stack and the inbox (z-45) — so a tap on the
+           shoved-aside work dismisses the drawer instead of landing on the
+           work underneath. A drawer that can only be left by keyboard is
            a trap: with an opaque portal up, this is the only pointer path back.
            The keyboard half of the same contract is the `inert` above, and the
            surface order in surfaceTop, which both put the drawer in front of

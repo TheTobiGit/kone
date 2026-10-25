@@ -1,4 +1,4 @@
-// The bench runner: the loop that turns a queued job into a running thread.
+// The queue runner: the loop that turns a queued job into a running thread.
 //
 // Everything durable already lives in the store (store/jobs.ts) — the queue,
 // the claim lease, the attempt history. This module is the thin moving part
@@ -72,7 +72,7 @@ export interface JobThreadDispatcher {
 export interface JobRunnerDeps {
   store: JobRunnerStore;
   dispatcher: JobThreadDispatcher;
-  /** Announce that a project's bench moved. Optional so a test (or a headless
+  /** Announce that a project's queue moved. Optional so a test (or a headless
    *  host) can run the queue with nothing listening. */
   emit?: (event: RuntimeEvent) => void;
   /** Identifies this process in a claim, so a stranded claim can be attributed
@@ -116,7 +116,7 @@ function startInputFor(job: JobRow, threadId: string): SessionStartInput {
 }
 
 /** The opening turn. The job's body is the prompt and its title names the
- *  thread, so the bench and the thread strip agree on what this work is called
+ *  thread, so the queue and the thread strip agree on what this work is called
  *  without either having to ask the model for a title. */
 function turnInputFor(job: JobRow, threadId: string): SendTurnInput {
   const input: SendTurnInput = { threadId, input: job.body };
@@ -147,9 +147,9 @@ export class JobRunner {
     this.emit = deps.emit ?? ((): void => {});
   }
 
-  /** Tell the bench a project moved. The event names what changed and where,
-   *  never the row: the bench re-reads the list, so the store stays the one
-   *  copy of the queue and the order on screen is always the order that will
+  /** Tell any listener a project moved. The event names what changed and where,
+   *  never the row: a listener re-reads the list, so the store stays the one
+   *  copy of the queue and the order it shows is always the order that will
    *  run. `threadId` is the job's thread when it has one — a filed draft
    *  belongs to no thread, and the empty string is how BaseEvent says so. */
   private announce(input: {
@@ -216,10 +216,10 @@ export class JobRunner {
   private async start(claimed: ClaimedJob): Promise<DrainResult> {
     const { job, run } = claimed;
     const threadId = this.newThreadId();
-    // The claim already moved the job to 'running' in the store, so the bench
-    // is told now rather than after the thread comes up: the wait for a
-    // provider to start is exactly when the list should already show it
-    // running, not still queued.
+    // The claim already moved the job to 'running' in the store, so listeners
+    // hear now rather than after the thread comes up: the wait for a provider
+    // to start is exactly when a list should already show it running, not
+    // still queued.
     this.announce({
       projectPath: job.projectPath,
       provider: job.target.provider,

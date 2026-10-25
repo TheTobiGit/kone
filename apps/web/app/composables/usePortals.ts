@@ -15,7 +15,7 @@ import type { Cue } from "./useSound";
 // so visible progress starts in one frame rather than one fade.
 //
 // Which portals stay and which leave comes from PORTAL_STACK, not from naming
-// the pair. That is the whole reason the order is data: a third portal is an
+// the pair. That is the whole reason the order is data: another portal is an
 // entry in the list, and the handoff it gets is decided by where it sits
 // rather than by another branch in here.
 //
@@ -28,14 +28,13 @@ import type { Cue } from "./useSound";
 // frame from a switch the user already moved past can never carry through —
 // dismissing mid-handoff lands on the still-open portal instead.
 
-export type PortalId = "studio" | "inbox" | "bench";
+export type PortalId = "studio" | "inbox";
 
-/** Painting order, bottom first. The studio is the work surface, so everything
- *  else paints over it; the inbox and the bench are both ways of looking at
- *  work the studio is doing, and which of the two sits on top is arbitrary —
- *  only that it is fixed matters, because it is what makes every switch
- *  between them a definite direction. */
-export const PORTAL_STACK: readonly PortalId[] = ["studio", "inbox", "bench"];
+/** Painting order, bottom first. The studio is the work surface, so the inbox
+ *  paints over it: the inbox is another way of looking at the work the studio
+ *  is doing, and the order is what makes every switch between them a definite
+ *  direction. */
+export const PORTAL_STACK: readonly PortalId[] = ["studio", "inbox"];
 
 /** Where a portal sits in the painting order.
  *
@@ -108,7 +107,6 @@ export interface ThreadJumpTarget {
 export interface UsePortals {
   studioOpen: Readonly<Ref<boolean>>;
   inboxOpen: Readonly<Ref<boolean>>;
-  benchOpen: Readonly<Ref<boolean>>;
   /** The frontmost open portal, if any. The inbox paints over the plane. */
   activePortal: ComputedRef<PortalId | null>;
   /** The --portal-fade-ms binding for the page wrapper, read from the same
@@ -122,7 +120,6 @@ export interface UsePortals {
   dismiss: (portal?: PortalId) => void;
   toggleStudio: () => void;
   toggleInbox: () => void;
-  toggleBench: () => void;
   /** Whether the portal is open but painted under another one. */
   isCovered: (portal: PortalId) => boolean;
   /** The surface contract every portal renders from. */
@@ -146,12 +143,11 @@ function defaultCue(name: Cue): void {
 
 export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   // One ref per portal rather than a reactive record: the public surface hands
-  // three of them out individually, and a record would have to be unwrapped at
+  // both of them out individually, and a record would have to be unwrapped at
   // every one of those boundaries.
   const openRefs = {
     studio: ref(false),
     inbox: ref(false),
-    bench: ref(false),
   } satisfies Record<PortalId, Ref<boolean>>;
 
   const pendingThreadJump = ref<ThreadJumpTarget | null>(null);
@@ -325,10 +321,6 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
     toggle("inbox");
   }
 
-  function toggleBench(): void {
-    toggle("bench");
-  }
-
   function jumpToThread(target: ThreadJumpTarget): void {
     // Recorded first so the inbox already has the thread when the summon
     // brings it forward; the inbox clears it once taken, so a second jump is
@@ -348,14 +340,12 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   return {
     studioOpen: readonly(openRefs.studio),
     inboxOpen: readonly(openRefs.inbox),
-    benchOpen: readonly(openRefs.bench),
     activePortal,
     fadeStyle,
     summon,
     dismiss,
     toggleStudio,
     toggleInbox,
-    toggleBench,
     isCovered,
     portalState,
     pendingThreadJump,

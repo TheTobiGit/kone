@@ -26,7 +26,6 @@ export type SettingsGlyphKind =
   | "teams"
   | "studio"
   | "inbox"
-  | "bench"
   | "assistant"
   | "providers"
   | "skills"
@@ -155,14 +154,6 @@ defineProps<{ kind: SettingsGlyphKind; live?: boolean }>();
         <g class="d"><path d="M5.8 5h12.4l2.3 8.5v4.5a1.8 1.8 0 0 1-1.8 1.8H5.3A1.8 1.8 0 0 1 3.5 18v-4.5z" pathLength="1" /></g>
         <g class="d" style="--at: 300ms"><path d="M3.5 13.5h4.6l1.4 2.4h5l1.4-2.4h4.6" pathLength="1" /></g>
         <path class="note" d="M9 9.5h6" />
-      </template>
-
-      <!-- Bench: queued jobs, the top one running its bar across. -->
-      <template v-else-if="kind === 'bench'">
-        <g class="d"><rect x="3.5" y="5" width="17" height="4.4" rx="1.6" pathLength="1" /></g>
-        <rect class="run" x="3.5" y="5" width="17" height="4.4" rx="1.6" stroke="none" />
-        <g class="d" style="--at: 260ms"><path d="M5 13.5h12" pathLength="1" /></g>
-        <g class="d" style="--at: 380ms"><path d="M5 17.5h8" pathLength="1" /></g>
       </template>
 
       <!-- Assistant: a spark that turns, a smaller one winking beside it. -->
@@ -454,23 +445,6 @@ svg * {
   0% { transform: translateY(-5px); opacity: 0; }
   35%, 80% { transform: translateY(3px); opacity: 1; }
   100% { transform: translateY(3px); opacity: 0; }
-}
-
-/* ── bench ─────────────────────────────────────────────────────────────────── */
-.run {
-  fill: var(--accent);
-  opacity: 0;
-  transform-box: fill-box;
-  transform-origin: left;
-  transform: scaleX(0);
-}
-.gt--live .run {
-  opacity: 0.45;
-  animation: sg-run 1.8s var(--gt-ease) infinite;
-}
-@keyframes sg-run {
-  0% { transform: scaleX(0); }
-  75%, 100% { transform: scaleX(1); }
 }
 
 /* ── assistant ─────────────────────────────────────────────────────────────── */

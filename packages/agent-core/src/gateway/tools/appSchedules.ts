@@ -1,4 +1,4 @@
-// Scheduled bench jobs, exposed as app tools to the assistant.
+// Scheduled jobs, exposed as app tools to the assistant.
 
 import { z } from "zod";
 
@@ -91,7 +91,7 @@ export function createAppScheduleTools(options: AppSchedulesToolOptions): ToolEn
       const schedules = options.store.listSchedules(path);
       return result(schedules.length ? schedules.map(scheduleText).join("\n") : "No scheduled jobs.", { schedules: schedules.map(scheduleRecord) });
     }),
-    tool("app_create_schedule", "Create a recurring scheduled bench job.", createSchema, jsonFor({ project: { type: "string" }, title: { type: "string" }, cron: { type: "string", description: "Standard five-field cron expression in local time." }, jobTemplate: templateJson }, ["project", "title", "cron", "jobTemplate"]), (a) => safe(() => {
+    tool("app_create_schedule", "Create a recurring scheduled job.", createSchema, jsonFor({ project: { type: "string" }, title: { type: "string" }, cron: { type: "string", description: "Standard five-field cron expression in local time." }, jobTemplate: templateJson }, ["project", "title", "cron", "jobTemplate"]), (a) => safe(() => {
       // SAFETY: createSchema has validated this nested job template before the registry calls the handler.
       const jobTemplate = a.jobTemplate as ScheduleJobTemplate;
       const schedule = options.store.createSchedule({ scheduleId: id(), projectPath: projectPath(options, String(a.project)), title: String(a.title), cron: String(a.cron), jobTemplate, at: now() });
