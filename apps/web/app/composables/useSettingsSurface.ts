@@ -22,7 +22,6 @@ export type SettingsPane =
   | "composer"
   | "studio"
   | "inbox"
-  | "bench"
   | "assistant"
   | "providers"
   | "agentsUsage"
@@ -66,7 +65,6 @@ const PANE_MEASURE = {
   composer: "compact",
   studio: "compact",
   inbox: "compact",
-  bench: "compact",
   assistant: "compact",
   providers: "page",
   agentsUsage: "page",

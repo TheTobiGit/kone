@@ -2007,10 +2007,11 @@ export type RuntimeEvent =
       smoothing?: boolean;
       ligatures?: boolean;
     })
-  // A project's bench moved: a job was filed, claimed, settled, or swept.
-  // Carries only what changed and where, never the row — the bench re-reads
-  // the project's list, so the store stays the single copy of the queue and a
-  // stale payload can never disagree with the order the runner will take.
+  // A project's queue moved: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — a queue surface
+  // re-reads the project's list, so the store stays the single copy of the
+  // queue and a stale payload can never disagree with the order the runner
+  // will take.
   // `threadId` is the job's thread when one exists and the empty string when
   // the change belongs to no thread; consumers key off projectPath.
   | (AgentBaseEvent & {
@@ -3661,146 +3662,11 @@ export type KoneScratchpadApi = {
   delete: (input: ScratchpadDeleteInput) => Promise<void>;
 };
 
-// ── the bench ───────────────────────────────────────────────────────────────
+// ── the job queue ───────────────────────────────────────────────────────────
 
-/** Where a job sits on the bench. `draft` is work described and parked;
+/** Where a job sits on the queue. `draft` is work described and parked;
  *  `queued` is the only state the runner takes from. */
 export type JobStatus = "draft" | "queued" | "running" | "done" | "failed" | "cancelled";
-
-/** One attempt's own state, which is not the job's: a failed run can sit under
- *  a job the user re-queued, and the bench shows both without either lying. */
-export type JobRunStatus = "claimed" | "running" | "done" | "failed" | "cancelled";
-
-/** Where a job runs, as the composer captured it — the session-start fields
- *  and nothing else. */
-export type JobTarget = {
-  provider: ProviderKind;
-  model?: string;
-  effort?: string;
-  mode?: InteractionMode;
-  workspace?: { mode: "local" | "worktree"; branch?: string; base?: string };
-  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
-};
-
-export type JobRow = {
-  jobId: string;
-  projectPath: string;
-  title: string;
-  body: string;
-  status: JobStatus;
-  target: JobTarget;
-  createdAt: number;
-  updatedAt: number;
-  sortKey?: number;
-  startedAt?: number;
-  endedAt?: number;
-  /** The branch the job's latest attempt actually ran on, read back from the
-   *  thread that attempt opened. Observed, not chosen — `target.workspace` is
-   *  the request, and a job in the project's own checkout requests nothing — so
-   *  this is the only field that says where the work landed. Absent until a run
-   *  has started, because until then the checkout can still move. */
-  branch?: string;
-};
-
-export type JobRunRow = {
-  runId: string;
-  jobId: string;
-  attempt: number;
-  status: JobRunStatus;
-  createdAt: number;
-  threadId?: string;
-  claimedBy?: string;
-  claimedAt?: number;
-  leaseExpiresAt?: number;
-  startedAt?: number;
-  endedAt?: number;
-  error?: string;
-};
-
-/** Fields an edit may change. Absent leaves alone; null clears. Status is not
- *  here — moving between states goes through the named calls so the
- *  timestamps stay consistent. */
-export type JobPatch = {
-  title?: string;
-  body?: string;
-  target?: JobTarget;
-  sortKey?: number | null;
-};
-
-/** No project means every project's jobs — the bench is one list across all
- *  of them, and a single project's queue is the narrower read. */
-export type BenchListInput = { projectPath?: string };
-export type BenchJobIdInput = { jobId: string };
-export type BenchCreateInput = {
-  jobId: string;
-  projectPath: string;
-  title: string;
-  body: string;
-  status: "draft" | "queued";
-  target: JobTarget;
-  attachments?: ChatAttachment[];
-};
-export type BenchUpdateInput = { jobId: string; patch: JobPatch };
-export type BenchQueueInput = { jobId: string; queued: boolean };
-export type BenchReorderInput = { projectPath: string; jobIds: string[] };
-
-/** One job plus its attempts — what the detail panel reads. */
-export type BenchJobDetail = { job: JobRow; runs: JobRunRow[] };
-
-export type KoneBenchApi = {
-  list: (input: BenchListInput) => Promise<JobRow[]>;
-  detail: (input: BenchJobIdInput) => Promise<BenchJobDetail | null>;
-  create: (input: BenchCreateInput) => Promise<JobRow | null>;
-  update: (input: BenchUpdateInput) => Promise<JobRow | null>;
-  setQueued: (input: BenchQueueInput) => Promise<JobRow | null>;
-  requeue: (input: BenchJobIdInput) => Promise<JobRow | null>;
-  reorder: (input: BenchReorderInput) => Promise<boolean>;
-  delete: (input: BenchJobIdInput) => Promise<boolean>;
-};
-
-export type ScheduleJobTemplate = {
-  title: string;
-  body: string;
-  target: JobTarget;
-  attachments?: ChatAttachment[];
-};
-export type ScheduleRow = {
-  scheduleId: string;
-  projectPath: string;
-  title: string;
-  cron: string;
-  jobTemplate: ScheduleJobTemplate;
-  paused: boolean;
-  nextRunAt: number | null;
-  lastRunAt: number | null;
-  lastJobId: string | null;
-  createdAt: number;
-  updatedAt: number;
-};
-export type ScheduleListInput = { projectPath?: string };
-export type ScheduleIdInput = { scheduleId: string };
-export type ScheduleCreateInput = {
-  scheduleId: string;
-  projectPath: string;
-  title: string;
-  cron: string;
-  jobTemplate: ScheduleJobTemplate;
-};
-export type ScheduleUpdateInput = {
-  scheduleId: string;
-  patch: { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
-};
-export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
-export type KoneSchedulesApi = {
-  list: (input: ScheduleListInput) => Promise<ScheduleRow[]>;
-  get: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  create: (input: ScheduleCreateInput) => Promise<ScheduleRow | null>;
-  update: (input: ScheduleUpdateInput) => Promise<ScheduleRow | null>;
-  pause: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  resume: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  runNow: (input: ScheduleIdInput) => Promise<ScheduleRunNowResult>;
-  delete: (input: ScheduleIdInput) => Promise<boolean>;
-};
 
 // ── jev, the router ─────────────────────────────────────────────────────────
 // Picking who answers is its own decision, made before a session exists, so it
@@ -4378,8 +4244,6 @@ export type KoneDesktopApi = {
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
-  bench: KoneBenchApi;
-  schedules: KoneSchedulesApi;
   jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;

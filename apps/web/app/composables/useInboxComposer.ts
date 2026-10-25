@@ -354,8 +354,8 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     }
   }
 
-  // A surface that starts with no project and acquires one — the bench, filing
-  // a job — changes the answer after mount, so this follows the path rather than
+  // A surface that starts with no project and acquires one — a job composer,
+  // filing a job — changes the answer after mount, so this follows the path rather than
   // reading once beside it. Immediate, so a surface that knew its project all
   // along still reads on mount exactly as before.
   watch(() => toValue(o.projectPath), () => void refreshBranch(), { immediate: true });

@@ -185,7 +185,7 @@ export function createAppViewTools(options: AppViewToolOptions): ToolEntry[] {
     {
       name: "app_get_view",
       description:
-        "See what the user is looking at in kone right now: which surfaces are open front to back (the launcher, a project page, the studio and its columns, the inbox, the bench, settings, a dialog), what each one holds, each thread's live status and what a parked one is waiting on, and any text the user selected. Include 'thread' to read the latest messages of the thread that has focus, or 'terminal' to read what the focused terminal is showing. Ids in the answer are the ones the other app tools take.",
+        "See what the user is looking at in kone right now: which surfaces are open front to back (the launcher, a project page, the studio and its columns, the inbox, settings, a dialog), what each one holds, each thread's live status and what a parked one is waiting on, and any text the user selected. Include 'thread' to read the latest messages of the thread that has focus, or 'terminal' to read what the focused terminal is showing. Ids in the answer are the ones the other app tools take.",
       inputSchema: GetViewInputSchema,
       jsonSchema: GET_VIEW_JSON_SCHEMA,
       permission: "allow",
