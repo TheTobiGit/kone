@@ -188,6 +188,7 @@ import type {
   GitHubPrCreateResult,
   GitHubPullRequest,
   GitHubPullRequestDetail,
+  GitHubPullRequestSection,
   GitHubRepoInfo,
   GitHubStatus,
   GitHubUser,
@@ -406,8 +407,8 @@ const api = {
         ipcRenderer.invoke("github:issue-comment", dir, number, body),
       createIssue: (dir: string, opts: GitHubIssueCreateOptions): Promise<GitHubIssueCreateResult> =>
         ipcRenderer.invoke("github:create-issue", dir, opts),
-      prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>
-        ipcRenderer.invoke("github:pr-detail", dir, number),
+      prDetail: (dir: string, number: number, section?: GitHubPullRequestSection): Promise<GitHubPullRequestDetail | null> =>
+        ipcRenderer.invoke("github:pr-detail", dir, number, section),
       prDiff: (dir: string, number: number): Promise<GitFileDiff[]> =>
         ipcRenderer.invoke("github:pr-diff", dir, number),
       commitAuthors: (dir: string): Promise<GitCommitAuthors | null> =>

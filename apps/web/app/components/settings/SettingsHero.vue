@@ -98,7 +98,7 @@ const contours = [
   );
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent),
-    0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
+    0 1px 2px rgb(0 0 0 / 5%);
   transition:
     transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 480ms var(--ease);
@@ -106,7 +106,7 @@ const contours = [
 .hero:hover {
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent);
+    0 1px 2px rgb(0 0 0 / 5%);
 }
 .hero:active {
   transform: scale(0.985);

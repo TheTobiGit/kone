@@ -203,8 +203,8 @@ const showDiff = computed(
   );
   --pocket-shadow: color-mix(in srgb, var(--raised-high) 90%, transparent) 0 2px 0 inset,
     color-mix(in srgb, var(--ink) 3%, transparent) 0 -10px 18px inset,
-    color-mix(in srgb, var(--ink) 6%, transparent) 0 4px 10px;
-  --paper-shadow: color-mix(in srgb, var(--ink) 7%, transparent) 0 4px 10px;
+    rgb(0 0 0 / 6%) 0 4px 10px;
+  --paper-shadow: rgb(0 0 0 / 7%) 0 4px 10px;
 
   position: relative;
   display: inline-block;

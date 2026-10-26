@@ -522,7 +522,7 @@ onBeforeUnmount(() => {
   background-color: var(--panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+    0 16px 40px -16px rgb(0 0 0 / 24%);
 }
 
 /* Grow out of the clicked row, and shrink back into it. */

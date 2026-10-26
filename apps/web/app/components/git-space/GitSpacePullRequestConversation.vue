@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import GitSpacePullRequestSection from "~/components/git-space/GitSpacePullRequestSection.vue";
+import type { PullRequestSectionState } from "~/composables/usePullRequestSections";
 import type { GitHubPerson, GitHubPrCommit, GitHubPullRequestDetail, GitHubReview } from "~/types/desktop";
 import { prDate } from "~/utils/prFormat";
 
@@ -9,13 +11,16 @@ import { prDate } from "~/utils/prFormat";
 // the pull request card owns, so this only says which one and where it was.
 
 const props = defineProps<{
-  pr: GitHubPullRequestDetail;
+  pr: GitHubPullRequestDetail | null;
+  summary: PullRequestSectionState;
+  activity: PullRequestSectionState;
   /** The commit the branch points at now; a review on any other is stale. */
   headOid: string | null;
 }>();
 
 const emit = defineEmits<{
   openCommit: [hash: string, origin: DOMRect | null];
+  retry: [section: "summary" | "conversation"];
 }>();
 
 function openCommit(e: MouseEvent, hash: string) {
@@ -42,7 +47,8 @@ type Event =
 
 const events = computed<Event[]>(() => {
   const p = props.pr;
-  const raw: Event[] = [{ kind: "opened", at: p.createdAt, person: p.author }];
+  if (!p) return [];
+  const raw: Event[] = props.summary.ready ? [{ kind: "opened", at: p.createdAt, person: p.author }] : [];
   for (const c of p.commits) raw.push({ kind: "commits", at: c.date, commits: [c] });
   for (const r of p.reviews) if (r.submittedAt) raw.push({ kind: "review", at: r.submittedAt, review: r });
   for (const c of p.comments) {
@@ -80,11 +86,14 @@ function plural(n: number, word: string): string {
 
 <template>
   <div class="prv__conversation">
-  <div v-if="pr.body" class="prv__description selectable">
+  <GitSpacePullRequestSection label="Description" variant="description" v-bind="summary" @retry="emit('retry', 'summary')">
+  <div v-if="pr?.body" class="prv__description selectable">
     <MarkdownMessage :source="pr.body" historical />
   </div>
   <p v-else class="prv__nodesc">No description.</p>
+  </GitSpacePullRequestSection>
 
+  <GitSpacePullRequestSection class="prv__activity" label="Activity" variant="activity" v-bind="activity" @retry="emit('retry', 'conversation')">
   <ol class="prv__rail">
     <li
       v-for="(e, i) in events"
@@ -98,7 +107,7 @@ function plural(n: number, word: string): string {
         <i class="prv__node" />
         <p class="prv__line">
           <b>{{ e.person?.login ?? "someone" }}</b>{{ " " }}opened this
-          <span class="prv__when">{{ pr.relative }}</span>
+          <span class="prv__when">{{ pr?.relative }}</span>
         </p>
       </template>
 
@@ -183,6 +192,7 @@ function plural(n: number, word: string): string {
       </template>
     </li>
   </ol>
+  </GitSpacePullRequestSection>
   </div>
 </template>
 
@@ -211,10 +221,11 @@ function plural(n: number, word: string): string {
   display: flex;
   flex-direction: column;
   gap: 22px;
-  margin-top: 44px;
+  margin-top: 0;
   padding: 0;
   list-style: none;
 }
+.prv__activity { margin-top: 44px; }
 .prv__rail::before {
   content: "";
   position: absolute;

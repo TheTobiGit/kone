@@ -242,7 +242,7 @@ onMounted(() => {
   background-color: var(--ground);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent),
-    0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
+    0 1px 3px rgb(0 0 0 / 10%);
   transform: translateX(calc(100% * var(--i)));
   transition: transform 320ms var(--cv-ease-move);
 }

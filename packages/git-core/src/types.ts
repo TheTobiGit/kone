@@ -573,6 +573,9 @@ export type GitHubPrCommit = {
   relative: string;
 };
 
+/** Independently fetched regions of the pull request details view. */
+export type GitHubPullRequestSection = "summary" | "conversation" | "checks" | "files" | "merge";
+
 /** A pull request in full — everything the dedicated view draws, in one read.
  *  Deliberately not an extension of `GitHubPullRequest`: the summary row names
  *  its author with a bare login, and this one carries a whole person. */

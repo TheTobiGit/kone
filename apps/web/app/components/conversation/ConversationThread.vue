@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, toRef, watch } from "vue";
+import ThreadPullRequestModal from "~/components/conversation/ThreadPullRequestModal.vue";
+import { PULL_REQUEST_OPENER, type PullRequestLink } from "~/utils/pullRequestLink";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -178,6 +180,18 @@ const props = defineProps<{
 provide(IMAGE_CWD_KEY, () => props.cwd ?? null);
 // The session's own id, present from the start; `threadId` is absent on a blank column.
 provide(IMAGE_THREAD_KEY, () => props.agentSeed ?? props.threadId ?? null);
+
+const prPreview = ref<{ cwd: string; link: PullRequestLink; origin: DOMRect | null } | null>(null);
+const prBridge = useGit();
+watch(() => props.cwd, () => {
+  prPreview.value = null;
+});
+
+provide(PULL_REQUEST_OPENER, (link, origin) => {
+  if (!props.cwd || !prBridge.available) return false;
+  prPreview.value = { cwd: props.cwd, link, origin };
+  return true;
+});
 
 const emit = defineEmits<{
   "to-scratchpad": [text: string];
@@ -1697,6 +1711,14 @@ watch(
       :origin="traced.origin"
       :now="now"
       @close="traced = null"
+    />
+    <ThreadPullRequestModal
+      v-if="prPreview"
+      :key="`${prPreview.cwd}:${prPreview.link.repository}:${prPreview.link.number}`"
+      :cwd="prPreview.cwd"
+      :link="prPreview.link"
+      :origin="prPreview.origin"
+      @close="prPreview = null"
     />
 </template>
 

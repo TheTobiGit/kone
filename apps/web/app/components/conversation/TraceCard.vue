@@ -131,7 +131,7 @@ onBeforeUnmount(() => {
   background: var(--panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 10px 30px -18px color-mix(in srgb, var(--ink) 12%, transparent);
+    0 10px 30px -18px rgb(0 0 0 / 12%);
 }
 /* Grow out of the turn, and shrink back into it. */
 .tr.is-in {
