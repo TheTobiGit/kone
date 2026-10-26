@@ -44,6 +44,7 @@ import { useShortcuts } from "~/composables/useShortcuts";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerReferences } from "~/composables/useComposerReferences";
+import { placeReferencePreview, useReferencePreview } from "~/composables/useReferencePreview";
 import { referenceGlance, splitReferenceAttachments } from "~/utils/composerReferences";
 
 import { useComposerMentions } from "~/composables/useComposerMentions";
@@ -903,48 +904,194 @@ async function addReference(reference: TextReference): Promise<void> {
 }
 
 function removeReference(id: string): void {
+  hideRefTipFor(id);
   removeReferenceState(id);
   cue("collapse");
   syncSoon();
 }
 
-// ── reference tooltip ─────────────────────────────────────────────────────
-// One tooltip for whichever reference chip is hovered or focused. It lives on
-// <body> so the composer's own clipping never cuts a long selection short.
+// ── reference preview ─────────────────────────────────────────────────────
+// One floating panel for whichever reference chip is hovered or focused. It
+// lives on <body> so the composer's own clipping never cuts a long selection
+// short, and it stays open while the pointer or focus is in either the chip or
+// the panel. The open/close rules live in the composable so the hover gap and
+// focus return can be tested without a DOM.
 const refTipId = `ref-tip-${Math.random().toString(36).slice(2, 9)}`;
-const REF_TIP_GAP = 6;
-const refTip = ref<{ id: string; text: string; anchor: DOMRect } | null>(null);
+const {
+  preview: refTip,
+  open: openRefTipState,
+  close: closeRefTipState,
+  enter: enterRefTipRegion,
+  leave: leaveRefTipPointer,
+  focusEnter: focusRefTipRegion,
+  focusLeave: leaveRefTipFocus,
+  allowsFocusOpen,
+  focusTrigger: focusRefTipTrigger,
+  hideIf: hideRefTipFor,
+  hideMissing: hideRefTipsMissing,
+} = useReferencePreview();
+const refTipPanel = ref<HTMLElement | null>(null);
 
 const refTipStyle = computed(() => {
-  const anchor = refTip.value?.anchor;
-  if (!anchor) return {};
-  // Above the chip by default; the composer sits low in the window, so above
-  // is almost always the side with room.
+  const tip = refTip.value;
+  if (!tip) return {};
+  const { left, maxWidth, top, bottom, maxHeight } = placeReferencePreview(tip.anchor, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
   return {
-    left: `${Math.max(8, anchor.left)}px`,
-    bottom: `${window.innerHeight - anchor.top + REF_TIP_GAP}px`,
+    left: `${left}px`,
+    maxWidth: `${maxWidth}px`,
+    maxHeight: `${maxHeight}px`,
+    ...(top === null ? { bottom: `${bottom ?? 0}px` } : { top: `${top}px` }),
   };
 });
 
-function showRefTip(reference: ChatAttachment, event: Event): void {
-  const text = reference.reference?.text ?? "";
-  if (!text) return;
+/** The whole chip, whichever inner element raised the event. */
+function refChipOf(event: Event): HTMLElement | null {
   const target = event.currentTarget;
-  if (!(target instanceof HTMLElement)) return;
-  const chip = target.closest(".ref-chip") ?? target;
-  refTip.value = { id: reference.id, text, anchor: chip.getBoundingClientRect() };
+  if (!(target instanceof Element)) return null;
+  return target.closest(".ref-chip");
 }
 
-function hideRefTip(id: string): void {
-  if (refTip.value?.id === id) refTip.value = null;
+function openRefTip(reference: ChatAttachment, event: Event): void {
+  const text = reference.reference?.text ?? "";
+  const chip = refChipOf(event);
+  if (!text || !chip) return;
+  openRefTipState({
+    id: reference.id,
+    text,
+    anchor: chip.getBoundingClientRect(),
+    trigger: chip.querySelector<HTMLElement>(".ref-chip__body"),
+  });
 }
 
-/** Escape closes the tooltip first; only a second Escape reaches the thread. */
-function dismissRefTip(event: KeyboardEvent): void {
+function onRefChipEnter(reference: ChatAttachment, event: MouseEvent): void {
+  enterRefTipRegion("chip");
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+}
+
+function onRefChipLeave(): void {
+  leaveRefTipPointer("chip");
+}
+
+function onRefChipFocusIn(reference: ChatAttachment, event: FocusEvent): void {
+  focusRefTipRegion("chip");
+  // Only the body opens the panel. Tab from the body moves to the remove
+  // button; reopening there would fight the tab that just left the panel.
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(".ref-chip__body")) return;
+  if (!allowsFocusOpen()) return;
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+}
+
+function onRefChipFocusOut(event: FocusEvent): void {
+  const chip = refChipOf(event);
+  // Move between the chip's own body and its remove button: still one chip.
+  if (chip && event.relatedTarget instanceof Node && chip.contains(event.relatedTarget)) return;
+  leaveRefTipFocus("chip");
+}
+
+/** Escape closes the preview first; only a second Escape reaches the composer. */
+function onRefChipEscape(event: KeyboardEvent): void {
   if (!refTip.value) return;
   event.stopPropagation();
-  refTip.value = null;
+  closeRefTipState();
 }
+
+/** Enter, click or ArrowDown on a chip moves focus into the panel, where the
+ *  arrow, page and Home/End keys scroll the full selection. */
+async function focusRefTip(reference: ChatAttachment, event: Event): Promise<void> {
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+  await nextTick();
+  refTipPanel.value?.focus({ preventScroll: true });
+}
+
+function onRefTipFocusOut(event: FocusEvent): void {
+  if (refTipPanel.value && event.relatedTarget instanceof Node && refTipPanel.value.contains(event.relatedTarget)) return;
+  leaveRefTipFocus("panel");
+}
+
+/** Scroll keys stay in the panel: they move its full-text scroller, never the
+ *  thread pane behind it. The default is untouched, so native scrolling works. */
+const REF_TIP_SCROLL_KEYS = new Set([
+  "ArrowDown",
+  "ArrowUp",
+  "PageDown",
+  "PageUp",
+  "Home",
+  "End",
+]);
+
+function onRefTipKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    refocusRefTipTrigger();
+    return;
+  }
+  if (event.key === "Tab") {
+    // Close on Tab and let the browser continue from the trigger, so one Tab
+    // leaves the panel and the next one moves on from the chip.
+    refocusRefTipTrigger();
+    return;
+  }
+  if (REF_TIP_SCROLL_KEYS.has(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    event.stopPropagation();
+  }
+}
+
+function refocusRefTipTrigger(): void {
+  if (!refTip.value) return;
+  focusRefTipTrigger();
+}
+
+/** Keep the panel pinned to its chip if the page scrolls or the window
+ *  changes size while it is open. */
+function refreshRefTipAnchor(): void {
+  const tip = refTip.value;
+  if (!tip) return;
+  const chip = tip.trigger?.closest(".ref-chip");
+  if (!chip || !chip.isConnected) {
+    closeRefTipState();
+    return;
+  }
+  refTip.value = { ...tip, anchor: chip.getBoundingClientRect() };
+}
+
+useEventListener(window, "resize", refreshRefTipAnchor);
+useEventListener(window, "scroll", refreshRefTipAnchor, { capture: true, passive: true });
+
+// A click anywhere else dismisses the preview; the composer's own click-away
+// must ignore the teleported panel (see the onClickOutside options below).
+useEventListener(
+  () => globalThis.document,
+  "pointerdown",
+  (event) => {
+    if (!refTip.value) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".ref-tip, .ref-chip")) return;
+    closeRefTipState();
+  },
+  { capture: true },
+);
+
+// The preview must never outlive what it describes: the folded card, a parked
+// ask, or the reference itself.
+watch(open, (isOpen) => {
+  if (!isOpen) closeRefTipState();
+});
+watch(
+  () => props.inactive,
+  (inactive) => {
+    if (inactive) closeRefTipState();
+  },
+);
+watch(
+  () => references.value.map((reference) => reference.id),
+  (ids) => hideRefTipsMissing(ids),
+);
 
 /** Put handed-back attachments (a queued row's Edit, a Stop's return) on the
  *  draft: references become chips again and files go through the ordinary
@@ -1068,13 +1215,13 @@ onClickOutside(
     // Folding on a click away is a setting; off, the card stays until Escape.
     if (!composerPrefs.value.foldOnBlur) return;
     const target = event.target;
-    if (target instanceof Element && target.closest("[data-agent-dock]")) {
+    if (target instanceof Element && target.closest("[data-agent-dock], .ref-tip")) {
       return;
     }
     close();
   },
   {
-    ignore: ["[data-agent-dock]"],
+    ignore: ["[data-agent-dock]", ".ref-tip"],
   },
 );
 const registerEscape = useThreadEscape();
@@ -1088,6 +1235,13 @@ registerEscape("composer", () => open.value && !props.alwaysOpen && !props.backg
  *  one layer: without this the surface behind the composer — a portal that
  *  answers Escape of its own — would take the same press and leave too. */
 function onEscapeCapture(event: KeyboardEvent): void {
+  // The floating preview is the top layer inside the composer: the first
+  // Escape dismisses it and never reaches the picker or the composer's close.
+  if (refTip.value) {
+    event.stopPropagation();
+    closeRefTipState();
+    return;
+  }
   if (!agentPickerOpen.value) return;
   event.stopPropagation();
   agentPickerOpen.value = false;
@@ -1115,6 +1269,7 @@ async function onGlobalKey(e: KeyboardEvent) {
   // SAFETY: a non-element target would fail the contentEditable and tag-name probes below,
   // so the keystroke is ignored either way.
   const t = e.target as HTMLElement | null;
+  if (t?.closest(".ref-tip")) return;
   if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
   // A file detail is open → the composer is inert; leave the keystroke alone.
   if (dock.value?.closest("[inert]")) return;
@@ -1464,24 +1619,32 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
         </Transition>
 
         <!-- References ride beside the attachment chips: the selection once,
-             in one line, with its full text in a tooltip on hover or focus.
-             They are not editable text. -->
+             in one line. Opening the chip shows the exact text in a scrollable
+             panel; the text itself never enters the editable field. -->
         <Transition name="fade">
           <div v-if="open && hasReferences" class="chips chips--refs" aria-label="Referenced text">
-            <div v-for="ref in references" :key="ref.id" class="ref-chip">
-              <span
+            <div
+              v-for="ref in references"
+              :key="ref.id"
+              class="ref-chip"
+              @mouseenter="onRefChipEnter(ref, $event)"
+              @mouseleave="onRefChipLeave"
+              @focusin="onRefChipFocusIn(ref, $event)"
+              @focusout="onRefChipFocusOut"
+              @keydown.esc="onRefChipEscape"
+            >
+              <button
+                type="button"
                 class="ref-chip__body"
-                tabindex="0"
-                :aria-describedby="refTip?.id === ref.id ? refTipId : undefined"
-                @mouseenter="showRefTip(ref, $event)"
-                @mouseleave="hideRefTip(ref.id)"
-                @focus="showRefTip(ref, $event)"
-                @blur="hideRefTip(ref.id)"
-                @keydown.esc="dismissRefTip($event)"
+                aria-haspopup="dialog"
+                :aria-expanded="refTip?.id === ref.id"
+                :aria-controls="refTip?.id === ref.id ? refTipId : undefined"
+                @click.stop="focusRefTip(ref, $event)"
+                @keydown.down.prevent.stop="focusRefTip(ref, $event)"
               >
                 <span class="ref-chip__quote" aria-hidden="true">“</span>
                 <span class="ref-chip__text">{{ referenceGlance(ref.reference?.text ?? "") }}</span>
-              </span>
+              </button>
               <button
                 type="button"
                 class="chip__remove"
@@ -1499,9 +1662,18 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
           <div
             v-if="refTip"
             :id="refTipId"
+            ref="refTipPanel"
             class="ref-tip"
-            role="tooltip"
+            role="dialog"
+            aria-modal="false"
+            aria-label="Referenced text"
+            tabindex="-1"
             :style="refTipStyle"
+            @mouseenter="enterRefTipRegion('panel')"
+            @mouseleave="leaveRefTipPointer('panel')"
+            @focusin="focusRefTipRegion('panel')"
+            @focusout="onRefTipFocusOut"
+            @keydown="onRefTipKeydown"
           >{{ refTip.text }}</div>
         </Teleport>
 
@@ -1923,7 +2095,7 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
 }
 
 /* A reference chip: the selection in one line, read as a quote rather than a
-   file. The full text is in the tooltip. */
+   file. Opening it shows the full text in the floating preview. */
 .chips--refs {
   padding-top: 8px;
 }
@@ -1942,10 +2114,14 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
   gap: 6px;
   min-width: 0;
   padding: 7px 4px 7px 9px;
+  border: 0;
+  background: transparent;
   color: var(--ink);
+  font: inherit;
   font-size: 12.5px;
   line-height: 16px;
-  cursor: default;
+  text-align: left;
+  cursor: pointer;
 }
 .ref-chip__body:focus-visible {
   outline: 2px solid var(--focus);
@@ -1967,16 +2143,17 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
 .ref-chip > .chip__remove {
   margin: 0 5px 0 0;
 }
-/* Same surface as the thread's hover labels, sized for prose: wraps, keeps the
-   selection's line breaks and scrolls past a dozen lines. */
+/* Same surface as the thread's hover labels, but this one is interactive: it
+   wraps, keeps the selection's line breaks, and scrolls the full text with the
+   pointer or the keyboard. */
 .ref-tip {
   position: fixed;
   z-index: 60;
   max-width: min(400px, calc(100vw - 16px));
-  max-height: 240px;
+  max-height: 320px;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 6px 9px;
+  padding: 7px 10px;
   border-radius: 7px;
   background: var(--ink);
   color: var(--ground);
@@ -1986,6 +2163,10 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  pointer-events: none;
+  cursor: auto;
+}
+.ref-tip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 </style>
