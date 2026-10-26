@@ -681,12 +681,26 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
    *  refusal); this owns the session lifecycle around it: start the fork's
    *  session from the source's provider/selection, then send the edited
    *  message silent — the fork already journaled it, so this only dispatches,
-   *  and the one-shot bootstrap carries the copied prefix to the model. */
+   *  and the one-shot bootstrap carries the copied prefix to the model.
+   *
+   *  The replacement block is the fork's newest user block and the bootstrap
+   *  deliberately replays everything BEFORE it, so anything the edited
+   *  message carried (a reference, a file, an image) reaches the provider only
+   *  if this send passes it. Read it back from the journal — the renderer's
+   *  edit-fork call names the edited text alone, and the store is the
+   *  authority for what the fork actually recorded. The silent turn journals
+   *  nothing, so these attachments are never recorded twice. */
   async forkThreadTurn(input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult> {
     const created = this.service.forkThreadForEdit(input);
     if (created.status === "exists") return created;
     await this.ensureThreadSession(created.threadId, { resume: false });
-    await this.sendThreadTurn({ threadId: created.threadId, input: input.editedText }, { silent: true });
+    const editedBlockId = this.store.latestUserBlockId(created.threadId);
+    const inherited = editedBlockId
+      ? this.store.userBlockAttachments(created.threadId, editedBlockId)
+      : undefined;
+    const turn: SendTurnInput = { threadId: created.threadId, input: input.editedText };
+    if (inherited?.length) turn.attachments = inherited;
+    await this.sendThreadTurn(turn, { silent: true });
     return created;
   }
 

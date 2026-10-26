@@ -3,6 +3,31 @@ import type { StoredBlock } from "../types.js";
 import { estimateBlockTokens, estimateContextTokens, findCutPoint } from "./cutPoint.js";
 
 describe("compaction cutPoint", () => {
+  it("prices a text reference at the bytes the prompt will inline", () => {
+    // A large selection is inlined verbatim by every adapter, so compaction
+    // has to see its real size or it fires far too late.
+    const quoted = "row\n".repeat(20_000); // 80k chars
+    const withReference: StoredBlock = {
+      id: "u-ref",
+      role: "user",
+      text: "explain this",
+      at: 1_000,
+      attachments: [
+        {
+          type: "reference",
+          id: "ref-1",
+          name: "Selection",
+          mimeType: "text/plain",
+          sizeBytes: quoted.length,
+          reference: { text: quoted, sourcePaneId: "pane-1" },
+        },
+      ],
+    };
+
+    expect(estimateBlockTokens(withReference)).toBeGreaterThan(19_000);
+    expect(estimateContextTokens([withReference]).characters).toBeGreaterThan(80_000);
+  });
+
   it("estimates tokens across user and assistant blocks accurately", () => {
     const userBlock: StoredBlock = {
       id: "u1",
