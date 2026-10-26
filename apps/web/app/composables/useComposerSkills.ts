@@ -1,5 +1,5 @@
 import { computed, watch } from "vue";
-import type { KoneAgentSkillsApi, ProviderKind, SkillReference } from "~/types/desktop";
+import type { KoneAgentSkillsApi, ProviderKind, SkillReference, TextReference } from "~/types/desktop";
 import type { SendRejection } from "./agentTypes";
 import { useConversationSkills } from "./useConversationSkills";
 import {
@@ -20,6 +20,9 @@ export type UseComposerSkillsDeps = {
   setEditorFromText: (value: string, skills?: readonly SkillReference[]) => void;
   markSkillChips: (isAvailable: (skill: SkillReference) => boolean) => void;
   getSetDraft: () => (draft: string, skills?: readonly SkillReference[]) => Promise<void>;
+  /** Put a refused turn's references back on the draft. Absent on surfaces
+   *  that never carry references (a job). */
+  restoreReferences?: (references: readonly TextReference[]) => void;
   cueError: () => void;
   flashNotice: (notice: string) => void;
   /** The skills slice of the bridge. Injectable so the skill list resolves in tests. */
@@ -162,6 +165,9 @@ export function useComposerSkills(deps: UseComposerSkillsDeps) {
       const draft = ours ? sent.draft : draftFromTurn(rejection.input, rejection.skills);
       const restored: readonly SkillReference[] = ours ? sent.skills : rejection.skills;
       if (draft.trim()) await deps.getSetDraft()(draft, restored);
+      // References are not part of the field text, so they come back on their
+      // own — the refused turn is the only place they survive a send.
+      if (rejection.references?.length) deps.restoreReferences?.(rejection.references);
     },
   );
 

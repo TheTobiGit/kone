@@ -27,12 +27,13 @@ import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type {
-  AttachmentKind,
+  ChatAttachment,
   InteractionMode,
   ProviderKind,
   ProviderStatus,
   SkillReference,
   StepWait,
+  TextReference,
   ThreadEnvMode,
 } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
@@ -42,6 +43,9 @@ import { useComposerQueueReturn } from "~/composables/useComposerQueueReturn";
 import { useShortcuts } from "~/composables/useShortcuts";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
+import { useComposerReferences } from "~/composables/useComposerReferences";
+import { referenceGlance, splitReferenceAttachments } from "~/utils/composerReferences";
+
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
@@ -165,6 +169,11 @@ const props = defineProps<{
    *  leaves a stray keystroke and Escape to that one, so a single key never
    *  wakes or closes every composer on screen at once. */
   background?: boolean;
+  /** Mounted but off screen — a parked ask owns this composer's spot. The
+   *  state (draft, chips, references, uploaded files) has to survive the wait,
+   *  so the card is hidden rather than unmounted, and it must not take input
+   *  that belongs to the ask. */
+  inactive?: boolean;
   /** Narrows where the unsent draft is kept, for a surface holding several
    *  composers over one project: without it they would share one draft, and
    *  text typed into one would come back in all of them. */
@@ -628,6 +637,7 @@ const skills = useComposerSkills({
   setEditorFromText: (value, saved) => setMentionEditorFromText(value, saved),
   markSkillChips: (isAvailable) => markSkillChips(isAvailable),
   getSetDraft: () => setDraft,
+  restoreReferences: (saved) => restoreReferenceValues(saved),
   cueError: () => cue("refuse"),
   flashNotice: (message) => flash(message),
 });
@@ -675,6 +685,8 @@ const {
   draftParts,
   markSkillChips,
   setEditorFromText: setMentionEditorFromText,
+  setEditorFromLiteralText: setMentionEditorFromLiteralText,
+  appendEditorLiteralText,
   clearEditor: clearMentionEditor,
   focusEditorEnd,
   insertTextAtCaret,
@@ -703,7 +715,9 @@ const {
   getScope: () => props.draftScope,
   getText: () => text.value,
   getSkills: () => skills.currentDraftSkills(),
+  getReferences: () => referenceSnapshot(),
   setEditorFromText: (val, saved) => skills.restoreEditorFromText(val, saved),
+  setReferences: (saved) => replaceReferences(saved),
 });
 
 /** A picked row runs in place of a send. Most consume the token and never
@@ -718,6 +732,7 @@ function runSlashCommand(name: string, focus: string, opts: { fromMenu: boolean 
     else {
       clearComposerEditor();
       clearAttachments();
+      clearReferences();
       syncSoon();
     }
   }
@@ -860,6 +875,86 @@ const {
   syncSoon,
 });
 
+// ── references (text selections attached as context) ────────────────────────
+// A reference never enters the editable field: it rides beside the prose as an
+// attachment-shaped chip, can be inspected in full and removed, and is merged
+// into the draft's attachments at send. The same state keeps the scoped draft.
+const {
+  references,
+  hasReferences,
+  add: addReferenceState,
+  remove: removeReferenceState,
+  clear: clearReferences,
+  restore: restoreReferenceAttachments,
+  restoreReferences: restoreReferenceValues,
+  replace: replaceReferences,
+  snapshot: referenceSnapshot,
+  attachments: referenceAttachments,
+} = useComposerReferences();
+
+/** Add one selection to this composer without touching the text. Returns once
+ *  the card is awake so the chip is visible when the caller's click lands. */
+async function addReference(reference: TextReference): Promise<void> {
+  if (isJob.value) return;
+  await wake();
+  if (!addReferenceState(reference)) return;
+  cue("press");
+  syncSoon();
+}
+
+function removeReference(id: string): void {
+  removeReferenceState(id);
+  cue("collapse");
+  syncSoon();
+}
+
+// ── reference tooltip ─────────────────────────────────────────────────────
+// One tooltip for whichever reference chip is hovered or focused. It lives on
+// <body> so the composer's own clipping never cuts a long selection short.
+const refTipId = `ref-tip-${Math.random().toString(36).slice(2, 9)}`;
+const REF_TIP_GAP = 6;
+const refTip = ref<{ id: string; text: string; anchor: DOMRect } | null>(null);
+
+const refTipStyle = computed(() => {
+  const anchor = refTip.value?.anchor;
+  if (!anchor) return {};
+  // Above the chip by default; the composer sits low in the window, so above
+  // is almost always the side with room.
+  return {
+    left: `${Math.max(8, anchor.left)}px`,
+    bottom: `${window.innerHeight - anchor.top + REF_TIP_GAP}px`,
+  };
+});
+
+function showRefTip(reference: ChatAttachment, event: Event): void {
+  const text = reference.reference?.text ?? "";
+  if (!text) return;
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  const chip = target.closest(".ref-chip") ?? target;
+  refTip.value = { id: reference.id, text, anchor: chip.getBoundingClientRect() };
+}
+
+function hideRefTip(id: string): void {
+  if (refTip.value?.id === id) refTip.value = null;
+}
+
+/** Escape closes the tooltip first; only a second Escape reaches the thread. */
+function dismissRefTip(event: KeyboardEvent): void {
+  if (!refTip.value) return;
+  event.stopPropagation();
+  refTip.value = null;
+}
+
+/** Put handed-back attachments (a queued row's Edit, a Stop's return) on the
+ *  draft: references become chips again and files go through the ordinary
+ *  upload restore. */
+async function restoreDraftAttachments(list: readonly ChatAttachment[]): Promise<void> {
+  const { files, references: refs } = splitReferenceAttachments(list);
+  if (refs.length) restoreReferenceAttachments(refs);
+  if (files.length) await restoreUploaded(files);
+}
+
 function onPaste(e: ClipboardEvent) {
   const files = e.clipboardData?.files;
   if (files && files.length > 0) {
@@ -881,13 +976,17 @@ let lastCard = false;
 
 const hasText = computed(() => text.value.trim().length > 0);
 const armed = computed(
-  () => hasText.value || hasAttachments.value || (isJob.value && hasTitle.value),
+  () =>
+    hasText.value ||
+    hasAttachments.value ||
+    (!isJob.value && hasReferences.value) ||
+    (isJob.value && hasTitle.value),
 );
 /** Whether the primary commit would actually land. A turn only needs writing;
  *  a job also needs somewhere to run, and queuing an unaimed one would file
  *  something the dispatcher can never pick up. */
 const commitReady = computed(() => (isJob.value ? armed.value && hasProject.value : armed.value));
-const card = computed(() => hasAttachments.value);
+const card = computed(() => hasAttachments.value || (!isJob.value && hasReferences.value));
 
 // Read the surface's natural height at its open width. Mid-wake the surface is
 // still orb-wide (its width eases out a beat later), and text wrapped that
@@ -959,6 +1058,10 @@ function syncSoon() {
 onClickOutside(
   dock,
   (event) => {
+    // A parked ask owns the surface; a click on it is not a click away from a
+    // composer the user cannot see. Keeping the card open means it comes back
+    // with the draft and any reference added while the ask waited.
+    if (props.inactive) return;
     // The picker lives outside our dock, so its clicks read as "outside" — but it
     // is our own surface, one step removed. Don't collapse while it's up.
     if (props.picking || agentPickerOpen.value) return;
@@ -979,7 +1082,7 @@ registerEscape("picker", () => Boolean(props.picking), null);
 registerEscape("picker", () => agentPickerOpen.value, () => {
   agentPickerOpen.value = false;
 });
-registerEscape("composer", () => open.value && !props.alwaysOpen && !props.background, close);
+registerEscape("composer", () => open.value && !props.alwaysOpen && !props.background && !props.inactive, close);
 
 /** The agent picker's Escape, taken in the capture phase so one press closes
  *  one layer: without this the surface behind the composer — a portal that
@@ -1004,6 +1107,7 @@ function onSurfaceClick() {
 // a key pressed while another field is focused, or one hit while a file detail
 // is up (the composer is inert then).
 async function onGlobalKey(e: KeyboardEvent) {
+  if (props.inactive) return;
   if (!composerPrefs.value.typeToWake || props.background) return;
   if (open.value || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   // Single printable char only — "a", "1", "?" pass; "Enter"/"Tab"/arrows don't.
@@ -1071,6 +1175,10 @@ function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) 
     const draft: ComposerDraft = { text: turn.input };
     if (files.length) draft.files = files;
     if (turn.skills.length) draft.skills = turn.skills;
+    // References are already metadata-only; the host merges them with the
+    // uploaded files so a text selection never needs an upload.
+    const refs = referenceAttachments();
+    if (refs.length) draft.references = refs;
     const dispatch = resolveFollowUpDispatch({
       behavior: composerPrefs.value.followUp,
       busy: props.busy ?? false,
@@ -1083,6 +1191,7 @@ function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) 
   cue("send");
   clearComposerEditor();
   clearAttachments();
+  clearReferences();
   syncSoon();
 }
 
@@ -1122,7 +1231,7 @@ async function onQueueEdit(entry: QueuedTurnEntry) {
   if (isEffortTier(entry.effort) && entry.effort !== props.reasoning) emit("update:reasoning", entry.effort);
   if (isInteractionMode(entry.mode) && entry.mode !== props.mode) emit("update:mode", entry.mode);
   await setDraft(skills.draftFromTurn(entry.input || "", picked), picked);
-  if (entry.attachments?.length) await restoreUploaded(entry.attachments);
+  if (entry.attachments?.length) await restoreDraftAttachments(entry.attachments);
 }
 
 // Stop hands the queued messages back into the field (see
@@ -1134,7 +1243,7 @@ const handBack = useComposerQueueReturn({
   currentSkills: () => skills.currentDraftSkills(),
   draftFromTurn: (input, picked) => skills.draftFromTurn(input, picked),
   setDraft: (draft, picked) => setDraft(draft, picked),
-  restoreUploaded: (list) => restoreUploaded(list),
+  restoreUploaded: (list) => restoreDraftAttachments(list),
 });
 onMounted(() => {
   restoreDraft();
@@ -1147,6 +1256,9 @@ onUnmounted(() => {
   clearAttachments();
 });
 watch(text, scheduleDraftSave);
+// A reference changes the draft as much as a keystroke does, so it is saved
+// on the same clock.
+watch(references, scheduleDraftSave, { deep: true });
 // Let hosts work ahead of the send off the same text. Emitted raw — the host
 // decides what is worth warming, so a keystroke here never costs a call by
 // itself.
@@ -1161,6 +1273,33 @@ async function setDraft(draft: string, saved?: readonly SkillReference[]) {
   syncSoon();
 }
 
+/** Seed the field with ordinary text, replacing what was there — no `/name` or
+ *  `@path` re-chipping. This is the New Thread path: a selection has to stay
+ *  the words the user selected, while `setDraft` keeps its restore semantics
+ *  for a queue row or a refused send. */
+async function seedDraft(value: string) {
+  await wake();
+  await nextTick();
+  setMentionEditorFromLiteralText(value);
+  trigger.dismiss();
+  focusEditorEnd();
+  syncSoon();
+}
+
+/** Add text after whatever is already written, keeping the existing words,
+ *  skill chips and references. Unlike setDraft this never replaces the draft;
+ *  it exists for routing a selection into a blank pane that already holds an
+ *  unsent draft. The added text is placed verbatim as one text node, so a
+ *  selection shaped like a command is never turned into a chip. */
+async function appendDraft(value: string): Promise<void> {
+  await wake();
+  await nextTick();
+  appendEditorLiteralText(value);
+  trigger.dismiss();
+  focusEditorEnd();
+  syncSoon();
+}
+
 function focus() {
   if (!open.value) {
     void wake();
@@ -1169,7 +1308,7 @@ function focus() {
   field.value?.focus();
 }
 
-defineExpose({ wake, setDraft, focus });
+defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
 </script>
 
 <template>
@@ -1323,6 +1462,48 @@ defineExpose({ wake, setDraft, focus });
             <span v-if="notice" class="chips__notice">{{ notice }}</span>
           </div>
         </Transition>
+
+        <!-- References ride beside the attachment chips: the selection once,
+             in one line, with its full text in a tooltip on hover or focus.
+             They are not editable text. -->
+        <Transition name="fade">
+          <div v-if="open && hasReferences" class="chips chips--refs" aria-label="Referenced text">
+            <div v-for="ref in references" :key="ref.id" class="ref-chip">
+              <span
+                class="ref-chip__body"
+                tabindex="0"
+                :aria-describedby="refTip?.id === ref.id ? refTipId : undefined"
+                @mouseenter="showRefTip(ref, $event)"
+                @mouseleave="hideRefTip(ref.id)"
+                @focus="showRefTip(ref, $event)"
+                @blur="hideRefTip(ref.id)"
+                @keydown.esc="dismissRefTip($event)"
+              >
+                <span class="ref-chip__quote" aria-hidden="true">“</span>
+                <span class="ref-chip__text">{{ referenceGlance(ref.reference?.text ?? "") }}</span>
+              </span>
+              <button
+                type="button"
+                class="chip__remove"
+                :aria-label="`Remove the reference from ${ref.name}`"
+                @click.stop.prevent="removeReference(ref.id)"
+              >
+                <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </Transition>
+        <Teleport to="body">
+          <div
+            v-if="refTip"
+            :id="refTipId"
+            class="ref-tip"
+            role="tooltip"
+            :style="refTipStyle"
+          >{{ refTip.text }}</div>
+        </Teleport>
 
         <!-- Dormant face -->
         <div class="face" aria-hidden="true">
@@ -1739,5 +1920,72 @@ defineExpose({ wake, setDraft, focus });
   gap: 3px;
   opacity: 0.38;
   filter: grayscale(1);
+}
+
+/* A reference chip: the selection in one line, read as a quote rather than a
+   file. The full text is in the tooltip. */
+.chips--refs {
+  padding-top: 8px;
+}
+.ref-chip {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--faint);
+}
+.ref-chip__body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 4px 7px 9px;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 16px;
+  cursor: default;
+}
+.ref-chip__body:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: 7px;
+}
+.ref-chip__quote {
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 14px;
+}
+.ref-chip__text {
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-chip > .chip__remove {
+  margin: 0 5px 0 0;
+}
+/* Same surface as the thread's hover labels, sized for prose: wraps, keeps the
+   selection's line breaks and scrolls past a dozen lines. */
+.ref-tip {
+  position: fixed;
+  z-index: 60;
+  max-width: min(400px, calc(100vw - 16px));
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--ink);
+  color: var(--ground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 </style>

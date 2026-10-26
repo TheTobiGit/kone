@@ -36,6 +36,8 @@ import type { EffortTier } from "~/utils/modelCatalog";
 import { deriveTurnSettingMarks, type TurnSettingChange } from "~/utils/turnSettingMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
+import { isReferenceAttachment } from "~/utils/composerReferences";
+import { resendDraft } from "~/utils/turnResend";
 import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
@@ -180,11 +182,12 @@ provide(IMAGE_THREAD_KEY, () => props.agentSeed ?? props.threadId ?? null);
 const emit = defineEmits<{
   "to-scratchpad": [text: string];
   /** Re-send the user request that precedes a failed turn. The host owns the
-   *  send path (ThreadStrip forwards this to the session's `send`). */
-  retry: [text: string];
+   *  send path (ThreadStrip forwards this to the session's `send`). A
+   *  reference-only request is valid and carries its attachments. */
+  retry: [text: string, attachments?: ChatAttachment[]];
   /** Edit-and-resend of the last user turn: send the edited text as a NEW
-   *  user turn on this thread. */
-  resend: [text: string];
+   *  user turn on this thread, keeping the turn's attachments. */
+  resend: [text: string, attachments?: ChatAttachment[]];
   /** Edit-and-resend of an earlier user turn: fork the thread at that block
    *  (the source is never mutated) and start the fork's first turn from the
    *  edited text. The host owns the fork path. */
@@ -435,7 +438,14 @@ function partitionAttachments(attachments?: ChatAttachment[]) {
   const images: ChatAttachment[] = [];
   const videos: ChatAttachment[] = [];
   const files: ChatAttachment[] = [];
+  const references: ChatAttachment[] = [];
   for (const att of attachments ?? []) {
+    if (att.type === "reference") {
+      // A reference-shaped record with a broken payload is neither a quote nor
+      // a file; drawing it as either would invent content that was not sent.
+      if (isReferenceAttachment(att)) references.push(att);
+      continue;
+    }
     if (isImageAttachment(att)) {
       images.push(att);
     } else if (isVideoAttachment(att)) {
@@ -444,14 +454,16 @@ function partitionAttachments(attachments?: ChatAttachment[]) {
       files.push(att);
     }
   }
-  return { images, videos, files };
+  return { images, videos, files, references };
 }
 export type AttachmentPartition = {
   images: ChatAttachment[];
   videos: ChatAttachment[];
   files: ChatAttachment[];
+  /** Text selections the user attached; rendered as inspectable quotes. */
+  references: ChatAttachment[];
 };
-const EMPTY_PARTITION: AttachmentPartition = { images: [], videos: [], files: [] };
+const EMPTY_PARTITION: AttachmentPartition = { images: [], videos: [], files: [], references: [] };
 // One exchange = one request + the assistant turn(s) answering it, with the
 // per-row lookups the template used to recompute (some twice, some 5x+ per
 // render) derived once here: the request text (channel reply-ref + retry),
@@ -462,6 +474,9 @@ type EnrichedExchange = {
   key: string;
   blocks: ThreadBlock[];
   requestText: string;
+  /** What rode the request: retry re-sends these so a quote or file is not
+   *  silently dropped from the turn it is retrying. */
+  requestAttachments: ChatAttachment[] | undefined;
   /** The agent that wrote the request, or the courier that carried it, when
    *  it was not the user. */
   requestFrom: SpeakingSender | null;
@@ -635,11 +650,16 @@ function userRequestFor(block: AssistantBlock): string {
   }
   return "";
 }
-function retryTurn(block: AssistantBlock, requestText: string): void {
+function retryTurn(
+  block: AssistantBlock,
+  requestText: string,
+  attachments?: ChatAttachment[],
+): void {
   const text = requestText || userRequestFor(block);
-  if (!text.trim() || props.busy) return;
+  const draft = resendDraft(text, attachments);
+  if (!draft || props.busy) return;
   cue("press");
-  emit("retry", text);
+  emit("retry", draft.text, draft.attachments);
 }
 function dismissTurnError(block: AssistantBlock): void {
   dismissedTurnErrors[block.id] = true;
@@ -654,14 +674,18 @@ function dismissTurnError(block: AssistantBlock): void {
 // (the transcript keeps the original either way — rolling it back would
 // rewrite history the replies after it already answered).
 const lastUserBlockId = computed(() => lastUserBlock()?.id ?? null);
-function saveUserEdit(block: Extract<ThreadBlock, { role: "user" }>, text: string): void {
-  const trimmed = text.trim();
-  if (!trimmed || props.busy) return;
+function saveUserEdit(
+  block: Extract<ThreadBlock, { role: "user" }>,
+  text: string,
+  attachments?: ChatAttachment[],
+): void {
+  const draft = resendDraft(text, attachments);
+  if (!draft || props.busy) return;
   cue("press");
   // The last user turn is still replaceable by a follow-up; anything earlier
   // has replies after it, so the edit branches the thread at that block.
-  if (block.id === lastUserBlockId.value) emit("resend", trimmed);
-  else emit("edit-fork", block.id, trimmed);
+  if (block.id === lastUserBlockId.value) emit("resend", draft.text, draft.attachments);
+  else emit("edit-fork", block.id, draft.text);
 }
 
 // ── a stored conversation whose transcript never arrived ─────────────────────
@@ -744,6 +768,7 @@ const allExchanges = computed<EnrichedExchange[]>(() => {
         key: b.id,
         blocks: [b],
         requestText: b.role === "user" ? b.text : "",
+        requestAttachments: b.role === "user" ? b.attachments : undefined,
         requestFrom: b.role === "user" && isSpeakingSender(b.sender) ? b.sender : null,
         requestIsNotice: b.role === "user" && b.sender?.kind === "system",
         reply: undefined,
@@ -1392,7 +1417,7 @@ watch(
           :reply="ex.traceReply"
           :trace-thread-id="agentSeed ?? threadId ?? null"
           :thread-title="threadTitle"
-          @save="(text) => saveUserEdit(block, text)"
+          @save="(text, attachments) => saveUserEdit(block, text, attachments)"
           @copy="copyUserRequest(block)"
           @scratchpad="addUserRequestToScratchpad(block)"
           @preview="openLightbox"
@@ -1476,7 +1501,7 @@ watch(
           >
             <p class="body body--error">{{ block.error }}</p>
             <div class="turn-fail__actions">
-              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block, ex.requestText)">
+              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block, ex.requestText, ex.requestAttachments)">
                 <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
                 <span>Retry</span>
               </button>

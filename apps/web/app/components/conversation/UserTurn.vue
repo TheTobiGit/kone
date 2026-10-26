@@ -70,8 +70,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** The edit was saved — the thread routes it (resend when last, fork when
    *  earlier). The draft stays open here until the thread's busy gate passes,
-   *  mirroring the old save: an empty or busy save keeps editing. */
-  save: [text: string];
+   *  mirroring the old save: an empty or busy save keeps editing. The turn's
+   *  attachments ride along so a quote or file is not lost. */
+  save: [text: string, attachments?: ChatAttachment[]];
   copy: [];
   scratchpad: [];
   preview: [att: ChatAttachment, turnAttachments: ChatAttachment[] | undefined];
@@ -116,7 +117,7 @@ function saveEdit(): void {
   editing.value = false;
   draft.value = "";
   cue("press");
-  emit("save", text);
+  emit("save", text, props.block.attachments);
 }
 
 // ── long requests fold ──────────────────────────────────────────────────────
@@ -250,8 +251,22 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
         :path="skill.path"
       />
     </div>
+    <!-- Text the user attached as a reference: a quote they can open to the
+         exact selected bytes. It carries provenance, never a text guess. -->
+    <div v-if="parts.references.length" class="you-references" aria-label="Referenced text">
+      <details v-for="ref in parts.references" :key="ref.id" class="you-reference">
+        <summary class="you-reference__summary">
+          <span class="you-reference__quote" aria-hidden="true">“</span>
+          <span class="you-reference__name">{{ ref.name }}</span>
+        </summary>
+        <pre class="you-reference__text">{{ ref.reference?.text }}</pre>
+      </details>
+    </div>
     <!-- What was attached to this turn -->
-    <div v-if="block.attachments?.length" class="you-attachments selectable">
+    <div
+      v-if="parts.images.length || parts.videos.length || parts.files.length"
+      class="you-attachments selectable"
+    >
       <!-- Images thumbnail grid -->
       <div
         v-if="parts.images.length"
@@ -464,6 +479,65 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
   justify-content: flex-end;
   gap: 6px;
   max-width: 80%;
+}
+/* References sit where attachments do, as quote blocks. Closed they are one
+   quiet line; opened they show the selection byte-for-byte. */
+.you-references {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 80%;
+}
+.you-reference {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--chip);
+}
+.you-reference__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 16px;
+}
+.you-reference__summary::-webkit-details-marker {
+  display: none;
+}
+.you-reference__summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: 7px;
+}
+.you-reference__quote {
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 14px;
+}
+.you-reference__name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.you-reference__text {
+  margin: 0;
+  padding: 8px 10px 10px;
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .you-foot {
   display: flex;

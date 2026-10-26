@@ -1,7 +1,9 @@
 import type { Ref, ShallowRef } from "vue";
 
 import type { ThreadSession } from "~/composables/useAgent";
+import type { ChatAttachment } from "~/types/desktop";
 import type { Pane } from "~/types/studio";
+import { resendDraft } from "~/utils/turnResend";
 import { useSound } from "./useSound";
 
 // Pane event forwarding: almost everything here relays a column's intent to
@@ -84,18 +86,22 @@ export function useStripPaneActions(deps: {
   // ── turn retry / resend / reload — the session's own send & open paths ───────
   // ConversationThread never touches the send path; these forward its intents to
   // the column's session, which owns send/openStored/start. `send` is the same
-  // function the composer uses, so a retry lands exactly like a fresh prompt.
-  function onRetryTurn(c: Pane, text: string): void {
+  // function the composer uses, so a retry lands exactly like a fresh prompt —
+  // including the attachment metadata the turn carried (a reference-only turn
+  // stays retryable).
+  function onRetryTurn(c: Pane, text: string, attachments?: ChatAttachment[]): void {
     if (c.kind !== "thread") return;
     const s = c.session;
-    if (!s || !text.trim() || s.busy.value) return;
-    void s.send(text);
+    const draft = resendDraft(text, attachments);
+    if (!s || !draft || s.busy.value) return;
+    void s.send(draft);
   }
-  function onResendTurn(c: Pane, text: string): void {
+  function onResendTurn(c: Pane, text: string, attachments?: ChatAttachment[]): void {
     if (c.kind !== "thread") return;
     const s = c.session;
-    if (!s || !text.trim() || s.busy.value) return;
-    void s.send(text);
+    const draft = resendDraft(text, attachments);
+    if (!s || !draft || s.busy.value) return;
+    void s.send(draft);
   }
   function onRetryLoad(c: Pane): void {
     if (c.kind !== "thread") return;
