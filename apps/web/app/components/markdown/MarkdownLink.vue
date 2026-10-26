@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
+import { parsePullRequestLink, PULL_REQUEST_OPENER } from "~/utils/pullRequestLink";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Link01Icon } from "@hugeicons/core-free-icons";
 
@@ -14,6 +15,15 @@ import { Link01Icon } from "@hugeicons/core-free-icons";
 // clickable.
 
 const props = defineProps<{ href: string; bare?: boolean }>();
+const openPullRequest = inject(PULL_REQUEST_OPENER, null);
+
+function onClick(event: MouseEvent) {
+  if (!openPullRequest || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const link = parsePullRequestLink(props.href);
+  if (!link) return;
+  const origin = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : null;
+  if (openPullRequest(link, origin)) event.preventDefault();
+}
 
 const url = computed<URL | null>(() => {
   try {
@@ -42,6 +52,7 @@ const iconOk = ref(true);
     :href="href"
     :target="external ? '_blank' : undefined"
     :rel="external ? 'noopener noreferrer' : undefined"
+    @click="onClick"
   >
     <span v-if="external && !bare" class="mdlink__ico" aria-hidden="true">
       <img

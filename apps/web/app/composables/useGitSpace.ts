@@ -27,6 +27,7 @@ import type {
   GitHubPrCreateResult,
   GitHubPullRequest,
   GitHubPullRequestDetail,
+  GitHubPullRequestSection,
   GitHubRepoInfo,
   GitHubStatus,
   GitHubUser,
@@ -314,7 +315,10 @@ export function useGitSpace(
   function prDetail(
     number: number,
     fresh = false,
+    section?: GitHubPullRequestSection,
   ): Promise<GitHubPullRequestDetail | null> {
+    // Partial reads belong to their caller and must never replace the full-detail cache.
+    if (section) return bridge.github.prDetail(dir(), number, section).catch(() => null);
     const cached = prDetails.value[number];
     // A pull request is the one cached payload that genuinely moves under you —
     // someone reviews, someone comments, a check goes green — so the view can

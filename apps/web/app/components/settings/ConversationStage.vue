@@ -136,8 +136,8 @@ watch(
   background-color: var(--ground);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 1px 2px color-mix(in srgb, var(--ink) 4%, transparent),
-    0 10px 24px -16px color-mix(in srgb, var(--ink) 12%, transparent);
+    0 1px 2px rgb(0 0 0 / 4%),
+    0 10px 24px -16px rgb(0 0 0 / 12%);
   overflow: hidden;
   transition: box-shadow var(--cv-t-small) ease;
 }
@@ -146,7 +146,7 @@ watch(
 .cv__frame--probe {
   box-shadow:
     inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent),
-    0 1px 2px color-mix(in srgb, var(--ink) 4%, transparent),
+    0 1px 2px rgb(0 0 0 / 4%),
     0 10px 24px -16px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .cv__screen {

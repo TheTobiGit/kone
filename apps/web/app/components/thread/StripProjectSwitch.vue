@@ -206,7 +206,7 @@ button.here__name:focus-visible {
   background-color: color-mix(in srgb, var(--ground) 96%, transparent);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent),
-    0 8px 24px -10px color-mix(in srgb, var(--ink) 14%, transparent);
+    0 8px 24px -10px rgb(0 0 0 / 14%);
 }
 /* The gap between the name and the list is dead space the pointer has to
    cross. Roofing it keeps that crossing inside the hover region, so the list

@@ -475,8 +475,8 @@ function onNav(e: KeyboardEvent): void {
   border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
-    0 1px 3px color-mix(in srgb, var(--ink) 5%, transparent),
-    0 10px 28px color-mix(in srgb, var(--ink) 11%, transparent);
+    0 1px 3px rgb(0 0 0 / 5%),
+    0 10px 28px rgb(0 0 0 / 11%);
   pointer-events: auto;
 }
 
@@ -640,8 +640,8 @@ function onNav(e: KeyboardEvent): void {
   backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
   box-shadow:
-    0 1px 3px color-mix(in srgb, var(--ink) 5%, transparent),
-    0 10px 26px color-mix(in srgb, var(--ink) 12%, transparent);
+    0 1px 3px rgb(0 0 0 / 5%),
+    0 10px 26px rgb(0 0 0 / 12%);
 }
 /* A palette opens away from the text where there's room for it — see popSide. */
 .tb--pop-above .tb__pop {

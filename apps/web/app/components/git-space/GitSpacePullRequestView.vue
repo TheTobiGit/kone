@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
+import GitSpacePullRequestSection from "~/components/git-space/GitSpacePullRequestSection.vue";
+import { usePullRequestSections } from "~/composables/usePullRequestSections";
 import ModalShell from "~/components/ui/ModalShell.vue";
 import { useModalExit } from "~/composables/useModalExit";
 import { changeBar, checkDuration, prDate } from "~/utils/prFormat";
@@ -16,7 +18,6 @@ import type {
   GitHubPrAction,
   GitHubPrCommit,
   GitHubPrFile,
-  GitHubPullRequestDetail,
   GitHubReview,
   GitHubReviewer,
 } from "~/types/desktop";
@@ -49,6 +50,8 @@ import type { useGitSpace } from "~/composables/useGitSpace";
 const props = defineProps<{
   space: ReturnType<typeof useGitSpace>;
   number: number;
+  /** The thread opener verifies the repository after the loading shell appears. */
+  ready?: boolean;
   /** The clicked row's viewport rect — the grow's origin. */
   origin: DOMRect | null;
 }>();
@@ -74,8 +77,8 @@ function openCommitAt(hash: string, origin: DOMRect | null) {
 
 type Tab = "conversation" | "files" | "commits" | "checks";
 
-const pr = ref<GitHubPullRequestDetail | null>(null);
-const loading = ref(true);
+const detail = usePullRequestSections((number, fresh, section) => props.space.prDetail(number, fresh, section));
+const { pr, sections } = detail;
 const refreshing = ref(false);
 const tab = ref<Tab>("conversation");
 const files = ref<GitFileDiff[] | null>(null);
@@ -83,18 +86,14 @@ const filesLoading = ref(false);
 const openPath = ref<string | null>(null);
 
 watch(
-  () => props.number,
-  async (number) => {
-    loading.value = true;
-    pr.value = null;
+  [() => props.number, () => props.ready !== false],
+  ([number, ready]) => {
     files.value = null;
+    filesLoading.value = false;
+    refreshing.value = false;
     openPath.value = null;
     tab.value = "conversation";
-    const d = await props.space.prDetail(number);
-    // A different pull request may have been opened while this was in flight.
-    if (props.number !== number) return;
-    pr.value = d;
-    loading.value = false;
+    if (ready) void detail.load(number);
   },
   { immediate: true },
 );
@@ -102,8 +101,8 @@ watch(
 // The patch is one read for the whole pull request and it's cached, so it's
 // fetched the first time the Files tab is asked for rather than up front — most
 // visits here are to read the conversation.
-watch([tab, pr], async () => {
-  if (tab.value !== "files" || !pr.value || files.value || filesLoading.value) return;
+watch([tab, () => sections.files.ready], async () => {
+  if (tab.value !== "files" || !sections.files.ready || files.value || filesLoading.value) return;
   const number = props.number;
   filesLoading.value = true;
   const patch = await props.space.prDiff(number);
@@ -118,13 +117,12 @@ watch([tab, pr], async () => {
 async function refresh() {
   // Never alongside an action: its own re-read could land first and be
   // overwritten by this older answer, showing a merged pull request as open.
-  if (refreshing.value || busy.value) return;
+  if (props.ready === false || refreshing.value || busy.value) return;
   cue("press");
   refreshing.value = true;
   const number = props.number;
-  const d = await props.space.prDetail(number, true);
+  await detail.load(number, true);
   if (props.number !== number) return;
-  if (d) pr.value = d;
   refreshing.value = false;
 }
 
@@ -133,7 +131,7 @@ const busy = computed(() => props.space.op.value !== null);
 /** The state as one word, and whether that word is good news. */
 const status = computed(() => {
   const p = pr.value;
-  if (!p) return null;
+  if (!p || !sections.summary.ready) return null;
   if (p.state === "merged") return { word: "Merged", tone: "merged" as const };
   if (p.state === "closed") return { word: "Closed", tone: "bad" as const };
   if (p.isDraft) return { word: "Draft", tone: "flat" as const };
@@ -325,7 +323,7 @@ async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
   }
   const d = await props.space.prDetail(number);
   if (d && props.number === number) {
-    pr.value = d;
+    detail.adopt(d);
     if (action === "merge" && d.state === "open") {
       actNotice.value = "GitHub queued the merge. It lands once the required checks pass.";
     }
@@ -342,7 +340,7 @@ async function sendComment(body: string): Promise<boolean> {
     return false;
   }
   const d = await props.space.prDetail(number);
-  if (d) pr.value = d;
+  if (d) detail.adopt(d);
   return true;
 }
 
@@ -433,7 +431,7 @@ onBeforeUnmount(() => {
         :style="originStyle"
         role="dialog"
         aria-modal="true"
-        :aria-label="pr?.title ?? `Pull request #${number}`"
+        :aria-label="sections.summary.ready ? pr?.title : `Pull request #${number}`"
         :inert="opened !== null"
       >
         <div class="prm__frame">
@@ -464,7 +462,8 @@ onBeforeUnmount(() => {
           <span v-if="status" class="prv__state" :class="`prv__state--${status.tone}`">{{ status.word }}</span>
           <span>#{{ number }}</span>
         </p>
-        <h1 class="prv__title">{{ pr?.title ?? "Pull request" }}</h1>
+        <GitSpacePullRequestSection label="Pull request" variant="heading" v-bind="sections.summary" @retry="detail.retry('summary')">
+        <h1 class="prv__title">{{ pr?.title }}</h1>
 
         <p v-if="pr" class="prv__note">
           <span class="prv__author">
@@ -482,6 +481,7 @@ onBeforeUnmount(() => {
           </span>
           <span>opened {{ pr.relative }}</span>
         </p>
+        </GitSpacePullRequestSection>
       </div>
 
       <div class="prv__actions">
@@ -491,15 +491,15 @@ onBeforeUnmount(() => {
           :class="{ 'prv__btn--spin': refreshing }"
           title="Re-read this pull request"
           aria-label="Re-read this pull request"
-          :disabled="busy"
+          :disabled="busy || ready === false"
           @click="refresh"
         >
           <HugeiconsIcon class="prv__refresh" :icon="RefreshIcon" :size="12" :stroke-width="2" aria-hidden="true" />
         </button>
-        <button v-if="pr?.state === 'open'" type="button" class="prv__btn" :disabled="busy" @click="checkout">
+        <button v-if="sections.summary.ready && pr?.state === 'open'" type="button" class="prv__btn" :disabled="busy" @click="checkout">
           Check out
         </button>
-        <button v-if="pr" type="button" class="prv__btn" @click="openOnGitHub">
+        <button v-if="sections.summary.ready && pr" type="button" class="prv__btn" @click="openOnGitHub">
           GitHub
           <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
         </button>
@@ -508,13 +508,7 @@ onBeforeUnmount(() => {
 
     <!-- ── page ─────────────────────────────────────────────────────────────── -->
     <div class="prv__scroll">
-      <GitSpaceSkeleton v-if="loading" variant="prose" />
-
-      <p v-else-if="!pr" class="prv__empty">
-        This pull request couldn't be read. The GitHub CLI may not be signed in.
-      </p>
-
-      <div v-else class="prv__cols">
+      <div class="prv__cols">
         <!-- ══ the main column ══════════════════════════════════════════════ -->
         <div class="prv__main">
           <nav class="prv__tabs" aria-label="Pull request sections">
@@ -528,7 +522,7 @@ onBeforeUnmount(() => {
               @click="setTab(t.id)"
             >
               {{ t.label }}
-              <span v-if="counts[t.id]" class="prv__count">{{ counts[t.id] }}</span>
+              <span v-if="sections[t.id === 'commits' ? 'conversation' : t.id].ready && counts[t.id]" class="prv__count">{{ counts[t.id] }}</span>
             </button>
           </nav>
 
@@ -536,10 +530,14 @@ onBeforeUnmount(() => {
           <section v-if="tab === 'conversation'" :key="tab" class="prv__pane">
             <GitSpacePullRequestConversation
               :pr="pr"
+              :summary="sections.summary"
+              :activity="sections.conversation"
               :head-oid="headOid"
+              @retry="detail.retry"
               @open-commit="openCommitAt"
             />
             <GitSpacePullRequestComment
+              v-if="sections.summary.ready && sections.conversation.ready"
               :busy="busy || refreshing"
               :send="sendComment"
               :error="commentError"
@@ -548,9 +546,7 @@ onBeforeUnmount(() => {
 
           <!-- ── files ────────────────────────────────────────────────────── -->
           <section v-else-if="tab === 'files'" :key="tab" class="prv__pane">
-            <GitSpaceSkeleton v-if="filesLoading" :rows="6" />
-
-            <template v-else>
+            <GitSpacePullRequestSection label="Files" variant="files" v-bind="sections.files" @retry="detail.retry('files')">
               <div v-for="g in fileGroups" :key="g.id" class="prv__group">
                 <p class="prv__glabel">
                   {{ g.label }} <span class="prv__count">{{ g.files.length }}</span>
@@ -581,21 +577,25 @@ onBeforeUnmount(() => {
                   <!-- The whole patch arrived in one read, so unfolding a file is a
                        lookup, not a fetch — there's nothing to wait for. -->
                   <template v-if="openPath === f.path">
+                    <GitSpacePullRequestSection label="Patch" variant="files" :ready="!filesLoading" :pending="filesLoading">
                     <GitSpaceInlineDiff v-if="openDiff" :diff="openDiff" :loading="false" />
                     <p v-else class="prv__nodiff">
                       This file isn't in the patch — it's probably binary, or too large for GitHub
                       to have sent.
                     </p>
+                    </GitSpacePullRequestSection>
                   </template>
                 </div>
               </div>
-            </template>
+            <p v-if="!fileGroups.length" class="prv__nodesc">No changed files.</p>
+            </GitSpacePullRequestSection>
           </section>
 
           <!-- ── commits ──────────────────────────────────────────────────── -->
           <section v-else-if="tab === 'commits'" :key="tab" class="prv__pane">
+            <GitSpacePullRequestSection label="Commits" variant="activity" v-bind="sections.conversation" @retry="detail.retry('conversation')">
             <ol class="prv__rail prv__rail--tight">
-              <li v-for="(c, i) in pr.commits" :key="c.oid" class="prv__event" :style="{ '--i': i }">
+              <li v-for="(c, i) in pr?.commits ?? []" :key="c.oid" class="prv__event" :style="{ '--i': i }">
                 <i class="prv__node prv__node--commit" />
                 <button
                   type="button"
@@ -616,11 +616,13 @@ onBeforeUnmount(() => {
             </ol>
             <!-- Only true of a pull request whose branch was pushed from elsewhere;
                  said plainly rather than silently showing nothing. -->
-            <p v-if="!pr.commits.length" class="prv__nodesc">GitHub didn't return any commits for this branch.</p>
+            <p v-if="!pr?.commits.length" class="prv__nodesc">GitHub didn't return any commits for this branch.</p>
+            </GitSpacePullRequestSection>
           </section>
 
           <!-- ── checks ───────────────────────────────────────────────────── -->
           <section v-else :key="tab" class="prv__pane">
+            <GitSpacePullRequestSection label="Checks" variant="files" v-bind="sections.checks" @retry="detail.retry('checks')">
             <div v-for="g in checkGroups" :key="g.id" class="prv__group">
               <p class="prv__glabel">
                 {{ g.label }} <span class="prv__count">{{ g.checks.length }}</span>
@@ -647,13 +649,16 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
-            <p v-if="!pr.checkRuns.length" class="prv__nodesc">No checks ran on this pull request.</p>
+            <p v-if="!pr?.checkRuns.length" class="prv__nodesc">No checks ran on this pull request.</p>
+            </GitSpacePullRequestSection>
           </section>
         </div>
 
         <!-- ══ the side column: can it merge ════════════════════════════════ -->
         <GitSpacePullRequestSide
           :pr="pr"
+          :sections="sections"
+          @retry="detail.retry"
           :check-counts="checkCounts"
           :reviewers="reviewers"
           :review-sentence="reviewSentence"
@@ -663,6 +668,7 @@ onBeforeUnmount(() => {
         >
           <template #act>
             <GitSpacePullRequestMerge
+              v-if="pr && sections.summary.ready && sections.merge.ready"
               :pr="pr"
               :mine="isMine"
               :busy="busy || refreshing"
@@ -717,7 +723,7 @@ onBeforeUnmount(() => {
   background-color: var(--panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+    0 16px 40px -16px rgb(0 0 0 / 24%);
 }
 
 /* Grow out of the clicked row, and shrink back into it. */
@@ -937,6 +943,18 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 64px;
   align-items: start;
+  animation: prv-resolve var(--gs-t-enter) var(--gs-ease) backwards;
+}
+@keyframes prv-resolve {
+  from { opacity: 0; }
+}
+.prv__cols :deep(.prv__block) {
+  animation: none;
+}
+.prv__cols :deep(.prv__side .prv__bar-add),
+.prv__cols :deep(.prv__side .prv__bar-del) {
+  animation-duration: var(--gs-t-enter);
+  animation-delay: 0ms;
 }
 .prv__main {
   min-width: 0;
@@ -1010,7 +1028,7 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 .prv__pane {
-  animation: prv-in var(--gs-t-small) var(--gs-ease);
+  animation: prv-resolve var(--gs-t-small) var(--gs-ease);
 }
 
 /* The rail: one hairline down the gutter, a node or a face at every event. */
@@ -1262,6 +1280,7 @@ onBeforeUnmount(() => {
     animation-duration: 0.01s;
   }
   .prv__head,
+  .prv__cols,
   .prv__scroll,
   .prv__pane,
   .prv__event,
