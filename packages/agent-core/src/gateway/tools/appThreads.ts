@@ -60,6 +60,7 @@ import type {
   ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
+import { isReferenceAttachment } from "../../types.js";
 import type { ConversationSearchHit, ConversationSearchOptions, QueuedTurnRow, TurnSpan } from "../../conversationStoreTypes.js";
 import { encodeThreadPageCursor, GLOBAL_ASSISTANT_PROJECT_PATH, type StoredThreadPage } from "../../conversationStoreTypes.js";
 import type { PendingInteraction } from "../../eventSubscriptions.js";
@@ -1082,7 +1083,11 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
       );
       for (const id of params.attachments) {
         const attachment = owned.get(id);
-        if (!attachment || !options.hasAttachment?.(id)) {
+        // A reference is metadata carried in this conversation's own user
+        // block; it has no file-registry row, so ownership of the block is the
+        // proof. Files still need the registry (it is what has their bytes).
+        const registered = isReferenceAttachment(attachment) || Boolean(options.hasAttachment?.(id));
+        if (!attachment || !registered) {
           throw new GatewayToolError(
             "invalid_input",
             `Attachment id "${id}" is unknown or was not given to this conversation.`,

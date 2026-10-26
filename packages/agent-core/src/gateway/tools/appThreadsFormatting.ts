@@ -7,7 +7,8 @@
 import { ago, compact } from "../helpers.js";
 import type { GatewayRecord } from "../schemas.js";
 import { historicalBlockText } from "../../contextBudget.js";
-import type { StoredBlock, StoredThreadMeta, ThreadStatus } from "../../types.js";
+import { formatReferencePrompt } from "../../referencePrompt.js";
+import { isReferenceAttachment, type StoredBlock, type StoredThreadMeta, type ThreadStatus } from "../../types.js";
 import type { ProjectRosterEntry } from "./appProjects.js";
 
 /** One thread as a list entry. */
@@ -105,9 +106,17 @@ export function renderMessageLine(message: ReadMessageRow): string {
 /** A block's model-readable narrative: the prompt for user blocks, the ordered
  *  assistant text for assistant blocks. Tool calls stay out — the thread's raw
  *  tool traffic belongs to the thread, and a reader asking what was said is not
- *  asking for it. */
+ *  asking for it. A user block's references are part of what was said: their
+ *  text is inlined here too, or a read-back would know a quote existed and
+ *  never be able to see it. */
 export function blockText(block: StoredBlock): string {
-  if (block.role === "user") return block.text;
+  if (block.role === "user") {
+    const parts = [block.text];
+    for (const attachment of block.attachments ?? []) {
+      if (isReferenceAttachment(attachment)) parts.push(formatReferencePrompt(attachment.reference));
+    }
+    return parts.filter((part) => part.length > 0).join("\n\n");
+  }
   return block.items
     .filter((item) => item.kind === "assistant_text")
     .map((item) => item.text)

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, InteractionMode, MessageSender, ProviderKind, SkillReference, StoredThreadMeta, TurnStamp } from "../types.js";
 import { encodeMessageSender, parseMessageSender } from "@kone/protocol/message-sender";
-import { DONE_CLEARED, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
+import { DONE_CLEARED, parseAttachments, parseJsonObject, rowToMeta, serializeSkillReferences, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH, THREAD_USAGE_COLUMNS } from "../conversationStoreTypes.js";
 import { changedKnobNames } from "./modelChanges.js";
 import { parseTurnSelection, serializeTurnSelection, type SelectionKnobs, type TurnSelection } from "../selection.js";
 import { indexBlockRow } from "./search.js";
@@ -654,6 +654,26 @@ export class ThreadRepo {
       return parseMessageSender(row.sender_json) ?? { kind: "user" };
     } catch {
       return null;
+    }
+  }
+
+  /** One user block's attachment metadata: the edit fork's first turn has to
+   *  redeliver what the replaced message carried, and the journal is the only
+   *  authority for it (the renderer drops attachments on that path). Bad JSON
+   *  reads as no attachments, matching the timeline's own decode. */
+  userBlockAttachments(threadId: string, blockId: string): ChatAttachment[] | undefined {
+    const db = this.dbh.handle();
+    if (!db) return undefined;
+    try {
+      // SAFETY: the projection names one nullable TEXT column.
+      const row = this.dbh.prepare(
+        db,
+        `SELECT attachments_json FROM blocks WHERE thread_id = ? AND block_id = ? AND role = 'user'`,
+      ).get(threadId, blockId) as { attachments_json: string | null } | undefined;
+      if (!row) return undefined;
+      return parseAttachments(row.attachments_json);
+    } catch {
+      return undefined;
     }
   }
 

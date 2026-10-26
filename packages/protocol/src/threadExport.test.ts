@@ -141,6 +141,35 @@ describe("decodeThreadExportJson", () => {
     expect(decoded).toEqual(sample);
   });
 
+  test("a referenced selection survives the decode with its exact bytes", () => {
+    const sample = sampleExport();
+    const user = sample.blocks[0];
+    if (user && user.role === "user") {
+      user.attachments = [
+        {
+          id: "ref_1",
+          name: "Source",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          type: "reference",
+          reference: {
+            text: "  a\n\tb\n",
+            sourcePaneId: "pane-1",
+            sourceThreadId: "thread-1",
+            sourceMessageId: "message-1",
+            sourceTitle: "Source",
+          },
+        },
+      ];
+    }
+    const decoded = decodeThreadExportJson(JSON.stringify(sample));
+    expect(decoded).toEqual(sample);
+    const decodedUser = decoded?.blocks[0];
+    if (!decodedUser || decodedUser.role !== "user") throw new Error("expected a user block");
+    expect(decodedUser.attachments?.[0]?.reference?.text).toBe("  a\n\tb\n");
+    expect(decodedUser.attachments?.[0]?.reference?.sourcePaneId).toBe("pane-1");
+  });
+
   test("rejects unparseable text, wrong versions, and wrong documents", () => {
     expect(decodeThreadExportJson("not json")).toBeNull();
     const sample = sampleExport();

@@ -1,22 +1,29 @@
 import type { StoredBlock } from "../types.js";
+import { isReferenceAttachment } from "../types.js";
+import { referencePromptChars } from "../referencePrompt.js";
 import type { ContextUsageEstimate, CutPointResult } from "./types.js";
 
 const CHARS_PER_TOKEN = 4;
 
-/** No adapter inlines attachment bytes into the prompt text — every one of
- *  them (see promptAttachments.ts) renders a short reference line naming the
- *  file, its mime type, a human-readable size, and its on-disk path, and
- *  leaves the agent to read the bytes with its own tools. `sizeBytes` is the
- *  file's byte count on disk, not anything that reaches the prompt, so it
- *  must never be added to a character estimate. This stands in for the fixed
- *  formatting around that rendered line (quotes, dashes, human size, and a
- *  typical absolute path) since the real path isn't known at this layer. */
+/** A file attachment is not inlined: every adapter (see promptAttachments.ts)
+ *  renders a short line naming the file, its mime type, a human-readable size,
+ *  and its on-disk path, and leaves the agent to read the bytes with its own
+ *  tools. `sizeBytes` is the file's byte count on disk, not anything that
+ *  reaches the prompt, so it must never be added to a character estimate. This
+ *  stands in for the fixed formatting around that rendered line (quotes,
+ *  dashes, human size, and a typical absolute path) since the real path isn't
+ *  known at this layer. A text reference IS inlined verbatim, so it is priced
+ *  by its exact prompt form below. */
 const ATTACHMENT_LINE_OVERHEAD_CHARS = 80;
 
 function userBlockCharacters(block: Extract<StoredBlock, { role: "user" }>): number {
   let chars = block.text.length;
   if (block.attachments) {
     for (const att of block.attachments) {
+      if (att.type === "reference") {
+        if (isReferenceAttachment(att)) chars += referencePromptChars(att.reference);
+        continue;
+      }
       chars += att.name.length + att.mimeType.length + ATTACHMENT_LINE_OVERHEAD_CHARS;
     }
   }
