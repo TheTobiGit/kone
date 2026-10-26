@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef, type Ref } from "vue";
 import type { ChatAttachment, KoneAgentApi, SkillReference } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
+import { isReferenceAttachment } from "~/utils/composerReferences";
 import { seedFromBridge } from "../useCompaction";
 import type { QueuedTurnEntry, QueueBridge, QueueReturn, ThreadBlock, TurnDraft } from "../agentTypes";
 
@@ -26,7 +27,15 @@ export function parseQueuedAttachments(json?: string | null): ChatAttachment[] |
 export function serializeQueuedAttachments(attachments?: ChatAttachment[] | null): string | null {
   if (!attachments || attachments.length === 0) return null;
   return JSON.stringify(
-    attachments.map(({ type, id, name, mimeType, sizeBytes }) => ({ type, id, name, mimeType, sizeBytes })),
+    attachments.map((attachment) => {
+      const { type, id, name, mimeType, sizeBytes } = attachment;
+      const row: ChatAttachment = { type, id, name, mimeType, sizeBytes };
+      // A reference's text is the payload; the queued row must carry it so a
+      // Stop/Edit hands the selection back intact (see mergeQueueReturn). Only
+      // a reference the shared guard accepts is worth persisting.
+      if (isReferenceAttachment(attachment)) row.reference = { ...attachment.reference };
+      return row;
+    }),
   );
 }
 

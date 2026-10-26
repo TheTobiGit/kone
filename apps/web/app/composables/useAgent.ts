@@ -42,6 +42,7 @@ import {
   type HandInOutcome,
   type TurnDraft,
   normalizeTurnDraft,
+  referencesOfAttachments,
   turnLabel,
 } from "./agentTypes";
 
@@ -759,11 +760,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   function rejectSend(
     blockId: string,
     message: string,
-    sent: Pick<SendRejection, "input" | "skills">,
+    sent: Pick<SendRejection, "input" | "skills"> & { attachments?: ChatAttachment[] },
   ): void {
     blocks.value = blocks.value.filter((b) => b.id !== blockId);
     error.value = message;
-    sendRejection.value = { at: Date.now(), message, ...sent };
+    const rejection: SendRejection = { at: Date.now(), message, input: sent.input, skills: sent.skills };
+    const references = referencesOfAttachments(sent.attachments);
+    if (references.length > 0) rejection.references = references;
+    sendRejection.value = rejection;
   }
 
   /** Send a user turn. Pushes the user block immediately when idle; the reply
@@ -864,7 +868,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // anchor to it (the store journals the block under its own id).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
-      rejectSend(blockId, peelIpcError(e, "Could not send to the agent"), { input: trimmed, skills });
+      rejectSend(blockId, peelIpcError(e, "Could not send to the agent"), { input: trimmed, skills, attachments: files });
     } finally {
       dispatching.value = false;
     }
@@ -964,7 +968,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
       steerWaits.offer(result?.afterStep);
     } catch (e) {
-      rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills });
+      rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills, attachments: files });
     } finally {
       dispatching.value = false;
     }
