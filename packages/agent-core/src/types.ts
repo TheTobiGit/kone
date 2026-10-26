@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { TextReference } from "@kone/protocol/text-reference";
 import type { WorktreeSetupSnapshot } from "./worktreeSetup.js";
 
 // ── Agent provider data model ───────────────────────────────────────────────
@@ -288,26 +289,43 @@ export type Session = {
 // IPC (agent:upload-attachment), written to a per-user attachments dir, and
 // read back off disk by each adapter at dispatch, where they're re-encoded
 // into whatever that CLI wants (Codex data-URL image item / Claude base64
-// image block / an on-disk-path text block for non-image files). Mirror any
-// change in apps/web/app/types/desktop.d.ts.
+// image block / an on-disk-path text block for non-image files). A
+// `reference` attachment is the exception: it carries a text selection and its
+// provenance in `reference`, needs no upload, and is inlined by the prompt
+// builders. Mirror any change in apps/web/app/types/desktop.d.ts.
 
 /** How an attachment is fed to the agent. `image` → a native vision block for
  *  providers that support it; `file` (PDFs, docs, code, anything non-image, and
  *  images a provider can't render) → an on-disk path the agent reads with its
- *  own file tools. */
-export type AttachmentKind = "image" | "file";
+ *  own file tools; `reference` → text selected from the conversation, inlined
+ *  verbatim by the prompt builders (no file on disk). */
+export type AttachmentKind = "image" | "file" | "reference";
 
 /** The bytes-free attachment metadata that rides a turn and is persisted with
- *  the user block. `id` doubles as the on-disk addressing key. */
+ *  the user block. `id` doubles as the on-disk addressing key for images and
+ *  files; a reference has no bytes and its text lives in `reference`. */
 export type ChatAttachment = {
   type: AttachmentKind;
   /** kone-minted id (also the stored file's name stem). */
   id: string;
-  /** Original file name — shown in the chip and named in the path block. */
+  /** Original file name — shown in the chip and named in the path block — or
+   *  a short title for a reference. */
   name: string;
   mimeType: string;
   sizeBytes: number;
+  /** Present only on `type: "reference"`: the exact selected text and its
+   *  provenance. */
+  reference?: TextReference;
 };
+
+/** Whether an attachment is a conversation reference rather than a file on
+ *  disk. References skip upload, path resolution and the file registry.
+ *
+ *  One implementation for the whole app: the protocol's guard validates the
+ *  exact text payload too (see packages/protocol/src/textReference.ts), so a
+ *  reference-shaped record with no payload is never treated as a quote. */
+export { isReferenceAttachment } from "@kone/protocol/text-reference";
+
 
 /** Upload payload: the renderer ships the raw bytes (base64, no data: prefix)
  *  exactly once; the main process persists them and returns the ChatAttachment

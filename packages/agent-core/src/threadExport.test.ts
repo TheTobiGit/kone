@@ -16,7 +16,7 @@ import { decodeThreadExportJson } from "@kone/protocol/thread-export";
 
 import { Database } from "bun:sqlite";
 
-import type { RuntimeEvent, RuntimeItem } from "./types.js";
+import type { ChatAttachment, RuntimeEvent, RuntimeItem } from "./types.js";
 
 // Same sqlite stand-in as conversationStore.test.ts: ConversationStore imports
 // node:sqlite (an Electron-runtime built-in bun can't load), so it is stood in
@@ -473,6 +473,62 @@ describe("a message somebody else said", () => {
     expect(agent?.role === "user" ? agent.sender : undefined).toEqual(AGENT);
     const first = byId.get("u-golden-1");
     expect(first?.role === "user" ? first.sender : "missing").toBeUndefined();
+  });
+});
+
+// ── references ────────────────────────────────────────────────────────────────
+
+describe("references in an export", () => {
+  const reference: ChatAttachment = {
+    type: "reference",
+    id: "ref_export",
+    name: "Source",
+    mimeType: "text/plain",
+    sizeBytes: 21,
+    reference: {
+      text: "  const answer = 42;\n\treturn answer;\n",
+      sourcePaneId: "pane-1",
+      sourceThreadId: "thread-1",
+      sourceMessageId: "message-1",
+      sourceTitle: "Source",
+    },
+  };
+
+  test("the JSON export keeps the exact selection and its provenance", () => {
+    const store = freshStore();
+    const threadId = "t-reference-export";
+    store.ensureThread({ threadId, projectPath: "/tmp/kone-ref", provider: "codex" });
+    store.recordUserBlock({
+      blockId: "u-ref",
+      threadId,
+      text: "what does this do?",
+      at: T0,
+      attachments: [reference],
+    });
+
+    const decoded = decodeThreadExportJson([...exportThreadJsonChunks(store, threadId)].join(""));
+    const user = decoded?.blocks[0];
+    if (!user || user.role !== "user") throw new Error("expected a user block");
+    expect(user.attachments?.[0]).toEqual(reference);
+    expect(user.attachments?.[0]?.reference?.text).toBe(reference.reference?.text);
+  });
+
+  test("the Markdown export carries the selection as readable text", () => {
+    const store = freshStore();
+    const threadId = "t-reference-markdown";
+    store.ensureThread({ threadId, projectPath: "/tmp/kone-ref", provider: "codex" });
+    store.recordUserBlock({
+      blockId: "u-ref",
+      threadId,
+      text: "what does this do?",
+      at: T0,
+      attachments: [reference],
+    });
+
+    const markdown = [...exportThreadMarkdownChunks(store, threadId)].join("");
+    expect(markdown).toContain("Referenced text:");
+    expect(markdown).toContain("From Source:");
+    expect(markdown).toContain("  const answer = 42;\n\treturn answer;\n");
   });
 });
 

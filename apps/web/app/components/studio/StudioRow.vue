@@ -12,6 +12,7 @@ import type {
   ApprovalDecision,
   InteractionMode,
   ProviderKind,
+  TextReference,
   UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
@@ -58,6 +59,7 @@ import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat } from "~/composables/sideChats";
 import { createHandoff, type HandoffOptions } from "~/composables/useThreadHandoff";
 import { handOffCaret } from "~/utils/caretHandoff";
+import { enrichTextReference } from "~/utils/selectionActions";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { usePendingThread } from "~/composables/useProject";
 import {
@@ -176,6 +178,12 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 type ColumnComposerHandle = {
   wake: () => Promise<void>;
   setDraft: (text: string) => Promise<void>;
+  /** Append exact text after the current unsent draft, preserving editor text,
+   *  skill chips and references. Used when New Thread reuses a column that
+   *  already holds a draft. */
+  appendDraft: (text: string) => Promise<void>;
+  /** Attach a structured selection reference without touching editable text. */
+  addReference: (reference: TextReference) => Promise<void>;
   /** Offer the caret this column holds, answering whether it held it. */
   releaseCaret: () => boolean;
   /** Take the caret into this column, if its card is open. */
@@ -185,7 +193,13 @@ type ColumnComposerHandle = {
  *  mounted, null as it leaves. */
 type ComposerRefValue = Element | ComponentPublicInstance | null;
 function isComposerHandle(el: ComposerRefValue): el is ComponentPublicInstance & ColumnComposerHandle {
-  return el instanceof Object && "wake" in el && "setDraft" in el;
+  return (
+    el instanceof Object &&
+    "wake" in el &&
+    "setDraft" in el &&
+    "appendDraft" in el &&
+    "addReference" in el
+  );
 }
 const columnComposers = new Map<string, ColumnComposerHandle>();
 const composerWaiters = new Map<string, ((handle: ColumnComposerHandle | null) => void)[]>();
@@ -243,12 +257,57 @@ const studio = useStudio({
   terminal,
   scratchpad,
   projectPath: () => props.project.path,
-  // The two UI-only tails of a cross-pane action: flash the pad's index dash
-  // after a capture, and pre-fill the composer of the draft thread's column.
+  // The UI-only tails of a cross-pane action: flash the pad's index dash after
+  // a capture, seed the draft thread's own composer with exact editable text,
+  // and hand a selection reference to the composer of the pane it came from.
   hooks: {
     pulsePad: (id) => pulsePadPane(id),
-    setDraft: async (text, paneId) => {
-      await (await composerFor(paneId))?.setDraft(text);
+    setDraft: async (text, paneId, options) => {
+      const handle = await composerFor(paneId);
+      if (!handle) {
+        flashRowNotice("Could not reach that thread's composer. Try again.");
+        return;
+      }
+      try {
+        if (options?.append) {
+          // The row's one blank pane already holds a draft: append rather than
+          // replace, keeping its text, chips and references.
+          await handle.appendDraft(text);
+          return;
+        }
+        await handle.setDraft(text);
+      } catch {
+        // The pane went away between the wait and the write.
+        flashRowNotice("Could not put that text in the composer. Try again.");
+      }
+    },
+    addReference: async (reference, paneId) => {
+      let pane = studio.panes.value.find((p) => p.id === paneId);
+      if (pane?.kind !== "thread") return;
+      // Provenance comes from the live session, not from the DOM: a restored
+      // dormant pane is attached first so thread id and title are real.
+      if (!pane.session) {
+        await studio.attach(paneId);
+        pane = studio.panes.value.find((p) => p.id === paneId);
+      }
+      if (pane?.kind !== "thread" || !pane.session) return;
+      const enriched = enrichTextReference(reference, {
+        threadId: pane.session.threadId.value,
+        title: pane.session.title.value,
+      });
+      const handle = await composerFor(paneId);
+      if (!handle) {
+        // A pending ask no longer unmounts the composer (see
+        // ThreadColumnComposer), so this is a pane that never landed. Say so
+        // instead of dismissing the toolbar over a reference that went nowhere.
+        flashRowNotice("Could not add the reference: that thread's composer is not ready. Try again.");
+        return;
+      }
+      try {
+        await handle.addReference(enriched);
+      } catch {
+        flashRowNotice("Could not add the reference. Try again.");
+      }
     },
   },
 });
@@ -470,7 +529,7 @@ function closePane(id: string): void {
 // the now-empty column so it doesn't linger on the studio pointing at a hidden row.
 async function archivePane(threadId: string, id: string): Promise<void> {
   if (sessionBusy(threadId)) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
     );
     return;
@@ -549,7 +608,7 @@ function openHandoffPicker(paneId: string): void {
   const pane = panes.value.find((p) => p.id === paneId);
   if (pane?.kind !== "thread" || !pane.session) return;
   if (pane.session.busy.value) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before handing off.",
     );
     return;
@@ -560,7 +619,7 @@ function openBranchPicker(paneId: string, blockId: string): void {
   const pane = panes.value.find((p) => p.id === paneId);
   if (pane?.kind !== "thread" || !pane.session) return;
   if (pane.session.busy.value) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before forking.",
     );
     return;
@@ -612,7 +671,7 @@ async function confirmHandoff(picked: ModelPick): Promise<void> {
     // conflict surfaces here — the column simply doesn't open, and the row
     // says why instead of swallowing it.
     console.warn("[handoff] could not hand off thread:", err);
-    flashArchiveNotice(
+    flashRowNotice(
       err instanceof Error ? err.message : "Could not hand off this thread.",
     );
   }
@@ -664,7 +723,7 @@ function pulsePadPane(id: string): void {
 }
 
 // A per-response "add to scratchpad" (the thread's own capture affordance) is
-// the capture-text intent, same path the selection bubble takes.
+// the capture-text intent. The selection toolbar no longer offers the pad.
 function captureToScratchpad(text: string, sourceKey: string): void {
   void studio.dispatch({ type: "capture-text", text, from: sourceKey });
 }
@@ -713,15 +772,15 @@ function sessionBusy(threadId: string): boolean {
   );
 }
 
-/** Transient archive-refusal notice — auto-dismisses, like the composer's own
- *  chip notice. No toast system exists yet; this is the smallest surface that
- *  explains why the row didn't disappear. */
-const archiveNotice = ref("");
-let archiveNoticeTimer: number | undefined;
-function flashArchiveNotice(message: string): void {
-  archiveNotice.value = message;
-  window.clearTimeout(archiveNoticeTimer);
-  archiveNoticeTimer = window.setTimeout(() => (archiveNotice.value = ""), 3800);
+/** Transient row notice — auto-dismisses, like the composer's own chip notice.
+ *  No toast system exists yet; this is the smallest surface that explains why
+ *  an action did not land (an archive refused, a composer that never mounted). */
+const rowNotice = ref("");
+let rowNoticeTimer: number | undefined;
+function flashRowNotice(message: string): void {
+  rowNotice.value = message;
+  window.clearTimeout(rowNoticeTimer);
+  rowNoticeTimer = window.setTimeout(() => (rowNotice.value = ""), 3800);
 }
 
 /** Drop the studio pane hosting a thread — the studio hosts one pane per
@@ -761,14 +820,14 @@ function closePaneHosting(threadId: string, options?: { onlyId?: string }): void
  *  screen pointing at it. */
 async function archiveSession(threadId: string, options?: { onlyId?: string }): Promise<boolean> {
   if (sessionBusy(threadId)) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
     );
     return false;
   }
   const archived = await rowRegistry.historyFor(registryPath).archive(threadId);
   if (!archived) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
     );
     return false;
@@ -779,7 +838,7 @@ async function archiveSession(threadId: string, options?: { onlyId?: string }): 
 }
 function removeSession(threadId: string): void {
   if (sessionBusy(threadId)) {
-    flashArchiveNotice(
+    flashRowNotice(
       "This thread is still working — let it finish (or stop it) before deleting.",
     );
     return;
@@ -1568,10 +1627,10 @@ useStudioRowView(registryPath, () =>
        be archived/deleted, and the row not disappearing needs an explanation.
        Rendered above every surface (studio + overview both archive) until it
        auto-dismisses. -->
-  <Transition name="archive-notice">
-    <div v-if="archiveNotice && !isOverview" class="archive-notice" role="status">
+  <Transition name="row-notice">
+    <div v-if="rowNotice && !isOverview" class="row-notice" role="status">
       <HugeiconsIcon :icon="InformationSquareIcon" :size="15" :stroke-width="2" aria-hidden="true" />
-      <span>{{ archiveNotice }}</span>
+      <span>{{ rowNotice }}</span>
     </div>
   </Transition>
     <!-- BOARD · the thread strip. Every live thread in this project is a column
@@ -1791,7 +1850,7 @@ useStudioRowView(registryPath, () =>
 /* The archive-refusal notice — a floating pill over every surface, so it works
    from the studio (column header archive) and the overview (recent rows). House
    tokens: sunken surface, hairline, muted ink, the amber used for warnings. */
-.archive-notice {
+.row-notice {
   position: fixed;
   top: 18px;
   left: 50%;
@@ -1813,20 +1872,20 @@ useStudioRowView(registryPath, () =>
   line-height: 1.4;
 }
 
-.archive-notice :deep(svg) {
+.row-notice :deep(svg) {
   flex: none;
   color: var(--warn);
 }
 
-.archive-notice-enter-active,
-.archive-notice-leave-active {
+.row-notice-enter-active,
+.row-notice-leave-active {
   transition:
     opacity 0.22s ease,
     transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.archive-notice-enter-from,
-.archive-notice-leave-to {
+.row-notice-enter-from,
+.row-notice-leave-to {
   opacity: 0;
   transform: translate(-50%, -8px);
 }

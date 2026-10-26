@@ -6,8 +6,12 @@ import type { StudioLayout } from "~/types/studio";
 import type { AgentSender, CourierSender, MessageSender } from "@kone/protocol/message-sender";
 import type { ContractTerms } from "@kone/protocol/contract";
 import type { KoneTask, KoneTaskList } from "@kone/protocol/kone-tasks";
+import type { TextReference } from "@kone/protocol/text-reference";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
+/** A text selection attached to a composer as context. Defined once in the
+ *  protocol package so the renderer, main process and adapters agree. */
+export type { TextReference } from "@kone/protocol/text-reference";
 
 /** A pull request linked to a thread (mirrors agent-core ThreadPullRequestLink). */
 export type LinkedThreadPullRequest = {
@@ -1197,16 +1201,20 @@ export type Session = {
 
 // ── Attachments (mirror packages/agent-core/src/types.ts) ─────────────────────
 /** How an attachment is fed to the agent. `image` → native vision block;
- *  `file` → an on-disk path the agent reads with its own tools. */
-export type AttachmentKind = "image" | "file";
+ *  `file` → an on-disk path the agent reads with its own tools; `reference` →
+ *  a text selection inlined as user-provided context (no file on disk). */
+export type AttachmentKind = "image" | "file" | "reference";
 
-/** Bytes-free attachment metadata that rides a turn. */
+/** Bytes-free attachment metadata that rides a turn. A reference carries its
+ *  actual text and provenance in `reference`, so it needs no upload. */
 export type ChatAttachment = {
   type: AttachmentKind;
   id: string;
   name: string;
   mimeType: string;
   sizeBytes: number;
+  /** Present only on `type: "reference"`. */
+  reference?: TextReference;
 };
 
 /** Upload payload — raw bytes (base64, no data: prefix) sent once over IPC. */

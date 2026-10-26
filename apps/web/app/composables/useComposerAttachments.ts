@@ -1,5 +1,5 @@
 import { computed, ref } from "vue";
-import type { AttachmentKind, ChatAttachment } from "~/types/desktop";
+import type { ChatAttachment } from "~/types/desktop";
 import { useSound } from "./useSound";
 
 export const MAX_ATTACHMENTS = 8;
@@ -10,7 +10,7 @@ export type PendingAttachment = {
   id: number;
   file: File;
   name: string;
-  kind: AttachmentKind;
+  kind: "image" | "file";
   sizeBytes: number;
   /** A short uppercase badge for non-image files, e.g. "PDF", "MD". */
   ext: string;
@@ -47,7 +47,7 @@ export function useComposerAttachments(deps: {
     return (raw || "FILE").slice(0, 4).toUpperCase();
   }
 
-  function kindOf(file: File): AttachmentKind {
+  function kindOf(file: File): "image" | "file" {
     return file.type.startsWith("image/") ? "image" : "file";
   }
 

@@ -8,6 +8,7 @@ import type {
   RuntimeItem,
   SendTurnInput,
   SkillReference,
+  TextReference,
   TurnStartResult,
   UserInputAnswerAttachments,
   UserInputAnswers,
@@ -15,6 +16,7 @@ import type {
 } from "~/types/desktop";
 import type { EffortTier } from "~/utils/modelCatalog";
 import type { ActivePlanTask } from "~/utils/planTasks";
+import { isReferenceAttachment } from "~/utils/composerReferences";
 
 /** A send or steer the backend refused, with what it carried. The composer
  *  that sent it restores its own draft (chips where they sat); any other
@@ -25,6 +27,8 @@ export type SendRejection = {
   message: string;
   input: string;
   skills: SkillReference[];
+  /** References the refused turn carried, so they come back with the words. */
+  references?: TextReference[];
 };
 
 /** One user turn as the composer meant it: prose plus what rode along. A
@@ -77,11 +81,15 @@ export function normalizeTurnDraft(
 
 /** What a host composer hands its session: prose plus the still-local files.
  *  Kept beside TurnDraft so the four hosts share one shape — the upload maps
- *  `files` to the draft's `attachments` before sending. */
+ *  `files` to the draft's `attachments` before sending. `references` are
+ *  already metadata-only (no upload), and every host merges them with the
+ *  uploaded files through {@link mergeComposerAttachments}. */
 export type ComposerDraft = {
   text: string;
   files?: File[];
   skills?: SkillReference[];
+  /** Text selections attached to this draft. They need no upload. */
+  references?: ChatAttachment[];
   /** The composer chose to steer this into the running turn (see TurnDraft). */
   steer?: boolean;
 };
@@ -103,6 +111,7 @@ export function normalizeComposerDraft(
     if (resolvedFiles) draft.files = resolvedFiles;
     const resolvedSkills = textOrDraft.skills ?? skills;
     if (resolvedSkills) draft.skills = resolvedSkills;
+    if (textOrDraft.references?.length) draft.references = textOrDraft.references;
     if (textOrDraft.steer) draft.steer = true;
     return draft;
   }
@@ -110,6 +119,37 @@ export function normalizeComposerDraft(
   if (files) draft.files = files;
   if (skills) draft.skills = skills;
   return draft;
+}
+
+/** The attachments a turn actually carries: uploaded files first, then the
+ *  reference metadata the composer held. One helper so no host can send the
+ *  files and silently drop the references, or upload a reference as if it were
+ *  a file. An identical attachment appearing in both halves is kept once. */
+export function mergeComposerAttachments(
+  uploaded: readonly ChatAttachment[] | undefined,
+  references: readonly ChatAttachment[] | undefined,
+): ChatAttachment[] | undefined {
+  const merged: ChatAttachment[] = [];
+  const seen = new Set<string>();
+  for (const attachment of [...(uploaded ?? []), ...(references ?? [])]) {
+    if (seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    merged.push(attachment);
+  }
+  return merged.length > 0 ? merged : undefined;
+}
+
+/** The references inside a sent turn's attachments, for the refusal hand-back.
+ *  Returns plain TextReference values so the composer can rebuild them even
+ *  after its own attachment list was cleared. */
+export function referencesOfAttachments(
+  attachments: readonly ChatAttachment[] | undefined,
+): TextReference[] {
+  const out: TextReference[] = [];
+  for (const attachment of attachments ?? []) {
+    if (isReferenceAttachment(attachment)) out.push({ ...attachment.reference });
+  }
+  return out;
 }
 
 /** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view

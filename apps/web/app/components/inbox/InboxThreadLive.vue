@@ -31,6 +31,7 @@ import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { resolveBranchDrift } from "~/utils/branchDrift";
+import { resendDraft } from "~/utils/turnResend";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -41,7 +42,7 @@ import type {
 } from "~/types/desktop";
 import type { UserInputOwner } from "~/composables/agentTypes";
 import type { SessionSummary } from "~/types/session";
-import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
+import { mergeComposerAttachments, normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 
 const props = defineProps<{
   /** The row this pane is showing. Carries the project the thread lives in,
@@ -363,13 +364,22 @@ async function onSend(
   // Only the thread's first turn asks: every later one finds it already
   // decided and leaves both the binding and the router alone.
   if (threadId) await composer.settleAndPin(draft.text, threadId);
-  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills, steer: draft.steer });
+  await s.send({ text: draft.text, attachments: mergeComposerAttachments(await upload(draft.files), draft.references), skills: draft.skills, steer: draft.steer });
 }
 
 async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   const s = session.value;
   if (!s) return;
   await s.sendQueuedEntryNow(entry);
+}
+
+/** Retry / resend of a turn keeps the attachment metadata it carried, so a
+ *  reference-only request stays retryable and its quote is not dropped. */
+async function onRetry(text: string, attachments?: ChatAttachment[]): Promise<void> {
+  const s = session.value;
+  const draft = resendDraft(text, attachments);
+  if (!s || !draft || s.busy.value) return;
+  await s.send(draft);
 }
 
 /** Edit-and-resend of an earlier message: fork the thread at that block and
@@ -448,8 +458,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :loading-older="session?.loadingOlder.value"
         :older-error="session?.olderError.value"
         hide-empty-art
-        @retry="onSend"
-        @resend="onSend"
+        @retry="onRetry"
+        @resend="onRetry"
         @edit-fork="onEditFork"
         @retry-load="session?.openStored(row.threadId)"
         @load-older="session?.loadOlder()"
