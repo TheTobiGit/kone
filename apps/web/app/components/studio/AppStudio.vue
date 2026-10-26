@@ -34,6 +34,7 @@ import {
   type StandingRow,
 } from "~/utils/rowFocus";
 import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
+import { usePendingThread } from "~/composables/useProject";
 import type { Project } from "~/composables/useProject";
 import type { PortalState } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
@@ -294,6 +295,21 @@ function exitStudioOverview(): void {
   plane.exitOverview();
   glideCameraFrom(from);
 }
+
+// A pending-thread request asks to see one thread: a session picked from the
+// launcher, a search hit, an attention bot. The overview keeps rows without
+// work off screen — and the row that would consume the request can be exactly
+// one of those, because a project whose last column closed keeps its session
+// resident and can still ask for attention. Zooming in is therefore part of
+// answering the request: the row mounts, takes it, and reveals the thread. The
+// glide is the summon's, so the two gestures agree.
+const pendingThread = usePendingThread();
+watch(pendingThread, (request) => {
+  if (!request || !plane.overview.value) return;
+  const from = cameraTransform.value;
+  plane.exitOverview();
+  glideCameraFrom(from);
+});
 
 function toggleStudioOverview(): void {
   if (empty.value) return;
