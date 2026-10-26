@@ -14,6 +14,7 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import type { ComputedRef, Ref } from "vue";
 import { buildIntentMenu, resolveIntentTitle } from "./useIntentMenu";
+import { isPortalEnabled } from "./usePortals";
 import type {
   IntentItem,
   IntentSection,
@@ -237,6 +238,7 @@ export function useIntentHost(options: UseIntentHostOptions): UseIntentHost {
         projectName: s.projectName,
       })),
       studioHasRows: studioPlane.rows.value.length > 0,
+      inboxEnabled: isPortalEnabled("inbox"),
       studioRow,
       studioThread: studioThread
         ? {

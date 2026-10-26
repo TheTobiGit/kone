@@ -36,6 +36,29 @@ export type PortalId = "studio" | "inbox";
  *  direction. */
 export const PORTAL_STACK: readonly PortalId[] = ["studio", "inbox"];
 
+/** Which portals are wired into the app right now. The studio is the one being
+ *  finished, so the inbox is parked: its components, state and tests stay, and
+ *  moving it back is adding the id here. A portal that is not in this set
+ *  cannot be summoned — the gate in `summon` below is the only place that
+ *  decides, so a stale entry point can never open a surface that is not built
+ *  yet. The stack above keeps the full order either way, so the handoff needs
+ *  no re-derivation.
+ *
+ *  Bringing the inbox back: add "inbox" above. These follow on their own —
+ *  the page's mount and its state binding, the intent menu's "Go to Inbox"
+ *  rows, the settings pane itself, the attention bots' jump (instead of the
+ *  project-page fallback) and the jump gate in jumpToThread. Two things were
+ *  parked by hand and have to come back by hand: the ⌘I action in useShortcuts
+ *  (with its handler in pages/index.vue) and the Inbox row in SettingsDrawer.
+ *  Each carries a comment pointing here. */
+export const ENABLED_PORTALS: ReadonlySet<PortalId> = new Set<PortalId>(["studio"]);
+
+/** Whether a portal is live. Read by the page (whether to mount the surface)
+ *  and by the menus (whether to offer a way there). */
+export function isPortalEnabled(portal: PortalId): boolean {
+  return ENABLED_PORTALS.has(portal);
+}
+
 /** Where a portal sits in the painting order.
  *
  *  A lookup built once from PORTAL_STACK rather than an `indexOf` per call. The
@@ -94,6 +117,9 @@ export interface UsePortalsOptions {
   cue?: (name: Cue) => void;
   /** Handoff clock. Defaults to real frames; tests hand in a manual one. */
   clock?: PortalClock;
+  /** Which portals may open. Defaults to ENABLED_PORTALS; tests hand in a set
+   *  naming the portal under test, so the parked ones stay exercisable. */
+  enabled?: ReadonlySet<PortalId>;
 }
 
 /** A parked thread in some project asking to be read in the inbox. Plain data,
@@ -154,6 +180,7 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
 
   const cue = options.cue ?? defaultCue;
   const clock = options.clock ?? browserClock;
+  const enabled = options.enabled ?? ENABLED_PORTALS;
 
   let cancelPending: (() => void) | null = null;
 
@@ -210,6 +237,12 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   }
 
   function summon(portal: PortalId): void {
+    // Parked portal: no surface to arrive on, so nothing happens — the same
+    // answer as pressing a summon for something that is not built yet. Guarding
+    // here rather than at each caller keeps the keyboard, the menus and the
+    // cross-portal jumps honest with one check.
+    if (!enabled.has(portal)) return;
+
     // Already frontmost: nothing to hand off, and re-cueing a portal the user
     // is looking at would sound like something happened. Abandon first so an
     // explicit re-summon settles a pending downward close instead of letting
@@ -322,6 +355,10 @@ export function usePortals(options: UsePortalsOptions = {}): UsePortals {
   }
 
   function jumpToThread(target: ThreadJumpTarget): void {
+    // A jump is a summon of the inbox, so a parked inbox takes no jumps: a
+    // recorded target with nowhere to land would sit in state forever.
+    if (!enabled.has("inbox")) return;
+
     // Recorded first so the inbox already has the thread when the summon
     // brings it forward; the inbox clears it once taken, so a second jump is
     // a fresh object and always re-triggers its watcher.

@@ -27,11 +27,14 @@ import {
   recordsStanding,
   renderPlaneRows,
   resolveLandingProject,
+  resolvePinHandoff,
   resolveRowFocus,
+  resolveRowSummon,
   type RenderRow,
   type StandingRow,
 } from "~/utils/rowFocus";
 import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
+import { usePendingThread } from "~/composables/useProject";
 import type { Project } from "~/composables/useProject";
 import type { PortalState } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
@@ -85,7 +88,10 @@ function reducedMotionOn(): boolean {
 // ── 2D Studio Overview (Exposé) ───────────────────────────────────────────────
 // Pulls the camera back across both axes to show all active project workspace rows
 // stacked vertically, with each row displaying its horizontal strip of columns.
-const studioOverview = ref(false);
+// The zoom itself is the plane's state (useStudioPlane), so a row that asks to be
+// shown can zoom in without reaching into this component; what stays here is the
+// camera animation, which is the only part that needs the DOM.
+const studioOverview = plane.overview;
 const cameraEl = ref<HTMLElement | null>(null);
 let cameraAnim: Animation | null = null;
 
@@ -162,6 +168,27 @@ watch(focusedPath, (path) => {
     index: at < 0 ? 0 : at,
   };
 });
+
+// A row is pinned while the axis has nothing to hold: summoned before it was
+// persisted, or left without a pane when its last one closed under the camera.
+// The save that gives it a pane is what takes the pin away, and the axis still
+// remembers whatever was focused before — so hand the landing over to the axis
+// as the pin is released, or the camera would snap to another project a moment
+// after arriving. Navigation in between already replaced the pin, so this only
+// runs for a landing the user has not left.
+watch(
+  () =>
+    resolvePinHandoff({
+      transientFocus: transientFocus.value,
+      standing: standing.value?.path ?? null,
+      rows: renderRows.value,
+    }),
+  (persisted) => {
+    if (!persisted) return;
+    plane.focusRow(persisted);
+    transientFocus.value = null;
+  },
+);
 
 // Publish the camera's row, so surfaces that open over the plane (the intent
 // menu) know which project a gesture here is about. The row the camera stands
@@ -240,11 +267,14 @@ const cameraTransform = computed(() => {
   return `translateY(calc(29vh - (${i} * (42vh + 24px))))`;
 });
 
-function enterStudioOverview(): void {
-  if (empty.value) return;
+/** Animate the camera from where it was to wherever the zoom now says it should
+ *  be. `from` has to be read before the zoom flips: the transform is derived
+ *  from the zoomed state, so after the flip it already names the destination.
+ *  Every path that changes the zoom goes through here — the toggle, a pane
+ *  picked from the overview, a row summoning the plane — so none of them can
+ *  snap where the rest glide. */
+function glideCameraFrom(fromTransform: string): void {
   const el = cameraEl.value;
-  const fromTransform = cameraTransform.value;
-  studioOverview.value = true;
   if (!el || reducedMotionOn()) return;
   cameraAnim?.cancel();
   cameraAnim = el.animate(
@@ -253,17 +283,33 @@ function enterStudioOverview(): void {
   );
 }
 
-function exitStudioOverview(): void {
-  const el = cameraEl.value;
-  const fromTransform = cameraTransform.value;
-  studioOverview.value = false;
-  if (!el || reducedMotionOn()) return;
-  cameraAnim?.cancel();
-  cameraAnim = el.animate(
-    { transform: [fromTransform, cameraTransform.value] },
-    { duration: 420, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
-  );
+function enterStudioOverview(): void {
+  if (empty.value) return;
+  const from = cameraTransform.value;
+  plane.enterOverview();
+  glideCameraFrom(from);
 }
+
+function exitStudioOverview(): void {
+  const from = cameraTransform.value;
+  plane.exitOverview();
+  glideCameraFrom(from);
+}
+
+// A pending-thread request asks to see one thread: a session picked from the
+// launcher, a search hit, an attention bot. The overview keeps rows without
+// work off screen — and the row that would consume the request can be exactly
+// one of those, because a project whose last column closed keeps its session
+// resident and can still ask for attention. Zooming in is therefore part of
+// answering the request: the row mounts, takes it, and reveals the thread. The
+// glide is the summon's, so the two gestures agree.
+const pendingThread = usePendingThread();
+watch(pendingThread, (request) => {
+  if (!request || !plane.overview.value) return;
+  const from = cameraTransform.value;
+  plane.exitOverview();
+  glideCameraFrom(from);
+});
 
 function toggleStudioOverview(): void {
   if (empty.value) return;
@@ -284,33 +330,21 @@ function onSelectRowPane(projectPath: string, paneId: string): void {
 }
 
 function focusRow(projectPath: string): boolean {
-  const rows = renderRows.value;
-  const at = rows.findIndex((r) => r.projectPath === projectPath);
-  const row = rows[at];
   // One pin, two ways to need it — the same two `renderPlaneRows` conjures a
-  // transient row from. A row on screen is pinned in the slot it already holds.
-  // A project with no row has never had anything opened in it, and travel still
-  // has to land somewhere: landing in an empty row is how work in a project
-  // starts, so the pin conjures one at the foot of the plane and moving on
-  // takes it away again, since the pin is what was holding it. A path the app
-  // has never heard of is a caller's mistake, not an empty row.
-  let pin: StandingRow | null = null;
-  if (row) {
-    pin = { path: projectPath, name: row.name, index: at };
-  } else {
-    const known = byRecency.value.find((p) => p.path === projectPath);
-    if (known) pin = { path: known.path, name: known.name, index: rows.length };
-  }
-  if (!pin) return false;
-  standing.value = pin;
+  // transient row from. The rule lives in utils/rowFocus (resolveRowSummon)
+  // beside the focus resolution it has to agree with: this only applies it.
+  const plan = resolveRowSummon({
+    rows: renderRows.value,
+    known: byRecency.value,
+    projectPath,
+  });
+  if (!plan) return false;
+  standing.value = plan.standing;
+  transientFocus.value = plan.transientFocus;
   // A transient row is not on the axis, so there is nothing there to focus and
   // the camera is held here instead.
-  if (!row || row.transient) {
-    transientFocus.value = projectPath;
-    return true;
-  }
-  transientFocus.value = null;
-  return plane.focusRow(projectPath);
+  if (plan.axisPath === null) return true;
+  return plane.focusRow(plan.axisPath);
 }
 
 // Everywhere the camera can travel, for the strip's project drop-down. The
@@ -605,7 +639,17 @@ function onOpenFile(path: string, rect: DOMRect | null): void {
 // from any other it is also a step of the camera. Only a hidden plane needs
 // summoning: a covered one is already open underneath and stays there.
 function onSummon(projectPath: string): void {
-  if (projectPath !== focusedPath.value) focusRow(projectPath);
+  // Focus and zoom in together: from the overview a focus alone lands on a row
+  // still seen from across the room, so the ask this summon exists for — a
+  // resumed thread, a new column — would arrive off screen. This goes through
+  // the row's own focus, not the axis: a row that has a pane on screen but has
+  // not been persisted yet is a valid landing, and landing on a persisted row
+  // has to release whatever pin was holding another one. Already-focused rows
+  // take the same path, because the zoom is the point.
+  const from = cameraTransform.value;
+  const wasZoomedOut = plane.overview.value;
+  if (focusRow(projectPath)) plane.exitOverview();
+  if (wasZoomedOut && !plane.overview.value) glideCameraFrom(from);
   if (props.state === "hidden") emit("summon");
 }
 
