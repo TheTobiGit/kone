@@ -153,6 +153,11 @@ export function useComposerSkills(deps: UseComposerSkillsDeps) {
       void conversation.refresh();
       const sent = lastDispatched;
       lastDispatched = null;
+      // References are not part of the field text, so they come back on their
+      // own — the refused turn is the only place they survive a send. They
+      // merge beside anything picked since, so prose started after the send
+      // must not keep them from returning.
+      if (rejection.references?.length) deps.restoreReferences?.(rejection.references);
       // Never over something the user has started writing since.
       if (deps.currentText().trim()) return;
       // A match restores the exact draft this composer sent; anything else — a
@@ -165,9 +170,6 @@ export function useComposerSkills(deps: UseComposerSkillsDeps) {
       const draft = ours ? sent.draft : draftFromTurn(rejection.input, rejection.skills);
       const restored: readonly SkillReference[] = ours ? sent.skills : rejection.skills;
       if (draft.trim()) await deps.getSetDraft()(draft, restored);
-      // References are not part of the field text, so they come back on their
-      // own — the refused turn is the only place they survive a send.
-      if (rejection.references?.length) deps.restoreReferences?.(rejection.references);
     },
   );
 
