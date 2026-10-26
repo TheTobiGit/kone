@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { PORTAL_FADE_MS, usePortals } from "./usePortals";
-import type { PortalClock } from "./usePortals";
+import { isPortalEnabled, PORTAL_FADE_MS, usePortals } from "./usePortals";
+import type { PortalClock, PortalId } from "./usePortals";
 import type { Cue } from "./useSound";
+
+/** Both portals live: the harness exercises the handoff the stack describes,
+ *  whether or not the app currently enables the inbox. */
+const ALL_PORTALS: ReadonlySet<PortalId> = new Set<PortalId>(["studio", "inbox"]);
 
 interface ScheduledTask {
   run: () => void;
@@ -56,6 +60,7 @@ function harness(): PortalHarness {
 
   const portals = usePortals({
     clock: ctl.clock,
+    enabled: ALL_PORTALS,
     cue: (name: Cue): void => {
       cued.push(name);
     },
@@ -271,7 +276,7 @@ describe("usePortals — pre-emption", () => {
   });
 
   test("the inbox key puts the inbox away only when it is frontmost", () => {
-    const { portals, runFrames } = harness();
+    const { portals } = harness();
     portals.toggleInbox();
     expect(portals.inboxOpen.value).toBe(true);
 
@@ -368,5 +373,59 @@ describe("usePortals — a portal arriving under the frontmost one", () => {
     runFrames();
     expect(portals.portalState("studio")).toBe("active");
     expect(portals.portalState("inbox")).toBe("hidden");
+  });
+});
+
+describe("usePortals — a parked portal", () => {
+  test("the shipped set parks the inbox and keeps the studio", () => {
+    expect(isPortalEnabled("studio")).toBe(true);
+    expect(isPortalEnabled("inbox")).toBe(false);
+  });
+
+  test("summoning a parked portal does nothing at all — no cue, no frame, no state", () => {
+    const ctl = manualClock();
+    const cued: Cue[] = [];
+    const portals = usePortals({
+      clock: ctl.clock,
+      enabled: new Set<PortalId>(["studio"]),
+      cue: (name: Cue): void => {
+        cued.push(name);
+      },
+    });
+
+    portals.summon("inbox");
+
+    expect(portals.inboxOpen.value).toBe(false);
+    expect(portals.activePortal.value).toBeNull();
+    expect(cued).toEqual([]);
+    expect(ctl.frames.length).toBe(0);
+  });
+
+  test("its own key is inert rather than a silent handoff", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.toggleInbox();
+
+    expect(portals.inboxOpen.value).toBe(false);
+    expect(portals.activePortal.value).toBeNull();
+  });
+
+  test("a jump to a thread records nothing while the inbox is parked", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.jumpToThread({ projectPath: "/p", threadId: "t-1" });
+
+    expect(portals.pendingThreadJump.value).toBeNull();
+    expect(portals.activePortal.value).toBeNull();
+  });
+
+  test("the studio still opens and dismisses normally", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.toggleStudio();
+    expect(portals.activePortal.value).toBe("studio");
+
+    portals.toggleStudio();
+    expect(portals.activePortal.value).toBeNull();
   });
 });
