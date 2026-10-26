@@ -200,14 +200,14 @@ describe("selection admission — only real message text in one thread pane", ()
     expect(captureSelection(makeSelection(text("message", first), text("loading", loading), "message loading"))).toBeNull();
   });
 
-  test("captures the last line's rect for placement", () => {
+  test("captures the union of nonempty line boxes for placement", () => {
     const { turns } = threadColumn("pane-a");
     const line = makeElement("p", {}, turns[0]!);
     const last = rect(140, 90, 60, 18);
 
-    const capture = captureSelection(makeSelection(text("a", line), text("b", line), "a b", [rect(100, 20, 80, 20), last]));
+    const capture = captureSelection(makeSelection(text("a", line), text("b", line), "a b", [rect(100, 20, 80, 20), last, rect(200, 500, 0, 18)]));
 
-    expect(capture!.rect).toEqual(last);
+    expect(capture!.rect).toEqual(rect(100, 20, 130, 58));
   });
 });
 
@@ -227,6 +227,57 @@ describe("toolbar placement — measured, inside the visual viewport", () => {
     const anchor = rect(20, 400, 120, 24);
     const placed = placeSelectionToolbar({ ...base, anchor });
     expect(placed.top).toBeGreaterThanOrEqual(anchor.bottom);
+  });
+
+  test("forward pointer selection places actions below the entire selected block", () => {
+    const anchor = rect(150, 300, 240, 160);
+    const placed = placeSelectionToolbar({
+      ...base, anchor, releasePoint: { x: 520, y: 300 },
+    });
+    expect(placed.top).toBe(anchor.bottom + 8);
+    expect(placed.left).toBe(520 - base.toolbar.width / 2);
+  });
+
+  test("backward pointer selection places actions above the entire selected block", () => {
+    const anchor = rect(150, 300, 240, 160);
+    const placed = placeSelectionToolbar({
+      ...base, anchor, releasePoint: { x: 310, y: 155 },
+    });
+    expect(placed.top + base.toolbar.height).toBe(anchor.top - 8);
+    expect(placed.left).toBe(310 - base.toolbar.width / 2);
+  });
+
+  test("flips a forward selection above when the pane has no space below", () => {
+    const anchor = rect(250, 300, 240, 160);
+    const placed = placeSelectionToolbar({
+      ...base, anchor, releasePoint: { x: 520, y: 400 },
+      bounds: rect(100, 250, 400, 340),
+    });
+    expect(placed.top + base.toolbar.height).toBe(anchor.top - 8);
+  });
+
+  test("contains actions in the intersection of their pane and visual viewport", () => {
+    const placed = placeSelectionToolbar({
+      ...base,
+      anchor: rect(200, 390, 120, 24),
+      releasePoint: { x: 400, y: 220 },
+      bounds: rect(100, 350, 200, 500),
+      viewport: { width: 480, height: 400 },
+    });
+    expect(placed.width).toBe(114);
+    expect(placed.left).toBe(358);
+    expect(placed.left + placed.width).toBe(472);
+    expect(placed.top).toBeGreaterThanOrEqual(108);
+    expect(placed.top + base.toolbar.height).toBeLessThanOrEqual(392);
+  });
+
+  test("keeps actions visible when the selected block spans beyond the viewport", () => {
+    const placed = placeSelectionToolbar({
+      ...base, anchor: rect(-100, 200, 240, 1200),
+      releasePoint: { x: 300, y: 800 },
+    });
+    expect(placed.top).toBeGreaterThanOrEqual(8);
+    expect(placed.top + base.toolbar.height).toBeLessThanOrEqual(892);
   });
 
   test("contains the real 301.5px content at a 320px visual viewport", () => {
@@ -277,6 +328,24 @@ describe("toolbar measurement — the first render is never capped to zero", () 
   test("the viewport cap is the visible width minus both margins", () => {
     expect(selectionToolbarCap(1280)).toBe(1264);
     expect(selectionToolbarCap(320)).toBe(304);
+  });
+
+  test("measures wrapped actions against pane width and preserves pointer placement", async () => {
+    let cap = 0;
+    const placed = await measureSelectionToolbar({
+      anchor: rect(200, 400, 120, 100),
+      releasePoint: { x: 500, y: 290 },
+      bounds: rect(100, 350, 220, 500),
+      viewport: { width: 1200, height: 900 },
+      measurement: {
+        applyCap: (value) => { cap = value; },
+        measure: () => ({ width: cap, height: 58 }),
+      },
+    });
+    expect(cap).toBe(204);
+    expect(placed.width).toBe(204);
+    expect(placed.left).toBe(358);
+    expect(placed.top).toBe(308);
   });
 
   test("measures the natural width after clearing an earlier 8px measurement", async () => {
