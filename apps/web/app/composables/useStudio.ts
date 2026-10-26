@@ -35,6 +35,7 @@ import type {
   StudioIntent,
   StudioRow,
 } from "~/types/studio";
+import type { TextReference } from "~/types/desktop";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 import { anchorFor, anchorId, liveAnchor, sessionMatchesKind } from "~/utils/studioAnchors";
@@ -97,11 +98,19 @@ export interface UseStudioOptions {
   hooks?: {
     /** Flash the target pad's index dash after a capture — today's pulsePadColumn. */
     pulsePad?: (padPaneId: PaneId) => void;
-    /** Pre-fill the composer under the freshly-opened draft thread. The text is
-     *  already quoted by the caller (the `> ` prefix lives at the call site).
-     *  Carries the pane it was opened in, since every thread column has a
-     *  composer of its own and only that one should take the draft. */
-    setDraft?: (text: string, paneId: PaneId) => void | Promise<void>;
+    /** Pre-fill the composer under the freshly-opened draft thread with the
+     *  exact selected text, as ordinary editable input. Reusing the row's one
+     *  blank pane passes `append: true` so an unsent draft already in that
+     *  composer is never silently overwritten. */
+    setDraft?: (
+      text: string,
+      paneId: PaneId,
+      options?: { append?: boolean },
+    ) => void | Promise<void>;
+    /** Hand a structured reference to the source pane's composer. The studio
+     *  does not render it and never turns it into editable text; the row
+     *  enriches provenance (thread id and title) from the live pane session. */
+    addReference?: (reference: TextReference, paneId: PaneId) => void | Promise<void>;
   };
 }
 
@@ -155,7 +164,7 @@ export interface UseStudioReturn {
    *  Every agent thread is adopted as a pane, so it always resolves to one. */
   focusThreadById: (threadId: string) => void;
   /** The one path for cross-pane actions — selection→pad, selection→new thread,
-   *  copy. See StudioIntent. */
+   *  selection→source composer. See StudioIntent. */
   dispatch: (intent: StudioIntent) => Promise<void>;
   /** Rebuild this project's persisted row from the live panes — order, kinds,
    *  the current backend ids (read from live sessions when attached) and widths. */
@@ -648,15 +657,6 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   // ── dispatch — the one cross-pane action path ────────────────────────────────
   async function dispatch(intent: StudioIntent): Promise<void> {
     switch (intent.type) {
-      case "copy": {
-        if (!import.meta.client) return;
-        try {
-          await navigator.clipboard.writeText(intent.text);
-        } catch {
-          // clipboard blocked — swallow, same as the old onSelectionCopy.
-        }
-        return;
-      }
       case "capture-text": {
         const trimmed = intent.text.trim();
         if (!trimmed) return;
@@ -678,11 +678,27 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       case "draft-thread": {
         if (!intent.draft.trim()) return;
         // A fresh thread beside the source, then pre-fill its composer once the
-        // pane (and thus the composer) has landed. Quoting is the caller's job.
+        // pane (and thus the composer) has landed. The text is the selection
+        // exactly as read — ordinary editable input, no quote markers.
+        const blankBefore = blankThreadPane.value?.id ?? null;
         const id = await open("thread", { near: intent.from });
         await nextTick();
-        await opts.hooks?.setDraft?.(intent.draft, id);
+        // Reusing the row's single blank pane must preserve whatever the user
+        // already typed there: appending is the only safe prefill in that case.
+        const append = blankBefore !== null && blankBefore === id;
+        await opts.hooks?.setDraft?.(intent.draft, id, { append });
         focus(id);
+        return;
+      }
+      case "attach-selection": {
+        if (!intent.reference.text.trim()) return;
+        // A reference is metadata for the composer, never editable text and
+        // never a send. The pane named by the reference owns the composer, so
+        // there is no duplicate `from` field that could disagree with it.
+        await opts.hooks?.addReference?.(
+          intent.reference,
+          intent.reference.sourcePaneId,
+        );
         return;
       }
     }
