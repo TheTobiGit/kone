@@ -13,6 +13,10 @@ import {
   splitComposerDraftSegments,
   type ComposerDraftPart,
 } from "~/utils/composerSkills";
+import {
+  appendEditorLiteralText,
+  replaceEditorWithLiteralText,
+} from "~/utils/composerLiteralDraft";
 import { useProjectFiles } from "./useProjectFiles";
 import type { TokenInsertion } from "./useComposerTrigger";
 
@@ -268,6 +272,24 @@ export function useComposerMentions(deps: {
     text.value = "";
   }
 
+  /** Replace the field with the value as ordinary text — no `/name` or `@path`
+   *  re-chipping. Used when a selection is seeded into a thread's composer, so
+   *  its words stay its words. */
+  function setEditorFromLiteralText(value: string): void {
+    const el = field.value;
+    if (!el) return;
+    disposeChips();
+    text.value = replaceEditorWithLiteralText(el, value, document);
+  }
+
+  /** Append ordinary text after the existing draft, leaving its words, skill
+   *  chips and reference chips in place. */
+  function appendEditorLiteralTextValue(value: string): void {
+    const el = field.value;
+    if (!el) return;
+    text.value = appendEditorLiteralText(el, text.value, value, document);
+  }
+
   function focusEditorEnd(): void {
     const el = field.value;
     if (!el) return;
@@ -319,6 +341,8 @@ export function useComposerMentions(deps: {
     draftParts,
     markSkillChips,
     setEditorFromText,
+    setEditorFromLiteralText,
+    appendEditorLiteralText: appendEditorLiteralTextValue,
     clearEditor,
     focusEditorEnd,
     insertTextAtCaret,

@@ -43,6 +43,21 @@ function file(name = "notes.txt"): ChatAttachment {
   return { type: "file", id: name, name, mimeType: "text/plain", sizeBytes: 10 };
 }
 
+function reference(text: string, id = "ref-1"): ChatAttachment {
+  return {
+    type: "reference",
+    id,
+    name: "Selection",
+    mimeType: "text/plain",
+    sizeBytes: new TextEncoder().encode(text).length,
+    reference: {
+      text,
+      sourcePaneId: "pane-1",
+      sourceThreadId: "thread-1",
+    },
+  };
+}
+
 describe("clampHandoffTokenCap", () => {
   test("clamps to the configured bounds and rounds", () => {
     expect(clampHandoffTokenCap(0)).toBe(MIN_HANDOFF_TOKEN_CAP);
@@ -60,6 +75,16 @@ describe("attachmentTokenAllowance", () => {
     expect(attachmentTokenAllowance([image(), file()])).toBe(
       ATTACHMENT_IMAGE_TOKENS + ATTACHMENT_OTHER_TOKENS,
     );
+  });
+
+  test("prices a reference by the text it will actually inline", () => {
+    // 80 KB of selected log/code is ~20k real prompt tokens, not the flat
+    // non-image allowance. A handoff budget that reserved 4k would overflow.
+    const selection = "x".repeat(80_000);
+    const allowance = attachmentTokenAllowance([reference(selection)]);
+    expect(allowance).toBeGreaterThan(19_000);
+    expect(allowance).toBeLessThan(21_000);
+    expect(allowance).toBeGreaterThan(ATTACHMENT_OTHER_TOKENS);
   });
 });
 
@@ -235,6 +260,54 @@ describe("historicalBlockText", () => {
   test("renders a user message with its attachments, whole", () => {
     const text = historicalBlockText({ id: "u", role: "user", text: "  hello  ", at: 1, attachments: [image("a.png"), file("b.txt")] });
     expect(text).toBe("hello\n[Attachments: a.png, b.txt]");
+  });
+
+  test("replays a reference's exact text, not just its name", () => {
+    const quoted = "  if (ready) {\n\treturn value;\n  }\n";
+    const text = historicalBlockText({
+      id: "u",
+      role: "user",
+      text: "what does this do?",
+      at: 1,
+      attachments: [file(), reference(quoted)],
+    });
+    expect(text).toContain("what does this do?");
+    // The fresh provider session only ever sees this replay; a name alone is
+    // a quote it cannot recover.
+    expect(text).toContain(quoted);
+    expect(text).toContain("[Attachments: notes.txt]");
+    expect(text).not.toContain("Selection, notes.txt");
+  });
+
+  test("a reference-only turn is not empty history", () => {
+    const quoted = "  only the quote\n";
+    const text = historicalBlockText({
+      id: "u",
+      role: "user",
+      text: "",
+      at: 1,
+      attachments: [reference(quoted)],
+    });
+    expect(text).not.toBeNull();
+    expect(text).toContain(quoted);
+  });
+
+  test("a reference-typed attachment with no payload is ignored safely", () => {
+    const broken: ChatAttachment = {
+      type: "reference",
+      id: "ref-broken",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 0,
+    };
+    const text = historicalBlockText({
+      id: "u",
+      role: "user",
+      text: "just prose",
+      at: 1,
+      attachments: [broken],
+    });
+    expect(text).toBe("just prose");
   });
 
   test("carries prose, plans and commands with exit codes", () => {

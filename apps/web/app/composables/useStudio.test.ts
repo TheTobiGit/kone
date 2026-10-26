@@ -3,6 +3,7 @@ import { nextTick, ref, shallowRef } from "vue";
 import type { Ref } from "vue";
 import { useStudio } from "./useStudio";
 import type { UseStudioOptions } from "./useStudio";
+import type { TextReference } from "~/types/desktop";
 
 // Minimal fakes for the three composables useStudio wraps. useStudio only ever
 // touches the surface used here (the `.sessions` list + a few async stubs), so
@@ -1508,5 +1509,118 @@ describe("useStudio — pane width persistence", () => {
     await settle();
     expect(restoredStudio.entries.value[0]!.zen).toBeUndefined();
     expect(restoredStudio.serialize().panes[0]!.zen).toBeUndefined();
+  });
+});
+
+describe("useStudio — selection actions route without sending", () => {
+  test("attach-selection forwards the exact reference to the source pane's composer", async () => {
+    const references: Array<{ reference: TextReference; paneId: string }> = [];
+    const drafts: Array<{ text: string; paneId: string; append: boolean }> = [];
+    const { studio } = harness({
+      addReference: (reference, paneId) => {
+        references.push({ reference, paneId });
+      },
+      setDraft: (text, paneId, options) => {
+        drafts.push({ text, paneId, append: options?.append ?? false });
+      },
+    });
+
+    const source = await studio.open("thread");
+    await settle();
+    const exact = "if (ready) {\n    run();\n}";
+
+    await studio.dispatch({
+      type: "attach-selection",
+      reference: { text: exact, sourcePaneId: source, sourceMessageId: "turn-4" },
+    });
+
+    expect(references).toEqual([
+      {
+        reference: { text: exact, sourcePaneId: source, sourceMessageId: "turn-4" },
+        paneId: source,
+      },
+    ]);
+    // A reference never becomes editable text and never opens another pane.
+    expect(drafts).toEqual([]);
+    expect(studio.entries.value.length).toBe(1);
+    expect(studio.panes.value[0]!.kind === "thread" && studio.panes.value[0]!.session?.blocks.value.length).toBe(0);
+  });
+
+  test("attach-selection ignores an empty selection", async () => {
+    let calls = 0;
+    const { studio } = harness({
+      addReference: () => {
+        calls += 1;
+      },
+    });
+    const source = await studio.open("thread");
+    await settle();
+
+    await studio.dispatch({
+      type: "attach-selection",
+      reference: { text: " \n\t ", sourcePaneId: source },
+    });
+
+    expect(calls).toBe(0);
+  });
+
+  test("draft-thread seeds exact editable text without quoting or sending", async () => {
+    const drafts: Array<{ text: string; paneId: string; append: boolean }> = [];
+    const { studio, agentSessions } = harness({
+      setDraft: (text, paneId, options) => {
+        drafts.push({ text, paneId, append: options?.append ?? false });
+      },
+    });
+
+    const exact = "  keep every space\n\tand this tab";
+    await studio.dispatch({ type: "draft-thread", draft: exact });
+    await settle();
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.text).toBe(exact);
+    expect(drafts[0]!.append).toBe(false);
+    expect(drafts[0]!.paneId).toBe(studio.entries.value[0]!.id);
+    // Prefill is not a send: the adopted blank thread still has no turns.
+    const pane = studio.panes.value[0]!;
+    expect(pane.kind === "thread" ? pane.session?.blocks.value.length : -1).toBe(0);
+    expect(agentSessions.value.length).toBe(1);
+  });
+
+  test("draft-thread reusing the blank pane appends instead of replacing its draft", async () => {
+    const drafts: Array<{ text: string; paneId: string; append: boolean }> = [];
+    const { studio } = harness({
+      setDraft: (text, paneId, options) => {
+        drafts.push({ text, paneId, append: options?.append ?? false });
+      },
+    });
+
+    const blank = await studio.open("thread");
+    await settle();
+    const terminal = await studio.open("terminal");
+    await settle();
+
+    await studio.dispatch({ type: "draft-thread", draft: "exact selection", from: terminal });
+    await settle();
+
+    // One blank invariant: the same pane is reused, and the caller is told to
+    // append so an existing unsent draft survives.
+    expect(studio.entries.value.length).toBe(2);
+    expect(drafts).toEqual([{ text: "exact selection", paneId: blank, append: true }]);
+    expect(studio.focusedId.value).toBe(blank);
+  });
+
+  test("a New Thread request with only whitespace is ignored", async () => {
+    let calls = 0;
+    const { studio } = harness({
+      setDraft: () => {
+        calls += 1;
+      },
+    });
+
+    await studio.dispatch({ type: "draft-thread", draft: "  \n\t " });
+    await settle();
+
+    expect(calls).toBe(0);
+    expect(studio.entries.value.length).toBe(0);
   });
 });

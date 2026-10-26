@@ -601,6 +601,11 @@ export class ConversationStore implements CrewBoardStore, CheckpointStore, Agent
     return this.threads.userBlockSender(threadId, blockId);
   }
 
+  /** @see ThreadRepo */
+  userBlockAttachments(threadId: string, blockId: string): ChatAttachment[] | undefined {
+    return this.threads.userBlockAttachments(threadId, blockId);
+  }
+
   /** @see AgentInboxRepo.onChanged */
   onInboxChanged(listener: InboxChangeListener): () => void {
     return this.agentInbox.onChanged(listener);

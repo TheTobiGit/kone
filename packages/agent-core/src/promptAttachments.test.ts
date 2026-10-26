@@ -177,6 +177,103 @@ describe("promptAttachments", () => {
     expect(result.fileBlock).not.toContain("pic.png");
   });
 
+  test("a reference is inlined as user-provided context and never resolved on disk", async () => {
+    const { buildReferenceBlock, buildTextAttachmentBlock } = await import("./promptAttachments.js");
+    const reference = {
+      type: "reference" as const,
+      id: "ref_1",
+      name: "Source thread",
+      mimeType: "text/plain",
+      sizeBytes: 40,
+      reference: {
+        text: "  if (ready) {\n\treturn value;\n  }\n",
+        sourcePaneId: "pane-1",
+        sourceThreadId: "thread-1",
+        sourceMessageId: "message-1",
+        sourceTitle: "Source thread",
+      },
+    };
+
+    const block = buildReferenceBlock([reference]);
+    expect(block).toMatch(/^`{3}text$/m);
+    expect(block).toContain("Source thread");
+    // Exact bytes, including indentation, tab and trailing newline.
+    expect(block).toContain("  if (ready) {\n\treturn value;\n  }\n");
+    expect(block.trimEnd().endsWith("```")).toBe(true);
+
+    // A reference-only turn is a real prompt block; no file lookup happens.
+    expect(await buildTextAttachmentBlock([reference])).toBe(block);
+  });
+
+  test("references and files share the prompt in attachment order", async () => {
+    const { getAttachmentStore } = await import("./AttachmentStore.js");
+    const { buildTextAttachmentBlock, buildCodexAttachmentInput } = await import(
+      "./promptAttachments.js"
+    );
+    const store = getAttachmentStore();
+    const doc = await store.save({
+      threadId: "th_1",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      data: Buffer.from("file body").toString("base64"),
+    });
+    const reference = {
+      type: "reference" as const,
+      id: "ref_2",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 11,
+      reference: { text: "quoted text", sourcePaneId: "pane-1" },
+    };
+
+    const block = await buildTextAttachmentBlock([doc, reference]);
+    expect(block).toContain("quoted text");
+    expect(block).toContain("notes.txt");
+    // The reference text stays separate from the file list.
+    expect(block.indexOf("quoted text")).toBeLessThan(block.indexOf("<attached_files>"));
+
+    expect((await buildCodexAttachmentInput([doc, reference])).fileBlock).toContain("quoted text");
+  });
+
+  test("every provider's non-native path carries the reference text", async () => {
+    const {
+      buildClaudeAttachmentContent,
+      buildCursorAttachmentInput,
+      buildCodexAttachmentInput,
+    } = await import("./promptAttachments.js");
+    const reference = {
+      type: "reference" as const,
+      id: "ref_4",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 10,
+      reference: { text: "exact text", sourcePaneId: "pane-1" },
+    };
+
+    expect((await buildClaudeAttachmentContent([reference])).fileBlock).toContain("exact text");
+    expect((await buildCursorAttachmentInput([reference])).fileBlock).toContain("exact text");
+    expect((await buildCodexAttachmentInput([reference])).fileBlock).toContain("exact text");
+  });
+
+  test("buildOpenCodeAttachmentParts leaves references out of file parts", async () => {
+    const { buildOpenCodeAttachmentParts, buildReferenceBlock } = await import(
+      "./promptAttachments.js"
+    );
+    const reference = {
+      type: "reference" as const,
+      id: "ref_3",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 6,
+      reference: { text: "opencode context", sourcePaneId: "pane-1" },
+    };
+
+    const parts = await buildOpenCodeAttachmentParts([reference]);
+    expect(parts).toEqual([]);
+    // OpenCode composes this into the prompt text, so the agent gets the bytes.
+    expect(buildReferenceBlock([reference])).toContain("opencode context");
+  });
+
   test("buildOpenCodeAttachmentParts returns file:// URLs for all attachments", async () => {
     const { getAttachmentStore } = await import("./AttachmentStore.js");
     const { buildOpenCodeAttachmentParts } = await import("./promptAttachments.js");
@@ -194,6 +291,46 @@ describe("promptAttachments", () => {
     expect(parts[0]?.type).toBe("file");
     expect(parts[0]?.filename).toBe("script.ts");
     expect(parts[0]?.url.startsWith("file://")).toBe(true);
+  });
+
+  test("a selection that contains the old closing marker cannot end its own quote", async () => {
+    const { buildReferenceBlock } = await import("./promptAttachments.js");
+    // A diff of this very file, a prompt, or documentation can contain both a
+    // backtick run and the old closing tag. The delimiter has to be longer
+    // than anything inside, and the selected bytes have to stay exact.
+    const text = "before\n````\n</referenced_text>\nafter\n";
+    const reference = {
+      type: "reference" as const,
+      id: "ref_fence",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: text.length,
+      reference: { text, sourcePaneId: "pane-1" },
+    };
+
+    const block = buildReferenceBlock([reference]);
+    expect(block).toContain(text);
+
+    const opening = /^(`{3,})text$/m.exec(block);
+    expect(opening).not.toBeNull();
+    // One backtick longer than the longest run in the quote.
+    expect(opening![1]!.length).toBe(5);
+    expect(block.endsWith(`\n${opening![1]}`)).toBe(true);
+  });
+
+  test("a reference-typed attachment with no usable payload is skipped safely", async () => {
+    const { buildReferenceBlock, buildTextAttachmentBlock } = await import("./promptAttachments.js");
+    // Persisted or foreign metadata can carry the discriminator without the
+    // text; the builder must skip it instead of throwing at send time.
+    const broken = {
+      type: "reference" as const,
+      id: "ref_broken",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 0,
+    };
+    expect(buildReferenceBlock([broken])).toBe("");
+    expect(await buildTextAttachmentBlock([broken])).toBe("");
   });
 
   test("concurrent image reads keep attachment order with per-image bytes", async () => {

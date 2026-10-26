@@ -57,7 +57,7 @@ import {
   type RestorePathClaim,
 } from "./checkpointRestoreSafety.js";
 import { snoozeUntilReset } from "./limitState.js";
-import { copyTurnStamp, isCompactionSupported, MAX_USER_INPUT_ANSWER_ATTACHMENTS, PROVIDER_KIND_VALUES, StartCancelled } from "./types.js";
+import { copyTurnStamp, isCompactionSupported, isReferenceAttachment, MAX_USER_INPUT_ANSWER_ATTACHMENTS, PROVIDER_KIND_VALUES, StartCancelled } from "./types.js";
 import type { ThreadRuntime, UrgentLanding } from "./recipientState.js";
 import type { CarriedTurn, TurnInbox } from "./inboxDelivery.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
@@ -5137,6 +5137,8 @@ export class AgentService {
       try {
         const store = getAttachmentStore();
         const valid = attachments.filter((att) => {
+          // A reference has no bytes to find on disk; its text is the payload.
+          if (isReferenceAttachment(att)) return true;
           const absPath = store.resolveAbsPath(att.id);
           if (!absPath || !existsSync(absPath)) {
             console.warn(

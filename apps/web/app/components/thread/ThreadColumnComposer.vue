@@ -28,6 +28,7 @@ import {
 } from "~/composables/useDockClearance";
 import { getSideChatSource } from "~/composables/sideChats";
 import {
+  mergeComposerAttachments,
   normalizeComposerDraft,
   type ComposerDraft,
   type QueuedTurnEntry,
@@ -35,14 +36,15 @@ import {
   type useAgent,
 } from "~/composables/useAgent";
 import { agentForThread } from "~/utils/agents";
+import { columnComposerDockState, type ColumnComposerDock } from "~/utils/columnComposerDock";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import type { ModelPick } from "~/composables/useModelCommit";
 import type { WorkspaceChoice } from "~/utils/threadWorkspace";
-import type { ChatAttachment, SkillReference, ThreadEnvMode } from "~/types/desktop";
+import type { ChatAttachment, SkillReference, TextReference, ThreadEnvMode } from "~/types/desktop";
 
 /** What the column's floor has to clear, and whether the card is open — the
  *  row lifts the focused column's corner docks onto a rail above an open card. */
-export type ColumnComposerDock = { open: boolean; height: number; clear: number };
+export type { ColumnComposerDock };
 
 const props = defineProps<{
   /** The column this composer belongs to — the key its unsent draft and its
@@ -103,8 +105,10 @@ const agentId = computed(() => {
   return composer.agentId.value;
 });
 
-// While an ask is parked on this thread the composer steps aside: the ask's
-// card lands in its spot once the column has focus.
+// While an ask is parked on this thread the composer steps aside — but only
+// visually. Unmounting it used to lose whatever the user was holding (and made
+// Add to Composer a silent no-op); hiding it keeps the draft, chips, references
+// and uploaded files alive until the ask resolves.
 const asking = computed(
   () => Boolean(props.session.pendingUserInput.value) || Boolean(props.session.pendingApproval.value),
 );
@@ -198,6 +202,7 @@ async function onSend(
     const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     if (ok.length) attachments = ok;
   }
+  attachments = mergeComposerAttachments(attachments, draft.references);
   void s.send({ text: draft.text, attachments, skills: draft.skills, steer: draft.steer });
 }
 
@@ -217,11 +222,24 @@ const { clear, height } = useDockClearance(dockEl, {
   air: STRIP_DOCK_AIR,
 });
 watch(
-  [composerOpen, height, clear],
-  ([open, h, c]) => emit("dock", { open, height: h, clear: c }),
+  [asking, composerOpen, height, clear],
+  ([parked, open, h, c]) =>
+    emit(
+      "dock",
+      columnComposerDockState({ asking: parked, open, height: h, clear: c }),
+    ),
   { immediate: true },
 );
 onBeforeUnmount(() => emit("dock", null));
+
+// The card is always mounted while this wrapper is (see the template); a null
+// inner ref means the column is being torn down. Refuse rather than resolve
+// successfully with nothing delivered — the row turns that into a notice.
+function composerHandle(): InstanceType<typeof AgentComposer> {
+  const handle = composerRef.value;
+  if (!handle) throw new Error("This column's composer is not mounted.");
+  return handle;
+}
 
 // The caret hand-off lives in the row, which owns focus across every column
 // (see utils/caretHandoff). A column only offers these two ends of it: which
@@ -230,8 +248,17 @@ defineExpose({
   wake: async (): Promise<void> => {
     await composerRef.value?.wake();
   },
+  /** Seed the field with ordinary, literal text for New Thread. */
   setDraft: async (text: string): Promise<void> => {
-    await composerRef.value?.setDraft(text);
+    await composerHandle().seedDraft(text);
+  },
+  /** Add a selection to this column's composer without changing its prose. */
+  addReference: async (reference: TextReference): Promise<void> => {
+    await composerHandle().addReference(reference);
+  },
+  /** Append text after the existing draft, keeping its chips and references. */
+  appendDraft: async (text: string): Promise<void> => {
+    await composerHandle().appendDraft(text);
   },
   /** Blur the caret if it is in this column, answering whether it was. */
   releaseCaret: (): boolean => {
@@ -249,80 +276,77 @@ defineExpose({
 </script>
 
 <template>
-  <Transition
-    enter-active-class="transition-opacity duration-200 ease-out"
-    enter-from-class="opacity-0"
-    leave-active-class="transition-opacity duration-150 ease-in"
-    leave-to-class="opacity-0"
-    @after-leave="composerOpen = false"
+  <!-- Always mounted: a parked ask only hides the dock (visibility keeps the
+       measured layout intact) so the composer's draft, chips and references
+       survive the wait and Add to Composer can land. `inert` plus visibility
+       keeps the hidden card out of focus and the accessibility tree. -->
+  <div
+    ref="dockEl"
+    class="col-composer"
+    :class="{ 'col-composer--open': composerOpen, 'col-composer--parked': asking }"
+    :inert="asking"
   >
-    <div
-      v-if="!asking"
-      ref="dockEl"
-      class="col-composer"
-      :class="{ 'col-composer--open': composerOpen }"
-    >
-      <HandOffChainBar :thread-id="session.threadId.value" :spawned="session.spawnedChildren.value" />
-      <AgentComposer
-        ref="composerRef"
-        :background="!focused"
-        :draft-scope="paneId"
-        :project-path="projectPath"
-        :provider="composer.provider.value"
-        :send-rejection="session.sendRejection.value"
-        :queue-return="session.queueReturn.value"
-        :steer-wait="session.steerWait.value"
-        :project-name="projectName"
-        :branch="workspace.branch.value"
-        :branch-switchable="blank && !isSideChat"
-        :env-mode="envMode"
-        :worktree-path="blank ? null : session.worktreePath.value"
-        :thread-name="session.title.value"
-        :thread-id="session.threadId.value"
-        :busy="session.busy.value"
-        :queued="session.queuedTurns.value"
-        :picking="composer.pickerOpen.value || workspacePickerOpen"
-        :agents="composer.agents.value"
-        :agent-id="agentId"
-        :routing-note="composer.routingNote.value"
-        :agent-switchable="blank && !isSideChat"
-        :models="composer.modelOptions.value"
-        :model-switchable="composer.modelSwitchable.value"
-        :model-id="composer.modelId.value"
-        :reasoning="composer.reasoning.value"
-        :mode="composer.mode.value"
-        :fast-mode="composer.fastMode.value"
-        :context-window="composer.contextWindow.value"
-        :blocked-reason="composer.sendBlockedReason.value"
-        :health-status="composer.sendBlockedStatus.value"
-        :health-checking="composer.recheckingProviders.value"
-        :workspace-steps="session.workspaceSteps.value"
-        :compactable="compactable"
-        :creatable="creatable"
-        @send="onSend"
-        @remove-queued="session.cancelQueuedTurn($event)"
-        @reorder-queued="session.reorderQueuedTurns($event)"
-        @send-now="onSendNow"
-        @interrupt-now="void session.interruptStepWaitNow()"
-        @interrupt="void session.stop()"
-        @update:agent-id="composer.onAgentPick"
-        @update:model-id="composer.onModelId"
-        @update:reasoning="composer.onReasoning"
-        @update:mode="composer.onMode"
-        @update:fast-mode="composer.onFastMode"
-        @update:context-window="composer.onContextWindow"
-        @open-models="composer.openPicker"
-        @open-branch="workspacePickerOpen = true"
-        @compact="onCompact"
-        @new-thread="emit('new-thread')"
-        @update:open="composerOpen = $event"
-        @update:draft="onDraft"
-        @recheck="composer.recheckProviders"
-        @cancel-workspace="session.cancelWorkspace()"
-        @dismiss-workspace="session.dismissWorkspaceSteps()"
-      />
-    </div>
-  </Transition>
+    <HandOffChainBar :thread-id="session.threadId.value" :spawned="session.spawnedChildren.value" />
+    <AgentComposer
+      ref="composerRef"
+      :background="!focused"
+      :inactive="asking"
+      :draft-scope="paneId"
+      :project-path="projectPath"
+      :provider="composer.provider.value"
+      :send-rejection="session.sendRejection.value"
+      :queue-return="session.queueReturn.value"
+      :steer-wait="session.steerWait.value"
+      :project-name="projectName"
+      :branch="workspace.branch.value"
+      :branch-switchable="blank && !isSideChat"
+      :env-mode="envMode"
+      :worktree-path="blank ? null : session.worktreePath.value"
+      :thread-name="session.title.value"
+      :thread-id="session.threadId.value"
+      :busy="session.busy.value"
+      :queued="session.queuedTurns.value"
+      :picking="composer.pickerOpen.value || workspacePickerOpen"
+      :agents="composer.agents.value"
+      :agent-id="agentId"
+      :routing-note="composer.routingNote.value"
+      :agent-switchable="blank && !isSideChat"
+      :models="composer.modelOptions.value"
+      :model-switchable="composer.modelSwitchable.value"
+      :model-id="composer.modelId.value"
+      :reasoning="composer.reasoning.value"
+      :mode="composer.mode.value"
+      :fast-mode="composer.fastMode.value"
+      :context-window="composer.contextWindow.value"
+      :blocked-reason="composer.sendBlockedReason.value"
+      :health-status="composer.sendBlockedStatus.value"
+      :health-checking="composer.recheckingProviders.value"
+      :workspace-steps="session.workspaceSteps.value"
+      :compactable="compactable"
+      :creatable="creatable"
+      @send="onSend"
+      @remove-queued="session.cancelQueuedTurn($event)"
+      @reorder-queued="session.reorderQueuedTurns($event)"
+      @send-now="onSendNow"
+      @interrupt-now="void session.interruptStepWaitNow()"
+      @interrupt="void session.stop()"
+      @update:agent-id="composer.onAgentPick"
+      @update:model-id="composer.onModelId"
+      @update:reasoning="composer.onReasoning"
+      @update:mode="composer.onMode"
+      @update:fast-mode="composer.onFastMode"
+      @update:context-window="composer.onContextWindow"
+      @open-models="composer.openPicker"
+      @open-branch="workspacePickerOpen = true"
+      @compact="onCompact"
+      @new-thread="emit('new-thread')"
+      @update:open="composerOpen = $event"
+      @update:draft="onDraft"
+      @recheck="composer.recheckProviders"
+      @cancel-workspace="session.cancelWorkspace()"
+      @dismiss-workspace="session.dismissWorkspaceSteps()"
+    />
+  </div>
 
   <!-- The pickers leave the column for the page: a background column is
        scaled and filtered, either of which would pin a fixed scrim to the
@@ -379,5 +403,12 @@ defineExpose({
 }
 .col-composer--open {
   z-index: 46;
+}
+/* A parked ask owns this spot. The dock stays in the tree (and keeps its
+   measured box) so the composer's state survives, but it takes no input, no
+   focus and no accessibility-tree presence. */
+.col-composer--parked {
+  visibility: hidden;
+  pointer-events: none;
 }
 </style>

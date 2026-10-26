@@ -17,6 +17,7 @@
 import type { ThreadSession } from "~/composables/useAgent";
 import type { TerminalSession } from "~/composables/useTerminal";
 import type { ScratchpadSession } from "~/composables/useScratchpad";
+import type { TextReference } from "~/types/desktop";
 
 /** The three artifacts a studio row can hold. Order here is the order the
  *  seam insert menu lists them in. */
@@ -59,14 +60,16 @@ export type Pane =
 
 /** One path for every cross-pane action, dispatched through `studio.dispatch`.
  *  `capture-text` lands selected thread text in the scratchpad; `draft-thread`
- *  opens a new thread with the composer pre-filled (already quoted by the caller);
- *  `copy` writes to the clipboard. Everything that used to reach across panes
+ *  opens a new thread with the composer pre-filled with the exact selection as
+ *  ordinary editable text (no quote markers); `attach-selection` hands a
+ *  structured reference to the pane named by the reference itself, without
+ *  touching editable text. Everything that used to reach across panes
  *  (sendToScratchpad, onSelectionNewThread, the selection bubble's kind-specific
  *  events) now emits one of these. */
 export type StudioIntent =
   | { type: "capture-text"; text: string; from: PaneId }
   | { type: "draft-thread"; draft: string; from?: PaneId }
-  | { type: "copy"; text: string };
+  | { type: "attach-selection"; reference: TextReference };
 
 /** One project's row: its panes in left-to-right order, and which of them the
  *  row was left focused on. Each row keeps its own focus so returning to a row

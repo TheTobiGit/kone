@@ -1376,4 +1376,23 @@ describe("TurnDraft object param", () => {
     expect(parseQueuedAttachments(json)?.map((a) => a.id)).toEqual(["a1"]);
     expect(parseQueuedAttachments("not-json")).toBeUndefined();
   });
+
+  test("a queued reference keeps its exact text and provenance", () => {
+    const reference: ChatAttachment = {
+      type: "reference",
+      id: "ref_1",
+      name: "Source",
+      mimeType: "text/plain",
+      sizeBytes: 12,
+      reference: {
+        text: "  quoted\n\tbytes\n",
+        sourcePaneId: "pane-1",
+        sourceThreadId: "thread-1",
+        sourceMessageId: "message-1",
+        sourceTitle: "Source",
+      },
+    };
+    const parsed = parseQueuedAttachments(serializeQueuedAttachments([reference]));
+    expect(parsed).toEqual([reference]);
+  });
 });

@@ -52,6 +52,10 @@
       "types": "./src/subagentPresets.ts",
       "default": "./src/subagentPresets.ts"
     },
+    "./text-reference": {
+      "types": "./src/textReference.ts",
+      "default": "./src/textReference.ts"
+    },
     "./theme-summary": {
       "types": "./src/themeSummary.ts",
       "default": "./src/themeSummary.ts"

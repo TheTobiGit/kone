@@ -1177,6 +1177,28 @@ describe("app_start_thread", () => {
     expect(calls.turns[0]?.input.attachments).toEqual([attachment]);
   });
 
+  it("forwards a stored text reference without a file-registry row", async () => {
+    const calls: RunnerCalls = { started: [], turns: [] };
+    // A reference has no bytes, so it is never registered in AttachmentStore.
+    // It was still given to this conversation in its own user block, which is
+    // the proof the ownership check needs.
+    const reference = {
+      type: "reference" as const,
+      id: "ref-owned",
+      name: "Selection",
+      mimeType: "text/plain",
+      sizeBytes: 6,
+      reference: { text: "quoted", sourcePaneId: "pane-1" },
+    };
+    const callerThread = { ...TRANSCRIPT, blocks: [{ ...block("user", "Here", 4), attachments: [reference] }] };
+    const store = makeStore({ loadThread: (threadId) => threadId === "t-newest" ? callerThread : null });
+    const result = await tools({ runner: makeRunner(calls), store, hasAttachment: () => false }).call(
+      makeCtx({ threadId: "t-newest" }), "app_start_thread", { ...START, attachments: ["ref-owned"] },
+    );
+    expect(result.isError).toBeUndefined();
+    expect(calls.turns[0]?.input.attachments).toEqual([reference]);
+  });
+
   it("refuses unknown or unowned attachment ids by name", async () => {
     const calls: RunnerCalls = { started: [], turns: [] };
     const result = await tools({ runner: makeRunner(calls), hasAttachment: () => true }).call(
