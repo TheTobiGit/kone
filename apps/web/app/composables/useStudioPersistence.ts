@@ -161,14 +161,18 @@ export function useStudioPersistence(projectPath: string | (() => string)) {
       // A newly-born row joins at the bottom, where the eye last was.
       rows.push(folded);
     }
-    // A newly-born row is where work just started, so it takes focus; an
-    // existing one keeps whatever the plane was already looking at, because a
-    // background row's teardown flush must not drag the camera onto it.
-    const isNew = !plane.rows.some((r) => r.projectPath === folded.projectPath);
+    // Focus follows navigation, never the act of saving. A row being written is
+    // not automatically the row being looked at: a background adoption, a
+    // teardown flush, and a debounced save that lands after the user moved on
+    // must all leave the camera where it is — otherwise a save can override
+    // newer travel, which no gesture asked for. The first row on an empty plane
+    // (or one whose remembered row is gone) is the exception, because there is
+    // nothing to keep. Explicit travel calls setFocusedRow; a row summoned
+    // before it existed hands over when it persists (resolvePinHandoff).
+    const hasFocus =
+      plane.focusedRow !== null && rows.some((r) => r.projectPath === plane.focusedRow);
     const focusedRow =
-      folded.panes.length > 0 && (isNew || plane.focusedRow === null)
-        ? folded.projectPath
-        : plane.focusedRow;
+      folded.panes.length > 0 && !hasFocus ? folded.projectPath : plane.focusedRow;
     writeThrough({ version: 2, rows, focusedRow });
   }
 

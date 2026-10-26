@@ -144,6 +144,92 @@ export function planeDestinations(
   return list;
 }
 
+export interface RowSummonInput {
+  /** Rows as the plane renders them: the persisted ones plus the transient. */
+  rows: readonly RenderRow[];
+  /** Projects the app knows, newest first — the fallback when a path has no row.
+   *  A project with no work still lands, because travelling to an empty project
+   *  is how work in it starts. */
+  known: readonly KnownProject[];
+  /** Where the summon asked to land. */
+  projectPath: string;
+}
+
+/** What landing on a row means for the plane's two pieces of focus state: the
+ *  pin that holds a transient row on screen, and the axis that remembers a
+ *  persisted one. Null when the path is neither a row nor a known project. */
+export interface RowSummon {
+  standing: StandingRow;
+  /** The row to pin, or null when the landing row is on the axis: a persisted
+   *  row must clear the pin, or another row's pin would keep the camera. */
+  transientFocus: string | null;
+  /** The persisted row to move the axis to, or null when the landing row is not
+   *  on the axis and there is nothing there to focus. */
+  axisPath: string | null;
+}
+
+/**
+ * Plan a landing from a summon — a resumed thread's ask, a new column, a
+ * terminal, a search jump.
+ *
+ * This reads rendered rows rather than the axis on purpose: a row whose first
+ * pane was opened a moment ago is on screen before the row itself is persisted
+ * (saves are debounced), so validating against the axis would refuse a summon
+ * the user can already see. It also has to clear the pin when it lands on a
+ * persisted row, or a stale pin would resolve focus back to a row the user has
+ * left.
+ */
+export function resolveRowSummon({ rows, known, projectPath }: RowSummonInput): RowSummon | null {
+  const at = rows.findIndex((r) => r.projectPath === projectPath);
+  const row = rows[at];
+  if (row) {
+    return {
+      standing: { path: projectPath, name: row.name, index: at },
+      transientFocus: row.transient ? projectPath : null,
+      axisPath: row.transient ? null : projectPath,
+    };
+  }
+  const knownProject = known.find((p) => p.path === projectPath);
+  if (!knownProject) return null;
+  // No row at all: the pin conjures one at the foot of the plane, which is the
+  // slot a new row would be born into.
+  return {
+    standing: { path: knownProject.path, name: knownProject.name, index: rows.length },
+    transientFocus: projectPath,
+    axisPath: null,
+  };
+}
+
+/**
+ * The path a pin has to hand over to the axis, or null while the pin still
+ * holds.
+ *
+ * A row is pinned rather than focused whenever the axis has no row to hold —
+ * both ways that happens: a summoned project with no work yet (`transientFocus`)
+ * and a row whose last pane just closed under the camera (`standing`). The
+ * moment the row has a pane saved the row exists, the pin stops applying
+ * (resolveRowFocus only honours a pin on a *transient* row), and the axis's
+ * memory is whatever was focused before — so without this hand-off the camera
+ * snaps to another project right after landing. The caller moves the axis to
+ * the returned path as it clears the pin.
+ *
+ * `transientFocus` wins when both name rows: it is the newer of the two (a
+ * summon records it, travel records `standing`), and only one row can be pinned.
+ */
+export function resolvePinHandoff({
+  transientFocus,
+  standing,
+  rows,
+}: {
+  transientFocus: string | null;
+  standing: string | null;
+  rows: readonly FocusRow[];
+}): string | null {
+  const pinned = transientFocus ?? standing;
+  if (!pinned) return null;
+  return recordsStanding(rows, pinned) ? pinned : null;
+}
+
 export interface RowFocusInput {
   /** Rows in camera order, top to bottom. */
   rows: readonly FocusRow[];

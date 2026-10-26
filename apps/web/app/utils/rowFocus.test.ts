@@ -4,7 +4,9 @@ import {
   recordsStanding,
   renderPlaneRows,
   resolveLandingProject,
+  resolvePinHandoff,
   resolveRowFocus,
+  resolveRowSummon,
   type FocusRow,
   type RenderRow,
 } from "./rowFocus";
@@ -301,5 +303,188 @@ describe("planeDestinations", () => {
 
   test("nothing anywhere is an empty list rather than a throw", () => {
     expect(planeDestinations([], [], [])).toEqual([]);
+  });
+});
+
+// A summon is a bar's ask: a resumed thread, a new column, a terminal, a search
+// jump. Landing it has to answer two questions at once — where the axis goes,
+// and what happens to a pin left on some other row.
+describe("summoning a row", () => {
+  const rendered = (): RenderRow[] => [
+    { projectPath: A, name: "kone", transient: true },
+    { projectPath: B, name: "synara", transient: false },
+  ];
+
+  test("a persisted row lands the axis on it and releases another row's pin", () => {
+    const plan = resolveRowSummon({ rows: rendered(), known: [], projectPath: B });
+    expect(plan).toEqual({
+      standing: { path: B, name: "synara", index: 1 },
+      transientFocus: null,
+      axisPath: B,
+    });
+  });
+
+  // The bug this pair exists for: A was left pinned as a transient row, then a
+  // bot's ask summoned B. Focusing the axis alone left the pin in place, so the
+  // camera resolved back to A and the ask arrived off screen.
+  test("releasing the pin is what makes the summoned row the focused one", () => {
+    const plan = resolveRowSummon({ rows: rendered(), known: [], projectPath: B });
+    expect(
+      resolveRowFocus({
+        rows: rendered(),
+        transientFocus: plan?.transientFocus ?? null,
+        standing: plan?.standing.path ?? null,
+        axisPath: plan?.axisPath ?? null,
+      }),
+    ).toBe(B);
+  });
+
+  test("a transient row is pinned instead of focused through the axis", () => {
+    const plan = resolveRowSummon({ rows: rendered(), known: [], projectPath: A });
+    expect(plan).toEqual({
+      standing: { path: A, name: "kone", index: 0 },
+      transientFocus: A,
+      axisPath: null,
+    });
+  });
+
+  test("a known project with no row pins the foot of the plane", () => {
+    const plan = resolveRowSummon({
+      rows: rendered(),
+      known: [{ path: C, name: "t3code" }],
+      projectPath: C,
+    });
+    expect(plan).toEqual({
+      standing: { path: C, name: "t3code", index: 2 },
+      transientFocus: C,
+      axisPath: null,
+    });
+  });
+
+  test("a path that is neither a row nor a known project lands nowhere", () => {
+    expect(resolveRowSummon({ rows: rendered(), known: [], projectPath: "/Developer/nowhere" })).toBeNull();
+  });
+
+  // Rendered rows, not the axis: a row whose first pane was opened a moment ago
+  // is on screen before the debounced save persists it.
+  test("a row on screen but not yet persisted is still a landing", () => {
+    const plan = resolveRowSummon({
+      rows: [{ projectPath: A, name: "kone", transient: true }],
+      known: [],
+      projectPath: A,
+    });
+    expect(plan?.standing).toEqual({ path: A, name: "kone", index: 0 });
+    expect(plan?.transientFocus).toBe(A);
+  });
+});
+
+// A landing that becomes a row: the pin holds a transient row, and the save
+// that makes it real is what takes the pin away. Without a hand-off the axis
+// wins with whatever it remembered before the summon.
+describe("a transient landing that becomes a row", () => {
+  test("hands over to the axis once the row is persisted", () => {
+    // Before the save: A is the only persisted row, B is the transient landing,
+    // and the pin is what holds the camera on it.
+    const whileTransient = [
+      { projectPath: A, transient: false },
+      { projectPath: B, transient: true },
+    ];
+    expect(
+      resolveRowFocus({
+        rows: whileTransient,
+        transientFocus: B,
+        standing: B,
+        axisPath: A,
+      }),
+    ).toBe(B);
+
+    // The save lands. The pin stops applying, and the axis's memory predates the
+    // summon — this is the flip the hand-off exists to prevent.
+    const persistedNow = [
+      { projectPath: A, transient: false },
+      { projectPath: B, transient: false },
+    ];
+    expect(
+      resolveRowFocus({ rows: persistedNow, transientFocus: B, standing: B, axisPath: A }),
+    ).toBe(A);
+
+    // The caller moves the axis to the handed-over path and drops the pin.
+    const handover = resolvePinHandoff({ transientFocus: B, standing: null, rows: persistedNow });
+    expect(handover).toBe(B);
+    expect(
+      resolveRowFocus({ rows: persistedNow, transientFocus: null, standing: B, axisPath: handover }),
+    ).toBe(B);
+  });
+
+  test("leaves the pin alone while the row is still transient", () => {
+    expect(
+      resolvePinHandoff({
+        transientFocus: B,
+        standing: null,
+        rows: [{ projectPath: B, transient: true }],
+      }),
+    ).toBeNull();
+  });
+
+  test("an absent pin hands over nothing", () => {
+    expect(
+      resolvePinHandoff({
+        transientFocus: null,
+        standing: null,
+        rows: [{ projectPath: B, transient: false }],
+      }),
+    ).toBeNull();
+  });
+
+  test("a pin on a row that is no longer rendered hands over nothing", () => {
+    expect(
+      resolvePinHandoff({
+        transientFocus: B,
+        standing: null,
+        rows: [{ projectPath: A, transient: false }],
+      }),
+    ).toBeNull();
+  });
+});
+
+// The other way a row is pinned: it was persisted, its last pane closed under
+// the camera, and it is now standing on screen with nothing behind it.
+describe("a standing row that gets work again", () => {
+  test("hands over to the axis once its new pane is saved", () => {
+    const persistedNow = [
+      { projectPath: A, transient: false },
+      { projectPath: B, transient: false },
+    ];
+
+    // Reopening it saves the row, and the standing pin stops applying.
+    expect(
+      resolvePinHandoff({ transientFocus: null, standing: B, rows: persistedNow }),
+    ).toBe(B);
+  });
+
+  test("keeps the pin while the row is still standing empty", () => {
+    expect(
+      resolvePinHandoff({
+        transientFocus: null,
+        standing: B,
+        rows: [
+          { projectPath: A, transient: false },
+          { projectPath: B, transient: true },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  test("a newer summon's pin wins over the standing row", () => {
+    expect(
+      resolvePinHandoff({
+        transientFocus: C,
+        standing: B,
+        rows: [
+          { projectPath: B, transient: false },
+          { projectPath: C, transient: false },
+        ],
+      }),
+    ).toBe(C);
   });
 });
