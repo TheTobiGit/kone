@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { AlertCircleIcon, ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import GitSpacePullRequestSection from "~/components/git-space/GitSpacePullRequestSection.vue";
 import { usePullRequestSections } from "~/composables/usePullRequestSections";
@@ -291,19 +291,31 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function checkout() {
-  if (busy.value) return;
-  cue("press");
-  void props.space.checkoutPr(props.number);
-}
-// The action in flight from this card, and why the last one failed. The space
-// keeps its own error line too, but that sits behind the card.
+// Actions started from this card, and why the last one failed. The space keeps
+// its own error line too, but that sits behind the card, so each action that
+// can fail its own way repeats the message where the button is.
 const pending = ref<GitHubPrAction | null>(null);
 const actError = ref<string | null>(null);
 /** Said when GitHub took a merge but didn't merge yet: a merge queue or
  *  pending required checks turn `gh pr merge` into a merge scheduled for later. */
 const actNotice = ref<string | null>(null);
 const commentError = ref<string | null>(null);
+const checkoutError = ref<string | null>(null);
+
+async function checkout() {
+  if (busy.value) return;
+  cue("press");
+  checkoutError.value = null;
+  const number = props.number;
+  const ok = await props.space.checkoutPr(number);
+  if (props.number !== number) return;
+  if (ok) {
+    cue("success");
+    return;
+  }
+  cue("error");
+  checkoutError.value = props.space.error.value ?? "Couldn't check out this pull request.";
+}
 
 async function act(action: GitHubPrAction, method?: GitHubMergeMethod) {
   if (busy.value || refreshing.value) return;
@@ -351,6 +363,7 @@ watch(
     actError.value = null;
     actNotice.value = null;
     commentError.value = null;
+    checkoutError.value = null;
   },
 );
 
@@ -482,6 +495,10 @@ onBeforeUnmount(() => {
           <span>opened {{ pr.relative }}</span>
         </p>
         </GitSpacePullRequestSection>
+        <p v-if="checkoutError" class="prv__alert" role="alert">
+          <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          {{ checkoutError }}
+        </p>
       </div>
 
       <div class="prv__actions">
@@ -855,6 +872,19 @@ onBeforeUnmount(() => {
   gap: 14px;
   font-size: 12.5px;
   color: var(--muted);
+}
+.prv__alert {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--diff-del);
+}
+.prv__alert :deep(svg) {
+  flex-shrink: 0;
 }
 .prv__author {
   display: inline-flex;
