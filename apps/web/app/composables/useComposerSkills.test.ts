@@ -206,6 +206,35 @@ describe("useComposerSkills", () => {
     expect(h.restoredRefs).toEqual([[reference]]);
   });
 
+  test("a refusal hands references back beside the prose the user started since", async () => {
+    const h = harness([skill("tdd")]);
+    await settle();
+    h.parts.current = [chip("tdd"), prose("fix it")];
+    h.text.current = "/tdd fix it";
+    h.api.composeTurn();
+    // The send cleared the field; the next prompt is already being written.
+    h.text.current = "the next prompt";
+    const reference: TextReference = {
+      text: "  exact\n\tbytes  ",
+      sourcePaneId: "pane-1",
+      sourceThreadId: "thread-1",
+      sourceMessageId: "message-1",
+      sourceTitle: "Selection",
+    };
+    h.setRejection({
+      at: 1,
+      message: "refused",
+      input: "fix it",
+      skills: [refOf("tdd")],
+      references: [reference],
+    });
+    await settle();
+    expect(h.restoredRefs).toEqual([[reference]]);
+    // Nothing re-drafts over what the user has typed.
+    expect(h.restored).toEqual([]);
+    expect(h.text.current).toBe("the next prompt");
+  });
+
   test("a refusal for another surface's turn rebuilds from what it carried", async () => {
     const h = harness([skill("tdd")]);
     await settle();
