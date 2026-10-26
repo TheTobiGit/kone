@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { nextTick } from "vue";
-import { useStudioPlane, __basename } from "./useStudioPlane";
+import { useStudioPlane, __basename, __resetStudioOverview } from "./useStudioPlane";
 import { useStudioPersistence, resetStudioPlane, studioPlane } from "./useStudioPersistence";
 import type { PaneEntry } from "~/types/studio";
 
@@ -33,6 +33,7 @@ const C = "/Developer/opensource/t3code";
 
 beforeEach(() => {
   resetStudioPlane();
+  __resetStudioOverview();
 });
 
 describe("row set", () => {
@@ -174,5 +175,41 @@ describe("row names", () => {
     expect(__basename("/Developer/kone/")).toBe("kone");
     expect(__basename("/Developer/kone")).toBe("kone");
     expect(__basename("kone")).toBe("kone");
+  });
+});
+
+describe("camera zoom", () => {
+  test("the toggle flips the zoom either way", () => {
+    seed(A, ["p1"]);
+    const plane = useStudioPlane();
+
+    plane.toggleOverview();
+    expect(plane.overview.value).toBe(true);
+    plane.toggleOverview();
+    expect(plane.overview.value).toBe(false);
+  });
+
+  test("enter and exit name the state they set, whatever it was before", () => {
+    seed(A, ["p1"]);
+    const plane = useStudioPlane();
+
+    plane.enterOverview();
+    plane.enterOverview();
+    expect(plane.overview.value).toBe(true);
+
+    plane.exitOverview();
+    plane.exitOverview();
+    expect(plane.overview.value).toBe(false);
+  });
+
+  test("focusing a row is not a zoom change — the overview slot keeps it", () => {
+    seed(A, ["p1"]);
+    seed(B, ["p1"]);
+    const plane = useStudioPlane();
+    plane.enterOverview();
+
+    expect(plane.focusRow(B)).toBe(true);
+    expect(plane.focusedPath.value).toBe(B);
+    expect(plane.overview.value).toBe(true);
   });
 });

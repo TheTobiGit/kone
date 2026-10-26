@@ -10,6 +10,7 @@ function ctx(over: Partial<IntentContext> = {}): IntentContext {
     recents: [],
     sessions: [],
     studioHasRows: false,
+    inboxEnabled: true,
     settingsOpen: false,
     ...over,
   };
@@ -143,6 +144,12 @@ describe("buildIntentMenu", () => {
       ctx({ view: "studio", studioRow: { projectPath: "/p/1", name: "one" } }),
     );
     expect(sections.find((s) => s.key === "thread")).toBeUndefined();
+  });
+
+  test("a parked inbox is offered from nowhere", () => {
+    for (const view of ["launcher", "project-overview", "studio"] as const) {
+      expect(ids(view, { inboxEnabled: false })).not.toContain("goto-inbox");
+    }
   });
 
   test("studio and inbox lead with back-to-page plus the sibling portal", () => {

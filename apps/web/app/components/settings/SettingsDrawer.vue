@@ -137,7 +137,9 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
     title: "Workspaces",
     rows: [
       { pane: "studio", label: "Studio", glyph: "studio" },
-      { pane: "inbox", label: "Inbox", glyph: "inbox" },
+      // Inbox: its page and glyph are built and parked with the portal
+      // (ENABLED_PORTALS in usePortals); a settings row for a surface you
+      // cannot open is a dead end.
       { pane: "assistant", label: "Assistant", glyph: "assistant" },
     ],
   },

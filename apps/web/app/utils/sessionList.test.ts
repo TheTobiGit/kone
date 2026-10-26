@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ForkContext, RuntimeEvent, StoredThreadMeta } from "~/types/desktop";
+import type {
+  AgentBaseEvent,
+  ForkContext,
+  RuntimeEvent,
+  StoredThreadMeta,
+  TokenUsage,
+} from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import { isWorkspacePending } from "./threadWorkspace";
 import {
@@ -388,9 +394,21 @@ describe("nextVisitStamp — one pure pass from latch plus list settle to stamp"
 });
 
 describe("isRowChangingEvent — which events are worth a list re-read", () => {
-  const usage = (u: Record<string, number | boolean>) =>
-    // SAFETY: only `type` and `usage` are read by the predicate under test.
-    ({ type: "thread.token-usage.updated", usage: u }) as unknown as RuntimeEvent;
+  // Every event the predicate reads carries the same envelope, so the tests
+  // vary only the payload and stay real events rather than shapes cast into
+  // one: a cast would happily pass a payload the bridge never sends.
+  const envelope: AgentBaseEvent = {
+    threadId: "thread-1",
+    provider: "codex",
+    at: 0,
+    source: "kone.store",
+  };
+
+  const usage = (u: TokenUsage): RuntimeEvent => ({
+    ...envelope,
+    type: "thread.token-usage.updated",
+    usage: u,
+  });
 
   test("a live context-only snapshot changes no rendered row", () => {
     expect(isRowChangingEvent(usage({ contextUsed: 40_000, contextWindow: 200_000, compactsAutomatically: true }))).toBe(false);
@@ -401,8 +419,14 @@ describe("isRowChangingEvent — which events are worth a list re-read", () => {
   });
 
   test("the rest of the allowlist passes through, and streaming deltas stay out", () => {
-    // SAFETY: only `type` is read for events other than token usage.
-    expect(isRowChangingEvent({ type: "turn.completed" } as unknown as RuntimeEvent)).toBe(true);
-    expect(isRowChangingEvent({ type: "item.updated" } as unknown as RuntimeEvent)).toBe(false);
+    expect(isRowChangingEvent({ ...envelope, type: "turn.completed", turnId: "turn-1" })).toBe(true);
+    expect(
+      isRowChangingEvent({
+        ...envelope,
+        type: "item.updated",
+        turnId: "turn-1",
+        item: { itemId: "item-1", kind: "assistant_text", status: "in-progress", text: "streaming…" },
+      }),
+    ).toBe(false);
   });
 });
