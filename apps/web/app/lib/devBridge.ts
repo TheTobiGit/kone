@@ -179,7 +179,10 @@ function createDevGit(): KoneGitApi {
       prs: (dir, opts) => later(world.mockPrs(dir, opts?.state ?? "open")),
       // A copy, as IPC hands over: the demo's actions change the world in place,
       // and the card has to see a new object to notice.
-      prDetail: (_dir, number) => later(structuredClone(world.mockPrDetail(number))),
+      prDetail: (_dir, number, section) => later(
+        structuredClone(world.mockPrDetail(number)),
+        section ? { summary: 180, conversation: 900, checks: 1500, files: 650, merge: 1200 }[section] : undefined,
+      ),
       prDiff: (_dir, number) => later(world.mockPrDiff(number)),
       issues: (dir, opts) => later(world.mockIssues(dir, opts?.state ?? "open")),
       issuesEnabled: () => later(true),

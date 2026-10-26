@@ -35,6 +35,7 @@ import type {
   GitHubPrFile,
   GitHubPullRequest,
   GitHubPullRequestDetail,
+  GitHubPullRequestSection,
   GitHubPullRequestState,
   GitHubRepoInfo,
   GitHubReview,
@@ -541,6 +542,16 @@ const PR_DETAIL_JSON_FIELDS =
   "reviewDecision,reviewRequests,latestReviews,comments,statusCheckRollup," +
   "commits,labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy,headRefOid";
 
+const PR_SECTION_JSON_FIELDS = {
+  summary:
+    "number,title,body,url,author,state,isDraft,headRefName,headRepositoryOwner,baseRefName," +
+    "labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy,headRefOid",
+  conversation: "number,reviewRequests,latestReviews,comments,commits",
+  checks: "number,statusCheckRollup",
+  files: "number,additions,deletions,changedFiles,files",
+  merge: "number,isDraft,mergeable,mergeStateStatus,reviewDecision",
+} satisfies Record<GitHubPullRequestSection, string>;
+
 const PullRequestDetailWire = z.object({
   number: z.number().int().positive(),
   title: z.string().catch(""),
@@ -968,12 +979,22 @@ export function mergeSettingsOf(wire: z.output<typeof MergeSettingsWire>): Merge
   };
 }
 
-async function mergeSettings(root: string): Promise<MergeSettings> {
+const RequiredMergeSettingsWire = z.object({
+  mergeCommitAllowed: z.boolean(),
+  squashMergeAllowed: z.boolean(),
+  rebaseMergeAllowed: z.boolean(),
+  viewerPermission: z.string(),
+});
+
+async function mergeSettings(root: string, strict = false): Promise<MergeSettings> {
   try {
     const out = await gh(root, ["repo", "view", "--json", MERGE_SETTINGS_JSON_FIELDS]);
-    const wire = decodeOrThrow(out, MergeSettingsWire, "The GitHub CLI returned unparseable repository data.");
+    const message = "The GitHub CLI returned unparseable repository data.";
+    const wire = decodeOrThrow(out, strict ? RequiredMergeSettingsWire : MergeSettingsWire, message);
+    if (strict && !wire) throw new GitError(message, null);
     return wire ? mergeSettingsOf(wire) : OPEN_MERGE_SETTINGS;
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return OPEN_MERGE_SETTINGS;
   }
 }
@@ -1068,23 +1089,29 @@ function pullRequestDetailOf(
   };
 }
 
-/** One pull request in full. Null when there's no such PR, or when gh is
+/** One pull request, optionally limited to one independently loading region.
+ *  Omitted fields retain decoder defaults and must not overwrite loaded regions.
+ *  Null when there's no such PR, or when gh is
  *  missing / logged out / the remote isn't GitHub — the empty states. */
 export async function prDetail(
   dir: string,
   number: number,
+  section?: GitHubPullRequestSection,
 ): Promise<GitHubPullRequestDetail | null> {
   const root = await repoRoot(dir);
   if (!root) return null;
   if (!Number.isInteger(number) || number <= 0) {
     throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
-  // The repository's rules are a second read, run alongside; they never fail
-  // the detail, only fall back to letting GitHub decide.
-  const settings = mergeSettings(root);
+  // Only the merge region needs repository permissions and available methods.
+  const settings = !section || section === "merge"
+    ? mergeSettings(root, section === "merge")
+    : Promise.resolve(OPEN_MERGE_SETTINGS);
+  // Attach a rejection handler immediately while the PR query is still running.
+  void settings.catch(() => {});
   let out: string;
   try {
-    out = await gh(root, ["pr", "view", String(number), "--json", PR_DETAIL_JSON_FIELDS]);
+    out = await gh(root, ["pr", "view", String(number), "--json", section ? PR_SECTION_JSON_FIELDS[section] : PR_DETAIL_JSON_FIELDS]);
   } catch (error) {
     if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     // A number that doesn't exist is an empty view, not a broken one.
@@ -1104,13 +1131,15 @@ export async function prDetail(
 
   const detail = pullRequestDetailOf(decoded, await settings);
 
-  await fillAvatars([
-    detail.author,
-    detail.mergedBy,
-    ...detail.assignees,
-    ...detail.reviews.map((r) => r.author),
-    ...detail.comments.map((comment) => comment.author),
-  ]);
+  if (!section) {
+    await fillAvatars([
+      detail.author,
+      detail.mergedBy,
+      ...detail.assignees,
+      ...detail.reviews.map((r) => r.author),
+      ...detail.comments.map((comment) => comment.author),
+    ]);
+  }
   return detail;
 }
 

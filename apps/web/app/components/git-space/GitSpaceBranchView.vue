@@ -638,7 +638,7 @@ onBeforeUnmount(() => {
   background-color: var(--panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 24px 64px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+    0 16px 40px -16px rgb(0 0 0 / 24%);
 }
 .bsm.is-in {
   animation: bsm-grow 460ms cubic-bezier(0.34, 1.3, 0.64, 1) backwards;

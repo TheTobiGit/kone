@@ -517,14 +517,14 @@ const bundleCards: BundleCard[] = [
   border-radius: 10px;
   background-color: var(--raised-high);
   border: 1px solid var(--line-soft);
-  box-shadow: color-mix(in srgb, var(--ink) 3%, transparent) 0 1px 4px;
+  box-shadow: rgb(0 0 0 / 3%) 0 1px 4px;
   /* Pivot at the bottom of each paper, where the fan meets the pill, so the
      tops spread apart as the bundle fans open on hover. */
   transform-origin: 50% 100%;
   transform: rotate(calc(var(--r) * var(--fan)));
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.bundle__card--front { box-shadow: color-mix(in srgb, var(--ink) 5%, transparent) 0 2px 6px; }
+.bundle__card--front { box-shadow: rgb(0 0 0 / 5%) 0 2px 6px; }
 .bundle__badge {
   display: flex;
   align-items: center;
@@ -557,7 +557,7 @@ const bundleCards: BundleCard[] = [
   padding-inline: 10px;
   border-radius: 11px;
   background-color: var(--ink);
-  box-shadow: color-mix(in srgb, var(--ink) 16%, transparent) 0 2px 6px;
+  box-shadow: rgb(0 0 0 / 16%) 0 2px 6px;
 }
 .bundle__count {
   font-family: var(--font-mono);

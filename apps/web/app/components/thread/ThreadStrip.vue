@@ -1659,7 +1659,7 @@ function dockVars(id: string): Record<string, string> {
   cursor: pointer;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
-    0 2px 8px color-mix(in srgb, var(--ink) 4%, transparent);
+    0 2px 8px rgb(0 0 0 / 4%);
   transition:
     background-color 0.18s ease,
     box-shadow 0.18s ease,
@@ -1681,7 +1681,7 @@ function dockVars(id: string): Record<string, string> {
   background: color-mix(in srgb, var(--hover) 45%, var(--ground));
   box-shadow:
     0 0 0 1.5px color-mix(in srgb, var(--ink) 22%, transparent),
-    0 4px 16px color-mix(in srgb, var(--ink) 7%, transparent);
+    0 4px 16px rgb(0 0 0 / 7%);
 }
 .rail.is-overview .col.is-focused:hover {
   background: color-mix(in srgb, var(--accent) 3.5%, var(--ground));
