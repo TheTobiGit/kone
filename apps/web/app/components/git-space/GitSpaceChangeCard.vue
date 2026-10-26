@@ -122,7 +122,7 @@ const marks = computed<Mark[]>(() => {
 .card {
   --card-bg: var(--raised-high);
   --card-border: var(--line-soft);
-  --card-shadow: color-mix(in srgb, var(--ink) 3%, transparent) 0 1px 3px;
+  --card-shadow: rgb(0 0 0 / 3%) 0 1px 3px;
   --ctx: var(--muted);
   --name: var(--ink);
 
@@ -144,7 +144,7 @@ const marks = computed<Mark[]>(() => {
 }
 .card:hover {
   /* Lifts on hover with a subtle, tight shadow. */
-  box-shadow: color-mix(in srgb, var(--ink) 5%, transparent) 0 3px 8px;
+  box-shadow: rgb(0 0 0 / 5%) 0 3px 8px;
   transform: translateY(-6px);
 }
 /* Ring only when the keyboard is driving focus. The detail overlay takes focus

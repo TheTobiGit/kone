@@ -570,7 +570,7 @@ watch(visible, (shown) => {
   background: var(--raised);
   box-shadow:
     0 0 0 1px var(--line-soft),
-    0 8px 20px -8px color-mix(in srgb, var(--ink) 12%, transparent);
+    0 8px 20px -8px rgb(0 0 0 / 12%);
   /* Fallback before the visual viewport is read; the inline cap is narrower
      when a pinch-zoomed viewport differs from the layout viewport. */
   max-width: calc(100vw - 16px);

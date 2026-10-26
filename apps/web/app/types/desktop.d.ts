@@ -533,6 +533,9 @@ export type GitHubPrCommit = {
   relative: string;
 };
 
+/** Independently fetched regions of the pull request details view. */
+export type GitHubPullRequestSection = "summary" | "conversation" | "checks" | "files" | "merge";
+
 /** A pull request in full — everything the dedicated view draws, in one read.
  *  Deliberately not an extension of `GitHubPullRequest`: the summary row names
  *  its author with a bare login, and this one carries a whole person. */
@@ -886,7 +889,7 @@ export type KoneGithubApi = {
   issueAction: (dir: string, number: number, action: "close" | "reopen", reason?: GitHubIssueCloseReason) => Promise<void>;
   issueComment: (dir: string, number: number, body: string) => Promise<void>;
   createIssue: (dir: string, opts: GitHubIssueCreateOptions) => Promise<GitHubIssueCreateResult>;
-  prDetail: (dir: string, number: number) => Promise<GitHubPullRequestDetail | null>;
+  prDetail: (dir: string, number: number, section?: GitHubPullRequestSection) => Promise<GitHubPullRequestDetail | null>;
   prDiff: (dir: string, number: number) => Promise<GitFileDiff[]>;
   commitAuthors: (dir: string) => Promise<GitCommitAuthors | null>;
   /** Open a URL in the user's real browser. */

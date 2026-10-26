@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { initTestRepo } from "@kone/git-core/testRepo.js";
 import { git } from "@kone/git-core/core.js";
-import type { GitHubMergeMethod } from "@kone/git-core/types.js";
+import type { GitHubMergeMethod, GitHubPullRequestSection } from "@kone/git-core/types.js";
 
 import { classifyGhError } from "./ghError.js";
 
@@ -316,6 +316,104 @@ describe("prs (record parsing)", () => {
   test("throws GitError on non-array responses", async () => {
     installFakeGh(`{ message: "Not Found" }`);
     await expect(prs(process.cwd())).rejects.toThrow("The GitHub CLI returned unexpected pull request data.");
+  });
+});
+
+/** Record every CLI invocation while controlling individual command failures. */
+function installSectionGh(failure?: "checks" | "merge-settings"): string {
+  const bin = mkdtempSync(path.join(os.tmpdir(), "kone-gh-sections-"));
+  tempDirs.push(bin);
+  const calls = path.join(bin, "calls.jsonl");
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+if (args[0] === "repo") {
+  if (${JSON.stringify(failure)} === "merge-settings") {
+    process.stderr.write("connection reset by peer"); process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({ viewerPermission: "READ", squashMergeAllowed: true, mergeCommitAllowed: false, rebaseMergeAllowed: false }));
+} else {
+  const fields = args[args.indexOf("--json") + 1].split(",");
+  if (${JSON.stringify(failure)} === "checks" && fields.includes("statusCheckRollup")) {
+    process.stderr.write("connection reset by peer"); process.exit(1);
+  }
+  const full = {
+    number: 42, title: "Independent regions", author: {login: "alice"}, isDraft: false,
+    state: "OPEN", additions: 12, deletions: 2, changedFiles: 1,
+    files: [{path: "main.ts", additions: 12, deletions: 2}],
+    mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED",
+    comments: [{body: "Loaded activity", author: {login: "bob"}}],
+    statusCheckRollup: [{__typename: "StatusContext", context: "test", state: "SUCCESS"}]
+  };
+  process.stdout.write(JSON.stringify(Object.fromEntries(fields.map(field => [field, full[field]]))));
+}
+`;
+  const executable = path.join(bin, "gh");
+  writeFileSync(executable, script);
+  chmodSync(executable, 0o755);
+  process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
+  return calls;
+}
+
+function recordedCalls(file: string): string[][] {
+  return readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+}
+
+describe("prDetail (independent regions)", () => {
+  const expectedFields = {
+    summary: ["number", "title", "body", "url", "author", "state", "isDraft", "headRefName", "headRepositoryOwner", "baseRefName", "labels", "assignees", "milestone", "createdAt", "updatedAt", "mergedAt", "closedAt", "mergedBy", "headRefOid"],
+    conversation: ["number", "reviewRequests", "latestReviews", "comments", "commits"],
+    checks: ["number", "statusCheckRollup"],
+    files: ["number", "additions", "deletions", "changedFiles", "files"],
+    merge: ["number", "isDraft", "mergeable", "mergeStateStatus", "reviewDecision"],
+  } satisfies Record<GitHubPullRequestSection, string[]>;
+
+  for (const section of Object.keys(expectedFields)) {
+    // SAFETY: this key is read directly from the complete section-to-fields record.
+    const region = section as GitHubPullRequestSection;
+    test(`${region} requests only its fields and avoids decorative avatar fetches`, async () => {
+      const calls = installSectionGh();
+      const fetchSpy = spyOn(globalThis, "fetch");
+      try {
+        const detail = await prDetail(process.cwd(), 42, region);
+        expect(detail?.number).toBe(42);
+        const invocations = recordedCalls(calls);
+        const prCall = invocations.find((args) => args[0] === "pr");
+        expect(prCall?.at(-1)?.split(",")).toEqual(expectedFields[region]);
+        expect(invocations.filter((args) => args[0] === "repo")).toHaveLength(region === "merge" ? 1 : 0);
+        expect(fetchSpy).not.toHaveBeenCalled();
+        if (region === "summary") {
+          expect(detail?.title).toBe("Independent regions");
+          expect(detail?.files).toEqual([]);
+          expect(detail?.comments).toEqual([]);
+          expect(detail?.checkRuns).toEqual([]);
+        }
+        if (region === "merge") {
+          expect(detail).toMatchObject({ canWrite: false, canTriage: false, mergeMethods: ["squash"] });
+        }
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+  }
+
+  test("malformed permissions cannot mark the merge region ready", async () => {
+    installFakeGh("{ number: 42 }");
+    await expect(prDetail(process.cwd(), 42, "merge")).rejects.toThrow("unparseable repository data");
+  });
+
+  test("a failed checks read does not prevent other regions from loading", async () => {
+    installSectionGh("checks");
+    await expect(prDetail(process.cwd(), 42, "checks")).rejects.toThrow();
+    expect(await prDetail(process.cwd(), 42, "summary")).toMatchObject({ title: "Independent regions" });
+    expect((await prDetail(process.cwd(), 42, "conversation"))?.comments[0]?.body).toBe("Loaded activity");
+  });
+
+  test("section permission failures surface while full reads retain the fallback", async () => {
+    installSectionGh("merge-settings");
+    await expect(prDetail(process.cwd(), 42, "merge")).rejects.toThrow();
+    expect(await prDetail(process.cwd(), 42)).toMatchObject({ canWrite: true, mergeMethods: ["merge", "squash", "rebase"] });
   });
 });
 
