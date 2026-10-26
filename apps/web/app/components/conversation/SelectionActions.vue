@@ -56,6 +56,28 @@ let copyTimer: number | undefined;
 let returnFocus: HTMLElement | null = null;
 /** Guards an async measure that finished after its selection was dismissed. */
 let measureRun = 0;
+let selectingWithPointer = false;
+let selectingWithKeyboard = false;
+let selectionCancelled = false;
+let releasePoint: { x: number; y: number } | undefined;
+let selectionRange: Range | null = null;
+
+function sourceBody(paneId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-column-key="${CSS.escape(paneId)}"] [data-column-type="thread"]`,
+  );
+}
+
+function matchesRange(range: Range | null, selection: Selection | null): boolean {
+  if (!range || !selection?.rangeCount) return false;
+  const next = selection.getRangeAt(0);
+  return (
+    range.startContainer === next.startContainer &&
+    range.startOffset === next.startOffset &&
+    range.endContainer === next.endContainer &&
+    range.endOffset === next.endOffset
+  );
+}
 // A deliberate dismissal outlives the selection that caused it. Without this,
 // the pointer-up or focus tick that follows Escape / an outside click would
 // re-open the toolbar under the reader's cursor.
@@ -125,9 +147,16 @@ async function measureAndPlace(): Promise<void> {
     hide();
     return;
   }
+  const bounds = sourceBody(selected.paneId)?.getBoundingClientRect();
+  if (!bounds || bounds.width <= 16 || bounds.height <= 16) {
+    hide();
+    return;
+  }
   const run = ++measureRun;
   const placed = await measureSelectionToolbar({
     anchor: selected.rect,
+    bounds,
+    releasePoint,
     viewport: readViewport(),
     measurement: {
       // Park the surface at a neutral origin first. A fixed, auto-width box
@@ -136,9 +165,8 @@ async function measureAndPlace(): Promise<void> {
       prepare: () => {
         measuring.value = true;
       },
-      // The only cap is the current viewport. Clearing and re-applying it before
-      // every read keeps the first render from measuring a zero-width box and
-      // lets a wider Copy result grow instead of being ratcheted down.
+      // Reapply the visible pane's cap before every read so wrapped labels
+      // measure at the width available for this selection.
       applyCap: async (maxWidth) => {
         viewportCap.value = maxWidth;
         await nextTick();
@@ -156,20 +184,26 @@ async function measureAndPlace(): Promise<void> {
 }
 
 const evaluate = useDebounceFn(() => {
-  const selected = captureSelection(window.getSelection());
+  if (
+    selectionCancelled || selectingWithPointer || selectingWithKeyboard || !document.hasFocus()
+  ) return;
+  const nativeSelection = window.getSelection();
+  const selected = captureSelection(nativeSelection);
   if (!selected) {
     suppressed = null;
     hide();
     return;
   }
-  if (suppressed && sameSelection(suppressed, selected)) return;
+  const unchangedRange = matchesRange(selectionRange, nativeSelection);
+  if (suppressed && sameSelection(suppressed, selected) && unchangedRange) return;
   suppressed = null;
   // The same selection survives a toolbar press: pointer-up and focus events
   // must not wipe a "Copied" result or restart the toolbar under the cursor.
-  if (visible.value && sameSelection(capture.value, selected)) {
+  if (visible.value && sameSelection(capture.value, selected) && unchangedRange) {
     capture.value = selected;
     return;
   }
+  selectionRange = nativeSelection?.getRangeAt(0).cloneRange() ?? null;
   capture.value = selected;
   activeIndex.value = 0;
   entered.value = false;
@@ -184,14 +218,58 @@ const evaluate = useDebounceFn(() => {
   void nextTick(measureAndPlace);
 }, 120);
 
-useEventListener(document, "selectionchange", evaluate);
-useEventListener(document, "mouseup", evaluate);
+useEventListener(document, "selectionchange", () => {
+  if (selectingWithPointer) suppressed = null;
+  evaluate();
+});
 
-useEventListener(document, "mousedown", (event) => {
-  if (!visible.value) return;
+useEventListener(document, "pointerdown", (event) => {
   const target = event.target instanceof Node ? event.target : null;
   if (isSelectionToolbarTarget(target)) return;
-  hide({ suppress: true, reason: "outside" });
+  if (visible.value) hide({ suppress: true, reason: "outside" });
+  if (event.button !== 0 || !event.isPrimary) return;
+  selectingWithPointer = true;
+  selectionCancelled = false;
+  releasePoint = undefined;
+});
+
+useEventListener(document, "pointerup", (event) => {
+  if (!selectingWithPointer || event.button !== 0) return;
+  selectingWithPointer = false;
+  releasePoint = { x: event.clientX, y: event.clientY };
+  evaluate();
+});
+
+useEventListener(document, "pointercancel", () => {
+  selectionCancelled = true;
+  selectingWithPointer = false;
+  hide({ suppress: true });
+});
+
+useEventListener(window, "blur", () => {
+  selectingWithPointer = false;
+  selectingWithKeyboard = false;
+  hide({ suppress: true });
+});
+
+useEventListener(document, "keydown", (event) => {
+  const extendsSelection = event.shiftKey && [
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown",
+  ].includes(event.key);
+  const selectsAll = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a";
+  if (!extendsSelection && !selectsAll) return;
+  if (toolbar.value?.contains(document.activeElement)) return;
+  selectingWithKeyboard = true;
+  selectionCancelled = false;
+  releasePoint = undefined;
+  suppressed = null;
+  if (visible.value) hide();
+});
+
+useEventListener(document, "keyup", () => {
+  if (!selectingWithKeyboard) return;
+  selectingWithKeyboard = false;
+  evaluate();
 });
 
 /** A dialog painted above the plane keeps Escape while it holds focus; the
@@ -254,8 +332,15 @@ function onToolbarFocusout(event: FocusEvent): void {
 useEventListener(
   document,
   "scroll",
-  () => {
-    if (visible.value) hide({ suppress: true, reason: "scroll" });
+  (event) => {
+    if (!visible.value || !capture.value) return;
+    const body = sourceBody(capture.value.paneId);
+    const target = event.target;
+    const sourceScrolled = target instanceof Element && body &&
+      (target.contains(body) || body.contains(target));
+    if (target === document || sourceScrolled) {
+      hide({ suppress: true, reason: "scroll" });
+    }
   },
   { capture: true },
 );
