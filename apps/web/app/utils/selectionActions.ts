@@ -54,7 +54,7 @@ export interface SelectionCapture {
   paneId: string;
   /** Only when the whole range sits in one message; cross-message ranges omit it. */
   messageId?: string;
-  /** The last measured line, used to place the toolbar beside the selection. */
+  /** The union of selected line boxes, used to keep actions outside the text. */
   rect: SelectionRect | null;
 }
 
@@ -155,10 +155,16 @@ function messageIdOf(node: SelectionNode): string | null {
   return id.trim() ? id : null;
 }
 
-function lastRect(range: SelectionRange): SelectionRect | null {
-  const rects = range.getClientRects();
-  if (rects.length) return rects[rects.length - 1] ?? null;
-  return range.getBoundingClientRect();
+function selectionRect(range: SelectionRange): SelectionRect | null {
+  const rects = Array.from(range.getClientRects()).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  if (!rects.length) return range.getBoundingClientRect();
+  const left = Math.min(...rects.map((rect) => rect.left));
+  const right = Math.max(...rects.map((rect) => rect.right));
+  const top = Math.min(...rects.map((rect) => rect.top));
+  const bottom = Math.max(...rects.map((rect) => rect.bottom));
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
 }
 
 /**
@@ -198,7 +204,7 @@ export function captureSelection(selection: SelectionLike | null): SelectionCapt
   const result: SelectionCapture = {
     text,
     paneId,
-    rect: lastRect(range),
+    rect: selectionRect(range),
   };
   if (messageId) result.messageId = messageId;
   return result;
@@ -238,6 +244,8 @@ export interface ToolbarViewport {
 
 export interface ToolbarPlacementInput {
   anchor: SelectionRect;
+  releasePoint?: { x: number; y: number };
+  bounds?: SelectionRect;
   toolbar: { width: number; height: number };
   viewport: ToolbarViewport;
   margin?: number;
@@ -271,44 +279,50 @@ export function selectionToolbarCap(viewportWidth: number, margin = 8): number {
   return Math.max(0, viewportWidth - margin * 2);
 }
 
-/**
- * Place the measured toolbar above the selection when it fits, below it when it
- * does not, and always inside the visual viewport. 320px is the narrow case the
- * toolbar has to survive; a narrower viewport still wins.
- */
+function visibleToolbarBounds(viewport: ToolbarViewport, bounds?: SelectionRect) {
+  const left = viewport.offsetLeft ?? 0;
+  const top = viewport.offsetTop ?? 0;
+  return {
+    left: Math.max(left, bounds?.left ?? left),
+    right: Math.min(left + Math.max(0, viewport.width), bounds?.right ?? Infinity),
+    top: Math.max(top, bounds?.top ?? top),
+    bottom: Math.min(top + Math.max(0, viewport.height), bounds?.bottom ?? Infinity),
+  };
+}
+
+/** Keep actions outside the selected block and inside the visible source pane.
+ * Pointer selections prefer the side nearest the release; keyboard selections
+ * prefer above. If neither side fits, use the side with more visible space. */
 export function placeSelectionToolbar(input: ToolbarPlacementInput): ToolbarPlacement {
   const margin = input.margin ?? 8;
   const gap = input.gap ?? 8;
-  // `getBoundingClientRect()` and a `position: fixed` box both speak layout
-  // viewport coordinates — verified in Chromium: while pinch-panned, the box's
-  // rect did not move even though `visualViewport.offsetLeft` did. The visual
-  // viewport is the part of that layout the reader can see, and
-  // `offsetLeft`/`offsetTop` locate its top-left corner in those same
-  // coordinates. Adding the offsets therefore translates the *visible bounds*
-  // ("8px from the visible edge") into coordinates the box can be placed at;
-  // with no pinch or pan they are zero and this is the ordinary clamp.
-  const offsetLeft = input.viewport.offsetLeft ?? 0;
-  const offsetTop = input.viewport.offsetTop ?? 0;
-  const viewportWidth = Math.max(0, input.viewport.width);
-  const viewportHeight = Math.max(0, input.viewport.height);
-  const width = Math.min(input.toolbar.width, selectionToolbarCap(viewportWidth, margin));
+  const bounds = visibleToolbarBounds(input.viewport, input.bounds);
+  const width = Math.min(input.toolbar.width, selectionToolbarCap(bounds.right - bounds.left, margin));
   const height = input.toolbar.height;
-
   const left = clamp(
-    input.anchor.left + input.anchor.width / 2 - width / 2,
-    offsetLeft + margin,
-    offsetLeft + viewportWidth - margin - width,
+    (input.releasePoint?.x ?? input.anchor.left + input.anchor.width / 2) - width / 2,
+    bounds.left + margin,
+    bounds.right - margin - width,
   );
-
   const aboveTop = input.anchor.top - gap - height;
-  const fitsAbove = aboveTop >= offsetTop + margin;
-  const desiredTop = fitsAbove ? aboveTop : input.anchor.bottom + gap;
+  const belowTop = input.anchor.bottom + gap;
+  const fitsAbove = aboveTop >= bounds.top + margin;
+  const fitsBelow = belowTop + height <= bounds.bottom - margin;
+  const prefersBelow = input.releasePoint !== undefined &&
+    input.releasePoint.y > input.anchor.top + input.anchor.height / 2;
+  let below = prefersBelow;
+  if (fitsAbove || fitsBelow) {
+    below = prefersBelow ? fitsBelow : !fitsAbove;
+  } else {
+    const spaceAbove = input.anchor.top - bounds.top;
+    const spaceBelow = bounds.bottom - input.anchor.bottom;
+    if (spaceAbove !== spaceBelow) below = spaceBelow > spaceAbove;
+  }
   const top = clamp(
-    desiredTop,
-    offsetTop + margin,
-    offsetTop + viewportHeight - margin - height,
+    below ? belowTop : aboveTop,
+    bounds.top + margin,
+    bounds.bottom - margin - height,
   );
-
   return { top, left, width };
 }
 
@@ -324,6 +338,8 @@ export interface ToolbarMeasurement {
 
 export interface ToolbarMeasurementInput {
   anchor: SelectionRect;
+  releasePoint?: { x: number; y: number };
+  bounds?: SelectionRect;
   viewport: ToolbarViewport;
   measurement: ToolbarMeasurement;
   margin?: number;
@@ -331,7 +347,7 @@ export interface ToolbarMeasurementInput {
 }
 
 /**
- * Measure, then place. The cap is always the current viewport width — never a
+ * Measure, then place. The cap is the visible source pane's width — never a
  * previous measurement — so the first render is not collapsed to zero and a
  * later, wider label grows the surface instead of ratcheting it down. The
  * surface is parked at a neutral origin first so the read cannot inherit the
@@ -341,12 +357,15 @@ export interface ToolbarMeasurementInput {
 export async function measureSelectionToolbar(
   input: ToolbarMeasurementInput,
 ): Promise<ToolbarPlacement> {
-  const cap = selectionToolbarCap(input.viewport.width, input.margin);
+  const bounds = visibleToolbarBounds(input.viewport, input.bounds);
+  const cap = selectionToolbarCap(bounds.right - bounds.left, input.margin);
   await input.measurement.prepare?.();
   await input.measurement.applyCap(cap);
   const box = input.measurement.measure();
   return placeSelectionToolbar({
     anchor: input.anchor,
+    releasePoint: input.releasePoint,
+    bounds: input.bounds,
     toolbar: { width: box.width, height: box.height },
     viewport: input.viewport,
     margin: input.margin,
