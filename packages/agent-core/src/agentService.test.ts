@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -2177,6 +2177,31 @@ describe("handoff window resolution", () => {
     const service = serviceFor(meta({ model: "small", contextWindow: 128_000 }));
     await service.listModels("codex");
     expect(service.handoffWindowTokensFor("t-window", "foreign-model")).toBe(8_000);
+  });
+});
+
+// These executable fixtures use /bin/sh; injected-platform launch tests cover Windows.
+describe.skipIf(process.platform === "win32")("AgentService.checkProviderBinary", () => {
+  test.each([
+    { name: "silent failure", body: "exit 1", error: "Command exited with code 1." },
+    { name: "diagnostic failure", body: "echo 'broken configuration' >&2; exit 2", error: "broken configuration" },
+    { name: "version then failure", body: "echo 'codex 1.2.3'; exit 3", error: "codex 1.2.3" },
+  ])("rejects a $name", async ({ body, error }) => {
+    const binary = path.join(userDataDir, "version-probe");
+    writeFileSync(binary, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+
+    const result = await service.checkProviderBinary("codex", binary);
+
+    expect(result).toMatchObject({ ok: false, version: null, resolvedPath: binary, error });
+  });
+
+  test("accepts a successful version probe", async () => {
+    const binary = path.join(userDataDir, "version-probe-success");
+    writeFileSync(binary, "#!/bin/sh\necho 'codex 1.2.3'\n", { mode: 0o755 });
+
+    const result = await service.checkProviderBinary("codex", binary);
+
+    expect(result).toMatchObject({ ok: true, version: "1.2.3", resolvedPath: binary });
   });
 });
 

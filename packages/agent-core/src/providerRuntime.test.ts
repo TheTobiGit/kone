@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { cacheStatuses } from "./providerCache.js";
 import { ProviderRuntime } from "./providerRuntime.js";
+import { writeProviderSettings } from "./providerSettings.js";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
   AdapterCapabilities,
@@ -212,6 +213,53 @@ describe("ProviderRuntime health checks", () => {
 });
 
 describe("ProviderRuntime settings application", () => {
+  test.each(["discovery", "health check"] as const)(
+    "a settings change during %s discards the old probe and refreshes",
+    async (kind) => {
+      const { runtime, adapter } = harness("cline");
+      const before: ProviderConfig = { homeDir: "/old/home" };
+      const after: ProviderConfig = { homeDir: "/new/home" };
+      writeProviderSettings("cline", before);
+      const started = Promise.withResolvers<void>();
+      const oldProbe = Promise.withResolvers<ProviderStatus>();
+      const published: ProviderStatus[][] = [];
+      runtime.onProvidersChanged((statuses) => published.push(statuses));
+      // A probe can refill its adapter's cache after settings invalidated it.
+      let cached: ProviderStatus | undefined;
+      adapter.invalidateDiscoveryCaches = () => { cached = undefined; };
+      adapter.discover = async () => {
+        adapter.discoverCalls += 1;
+        if (adapter.discoverCalls === 1) {
+          started.resolve();
+          cached = await oldProbe.promise;
+        }
+        return cached ?? readyStatus("cline");
+      };
+
+      const inFlight = kind === "discovery"
+        ? runtime.discover()
+        : runtime.checkProvider("cline");
+      await started.promise;
+      writeProviderSettings("cline", after);
+      await runtime.applyProviderSettings("cline", before, after);
+      oldProbe.resolve({
+        ...readyStatus("cline"),
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+      });
+
+      const result = await inFlight;
+      expect(Array.isArray(result) ? result[0]?.readiness : result.readiness).toBe("ready");
+      expect(adapter.discoverCalls).toBeGreaterThanOrEqual(2);
+      await runtime.discover();
+
+      expect(published).toHaveLength(1);
+      expect(published[0]?.[0]?.readiness).toBe("ready");
+      expect(runtime.cachedSurface().statuses[0]?.readiness).toBe("ready");
+      writeProviderSettings("cline", {});
+    },
+  );
+
   test("a runtime-moving setting retires; a presentation-only one does not", async () => {
     const { runtime, adapter, retired, invalidatedQuota } = harness("cline");
     const before: ProviderConfig = { binaryPath: "/old/cline" };

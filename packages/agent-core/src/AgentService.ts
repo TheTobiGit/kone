@@ -77,6 +77,7 @@ import { readProviderCache, type ProviderSurfaceSnapshot } from "./providerCache
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { ProviderRuntime } from "./providerRuntime.js";
 import { probeResult } from "./spawn.js";
+import { probeDetail } from "./providerHealth.js";
 import {
   assertProviderEnabled,
   customModelsFor,
@@ -1040,14 +1041,14 @@ export class AgentService {
       };
     }
     const probe = await probeResult(maint.resolvedPath, ["--version"], env, 8_000);
-    if (probe.outcome === "missing" || probe.outcome === "failure" || probe.outcome === "timeout") {
+    if (probe.outcome !== "ok") {
       return {
         provider,
         binary: maint.binary,
         ok: false,
         version: null,
         resolvedPath: maint.resolvedPath,
-        error: probe.outcome === "timeout" ? "Timed out" : "Not found",
+        error: probe.outcome === "timeout" ? "Timed out" : probeDetail(probe) ?? "Not found",
       };
     }
     const combined = [probe.stdout, probe.stderr].join(' ').trim();
