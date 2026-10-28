@@ -578,10 +578,13 @@ describe("useProviderSettings: extended provider & global settings", () => {
 
     await settings.setEnvVars("codex", [
       { name: "OPENAI_BASE_URL", value: "https://api.example.com/v1" },
+      { name: "OPENAI_API_KEY", value: "sk-never-stored", secret: true },
     ]);
     expect(settings.envVars("codex")).toEqual([
       { name: "OPENAI_BASE_URL", value: "https://api.example.com/v1" },
+      { name: "OPENAI_API_KEY", value: "", secret: true },
     ]);
+    expect(bridge.main().codex?.env).toEqual(settings.envVars("codex"));
     expect(bridge.patchCalls.length).toBeGreaterThanOrEqual(5);
   });
 

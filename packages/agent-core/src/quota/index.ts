@@ -162,9 +162,12 @@ const QUOTA_CAPABLE_PROVIDERS = new Set<string>(quotaCapableProviders());
  *  presence probes (Claude Code and the Cursor CLI both keep their login
  *  there these days) run under a short timeout so a first-read prompt can
  *  never hold the page open. */
-export async function detectProviderCredential(provider: QuotaCapableProvider): Promise<boolean> {
+export async function detectProviderCredential(
+  provider: QuotaCapableProvider,
+  env?: NodeJS.ProcessEnv,
+): Promise<boolean> {
   try {
-    if (provider === "opencode") return await detectOpenCodeDatabase();
+    if (provider === "opencode") return await detectOpenCodeDatabase(env);
     if (provider === "cursor") return await detectCursorCredential();
     if (provider === "claudeAgent") return await detectClaudeCredential();
     if (provider === "antigravity") return await detectAntigravityCredential();
@@ -186,6 +189,9 @@ export async function detectProviderCredential(provider: QuotaCapableProvider): 
 export async function fetchProviderQuota(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean } = {},
+  /** The provider's resolved child environment. Internal seam: renderer IPC
+   *  never supplies this, so a window cannot redirect a usage read. */
+  env?: NodeJS.ProcessEnv,
 ): Promise<QuotaProviderReport> {
   const cached = cache.get(provider);
   if (!opts.force && cached && Date.now() - cached.at < cached.ttlMs) return cached.report;
@@ -201,7 +207,7 @@ export async function fetchProviderQuota(
   if (pending) return pending;
 
   const generation = currentQuotaGeneration(provider);
-  const run = runProviderQuota(provider, opts, generation).finally(() => {
+  const run = runProviderQuota(provider, opts, env, generation).finally(() => {
     if (inFlight.get(provider) === run) inFlight.delete(provider);
   });
   inFlight.set(provider, run);
@@ -211,11 +217,12 @@ export async function fetchProviderQuota(
 async function runProviderQuota(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean },
+  env: NodeJS.ProcessEnv | undefined,
   generation: number,
 ): Promise<QuotaProviderReport> {
   const isCurrent = () => currentQuotaGeneration(provider) === generation;
   try {
-    const result = await fetchFor(provider, opts);
+    const result = await fetchFor(provider, opts, env);
     if (!isCurrent()) return result.report;
 
     if (result.retryAfterSeconds !== undefined) {
@@ -303,6 +310,7 @@ type FetchResult = { report: QuotaProviderReport; retryAfterSeconds?: number };
 function fetchFor(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal },
+  env: NodeJS.ProcessEnv | undefined,
 ): Promise<FetchResult> {
   switch (provider) {
     case "claudeAgent":
@@ -312,7 +320,7 @@ function fetchFor(
     case "cursor":
       return fetchCursorQuota({ allowKeychain: opts.allowKeychain, signal: opts.signal });
     case "opencode":
-      return fetchOpenCodeQuota({ signal: opts.signal });
+      return fetchOpenCodeQuota({ signal: opts.signal, env }); // undefined builds it in opencode.ts
     case "antigravity":
       return fetchAntigravityQuota({ signal: opts.signal });
     case "droid":

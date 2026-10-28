@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { envValue } from "../envKeys.js";
+import { buildProviderChildEnv } from "../providerChildEnv.js";
 import { DatabaseSync } from "../sqlite.js";
 import { detectOpenCodeLayout } from "../usage/local/opencodeSchema.js";
 
@@ -102,9 +104,14 @@ type UsageRow = {
 
 /** Resolution order mirrors OpenCode itself, so kone reads exactly the
  *  directory the CLI just wrote to: an explicit override first, then XDG,
- *  then the plain default. Supports comma-separated `OPENCODE_DATA_DIR`. */
-export function resolveOpenCodeDataDirs(): string[] {
-  const override = process.env.OPENCODE_DATA_DIR?.trim();
+ *  then the plain default. Supports comma-separated `OPENCODE_DATA_DIR`.
+ *  `env` is the provider's resolved child environment — the same one its CLI
+ *  runs with — not kone's own process environment, so a configured profile
+ *  reads its own database. */
+export function resolveOpenCodeDataDirs(
+  env: NodeJS.ProcessEnv = buildProviderChildEnv("opencode"),
+): string[] {
+  const override = envValue(env, "OPENCODE_DATA_DIR")?.trim();
   if (override) {
     const dirs = override
       .split(",")
@@ -112,13 +119,15 @@ export function resolveOpenCodeDataDirs(): string[] {
       .filter((part) => part.length > 0);
     if (dirs.length > 0) return dirs;
   }
-  const xdg = process.env.XDG_DATA_HOME?.trim();
+  const xdg = envValue(env, "XDG_DATA_HOME")?.trim();
   if (xdg) return [path.join(xdg, "opencode")];
   return [path.join(os.homedir(), ".local", "share", "opencode")];
 }
 
-function resolveDataDir(): string {
-  return resolveOpenCodeDataDirs()[0] ?? path.join(os.homedir(), ".local", "share", "opencode");
+function resolveDataDir(env: NodeJS.ProcessEnv): string {
+  return (
+    resolveOpenCodeDataDirs(env)[0] ?? path.join(os.homedir(), ".local", "share", "opencode")
+  );
 }
 
 /** Every `opencode*.db` file in the data dir. OpenCode partitions its usage
@@ -148,9 +157,11 @@ export function listOpenCodeDatabasePaths(dataDir: string): string[] {
 /** Cheap presence check for provider-detection UI: does OpenCode's data dir
  *  hold at least one channel database on this machine? No SQLite open, no
  *  parsing — just "is there a file kone could try to read". */
-export async function detectOpenCodeDatabase(): Promise<boolean> {
+export async function detectOpenCodeDatabase(
+  env: NodeJS.ProcessEnv = buildProviderChildEnv("opencode"),
+): Promise<boolean> {
   try {
-    for (const dir of resolveOpenCodeDataDirs()) {
+    for (const dir of resolveOpenCodeDataDirs(env)) {
       if (listOpenCodeDatabasePaths(dir).length > 0) return true;
     }
     return false;
@@ -460,9 +471,12 @@ export function computeTrend(rows: UsageRow[], nowMs: number): TrendPoint[] {
  *  print. Never throws: every path, including a database that fails to
  *  open, resolves to a report — matching the contract every other quota
  *  provider in this module honors. */
-export async function fetchOpenCodeQuota(opts: { signal?: AbortSignal } = {}): Promise<{ report: QuotaProviderReport }> {
+export async function fetchOpenCodeQuota(
+  opts: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ report: QuotaProviderReport }> {
   try {
-    const dataDir = resolveDataDir();
+    const env = opts.env ?? buildProviderChildEnv("opencode");
+    const dataDir = resolveDataDir(env);
     let paths: string[];
     try {
       paths = listOpenCodeDatabasePaths(dataDir);

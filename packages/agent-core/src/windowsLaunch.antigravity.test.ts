@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 
-import { agentCoreModuleUrl, createLaunchFixture, runLaunchScript } from "./testing/win32Launch.js";
+import { agentCoreModuleUrl, launchFixtures, runLaunchScript } from "./testing/win32Launch.js";
 import { escapeCmdCommand } from "./windowsLaunch.js";
+
+const fixtures = launchFixtures();
+
+afterEach(fixtures.cleanup);
 
 // The Antigravity ACP adapter's sign-in probe (adapters/AntigravityAcpAdapter.ts
 // discover): `agy models` through probeResult. The ACP server itself is
@@ -17,7 +21,7 @@ const RESOLVED_SERVER = `{ executablePath: "/nonexistent/agy_acp_server.par", ha
 
 describe("Antigravity ACP adapter launch", () => {
   test("discover() probes models through cmd.exe", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const run = await runLaunchScript({
       fixture,
@@ -36,7 +40,7 @@ describe("Antigravity ACP adapter launch", () => {
   }, 15_000);
 
   test("off Windows the same probe spawns the bare name", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installExecutable(BINARY);
     const run = await runLaunchScript({
       fixture,

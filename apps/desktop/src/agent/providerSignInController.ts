@@ -96,7 +96,7 @@ export type SignInTerminalManager = Pick<
 
 export type ProviderSignInControllerOptions = {
   manager: SignInTerminalManager;
-  svc: Pick<AgentService, "getProviderSettings" | "checkProvider">;
+  svc: Pick<AgentService, "getProviderSettings">;
   /** Test seam: the base env the login resolves against. */
   buildEnv?: () => Promise<NodeJS.ProcessEnv>;
   /** Test seam: the main-generated terminal id. Defaults to `signin-<uuid>`. */

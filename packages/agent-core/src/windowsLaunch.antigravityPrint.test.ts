@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -6,13 +6,17 @@ import { runAntigravityHelperProcess } from "./adapters/AntigravityPrintAdapter.
 import { resolveAntigravityBinary } from "./antigravityHome.js";
 import {
   agentCoreModuleUrl,
-  createLaunchFixture,
   installTaskkillRecorder,
+  launchFixtures,
   recordingSpawn,
   runLaunchScript,
   type LaunchFixture,
 } from "./testing/win32Launch.js";
 import { escapeCmdCommand } from "./windowsLaunch.js";
+
+const fixtures = launchFixtures();
+
+afterEach(fixtures.cleanup);
 
 // The Antigravity print adapter's two non-probe spawns: the short helper
 // (`agy plugin install` / `agy models`, runAntigravityHelperProcess) and the
@@ -58,7 +62,7 @@ function readRecordFile(file: string): string[][] {
 
 describe("Antigravity helper process through the launch seam", () => {
   test("on Windows the helper is ComSpec running the npm shim", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const env = launchEnv(fixture);
     const { calls, spawn } = recordingSpawn("process.stdout.write('models\\n')");
@@ -76,7 +80,7 @@ describe("Antigravity helper process through the launch seam", () => {
   });
 
   test("an argv cmd.exe cannot carry is refused, not launched truncated", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const { calls, spawn } = recordingSpawn();
     const failure = await runAntigravityHelperProcess(
@@ -90,7 +94,7 @@ describe("Antigravity helper process through the launch seam", () => {
   });
 
   test("off Windows the helper spawns the bare name with the unchanged options", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installExecutable(BINARY);
     const env = launchEnv(fixture);
     const { calls, spawn } = recordingSpawn("process.stdout.write('models\\n')");
@@ -110,7 +114,7 @@ describe("Antigravity helper process through the launch seam", () => {
   });
 
   test("on Windows a timed-out helper is torn down with taskkill", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const taskkillRecord = installTaskkillRecorder(fixture);
     // A cmd.exe that never finishes: the helper's timeout is the only way out,
@@ -188,7 +192,7 @@ describe("Antigravity print-mode turn launch", () => {
   }
 
   test("on Windows the turn is ComSpec running the npm shim", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const run = await runLaunchScript({ fixture, windows: true, body: turnBody(fixture, "hello from kone", "t-win") });
     expect(run.stderr).toBe("");
@@ -208,7 +212,7 @@ describe("Antigravity print-mode turn launch", () => {
   }, 20_000);
 
   test("on Windows a multi-line prompt fails the turn instead of truncating it", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const run = await runLaunchScript({
       fixture,
@@ -225,7 +229,7 @@ describe("Antigravity print-mode turn launch", () => {
   }, 20_000);
 
   test("off Windows the turn spawns the bare name with the unchanged argv", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installExecutable(BINARY);
     const run = await runLaunchScript({ fixture, windows: false, body: turnBody(fixture, "hello from kone", "t-posix") });
     expect(run.stderr).toBe("");

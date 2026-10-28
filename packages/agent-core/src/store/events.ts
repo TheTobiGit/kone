@@ -463,7 +463,7 @@ export class EventIngestRepo {
                   cacheReadTokens: splits.cacheReadTokens ?? 0,
                   cacheCreationTokens: splits.cacheCreationTokens ?? 0,
                   reasoningTokens: splits.reasoningTokens ?? 0,
-                });
+                }, event.refs?.conversationId || null);
               }
             }
           });
@@ -859,7 +859,15 @@ export class EventIngestRepo {
    *  hasn't reported one yet and a provider that structurally never will
    *  should look identical in this table (both "no cache tokens for this
    *  turn"), so SUM() over the column is always correct without a COALESCE
-   *  at every read site. */
+   *  at every read site.
+   *
+   *  `usageSessionId` is the provider-native session the counter belongs to
+   *  (the same id the envelope carries as `refs.conversationId`). Running-total
+   *  providers keep one cumulative counter per session, so the trace reads two
+   *  rows as comparable only when both name the same session — never by
+   *  guessing from provider, model or timestamp. It stays NULL when the event
+   *  names no session, which is the honest "boundary unknown" state for rows
+   *  written before this column existed. */
   private recordTurnUsage(
     db: DatabaseSync,
     threadId: string,
@@ -874,13 +882,15 @@ export class EventIngestRepo {
       cacheCreationTokens?: number;
       reasoningTokens?: number;
     },
+    usageSessionId: string | null,
   ): void {
     db.prepare(
       `INSERT INTO turn_usage
          (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
-          cache_read_tokens, cache_creation_tokens, reasoning_tokens, provider, model, at)
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, provider, model,
+          usage_session_id, at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-               (SELECT CASE WHEN model = ? THEN ? ELSE model END FROM threads WHERE thread_id = ?), ?)
+               (SELECT CASE WHEN model = ? THEN ? ELSE model END FROM threads WHERE thread_id = ?), ?, ?)
        ON CONFLICT(thread_id, turn_id) DO UPDATE SET
          input_tokens          = excluded.input_tokens,
          output_tokens         = excluded.output_tokens,
@@ -890,6 +900,7 @@ export class EventIngestRepo {
          reasoning_tokens      = excluded.reasoning_tokens,
          provider              = excluded.provider,
          model                 = excluded.model,
+         usage_session_id      = excluded.usage_session_id,
          at                    = excluded.at`,
     ).run(
       threadId,
@@ -904,6 +915,7 @@ export class EventIngestRepo {
       this.reroutes.get(threadId)?.from ?? null,
       this.reroutes.get(threadId)?.to ?? null,
       threadId,
+      usageSessionId,
       at,
     );
   }

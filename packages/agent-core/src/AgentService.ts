@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError, limitResetFromError } from "./adapters/errors.js";
-import { cachedLimitResetFor, invalidateProviderQuotaCache, isQuotaCapableProvider } from "./quota/index.js";
+import { cachedLimitResetFor, isQuotaCapableProvider } from "./quota/index.js";
 import {
   resolveModelWithFallback,
   type ModelCandidate,
@@ -73,19 +73,9 @@ import {
   type ConversationStore,
 } from "./ConversationStore.js";
 import { buildAgentEnv } from "./processEnv.js";
-import {
-  cacheModels,
-  cacheStatuses,
-  readProviderCache,
-  type ProviderSurfaceSnapshot,
-} from "./providerCache.js";
-import {
-  disabledProviderStatus,
-  providerStatusesEqual,
-  stabilizeProviderStatuses,
-  statusEnabled,
-} from "./providerHealth.js";
+import { readProviderCache, type ProviderSurfaceSnapshot } from "./providerCache.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
+import { ProviderRuntime } from "./providerRuntime.js";
 import { probeResult } from "./spawn.js";
 import {
   assertProviderEnabled,
@@ -132,7 +122,6 @@ import type {
   GlobalProviderSettingsPatch,
   ProviderBinaryCheckResult,
   ProviderConfig,
-  ProviderEnvVar,
   ProviderKind,
   ProviderModelsRefreshResult,
   ProviderMaintenance,
@@ -566,32 +555,24 @@ type CancelScope = { queueIds: ReadonlySet<string> } | { upToRowid: number | nul
 
 export class AgentService {
   private readonly userQuestions = new UserQuestionRequests((event) => this.dispatch(event));
-  private readonly adapters = new Map<ProviderKind, ProviderAdapter>();
+  /** Adapters, catalogs, discovery rounds and the provider-status surface. The
+   *  service keeps thread routing; everything provider-runtime-shaped lives
+   *  with the runtime so a settings write and a sign-in retire the same state. */
+  private readonly providers: ProviderRuntime;
   /** threadId → provider, so thread-scoped calls find the right adapter. */
   private readonly routing = new Map<string, ProviderKind>();
+  /** Bumped whenever a provider's credential-bound runtime is retired (a new
+   *  sign-in, or install settings that move how its CLI launches). A start
+   *  reads it before spawning and refuses to adopt a session whose provider
+   *  moved underneath it. */
+  private readonly providerEpochs = new Map<ProviderKind, number>();
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
-  /** Last known catalog per provider — seeded from disk at construction, so a
-   *  cold launch can validate a model id without spawning a probe CLI. */
-  private readonly catalogs = new Map<ProviderKind, ModelDescriptor[]>();
   /** The MCP gateway (docs/mcp-gateway-design.md), attached after boot. When
    *  live, each startSession mints a per-session bearer token and stopSession
    *  revokes it — agents reach kone tools over loopback. */
   private gateway: GatewayHandle | null = null;
   /** What waits in each thread's inbox, carried by the next turn to start. */
   private turnInbox: TurnInbox | null = null;
-  private warming: Promise<void> | null = null;
-  /** The discovery round in flight, so concurrent callers share one set of CLI
-   *  spawns instead of racing their own. */
-  private discovering: Promise<ProviderStatus[]> | null = null;
-  /** Tail of the provider-probe queue. Discovery probes every CLI and a check
-   *  probes one; running them at once would race two handshakes for the same
-   *  CLI and two writers for one disk snapshot, so each round starts when the
-   *  previous one settles. */
-  private providerRounds: Promise<unknown> = Promise.resolve();
-  /** Told whenever the provider surface actually changes — the desktop layer
-   *  forwards this to every renderer, so a status corrected in the background
-   *  reaches the UI without anyone asking for it. */
-  private readonly providerListeners = new Set<(statuses: ProviderStatus[]) => void>();
   /** Parked asks per thread (requestId → ask). Approvals/user-inputs are live
    *  round-trips and are never journaled, so this map is the only record a
    *  re-subscribing renderer can be replayed from (reload recovery), and the
@@ -741,45 +722,38 @@ export class AgentService {
     // parked-ask snapshot, per-thread heartbeat, and live-turn map current.
     // Registered before any adapter, so nothing a provider emits escapes it.
     this.listeners.add((event) => this.trackEvent(event));
+    const adapters: ProviderAdapter[] = [];
     if (options.adapters) {
-      for (const adapter of options.adapters(emit)) this.register(adapter);
+      adapters.push(...options.adapters(emit));
     } else {
-      this.register(new CodexAdapter(emit));
-      this.register(new ClaudeAdapter(emit));
-      this.register(new OpenCodeAdapter(emit));
-      this.register(new CursorAdapter(emit));
-      this.register(new DroidAdapter(emit));
-      this.register(new ClineAdapter(emit));
-      // Antigravity's plugin MCP path needs one-shot gateway bootstraps (its
-      // plugin config must stay secret-free on disk) — minted from the session
-      // credential through the gateway handle once it's attached.
-      this.register(
+      adapters.push(
+        new CodexAdapter(emit),
+        new ClaudeAdapter(emit),
+        new OpenCodeAdapter(emit),
+        new CursorAdapter(emit),
+        new DroidAdapter(emit),
+        new ClineAdapter(emit),
+        // Antigravity's plugin MCP path needs one-shot gateway bootstraps (its
+        // plugin config must stay secret-free on disk) — minted from the session
+        // credential through the gateway handle once it's attached.
         new AntigravityAdapter(emit, (sessionToken) =>
           this.gateway?.issueBootstrapToken(sessionToken) ?? null,
         ),
       );
     }
-    // Point each adapter at the user's persisted install settings (custom binary
-    // path, …) before anything probes or spawns. Unset providers keep their
-    // built-in default, so a fresh install behaves exactly as before.
-    const settings = readProviderSettings();
-    for (const [provider, adapter] of this.adapters) {
-      adapter.setConfig?.(settings[provider] ?? {});
-    }
+    this.providers = new ProviderRuntime({
+      adapters,
+      livenessHook: (threadId) => this.noteAlive(threadId),
+      retireSessions: (provider) => this.stopSessionsForProvider(provider),
+    });
     this.scheduleHealthTimer();
-    for (const [provider, models] of Object.entries(readProviderCache().models)) {
-      if (models?.length) {
-        // SAFETY: the provider cache is keyed by ProviderKind at write time.
-        this.catalogs.set(provider as ProviderKind, models);
-      }
-    }
     this.ensureRetentionSweep();
     this.ensurePullRequestSweep();
   }
 
-  private register(adapter: ProviderAdapter): void {
-    this.adapters.set(adapter.provider, adapter);
-    adapter.setLivenessHook?.((threadId) => this.noteAlive(threadId));
+  /** The adapter registry, owned by the provider runtime. */
+  private get adapters(): ReadonlyMap<ProviderKind, ProviderAdapter> {
+    return this.providers.adapters;
   }
 
   /** An adapter saw a thread's running turn make progress no event carries
@@ -790,9 +764,7 @@ export class AgentService {
   }
 
   private adapter(provider: ProviderKind): ProviderAdapter {
-    const adapter = this.adapters.get(provider);
-    if (!adapter) throw new Error(`Unsupported agent provider: ${provider}`);
-    return adapter;
+    return this.providers.adapter(provider);
   }
 
   private adapterForThread(threadId: string): ProviderAdapter {
@@ -865,252 +837,54 @@ export class AgentService {
   // ── discovery ─────────────────────────────────────────────────────────────
 
   /** The last known provider surface, straight off the disk cache — no CLI is
-   *  spawned, so this answers in microseconds. The renderer hydrates its picker
-   *  from this at app open and refreshes in the background, which is what makes
-   *  a cold launch present a provider list that's actually usable rather than
-   *  one that only *looks* populated. Empty on a first-ever run. */
+   *  spawned. The renderer hydrates its picker from this at app open and
+   *  refreshes in the background. */
   cachedSurface(): ProviderSurfaceSnapshot {
-    const surface = readProviderCache();
-    const settings = readProviderSettings();
-    // Manual-compaction support derives at read time from the live adapter
-    // union — the disk snapshot carries no copy (see providerCache.ts), so a
-    // stale flag can never linger past the adapter that owns it.
-    const statuses = surface.statuses.map((status) => {
-      const supportsThreadCompaction = isCompactionSupported(
-        this.adapters.get(status.provider)?.capabilities.compaction,
-      );
-      return isProviderEnabled(status.provider, settings)
-        ? { ...status, enabled: statusEnabled(status), supportsThreadCompaction }
-        : { ...disabledProviderStatus(status.provider, status.label), supportsThreadCompaction };
-    });
-    const models = { ...surface.models };
-    for (const provider of PROVIDER_KIND_VALUES) {
-      const merged = this.withCustomModels(provider, models[provider] ?? []);
-      if (merged.length > 0) models[provider] = merged;
-    }
-    return { ...surface, statuses, models };
+    return this.providers.cachedSurface();
   }
 
-  /** Queue one provider-probe round behind the previous one. Success or
-   *  failure both release the queue: a failed round published nothing, and the
-   *  next one still deserves to run. */
-  private queueProviderRound<T>(round: () => Promise<T>): Promise<T> {
-    const result = this.providerRounds.then(round, round);
-    this.providerRounds = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+  /** Probe every provider on the user's machine — what's installed + logged in. */
+  discover(): Promise<ProviderStatus[]> {
+    return this.providers.discover();
   }
 
-  /** Probe every provider on the user's machine — what's installed + logged in.
-   *
-   *  Folded over the previous round before it is published or persisted: a probe
-   *  that timed out reports no verdict, and letting one slow CLI overwrite a
-   *  known-good row would put that wrong answer on disk, where the next cold
-   *  launch hydrates it as fact. */
-  async discover(): Promise<ProviderStatus[]> {
-    // Single-flight: discovery spawns a CLI per provider, and two surfaces
-    // asking at once (the picker opening while warmup is still running) would
-    // otherwise pay for that twice and race each other to the disk snapshot.
-    this.discovering ??= this.queueProviderRound(async () => {
-      try {
-        const settings = readProviderSettings();
-        const cached = readProviderCache().statuses;
-        const probed = await Promise.all(
-          [...this.adapters.values()].map((a) => this.probeProvider(a, settings, cached)),
-        );
-        const statuses = stabilizeProviderStatuses(cached, probed);
-        this.publishStatuses(statuses);
-        return statuses;
-      } finally {
-        this.discovering = null;
-      }
-    });
-    return this.discovering;
+  /** Re-probe one provider's health. Observing never retires work in flight;
+   *  credential changes retire through `confirmProviderSignIn` or settings. */
+  checkProvider(provider: ProviderKind): Promise<ProviderStatus> {
+    return this.providers.checkProvider(provider);
   }
 
-  /** One provider's fresh row, with the disabled and manual-compaction rules
-   *  applied — the shared half of a full discovery and a single check. The
-   *  input adapter must already have had its discovery caches dropped when the
-   *  caller is re-probing after a login. */
-  private async probeProvider(
-    adapter: ProviderAdapter,
-    settings: ProviderSettingsMap,
-    cached: readonly ProviderStatus[],
-  ): Promise<ProviderStatus> {
-    // Manual-compaction support is adapter code truth — derived from the
-    // adapter's compaction union here, never probed or persisted.
-    const supportsThreadCompaction = isCompactionSupported(adapter.capabilities.compaction);
-    if (!isProviderEnabled(adapter.provider, settings)) {
-      const prev = cached.find((s) => s.provider === adapter.provider);
-      return {
-        ...disabledProviderStatus(adapter.provider, prev?.label ?? adapter.provider),
-        supportsThreadCompaction,
-      };
-    }
-    const status = await adapter.discover();
-    return {
-      ...status,
-      enabled: statusEnabled(status),
-      supportsThreadCompaction,
-    };
-  }
-
-  /** Re-probe exactly ONE provider and fold its fresh row into the cached
-   *  surface. This is what "Check authentication" calls after a login: drop
-   *  that adapter's cached handshake, ask only that adapter, then publish the
-   *  merged round so the corrected row reaches every renderer.
-   *
-   *  The check runs in the same single-flight slot as a full discovery — a
-   *  later discovery waits for it, and a discovery already queued runs first —
-   *  so two handshakes for one CLI are never in flight at once. The cache is
-   *  re-read after the probe resolves: whatever round is on disk then is what
-   *  the checked row is folded into. */
-  async checkProvider(provider: ProviderKind): Promise<ProviderStatus> {
-    const adapter = this.adapter(provider);
-    adapter.invalidateDiscoveryCaches?.();
-
-    const probed = await this.queueProviderRound(() =>
-      this.probeProvider(adapter, readProviderSettings(), readProviderCache().statuses),
-    );
-
-    // Re-read AFTER the probe: a full discovery that published a newer round
-    // while this CLI was answering must keep its other rows. Folding into the
-    // pre-probe snapshot would overwrite them with stale data.
-    const cached = readProviderCache().statuses;
-    const [folded] = stabilizeProviderStatuses(cached, [probed]);
-    if (!folded) throw new Error(`No provider status for ${provider}.`);
-    const previous = cached.find((status) => status.provider === provider);
-    if (
-      previous &&
-      (previous.authStatus !== folded.authStatus || previous.readiness !== folded.readiness)
-    ) {
-      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
-      void this.stopSessionsForProvider(provider);
-    }
-    const merged = cached.some((status) => status.provider === provider)
-      ? cached.map((status) => (status.provider === provider ? folded : status))
-      : [...cached, folded];
-    this.publishStatuses(merged);
-    return folded;
+  /** Confirm an in-app sign-in and retire everything bound to the credentials
+   *  that were there before it. Ready → ready is an account switch, so it must
+   *  not be mistaken for "nothing happened". */
+  confirmProviderSignIn(provider: ProviderKind): Promise<ProviderStatus> {
+    return this.providers.confirmProviderSignIn(provider);
   }
 
   /** Subscribe to provider-surface changes. Returns an unsubscribe fn. */
   onProvidersChanged(listener: (statuses: ProviderStatus[]) => void): () => void {
-    this.providerListeners.add(listener);
-    return () => this.providerListeners.delete(listener);
+    return this.providers.onProvidersChanged(listener);
   }
 
-  /** Persist a discovery round and announce it — but only when something the
-   *  user could see actually moved. Every probe writes a `checkedAt`-free row,
-   *  so an unchanged surface compares equal and stays silent rather than waking
-   *  every renderer on a timer. */
-  private publishStatuses(statuses: ProviderStatus[]): void {
-    const changed = !providerStatusesEqual(readProviderCache().statuses, statuses);
-    cacheStatuses(statuses);
-    if (!changed) return;
-    for (const listener of this.providerListeners) {
-      try {
-        listener(statuses);
-      } catch (error) {
-        // One bad subscriber must not strand the others or the probe round.
-        console.error("[agent] provider status listener failed:", error);
-      }
-    }
+  listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
+    return this.providers.listModels(provider);
   }
 
-  /** Merge user-configured custom model slugs into a provider's model list. */
-  private withCustomModels(
-    provider: ProviderKind,
-    models: readonly ModelDescriptor[],
-  ): ModelDescriptor[] {
-    const slugs = customModelsFor(provider);
-    if (slugs.length === 0) return [...models];
-    const seen = new Set(models.map((m) => m.id));
-    const extras: ModelDescriptor[] = [];
-    for (const slug of slugs) {
-      if (seen.has(slug)) continue;
-      seen.add(slug);
-      extras.push({ id: slug, label: slug, custom: true });
-    }
-    return [...models, ...extras];
+  /** Force a fresh model catalog probe for `provider`, keeping the last known
+   *  non-empty catalog when the probe fails or returns empty. */
+  refreshProviderModels(provider: ProviderKind): Promise<ProviderModelsRefreshResult> {
+    return this.providers.refreshProviderModels(provider);
   }
 
-  async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
-    const models = await this.adapter(provider).listModels();
-    if (models.length) {
-      this.catalogs.set(provider, models);
-      cacheModels(provider, models);
-    }
-    return this.withCustomModels(provider, models);
-  }
-
-  /** Force a fresh model catalog probe for `provider`, keeping the last
-   *  known non-empty catalog when the probe fails or returns empty, and
-   *  surfacing any discovery error string to the UI. */
-  async refreshProviderModels(provider: ProviderKind): Promise<ProviderModelsRefreshResult> {
-    const adapter = this.adapter(provider);
-    adapter.invalidateDiscoveryCaches?.();
-    const fallback =
-      this.catalogs.get(provider) ?? readProviderCache().models[provider] ?? [];
-    try {
-      const probed = await adapter.listModels();
-      if (probed.length > 0) {
-        this.catalogs.set(provider, probed);
-        cacheModels(provider, probed);
-        return { provider, models: this.withCustomModels(provider, probed) };
-      }
-      return {
-        provider,
-        models: this.withCustomModels(provider, fallback),
-        error: "Provider returned no models.",
-      };
-    } catch (error) {
-      return {
-        provider,
-        models: this.withCustomModels(provider, fallback),
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  /** Refresh the whole surface in the background at app open: discover, then
-   *  pull each installed provider's catalog, writing both through to disk. The
-   *  point is that by the time the user sends anything, `catalogFor` is warm —
-   *  validation on the send path must never be the thing that spawns a CLI.
-   *  Deduped, and never rejects: a missing or broken CLI just leaves the
-   *  previous snapshot in place. */
+  /** Refresh the whole surface in the background at app open. */
   warm(): Promise<void> {
-    this.warming ??= (async () => {
-      try {
-        const found = await this.discover();
-        await Promise.all(
-          found
-            .filter((s) => s.available)
-            .map((s) => this.listModels(s.provider).catch(() => [])),
-        );
-      } catch {
-        // Warming is opportunistic — the cached snapshot stays valid.
-      } finally {
-        this.warming = null;
-      }
-    })();
-    return this.warming;
+    return this.providers.warm();
   }
 
-  /** The catalog we already know for `provider`, or undefined if we've never
-   *  successfully read one. Deliberately non-spawning: the validators below run
-   *  on the send path, and `listModels()` there would stall the user's turn
-   *  behind a fresh `codex app-server` handshake. Unknown catalog → no
-   *  validation, which is the same permissive behaviour as a failed probe. */
+  /** The catalog we already know for `provider`, or undefined. Non-spawning:
+   *  the send path must never wait on a CLI handshake. */
   private catalogFor(provider: ProviderKind): ModelDescriptor[] | undefined {
-    const known = this.catalogs.get(provider);
-    if (known?.length) return known;
-    // Nothing in memory yet — kick off a refresh so the *next* turn is guarded,
-    // but don't make this one wait for it.
-    void this.listModels(provider).catch(() => []);
-    return undefined;
+    return this.providers.catalogFor(provider);
   }
 
   // ── install settings ────────────────────────────────────────────────────────
@@ -1134,15 +908,16 @@ export class AgentService {
   ): ProviderSettingsSnapshot {
     const before = readProviderSettings();
     const snapshot = importLegacyRendererSettings(legacy);
-    let enabledChanged = false;
     for (const provider of PROVIDER_KIND_VALUES) {
       if (isProviderEnabled(provider, before) === isProviderEnabled(provider, snapshot.settings)) {
         continue;
       }
-      enabledChanged = true;
-      this.adapters.get(provider)?.setConfig?.(snapshot.settings[provider] ?? {});
+      void this.providers.applyProviderSettings(
+        provider,
+        before[provider],
+        snapshot.settings[provider],
+      );
     }
-    if (enabledChanged) void this.discover();
     return snapshot;
   }
 
@@ -1154,12 +929,21 @@ export class AgentService {
     return subscribeProviderSettings(listener);
   }
 
-  /** Persist one provider's install settings and apply them to its live adapter
-   *  so the next discover / session picks up the change without a restart.
-   *  Returns the full updated map. */
+  /** How many times this provider's credential-bound runtime has been retired.
+   *  A session start reads it before spawning; any change means the process it
+   *  was handed no longer belongs to the current runtime. */
+  private providerEpoch(provider: ProviderKind): number {
+    return this.providerEpochs.get(provider) ?? 0;
+  }
+
   /** Stop every active session currently routed to `provider` (e.g. when its
-   *  binary path, home directory, environment, or sign-in state changes). */
+   *  binary path, home directory, environment, or sign-in state changes).
+   *
+   *  The provider's epoch moves first, so a session that was still connecting
+   *  cannot finish, route itself, and outlive the runtime it was spawned for.
+   *  Its start sees the new epoch and tears itself down. */
   async stopSessionsForProvider(provider: ProviderKind): Promise<number> {
+    this.providerEpochs.set(provider, this.providerEpoch(provider) + 1);
     const threads = new Set<string>();
     for (const [threadId, routed] of this.routing) {
       if (routed === provider) threads.add(threadId);
@@ -1171,27 +955,6 @@ export class AgentService {
       [...threads].map((threadId) => this.stopSession(threadId).catch(() => {})),
     );
     return threads.size;
-  }
-
-  private envPairsEqual(
-    before: readonly ProviderEnvVar[] | undefined,
-    after: readonly ProviderEnvVar[] | undefined,
-  ): boolean {
-    const a = before ?? [];
-    const b = after ?? [];
-    if (a.length !== b.length) return false;
-    return a.every((item, i) => item.name === b[i]?.name && item.value === b[i]?.value);
-  }
-
-  private didRuntimeSettingsChange(
-    before: ProviderConfig | undefined,
-    after: ProviderConfig | undefined,
-  ): boolean {
-    if ((before?.enabled ?? true) !== (after?.enabled ?? true)) return true;
-    if ((before?.binaryPath ?? "") !== (after?.binaryPath ?? "")) return true;
-    if ((before?.homeDir ?? "") !== (after?.homeDir ?? "")) return true;
-    if (!this.envPairsEqual(before?.env, after?.env)) return true;
-    return false;
   }
 
   private scheduleHealthTimer(): void {
@@ -1209,18 +972,13 @@ export class AgentService {
     this.healthCheckTimer = timer;
   }
 
+  /** Persist one provider's install settings and apply them to its live
+   *  adapter so the next discover / session picks up the change. Returns the
+   *  full updated map. */
   setProviderSettings(provider: ProviderKind, config: ProviderConfig): ProviderSettingsMap {
-    const prevSettings = readProviderSettings();
-    const prevEntry = prevSettings[provider];
+    const prevEntry = readProviderSettings()[provider];
     const next = writeProviderSettings(provider, config);
-    const nextEntry = next[provider];
-    this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
-    if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
-      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
-      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
-      void this.stopSessionsForProvider(provider);
-      void this.discover();
-    }
+    void this.providers.applyProviderSettings(provider, prevEntry, next[provider]);
     return next;
   }
 
@@ -1232,14 +990,7 @@ export class AgentService {
   patchProviderSettings(provider: ProviderKind, patch: ProviderConfig): ProviderSettingsSnapshot {
     const prevEntry = readProviderSettings()[provider];
     const next = patchProviderSettingsInStore(provider, patch);
-    const nextEntry = next[provider];
-    this.adapters.get(provider)?.setConfig?.(nextEntry ?? {});
-    if (this.didRuntimeSettingsChange(prevEntry, nextEntry)) {
-      if (isQuotaCapableProvider(provider)) invalidateProviderQuotaCache(provider);
-      this.adapters.get(provider)?.invalidateDiscoveryCaches?.();
-      void this.stopSessionsForProvider(provider);
-      void this.discover();
-    }
+    void this.providers.applyProviderSettings(provider, prevEntry, next[provider]);
     return this.getProviderSettingsSnapshot();
   }
 
@@ -1824,6 +1575,10 @@ export class AgentService {
     this.bumpSessionGeneration(input.threadId);
     assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
+    // The runtime this start is about to dial. If a sign-in or an install
+    // settings write retires the provider while the CLI is connecting, the
+    // process may have read either half of the change; it is not adopted.
+    const providerEpoch = this.providerEpoch(input.provider);
     if (input.fallbacks && input.fallbacks.length > 0) {
       this.threadFallbacks.set(input.threadId, input.fallbacks);
     }
@@ -1847,11 +1602,13 @@ export class AgentService {
     this.routing.set(input.threadId, input.provider);
     this.ensureWedgeWatchdog();
     this.ensureIdleReaper();
-    // A stop that arrived while the session was connecting: the provider has
-    // taken the start, so tear it down and reject as cancelled rather than
-    // returning a dead session a caller would dispatch into. Queued work is
-    // not promoted into a session being stopped.
-    if (this.startStopRequested.delete(input.threadId)) {
+    // A stop that arrived while the session was connecting, or a provider
+    // runtime retired underneath it: the provider has taken the start, so tear
+    // it down and reject as cancelled rather than returning a dead session a
+    // caller would dispatch into. Queued work is not promoted into a session
+    // being stopped.
+    const providerRetired = this.providerEpoch(input.provider) !== providerEpoch;
+    if (this.startStopRequested.delete(input.threadId) || providerRetired) {
       await this.stopSession(input.threadId).catch((err) => {
         console.warn(`[agent] tearing down a stopped start for ${input.threadId} failed:`, err);
       });
@@ -2356,7 +2113,7 @@ export class AgentService {
     const result: ProviderAvailability[] = [];
     for (const provider of providers) {
       const status = cached.statuses.find((s) => s.provider === provider);
-      const catalog = this.catalogs.get(provider) ?? cached.models[provider] ?? [];
+      const catalog = this.providers.knownCatalog(provider) ?? cached.models[provider] ?? [];
       result.push({
         provider,
         available: status ? status.available : this.adapters.has(provider),

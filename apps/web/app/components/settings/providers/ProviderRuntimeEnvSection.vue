@@ -3,7 +3,8 @@
 // - Runtime: inline health status + Re-check, read-only Binary path chip with
 //   inline verification badge (✓ version or ! Not found) and Override/Reset,
 //   read-only Home path chip with Change/Reset, and single-line Version + channel.
-// - Environment: compact `KEY = value` rows with secret lock toggle and delete.
+// - Environment: compact `KEY = value` rows. A secret row stores no value; it
+//   reads the same-named variable from kone's environment (lock indicator).
 import { computed, nextTick, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -191,18 +192,21 @@ function commitNewVar() {
   const provider = props.row.provider;
   const k = newKey.value.trim();
   if (k) {
-    const entry: ProviderEnvVar = { name: k, value: newVal.value };
-    if (newSecret.value) entry.secret = true;
+    const entry: ProviderEnvVar = newSecret.value
+      ? { name: k, value: "", secret: true }
+      : { name: k, value: newVal.value };
     const next = [...props.envVars.filter((v) => v.name !== k), entry];
     emit("saveEnv", provider, next);
   }
   addingVar.value = false;
 }
 
-function toggleSecret(index: number) {
+/** A literal becomes an inherited variable. The literal is dropped here, not
+ *  merely masked, because a secret marked in settings is never written down. */
+function inheritVar(index: number) {
   const provider = props.row.provider;
   const next = props.envVars.map((v, i) =>
-    i === index ? { ...v, secret: !v.secret } : { ...v },
+    i === index ? { name: v.name, value: "", secret: true } : { ...v },
   );
   emit("saveEnv", provider, next);
 }
@@ -452,20 +456,34 @@ function removeVar(index: number) {
           <code class="pf__envkey">{{ v.name }}</code>
           <span class="pf__enveq" aria-hidden="true">=</span>
           <code class="pf__envval" :class="{ 'pf__envval--secret': v.secret }">
-            {{ v.secret ? "••••••••••••" : v.value }}
+            {{ v.secret ? "Inherited from environment" : v.value }}
           </code>
           <div class="pf__envacts">
-            <button
-              type="button"
-              class="pf__iconbtn"
-              :class="{ 'pf__iconbtn--on': v.secret }"
-              :aria-pressed="Boolean(v.secret)"
-              :aria-label="v.secret ? `Show ${v.name}` : `Mask ${v.name}`"
-              :tabindex="open ? 0 : -1"
-              @click="toggleSecret(i)"
+            <span
+              v-if="v.secret"
+              class="pf__iconbtn pf__iconbtn--on"
+              role="img"
+              :aria-label="`${v.name} is read from the environment`"
+              :title="`${v.name} is read from the environment`"
             >
               <HugeiconsIcon
-                :icon="v.secret ? LockIcon : SquareUnlock01Icon"
+                :icon="LockIcon"
+                :size="13"
+                :stroke-width="1.8"
+                aria-hidden="true"
+              />
+            </span>
+            <button
+              v-else
+              type="button"
+              class="pf__iconbtn"
+              :aria-label="`Inherit ${v.name} from the environment`"
+              title="Read this variable from the environment instead of storing its value"
+              :tabindex="open ? 0 : -1"
+              @click="inheritVar(i)"
+            >
+              <HugeiconsIcon
+                :icon="SquareUnlock01Icon"
                 :size="13"
                 :stroke-width="1.8"
                 aria-hidden="true"
@@ -501,8 +519,9 @@ function removeVar(index: number) {
           />
           <span class="pf__enveq" aria-hidden="true">=</span>
           <input
+            v-if="!newSecret"
             v-model="newVal"
-            :type="newSecret ? 'password' : 'text'"
+            type="text"
             class="pp__input pf__compactinput pf__valinput"
             placeholder="value"
             spellcheck="false"
@@ -510,12 +529,16 @@ function removeVar(index: number) {
             @keydown.enter.prevent="commitNewVar"
             @keydown.esc.prevent="addingVar = false"
           />
+          <span v-else class="pf__envval pf__envval--secret">
+            Inherited from environment
+          </span>
           <button
             type="button"
             class="pf__iconbtn"
             :class="{ 'pf__iconbtn--on': newSecret }"
             :aria-pressed="newSecret"
-            aria-label="Secret"
+            :aria-label="newSecret ? 'Store a literal value' : 'Inherit from environment'"
+            title="Read this variable from the environment instead of storing its value"
             @click="newSecret = !newSecret"
           >
             <HugeiconsIcon

@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -1590,6 +1590,18 @@ function migration0043ThreadTasks(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * The provider-native session each usage audit row's counter belongs to.
+ * Running-total providers keep one cumulative counter per session, so the
+ * trace can only subtract one row from another when both name the same
+ * session. Rows written before this column stay NULL: the boundary is then
+ * genuinely unknown, and the reader keeps the old provider/hand-in reading
+ * for them rather than inventing an identity.
+ */
+function migration0044TurnUsageSession(db: DatabaseSync): void {
+  addColumn(db, "turn_usage", "usage_session_id", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1634,6 +1646,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
   { id: 42, name: "ProviderSelection", run: migration0042ProviderSelection },
   { id: 43, name: "ThreadTasks", run: migration0043ThreadTasks },
+  { id: 44, name: "TurnUsageSession", run: migration0044TurnUsageSession },
 ];
 
 export interface MigrationOptions {

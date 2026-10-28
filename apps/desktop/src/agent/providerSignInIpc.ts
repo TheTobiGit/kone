@@ -44,6 +44,11 @@ export function registerProviderSignInIpc(svc: AgentService): void {
 
   ipcMain.handle("provider-signin:check", (_event, provider: ProviderKind) => {
     const parsed = ProviderKindSchema.parse(provider);
-    return svc.checkProvider(parsed);
+    // This check belongs to the sign-in dialog, so a ready verdict is the
+    // provider confirming the login just completed — not an ordinary health
+    // probe. That distinction is what retires the sessions and caches the old
+    // account left behind, including when the account changed but readiness
+    // stayed `ready` throughout.
+    return svc.confirmProviderSignIn(parsed);
   });
 }

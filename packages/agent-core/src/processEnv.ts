@@ -1,10 +1,13 @@
 import { buildProviderChildEnv } from "./providerChildEnv.js";
+import { setEnvVar, windowsEnvKey } from "./envKeys.js";
 import type { ProviderKind } from "./types.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+
+export { windowsEnvKey } from "./envKeys.js";
 
 // Environment for spawned agent CLIs. The rule (kone's "bring your own
 // subscription" stance): inherit the user's environment and let each CLI read
@@ -53,21 +56,6 @@ export function windowsCliDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   return [`${profile}\\.local\\bin`, `${profile}\\.bun\\bin`, `${profile}\\scoop\\shims`];
 }
 
-/** The key Node keeps for `name` when it spawns a child on Windows. Windows env
- *  keys are case-insensitive, but an env object can hold one variable under
- *  several casings (`Path` beside `PaTH`); Node passes the child exactly one of
- *  them — it sorts the keys and keeps the first per case-insensitive name
- *  (lib/child_process.js, normalizeSpawnArguments). Anything kone reads on the
- *  child's behalf (PATH, PATHEXT, ComSpec) has to read that same key, or the
- *  launch is resolved against a value the child never sees. Undefined when the
- *  variable is absent under every casing. */
-export function windowsEnvKey(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  const wanted = name.toUpperCase();
-  return Object.keys(env)
-    .sort()
-    .find((key) => key.toUpperCase() === wanted);
-}
-
 /** The env key that holds PATH. On win32 that is whichever casing Node would
  *  pass to the child (`windowsEnvKey`; a spread `process.env` usually carries
  *  `Path`, and an exact `PATH` always sorts first) — reading `env.PATH` there
@@ -88,9 +76,6 @@ export function pathEnvKey(
 export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   const key = pathEnvKey(env, "win32");
-  for (const other of Object.keys(env)) {
-    if (other !== key && other.toUpperCase() === "PATH") delete env[other];
-  }
   const seen = new Set((env[key] ?? "").split(";").filter(Boolean));
   const merged = [...seen];
   for (const dir of windowsCliDirs(env)) {
@@ -99,7 +84,7 @@ export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.
       merged.push(dir);
     }
   }
-  env[key] = merged.join(";");
+  setEnvVar(env, key, merged.join(";"), "win32");
   return env;
 }
 

@@ -109,18 +109,32 @@ function cleanStringList(raw: readonly string[] | undefined): string[] | undefin
   return out.length > 0 ? out : undefined;
 }
 
-function cleanEnvVars(raw: readonly ProviderEnvVar[] | undefined): ProviderEnvVar[] | undefined {
+type CleanEnvVars = {
+  env?: ProviderEnvVar[];
+  /** Secret variables whose stored value was dropped. Only the names are kept,
+   *  so a legacy literal never travels any further than this decode. */
+  strippedSecretNames: string[];
+};
+
+function cleanEnvVars(raw: readonly ProviderEnvVar[] | undefined): CleanEnvVars {
   const out: ProviderEnvVar[] = [];
+  const strippedSecretNames: string[] = [];
   for (const item of raw ?? []) {
     const name = item.name.trim();
     if (!name) continue;
-    const entry: ProviderEnvVar = { name, value: item.value };
-    if (item.secret === true) entry.secret = true;
+    const secret = item.secret === true;
+    const entry: ProviderEnvVar = secret
+      ? { name, value: "", secret: true }
+      : { name, value: item.value };
+    if (secret && item.value.length > 0) strippedSecretNames.push(name);
     const existingIdx = out.findIndex((e) => e.name === name);
     if (existingIdx >= 0) out[existingIdx] = entry;
     else out.push(entry);
   }
-  return out.length > 0 ? out : undefined;
+  return {
+    env: out.length > 0 ? out : undefined,
+    strippedSecretNames,
+  };
 }
 
 function cleanProviderOrder(raw: readonly string[] | undefined): ProviderKind[] | undefined {
@@ -140,10 +154,18 @@ function clampHealthIntervalSec(raw: number | undefined): number | undefined {
   return Math.min(MAX_HEALTH_CHECK_INTERVAL_SEC, Math.max(15, rounded));
 }
 
-function sanitize(raw: JsonValue | ProviderSettingsMap | null | undefined): ProviderSettingsMap {
+type SanitizedSettings = {
+  settings: ProviderSettingsMap;
+  strippedSecretNames: string[];
+};
+
+function sanitizeWithReport(
+  raw: JsonValue | ProviderSettingsMap | null | undefined,
+): SanitizedSettings {
   const parsed = SettingsRecordWire.safeParse(raw);
-  if (!parsed.success) return {};
-  const out: ProviderSettingsMap = {};
+  if (!parsed.success) return { settings: {}, strippedSecretNames: [] };
+  const settings: ProviderSettingsMap = {};
+  const strippedSecretNames: string[] = [];
   for (const provider of KNOWN_PROVIDERS) {
     const decoded = ProviderConfigWire.safeParse(parsed.data[provider]);
     if (!decoded.success) continue;
@@ -160,30 +182,49 @@ function sanitize(raw: JsonValue | ProviderSettingsMap | null | undefined): Prov
     if (customModels) clean.customModels = customModels;
     if (entry.homeDir) clean.homeDir = entry.homeDir;
     const env = cleanEnvVars(entry.env);
-    if (env) clean.env = env;
+    if (env.env) clean.env = env.env;
+    strippedSecretNames.push(...env.strippedSecretNames);
     if (entry.resumeAtReset !== undefined) clean.resumeAtReset = entry.resumeAtReset;
     if (entry.snoozeWhenLimited !== undefined) clean.snoozeWhenLimited = entry.snoozeWhenLimited;
-    out[provider] = clean;
+    settings[provider] = clean;
   }
-  return out;
+  return { settings, strippedSecretNames };
+}
+
+function sanitize(raw: JsonValue | ProviderSettingsMap | null | undefined): ProviderSettingsMap {
+  return sanitizeWithReport(raw).settings;
 }
 
 function defaultEnvelope(): SettingsEnvelope {
   return { version: CURRENT_VERSION, revision: 0, settings: {}, legacyRendererImported: false };
 }
 
-function envelopeFrom(wire: z.infer<typeof SettingsEnvelopeWire>): SettingsEnvelope {
-  const env: SettingsEnvelope = {
+type DecodedSettings = {
+  envelope: SettingsEnvelope;
+  upgraded: boolean;
+  /** False for a file from a newer kone: read leniently, never rewritten. */
+  persistable: boolean;
+  strippedSecretNames: string[];
+};
+
+function envelopeFrom(wire: z.infer<typeof SettingsEnvelopeWire>): DecodedSettings {
+  const sanitized = sanitizeWithReport(wire.settings);
+  const envelope: SettingsEnvelope = {
     version: CURRENT_VERSION,
     revision: wire.revision,
-    settings: sanitize(wire.settings),
+    settings: sanitized.settings,
     legacyRendererImported: wire.legacyRendererImported === true,
   };
   const order = cleanProviderOrder(wire.providerOrder);
-  if (order) env.providerOrder = order;
+  if (order) envelope.providerOrder = order;
   const interval = clampHealthIntervalSec(wire.healthCheckIntervalSec);
-  if (interval !== undefined) env.healthCheckIntervalSec = interval;
-  return env;
+  if (interval !== undefined) envelope.healthCheckIntervalSec = interval;
+  return {
+    envelope,
+    upgraded: false,
+    persistable: true,
+    strippedSecretNames: sanitized.strippedSecretNames,
+  };
 }
 
 function runMigrations(raw: JsonValue, fromVersion: number): JsonValue {
@@ -195,30 +236,24 @@ function runMigrations(raw: JsonValue, fromVersion: number): JsonValue {
   return value;
 }
 
-function migrateAndDecode(
-  parsed: JsonValue,
-  fromVersion: number,
-): { envelope: SettingsEnvelope; upgraded: boolean } | null {
+function migrateAndDecode(parsed: JsonValue, fromVersion: number): DecodedSettings | null {
   const migrated = SettingsEnvelopeWire.safeParse(runMigrations(parsed, fromVersion));
-  return migrated.success
-    ? { envelope: envelopeFrom(migrated.data), upgraded: true }
-    : null;
+  if (!migrated.success) return null;
+  const decoded = envelopeFrom(migrated.data);
+  return { ...decoded, upgraded: true };
 }
 
-function decode(
-  file: string,
-  parsed: JsonValue,
-): { envelope: SettingsEnvelope; upgraded: boolean } | null {
+function decode(file: string, parsed: JsonValue): DecodedSettings | null {
   const wire = SettingsEnvelopeWire.safeParse(parsed);
   if (wire.success) {
     if (wire.data.version > CURRENT_VERSION) {
       console.warn(
         `[providerSettings] ${file} was written by a newer kone (version ${wire.data.version} > ${CURRENT_VERSION}); reading it leniently.`,
       );
-      return { envelope: envelopeFrom(wire.data), upgraded: false };
+      return { ...envelopeFrom(wire.data), persistable: false };
     }
     if (wire.data.version === CURRENT_VERSION) {
-      return { envelope: envelopeFrom(wire.data), upgraded: false };
+      return envelopeFrom(wire.data);
     }
     return migrateAndDecode(parsed, wire.data.version);
   }
@@ -250,10 +285,29 @@ function persist(envelope: SettingsEnvelope): void {
 let cache: SettingsEnvelope | null = null;
 const listeners = new Set<(snapshot: ProviderSettingsSnapshot) => void>();
 
+/** The settings a snapshot may carry. Secret entries reach here with an empty
+ *  value already; restating that here keeps a future write path from leaking a
+ *  literal through the general snapshot by accident. */
+function snapshotSettings(settings: ProviderSettingsMap): ProviderSettingsMap {
+  const out: ProviderSettingsMap = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const config = settings[provider];
+    if (!config) continue;
+    const copy: ProviderConfig = { ...config };
+    if (config.env) {
+      copy.env = config.env.map((item) =>
+        item.secret === true ? { name: item.name, value: "", secret: true } : { ...item },
+      );
+    }
+    out[provider] = copy;
+  }
+  return out;
+}
+
 function snapshotOf(envelope: SettingsEnvelope): ProviderSettingsSnapshot {
   const snap: ProviderSettingsSnapshot = {
     revision: envelope.revision,
-    settings: envelope.settings,
+    settings: snapshotSettings(envelope.settings),
     legacyImportPending: !envelope.legacyRendererImported,
   };
   if (envelope.providerOrder) snap.providerOrder = [...envelope.providerOrder];
@@ -293,7 +347,16 @@ function readEnvelope(): SettingsEnvelope {
     return cache;
   }
   cache = decoded.envelope;
-  if (decoded.upgraded) persist(cache);
+  if (decoded.strippedSecretNames.length > 0) {
+    // A pre-boundary file stored the literal. Drop it from disk without ever
+    // naming the value; the variable is now inherited from the environment.
+    console.warn(
+      `[providerSettings] removed stored values for secret env vars (${decoded.strippedSecretNames.join(", ")}); they are now read from the environment.`,
+    );
+  }
+  if (decoded.persistable && (decoded.upgraded || decoded.strippedSecretNames.length > 0)) {
+    persist(cache);
+  }
   return cache;
 }
 
@@ -322,7 +385,7 @@ function commit(
   const next: SettingsEnvelope = {
     version: CURRENT_VERSION,
     revision: current.revision + 1,
-    settings,
+    settings: sanitize(settings),
     legacyRendererImported: flags.legacyRendererImported ?? current.legacyRendererImported,
   };
   const nextOrder =

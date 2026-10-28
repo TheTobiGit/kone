@@ -121,13 +121,60 @@ describe("fetchOpenCodeQuota on the v2 log", () => {
     insert.run("c", "s", "assistant", now - 1000, message("openai", 9));
     db.close();
 
-    process.env.OPENCODE_DATA_DIR = dir;
     try {
-      const { report } = await quota.fetchOpenCodeQuota();
+      const { report } = await quota.fetchOpenCodeQuota({
+        env: { OPENCODE_DATA_DIR: dir },
+      });
       expect(report.spend?.[0]?.dollars).toBe(0.75);
     } finally {
-      delete process.env.OPENCODE_DATA_DIR;
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reads the passed provider env, not process.env, for resolution, detection and fetching", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const targetDir = mkdtempSync(path.join(tmpdir(), "kone-opencode-target-"));
+    const otherDir = mkdtempSync(path.join(tmpdir(), "kone-opencode-other-"));
+
+    const createDatabase = (dir: string, cost: number) => {
+      const db = new Database(path.join(dir, "opencode.db"));
+      db.exec(
+        `CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER, data TEXT)`,
+      );
+      db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?)").run(
+        "a",
+        "s",
+        "assistant",
+        Date.now() - 1000,
+        JSON.stringify({ model: { id: "m", providerID: "opencode" }, cost, tokens: { input: 10 } }),
+      );
+      db.close();
+    };
+    createDatabase(targetDir, 0.5);
+    createDatabase(otherDir, 9);
+
+    const previous = process.env.OPENCODE_DATA_DIR;
+    process.env.OPENCODE_DATA_DIR = otherDir;
+    try {
+      const env = { OPENCODE_DATA_DIR: targetDir };
+      expect(quota.resolveOpenCodeDataDirs(env)).toEqual([targetDir]);
+      expect(await quota.detectOpenCodeDatabase(env)).toBe(true);
+      const { report } = await quota.fetchOpenCodeQuota({ env });
+      expect(report.spend?.[0]?.dollars).toBe(0.5);
+
+      // The quota shell must hand the same env to detection and fetching.
+      const quotaIndex = await import("./index.js");
+      quotaIndex.resetQuotaStateForTests();
+      expect(await quotaIndex.detectProviderCredential("opencode", env)).toBe(true);
+      const wired = await quotaIndex.fetchProviderQuota("opencode", { force: true }, env);
+      expect(wired.spend?.[0]?.dollars).toBe(0.5);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_DATA_DIR;
+      else process.env.OPENCODE_DATA_DIR = previous;
+      rmSync(targetDir, { recursive: true, force: true });
+      rmSync(otherDir, { recursive: true, force: true });
     }
   });
 });

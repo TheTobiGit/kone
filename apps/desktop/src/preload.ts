@@ -1026,7 +1026,8 @@ const api = {
     // The renderer names a provider; the main process resolves the CLI's own
     // login command. Nothing here can name a command or carry a credential.
     // The sign-in PTY id is minted in main and returned by `start`; any id the
-    // renderer sends is ignored.
+    // renderer sends is ignored. `check` is the dialog's confirmation step, so
+    // a ready answer also retires what the previous sign-in left behind.
     command: (provider: ProviderKind): Promise<ProviderSignInCommand | null> =>
       ipcRenderer.invoke("provider-signin:command", provider),
     start: (input: ProviderSignInStartInput): Promise<ProviderSignInStart> =>

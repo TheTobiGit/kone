@@ -2524,7 +2524,11 @@ export interface ProviderAdapter {
  *  "use the adapter's built-in default" (e.g. resolve `codex` on PATH). */
 export type ProviderEnvVar = {
   name: string;
+  /** A literal value for an ordinary variable. Always empty when `secret` is
+   *  true: kone never stores a credential. */
   value: string;
+  /** Read the same-named variable from the inherited environment instead of
+   *  storing it. `value` is ignored and persisted as empty. */
   secret?: boolean;
 };
 
@@ -2551,7 +2555,9 @@ export type ProviderConfig = {
   customModels?: string[];
   /** Optional override for the provider CLI's home / config directory. */
   homeDir?: string;
-  /** Per-provider environment variables passed to spawned CLI processes. */
+  /** Per-provider environment variables passed to spawned CLI processes.
+   *  Ordinary entries carry a stored value; secret entries name a variable
+   *  kone inherits from its own environment and never stores. */
   env?: ProviderEnvVar[];
   /** Resume a thread limited on this provider at the provider's reset
    *  (default: true). Off still marks the thread limited. */

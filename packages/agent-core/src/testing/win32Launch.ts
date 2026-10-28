@@ -19,14 +19,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // EXECUTABLE extensionless `x` on PATH and records what the bare name received.
 
 /** The environment variables the recorder reads: where to append the argv
- *  lines, and what to print on stdout (a version string, say). */
-const RECORD_ENV = "KONE_LAUNCH_RECORD";
-const STDOUT_ENV = "KONE_LAUNCH_STDOUT";
+ *  lines, and what to print on stdout (a version string, say). They are not
+ *  `KONE_*`: a provider launch strips kone's internal variables from the child
+ *  environment, which would silently take the recorder's settings with it. */
+const RECORD_ENV = "LAUNCH_FIXTURE_RECORD";
+const STDOUT_ENV = "LAUNCH_FIXTURE_STDOUT";
 
 /** The directory the agent-core package lives in. Subprocesses run with this as
  *  their cwd so the adapters' own imports resolve, and tests build absolute
  *  module URLs from it (a script in a temp dir cannot resolve `@kone/*`). */
 const AGENT_CORE_DIR = fileURLToPath(new URL("../..", import.meta.url));
+
+/** The real module that injects the per-user state directory, imported by a
+ *  scenario before any adapter can read provider settings or write under it. */
+const USER_DATA_MODULE = pathToFileURL(path.join(AGENT_CORE_DIR, "src", "userDataDir.ts")).href;
 
 /** The absolute URL of a module under `src/`, for a script that has to import
  *  the real adapter from a temp directory outside the package. */
@@ -95,6 +101,9 @@ export type LaunchFixture = {
   readonly binDir: string;
   /** HOME / USERPROFILE for the subprocess — empty of any real install. */
   readonly homeDir: string;
+  /** Kone's per-user state directory for the subprocess — empty, so no scenario
+   *  can read the machine's real provider settings or write under them. */
+  readonly userDataDir: string;
   /** The recorder started where a batch shim needs cmd.exe. */
   readonly comspec: string;
   readonly recordFile: string;
@@ -112,6 +121,9 @@ export type LaunchFixture = {
   env(options: { windows: boolean }): NodeJS.ProcessEnv;
   /** Every argv line the recorder has written, oldest first. */
   records(): string[][];
+  /** Remove the fixture's temp tree. Call from the suite's `afterEach`/`afterAll`
+   *  once nothing in the case needs its files anymore. */
+  cleanup(): void;
 };
 
 /** Build a fixture: temp dirs, the ComSpec recorder and an empty record file.
@@ -120,8 +132,10 @@ export function createLaunchFixture(options: { stdout?: string } = {}): LaunchFi
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kone-win32-launch-"));
   const binDir = path.join(root, "bin");
   const homeDir = path.join(root, "home");
+  const userDataDir = path.join(root, "user-data");
   fs.mkdirSync(binDir);
   fs.mkdirSync(homeDir);
+  fs.mkdirSync(userDataDir);
 
   const comspec = path.join(root, "cmd-recorder");
   write(comspec, recorderSource(), 0o755);
@@ -142,6 +156,7 @@ export function createLaunchFixture(options: { stdout?: string } = {}): LaunchFi
     root,
     binDir,
     homeDir,
+    userDataDir,
     comspec,
     recordFile,
     stdout,
@@ -172,6 +187,30 @@ export function createLaunchFixture(options: { stdout?: string } = {}): LaunchFi
       };
     },
     records,
+    cleanup(): void {
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A suite's set of fixtures: create every fixture through it and hand
+ *  `cleanup` to `afterEach`/`afterAll`, so no temp tree outlives its cases. */
+export type LaunchFixtureSet = {
+  create(options?: { stdout?: string }): LaunchFixture;
+  cleanup(): void;
+};
+
+export function launchFixtures(): LaunchFixtureSet {
+  const fixtures: LaunchFixture[] = [];
+  return {
+    create(options: { stdout?: string } = {}): LaunchFixture {
+      const fixture = createLaunchFixture(options);
+      fixtures.push(fixture);
+      return fixture;
+    },
+    cleanup(): void {
+      for (const fixture of fixtures.splice(0)) fixture.cleanup();
+    },
   };
 }
 
@@ -187,11 +226,12 @@ export type LaunchRun = {
 /** Run one launch scenario in a subprocess and report what the recorder saw.
  *
  *  `body` is the script's work — importing a real adapter and triggering one
- *  launch — and runs after the optional platform claim. With `windows` set, the
- *  script redefines `process.platform` as "win32" as its first statement, so
- *  the throwaway process (and only it) sees Windows. The subprocess is killed
- *  if it outlives `timeoutMs`, so a wedged scenario fails the assertion instead
- *  of hanging the suite. */
+ *  launch — and runs after the bootstrap. The bootstrap first claims win32 when
+ *  `windows` is set (so the throwaway process, and only it, sees Windows), then
+ *  points the per-user state directory at the fixture, before any adapter can
+ *  read provider settings or write under the user's real one. The subprocess is
+ *  killed if it outlives `timeoutMs`, so a wedged scenario fails the assertion
+ *  instead of hanging the suite. The scenario file is removed once it settles. */
 export async function runLaunchScript(input: {
   fixture: LaunchFixture;
   body: string;
@@ -202,36 +242,43 @@ export async function runLaunchScript(input: {
   const platformClaim = input.windows
     ? 'Object.defineProperty(process, "platform", { value: "win32" });\n'
     : "";
-  fs.writeFileSync(scriptPath, `${platformClaim}${input.body}`);
+  const userDataBootstrap = `const { setUserDataDir } = await import(${JSON.stringify(USER_DATA_MODULE)});
+setUserDataDir(${JSON.stringify(input.fixture.userDataDir)});
+`;
+  fs.writeFileSync(scriptPath, `${platformClaim}${userDataBootstrap}${input.body}`);
 
-  const child = spawn(process.execPath, [scriptPath], {
-    cwd: AGENT_CORE_DIR,
-    env: input.fixture.env({ windows: input.windows }),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (buf: Buffer) => (stdout += buf.toString()));
-  child.stderr.on("data", (buf: Buffer) => (stderr += buf.toString()));
-
-  const code = await new Promise<number | null>((resolve) => {
-    const timer = setTimeout(() => {
-      stderr += `\n[launch scenario timed out after ${input.timeoutMs ?? 15_000}ms]`;
-      child.kill("SIGKILL");
-    }, input.timeoutMs ?? 15_000);
-    child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      resolve(exitCode);
+  try {
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: AGENT_CORE_DIR,
+      env: input.fixture.env({ windows: input.windows }),
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      stderr += `\n[launch scenario failed to start: ${error.message}]`;
-      resolve(null);
-    });
-  });
 
-  return { code, stdout, stderr, records: input.fixture.records() };
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (buf: Buffer) => (stdout += buf.toString()));
+    child.stderr.on("data", (buf: Buffer) => (stderr += buf.toString()));
+
+    const code = await new Promise<number | null>((resolve) => {
+      const timer = setTimeout(() => {
+        stderr += `\n[launch scenario timed out after ${input.timeoutMs ?? 15_000}ms]`;
+        child.kill("SIGKILL");
+      }, input.timeoutMs ?? 15_000);
+      child.on("close", (exitCode) => {
+        clearTimeout(timer);
+        resolve(exitCode);
+      });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        stderr += `\n[launch scenario failed to start: ${error.message}]`;
+        resolve(null);
+      });
+    });
+
+    return { code, stdout, stderr, records: input.fixture.records() };
+  } finally {
+    fs.rmSync(scriptPath, { force: true });
+  }
 }
 
 /** A stand-in for System32's taskkill on the scenario's PATH: it records the

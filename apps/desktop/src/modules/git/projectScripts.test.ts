@@ -55,7 +55,10 @@ describe("runProjectScript", () => {
     const startedAt = Date.now();
     const result = await runProjectScript({
       cwd,
-      command: "trap '' TERM; sleep 30 & wait",
+      // The login shell is host-specific and may treat an ignored TERM as
+      // "wait is done", exiting before the escalation can run; exec sh so the
+      // group under the timeout really does ignore TERM.
+      command: "exec /bin/sh -c 'trap \"\" TERM; sleep 30 & wait'",
       timeoutMs: 150,
     });
     expect(result.timedOut).toBe(true);
