@@ -1097,6 +1097,12 @@ export type TurnUsageRecord = {
    *  written before the columns were filled. */
   provider: string | null;
   model: string | null;
+  /** The provider-native session this row's counter belongs to. Running-total
+   *  providers report one counter per session, so a row is only comparable
+   *  with another row carrying the same id. Null on rows written before the
+   *  column existed (or by a provider that named no session); those fall back
+   *  to the old provider/hand-in reading. */
+  usageSessionId: string | null;
   at: number;
 };
 

@@ -170,17 +170,18 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 43 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 44 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(43);
+    expect(version.user_version).toBe(44);
     expect(columnNames(raw, "subagents")).toContain("duration_ms");
     expect(columnNames(raw, "threads")).toContain("pending_selection_json");
     expect(columnNames(raw, "queued_turns")).toContain("provider");
+    expect(columnNames(raw, "turn_usage")).toContain("usage_session_id");
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -293,6 +294,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 41, name: "ThreadReferencesAndSubagentDuration" },
       { migration_id: 42, name: "ProviderSelection" },
       { migration_id: 43, name: "ThreadTasks" },
+      { migration_id: 44, name: "TurnUsageSession" },
     ]);
 
     const idx = raw
@@ -2181,6 +2183,21 @@ describe("queued turns schema", () => {
         thread_id  TEXT PRIMARY KEY,
         agent_id   TEXT,
         settled_at INTEGER NOT NULL
+      );
+      -- Same reason: migration 44 adds a column to the baseline's audit table.
+      CREATE TABLE turn_usage (
+        thread_id             TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+        turn_id               TEXT NOT NULL,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        total_tokens          INTEGER,
+        cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
+        provider              TEXT,
+        model                 TEXT,
+        at                    INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id)
       );
       CREATE TABLE schema_migrations (
         migration_id INTEGER PRIMARY KEY,

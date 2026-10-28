@@ -392,6 +392,7 @@ export function resolveProviderSignInLaunch(input: {
     input.provider,
     withoutBrowserSuppressors(input.env),
     input.settings,
+    platform,
   );
   const command = commandFromSpec(input.provider, spec, input.settings, platform);
   const file = launchBinary(input.provider, input.settings, childEnv);

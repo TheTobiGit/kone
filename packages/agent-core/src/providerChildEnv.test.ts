@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -60,7 +60,7 @@ describe("providerSettings extended fields (L2, M3, M4, H5)", () => {
     expect(snap.codex?.homeDir).toBe("~/.codex-work");
     expect(snap.codex?.env).toEqual([
       { name: "OPENAI_BASE_URL", value: "https://proxy.example/v1" },
-      { name: "OPENAI_API_KEY", value: "sk-secret", secret: true },
+      { name: "OPENAI_API_KEY", value: "", secret: true },
     ]);
   });
 
@@ -107,12 +107,76 @@ describe("buildProviderChildEnv (H5)", () => {
         { name: "OPENAI_API_KEY", value: "sk-123", secret: true },
       ],
     });
-    const env = buildProviderChildEnv("codex", { PATH: "/usr/bin", HOME: "/Users/alice" });
+    const env = buildProviderChildEnv("codex", {
+      PATH: "/usr/bin",
+      HOME: "/Users/alice",
+      OPENAI_API_KEY: "sk-inherited",
+    });
     expect(homeEnvVarFor("codex")).toBe("CODEX_HOME");
     expect(defaultHomeDirFor("codex")).toBe("~/.codex");
     expect(env.CODEX_HOME).toBe(path.join(os.homedir(), ".codex-team"));
     expect(env.OPENAI_BASE_URL).toBe("https://gateway.internal/v1");
-    expect(env.OPENAI_API_KEY).toBe("sk-123");
+    // The secret entry is a reference to the inherited variable, never a copy
+    // of the value stored in settings.
+    expect(env.OPENAI_API_KEY).toBe("sk-inherited");
+  });
+
+  test("a secret entry with no inherited variable leaves the child without it", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { PATH: "/usr/bin" },
+      { codex: { env: [{ name: "OPENAI_API_KEY", value: "sk-stored", secret: true }] } },
+    );
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  test("an inherited home variable reads the original environment before the home override", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { CODEX_HOME: "/inherited-home" },
+      {
+        codex: {
+          homeDir: "/configured-home",
+          env: [{ name: "CODEX_HOME", value: "", secret: true }],
+        },
+      },
+    );
+    expect(env.CODEX_HOME).toBe("/inherited-home");
+  });
+
+  test("a Windows inherited entry does not inherit an earlier literal override", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { TOKEN: "inherited" },
+      {
+        codex: {
+          env: [
+            { name: "TOKEN", value: "literal" },
+            { name: "Token", value: "", secret: true },
+          ],
+        },
+      },
+      "win32",
+    );
+    expect(env.TOKEN).toBe("inherited");
+    expect(env.Token).toBeUndefined();
+  });
+
+  test("inherited references cannot restore stripped control variables", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { NODE_OPTIONS: "--inspect", KONE_TOKEN: "internal" },
+      {
+        codex: {
+          env: [
+            { name: "NODE_OPTIONS", value: "", secret: true },
+            { name: "KONE_TOKEN", value: "", secret: true },
+          ],
+        },
+      },
+    );
+    expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.KONE_TOKEN).toBeUndefined();
   });
 
   test("maps claudeAgent homeDir to CLAUDE_CONFIG_DIR without touching HOME", () => {
@@ -120,6 +184,89 @@ describe("buildProviderChildEnv (H5)", () => {
     const env = buildProviderChildEnv("claudeAgent", { HOME: "/Users/alice" });
     expect(env.CLAUDE_CONFIG_DIR).toBe("/custom/claude");
     expect(env.HOME).toBe("/Users/alice");
+  });
+});
+
+describe("buildProviderChildEnv Windows key semantics", () => {
+  const onlyPathKeys = (env: NodeJS.ProcessEnv): string[] =>
+    Object.keys(env).filter((key) => key.toUpperCase() === "PATH");
+
+  test("a configured Path replaces the inherited PATH instead of sitting beside it", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { PATH: "old" },
+      { codex: { env: [{ name: "Path", value: "new" }] } },
+      "win32",
+    );
+    expect(onlyPathKeys(env)).toEqual(["PATH"]);
+    expect(env.PATH).toBe("new");
+  });
+
+  test("a configured PATH replaces an inherited Path under the casing Node keeps", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { Path: "old" },
+      { codex: { env: [{ name: "PATH", value: "new" }] } },
+      "win32",
+    );
+    expect(onlyPathKeys(env)).toEqual(["Path"]);
+    expect(env.Path).toBe("new");
+  });
+
+  test("a home override replaces an inherited home variable under any casing", () => {
+    const env = buildProviderChildEnv(
+      "codex",
+      { Path: "C:\\Windows", codex_home: "C:\\old" },
+      { codex: { homeDir: "~/work" } },
+      "win32",
+    );
+    const homeKeys = Object.keys(env).filter((key) => key.toUpperCase() === "CODEX_HOME");
+    expect(homeKeys).toEqual(["codex_home"]);
+    expect(env.codex_home).toBe(path.join(os.homedir(), "work"));
+  });
+
+  test("strips control and kone variables case-insensitively on Windows only", () => {
+    const windows = buildProviderChildEnv(
+      "codex",
+      { Path: "C:\\Windows", node_options: "--inspect", Kone_Token: "x" },
+      {},
+      "win32",
+    );
+    expect(windows.node_options).toBeUndefined();
+    expect(windows.Kone_Token).toBeUndefined();
+    expect(windows.Path).toBe("C:\\Windows");
+
+    const posix = buildProviderChildEnv(
+      "codex",
+      { PATH: "/usr/bin", node_options: "--inspect", KONE_TOKEN: "x" },
+      {},
+      "linux",
+    );
+    expect(posix.node_options).toBe("--inspect");
+    expect(posix.KONE_TOKEN).toBeUndefined();
+  });
+
+  test("providerSignIn resolves against the injected Windows platform", async () => {
+    const { resolveProviderSignInLaunch } = await import("./providerSignIn.js");
+    const binDir = mkdtempSync(path.join(os.tmpdir(), "kone-signin-win-"));
+    writeFileSync(path.join(binDir, "codex.cmd"), "@echo off\r\n");
+    chmodSync(path.join(binDir, "codex.cmd"), 0o755);
+
+    try {
+      const launch = resolveProviderSignInLaunch({
+        provider: "codex",
+        settings: { codex: { env: [{ name: "Path", value: binDir }] } },
+        env: { PATH: "C:\\Windows\\System32" },
+        platform: "win32",
+      });
+      expect(launch.ok).toBe(true);
+      if (launch.ok) {
+        expect(onlyPathKeys(launch.env)).toEqual(["PATH"]);
+        expect(launch.env.PATH).toBe(binDir);
+      }
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -266,6 +413,10 @@ describe("PR #24 review fixes", () => {
     const fakeBin = path.join(binDir, "codex");
     writeFileSync(fakeBin, "#!/bin/sh\necho 'codex 0.48.0'\n");
     chmodSync(fakeBin, 0o755);
+    // An ambient API key is a real login and would decide the case before the
+    // configured home is read; the harness supplies the credentials it means.
+    const ambientKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
 
     try {
       // 1. An empty configured homeDir must report unauthenticated even if ~/.codex is logged in:
@@ -291,6 +442,8 @@ describe("PR #24 review fixes", () => {
       expect(authedStatus.readiness).toBe("ready");
       expect(authedStatus.authLabel).toBe("API Key");
     } finally {
+      if (ambientKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = ambientKey;
       rmSync(fakeHome, { recursive: true, force: true });
       rmSync(binDir, { recursive: true, force: true });
     }
@@ -358,21 +511,24 @@ describe("PR #24 review fixes", () => {
     await svc.startSession({ threadId: "t-keep-alive", provider: "codex", cwd: "/tmp" });
     const beforeDiscovers = discoverCount;
 
-    // Flip only `secret: true` on the same name/value pair:
+    // Marking a literal as inherited changes the child env (the stored value
+    // is dropped), so the running session must be replaced:
     svc.patchProviderSettings("codex", {
       env: [{ name: "OPENAI_API_KEY", value: "sk-123", secret: true }],
     });
     await new Promise((r) => setTimeout(r, 30));
-    expect(stoppedThreads).toEqual([]);
-    expect(discoverCount).toBe(beforeDiscovers);
+    expect(stoppedThreads).toEqual(["t-keep-alive"]);
+    expect(discoverCount).toBeGreaterThan(beforeDiscovers);
+    const afterInheritDiscovers = discoverCount;
 
-    // Changing the actual value DOES stop the session and re-probe:
+    // A literal on a secret entry is never stored, so changing it changes
+    // nothing the child runs with — no second restart:
     svc.patchProviderSettings("codex", {
       env: [{ name: "OPENAI_API_KEY", value: "sk-456", secret: true }],
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(stoppedThreads).toEqual(["t-keep-alive"]);
-    expect(discoverCount).toBeGreaterThan(beforeDiscovers);
+    expect(discoverCount).toBe(afterInheritDiscovers);
 
     await svc.stopAll();
   });

@@ -285,7 +285,11 @@ export class TranscriptRepo {
       // schema creates, aliased to the record's camelCase fields. Rows written
       // before provider and model were stamped keep them unknown: the thread's
       // current pick may not be what answered an older turn, and a guess
-      // would price it at the wrong model's rates.
+      // would price it at the wrong model's rates. `usage_session_id` is NULL
+      // on rows written before migration 44 (and on a row whose event named no
+      // session), which the trace reads as "boundary unknown". Ties on `at`
+      // fall back to rowid, the durable write order: a counter's step needs the
+      // earlier row to come first, and turn ids carry no such order.
       const rows = db
         .prepare(
           `SELECT u.turn_id AS turnId,
@@ -297,10 +301,11 @@ export class TranscriptRepo {
                   u.reasoning_tokens AS reasoningTokens,
                   u.provider AS provider,
                   u.model AS model,
+                  u.usage_session_id AS usageSessionId,
                   u.at AS at
              FROM turn_usage u
             WHERE u.thread_id = ?
-            ORDER BY u.at ASC, u.turn_id ASC`,
+            ORDER BY u.at ASC, u.rowid ASC`,
         )
         .all(threadId) as TurnUsageRecord[];
       return rows;

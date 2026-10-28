@@ -15,6 +15,8 @@ import type {
   QueuedTurnRow,
   QueuedTurnStore,
   SendTurnInput,
+  Session,
+  SessionStartInput,
   StoredThreadMeta,
   ThreadCompactionCapability,
   TurnStartResult,
@@ -22,6 +24,7 @@ import type {
 } from "./types.js";
 import { cacheStatuses } from "./providerCache.js";
 import { writeProviderSettings } from "./providerSettings.js";
+import { StartCancelled } from "./types.js";
 
 // AgentService is exercised with fake adapters INJECTED through its options
 // (adapters + store) — no module is mocked, so this file can never shadow a
@@ -51,7 +54,7 @@ type EmitEvent = (event: import("./types.js").RuntimeEvent) => void;
 /** The fake every adapter module exports: captures the emit closure (so the
  *  test can emit like the provider would) and records stopSession calls (so
  *  the wedge watchdog is observable). */
-class FakeAdapter {
+class FakeAdapter implements ProviderAdapter {
   capabilities = {
     sessionModelSwitch: "unsupported" as const,
     streamsText: false,
@@ -75,7 +78,7 @@ class FakeAdapter {
   static instances: FakeAdapter[] = [];
   constructor(
     public emit: EmitEvent,
-    readonly provider: string,
+    readonly provider: ProviderKind,
   ) {
     FakeAdapter.emits.push({ provider, emit });
     FakeAdapter.instances.push(this);
@@ -93,21 +96,37 @@ class FakeAdapter {
   setLivenessHook(hook: (threadId: string) => void): void {
     this.alive = hook;
   }
-  // The fake is injected as a `ProviderAdapter` wholesale (see the cast where
-  // `adapters` is built); these stub methods are never called by the tests, so
-  // they return the emptiest thing that reads as "nothing here".
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  async discover(): Promise<unknown> {
-    return [];
+  async discover(): Promise<ProviderStatus> {
+    return {
+      provider: this.provider,
+      label: this.provider,
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+    };
   }
-  async listModels(): Promise<unknown[]> {
+  async listModels(): Promise<ModelDescriptor[]> {
     return FakeAdapter.models[this.provider] ?? [];
   }
   /** Per-provider catalogs the window-resolution tests warm. */
   static models: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  async startSession(): Promise<unknown> {
-    return {};
+  /** When set, the next startSession waits on it before resolving — a session
+   *  start the test can hold open across a provider-runtime transition. One
+   *  start only. */
+  static startGate: Promise<void> | null = null;
+  async startSession(input: SessionStartInput): Promise<Session> {
+    if (FakeAdapter.startGate) {
+      const gate = FakeAdapter.startGate;
+      FakeAdapter.startGate = null;
+      await gate;
+    }
+    return {
+      threadId: input.threadId,
+      provider: this.provider,
+      cwd: input.cwd,
+      status: "ready",
+      mode: input.mode ?? "ask",
+    };
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const turnId = `turn-${++FakeAdapter.turnCounter}`;
@@ -134,7 +153,7 @@ class FakeAdapter {
   setConfig(config: ProviderConfig): void {
     this.configs.push(config);
   }
-  async listSessions(): Promise<unknown[]> {
+  async listSessions(): Promise<Session[]> {
     return [];
   }
   async hasSession(): Promise<boolean> {
@@ -1709,7 +1728,7 @@ class CompactFakeAdapter extends FakeAdapter {
 
   constructor(
     emit: EmitEvent,
-    provider: string,
+    provider: ProviderKind,
     readonly native: boolean,
   ) {
     super(emit, provider);
@@ -2367,6 +2386,149 @@ describe("AgentService.checkProvider", () => {
     } finally {
       writeProviderSettings("codex", { enabled: true });
       await disabledService.stopAll();
+    }
+  });
+
+  test("a ready -> ready sign-in confirmation retires the provider's live session", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const reauthService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-reauth-ready-to-ready";
+      await reauthService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+      expect(FakeAdapter.stopped).not.toContain(thread);
+
+      const row = await reauthService.confirmProviderSignIn("codex");
+
+      // Same ready row as before, but the sign-in means the credential behind
+      // it may now belong to another account — the old session cannot survive.
+      expect(row).toMatchObject({ provider: "codex", readiness: "ready" });
+      expect(FakeAdapter.stopped).toContain(thread);
+    } finally {
+      await reauthService.stopAll();
+    }
+  });
+
+  test("an ordinary health check leaves live sessions alone", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const healthService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-health-ready-to-ready";
+      await healthService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+
+      await healthService.checkProvider("codex");
+
+      // Observing the same account is not a credential change: no teardown.
+      expect(FakeAdapter.stopped).not.toContain(thread);
+    } finally {
+      await healthService.stopAll();
+    }
+  });
+
+  test("a sign-in is not outrun by a session that is still starting", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const startingService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-reauth-pending-start";
+      let releaseStart!: () => void;
+      FakeAdapter.startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const starting = startingService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+
+      await startingService.confirmProviderSignIn("codex");
+      releaseStart();
+
+      // The session was spawned for the old runtime, so it is never adopted:
+      // the start tears it down and reports cancellation.
+      await expect(starting).rejects.toBeInstanceOf(StartCancelled);
+      expect(FakeAdapter.stopped).toContain(thread);
+    } finally {
+      FakeAdapter.startGate = null;
+      await startingService.stopAll();
     }
   });
 

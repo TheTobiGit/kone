@@ -938,7 +938,11 @@ export type ProviderStatus = {
  *  reach the CLI the user already installed + logged into. */
 export type ProviderEnvVar = {
   name: string;
+  /** A literal value for an ordinary variable. Always empty when `secret` is
+   *  true: kone never stores a credential. */
   value: string;
+  /** Read the same-named variable from the inherited environment instead of
+   *  storing it. `value` is ignored and persisted as empty. */
   secret?: boolean;
 };
 
@@ -962,7 +966,9 @@ export type ProviderConfig = {
   customModels?: string[];
   /** Optional override for the provider CLI's home / config directory. */
   homeDir?: string;
-  /** Per-provider environment variables passed to spawned CLI processes. */
+  /** Per-provider environment variables passed to spawned CLI processes.
+   *  Ordinary entries carry a stored value; secret entries name a variable
+   *  kone inherits from its own environment and never stores. */
   env?: ProviderEnvVar[];
   /** Resume a thread limited on this provider at the provider's reset
    *  (default: true). Off still marks the thread limited. */
@@ -3796,10 +3802,12 @@ export type KoneProviderSignInApi = {
   command: (provider: ProviderKind) => Promise<ProviderSignInCommand | null>;
   /** Start the login command in a fresh PTY. */
   start: (input: ProviderSignInStartInput) => Promise<ProviderSignInStart>;
-  /** Re-probe this ONE provider now (dropping its cached probe first) and
-   *  return its fresh status. The result is also folded into the shared
-   *  surface and pushed on agent:providers-changed, so a verified check clears
-   *  "needs sign-in" everywhere. */
+  /** Confirm the login this dialog just ran: re-probe this ONE provider
+   *  (dropping its cached probe first) and return its fresh status. A ready
+   *  verdict retires the previous credential's sessions and cached quota/models
+   *  — including an account switch that stays `ready` throughout — and the
+   *  result is folded into the shared surface and pushed on
+   *  agent:providers-changed. */
   check: (provider: ProviderKind) => Promise<ProviderStatus>;
 };
 

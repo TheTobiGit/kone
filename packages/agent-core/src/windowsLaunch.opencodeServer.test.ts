@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,8 +7,8 @@ import { classifyOpenCodeSpawnFailure, probeOpenCodeVersion } from "./opencodeHo
 import { OpenCodeServerPool } from "./opencodeServer.js";
 import {
   agentCoreModuleUrl,
-  createLaunchFixture,
   installTaskkillRecorder,
+  launchFixtures,
   recordingSpawn,
   runLaunchScript,
   type LaunchFixture,
@@ -30,11 +30,19 @@ import { escapeCmdCommand, launchFailureError } from "./windowsLaunch.js";
 
 // The server ledger lives under the user data dir; point it at a temp one so no
 // case can read or write the machine's real orphan list.
-setUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-opencode-launch-userdata-")));
+const parentUserData = mkdtempSync(path.join(tmpdir(), "kone-opencode-launch-userdata-"));
+setUserDataDir(parentUserData);
+
+afterAll(() => {
+  rmSync(parentUserData, { recursive: true, force: true });
+});
+
+const fixtures = launchFixtures();
+
+afterEach(fixtures.cleanup);
 
 const BINARY = "opencode";
 const SERVER_MODULE = agentCoreModuleUrl("opencodeServer.ts");
-const USER_DATA_MODULE = agentCoreModuleUrl("userDataDir.ts");
 
 /** Where a Windows launch finds cmd.exe, as the scenario env spells it. */
 const COMSPEC = "C:\\Windows\\System32\\cmd.exe";
@@ -67,7 +75,7 @@ function withIdlingComspec(fixture: LaunchFixture): LaunchFixture {
   writeFileSync(
     comspec,
     `#!${process.execPath}
-process.stdout.write(process.env.KONE_LAUNCH_STDOUT || "");
+process.stdout.write(process.env.LAUNCH_FIXTURE_STDOUT || "");
 setInterval(() => {}, 1000);
 `,
     { mode: 0o755 },
@@ -92,7 +100,7 @@ describe("OpenCode server boot through the launch seam", () => {
   }
 
   test("on Windows the boot is ComSpec running the npm shim", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installNpmSiblings(BINARY);
     const env = { PATH: fixture.binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD", ComSpec: COMSPEC };
     const { calls, spawn } = recordingSpawn();
@@ -176,7 +184,7 @@ describe("OpenCode server boot through the launch seam", () => {
   });
 
   test("dispose tears the cmd.exe wrapper's whole tree down with taskkill", async () => {
-    const fixture = createLaunchFixture({
+    const fixture = fixtures.create({
       stdout: "opencode server listening on http://127.0.0.1:3210\n",
     });
     fixture.installNpmSiblings(BINARY);
@@ -186,8 +194,6 @@ describe("OpenCode server boot through the launch seam", () => {
       fixture: scenario,
       windows: true,
       body: `
-        const { setUserDataDir } = await import(${JSON.stringify(USER_DATA_MODULE)});
-        setUserDataDir(process.env.HOME);
         const { OpenCodeServerPool } = await import(${JSON.stringify(SERVER_MODULE)});
         const pool = new OpenCodeServerPool();
         const server = await pool.start({ cwd: process.env.HOME, env: process.env, binary: ${JSON.stringify(BINARY)} });
@@ -234,7 +240,7 @@ describe("OpenCode version probe through the launch seam", () => {
   }
 
   test("on Windows the probe is ComSpec running the npm shim", async () => {
-    const fixture = createLaunchFixture({ stdout: "1.14.19\n" });
+    const fixture = fixtures.create({ stdout: "1.14.19\n" });
     fixture.installNpmSiblings(BINARY);
     // The probe builds its own env, so PATH carries the fixture in Windows
     // form: the first `;`-separated entry is the bin dir, whatever the agent
@@ -277,7 +283,7 @@ describe("OpenCode version probe through the launch seam", () => {
   });
 
   test("off Windows the probe spawns the bare name with the unchanged options", async () => {
-    const fixture = createLaunchFixture();
+    const fixture = fixtures.create();
     fixture.installExecutable(BINARY);
     usePath(fixture.binDir);
     const { calls, spawn } = recordingSpawn("process.stdout.write('1.14.19\\n')");

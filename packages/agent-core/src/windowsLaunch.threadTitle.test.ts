@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { generateThreadTitle } from "./threadTitle.js";
 import { createLaunchFixture, recordingSpawn } from "./testing/win32Launch.js";
+import { setUserDataDir } from "./userDataDir.js";
 import { escapeCmdArgument, escapeCmdCommand } from "./windowsLaunch.js";
 
 // Thread titles are a one-shot CLI call (`claude -p`, `codex exec`, …). On
@@ -48,9 +49,12 @@ const CLAUDE_ARGS = [
 
 const fixture = createLaunchFixture();
 fixture.installNpmSiblings("claude");
+// The generators build the provider environment through the settings store, so
+// point the per-user state at the fixture before any title is generated.
+setUserDataDir(fixture.userDataDir);
 
 afterAll(() => {
-  fs.rmSync(fixture.root, { recursive: true, force: true });
+  fixture.cleanup();
 });
 
 /** The process environment a Windows machine would present: a `;`-separated

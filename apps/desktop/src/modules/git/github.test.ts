@@ -34,11 +34,11 @@ const {
 
 describe("branchPullRequest outcome", () => {
   test("a repo with no GitHub remote reports the lookup unavailable, not no-PR", async () => {
+    installFakeGhRaw("", { stderr: "gh: no git remotes found", code: 1 });
     const dir = await initTestRepo("kone-gh-branch-");
     try {
       const outcome = await branchPullRequest(dir, "feature");
-      // gh is missing, unauthenticated, or has no remote here — all of which are
-      // "unknown", never "there is no PR".
+      // An unavailable lookup is unknown, never proof that there is no PR.
       expect(outcome.available).toBe(false);
       expect(outcome.pullRequest).toBeNull();
     } finally {
@@ -47,6 +47,10 @@ describe("branchPullRequest outcome", () => {
   });
 
   test("a failed repository resolution is unavailable, not a known-empty PR list", async () => {
+    installFakeGhRaw("", {
+      stderr: "GraphQL: Could not resolve to a Repository with the name 'kone-nonexistent-org-xyz/nonexistent-repo-xyz'.",
+      code: 1,
+    });
     const dir = await initTestRepo("kone-gh-branch-");
     try {
       // A remote gh cannot resolve: `gh pr list` fails with NOT_FOUND, which
@@ -145,12 +149,15 @@ function installFakeGh(stdout: string): void {
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
 }
 
-/** Put a fake `gh` first on PATH; outputs raw string verbatim without JSON.stringify wrapping. */
-function installFakeGhRaw(rawStdout: string): void {
+/** Put a fake `gh` first on PATH, returning a deterministic CLI result. */
+function installFakeGhRaw(rawStdout: string, failure?: { stderr: string; code: number }): void {
   const bin = mkdtempSync(path.join(os.tmpdir(), "kone-gh-bin-"));
   tempDirs.push(bin);
   const ghPath = path.join(bin, "gh");
-  writeFileSync(ghPath, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(rawStdout)});\n`);
+  writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(rawStdout)});\nprocess.stderr.write(${JSON.stringify(failure?.stderr ?? "")});\nprocess.exitCode = ${failure?.code ?? 0};\n`,
+  );
   chmodSync(ghPath, 0o755);
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
 }

@@ -1,15 +1,7 @@
 <script setup lang="ts">
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  reactive,
-  ref,
-  type ComponentPublicInstance,
-} from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Attachment01Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@hugeicons/core-free-icons";
 import type {
   ChatAttachment,
   UserInputAnswerAttachments,
@@ -17,11 +9,11 @@ import type {
   UserInputQuestion,
 } from "~/types/desktop";
 import type { UserInputOwner } from "~/composables/agentTypes";
-import VisualFrame from "~/components/conversation/VisualFrame.vue";
-import VisualImageViewer from "~/components/conversation/VisualImageViewer.vue";
-import { formatFileSize } from "~/utils/formatFile";
+import { useUserInputAttachments } from "~/composables/useUserInputAttachments";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
+import UserInputAnswerFiles from "~/components/ui/UserInputAnswerFiles.vue";
+import UserInputQuestionMedia from "~/components/ui/UserInputQuestionMedia.vue";
 import {
   buildUserInputAnswers,
   emptyUserInputDraft,
@@ -77,166 +69,28 @@ const emit = defineEmits<{
 const drafts = reactive<Record<string, UserInputDraft>>({});
 for (const q of props.questions) drafts[q.id] = emptyUserInputDraft();
 
-// Files the user is attaching, keyed by question id. Uploads start the moment
-// a file is picked, dropped or pasted; `attachments` holds the stored metadata
-// once each one lands, `uploading` the rows still in flight, and `uploadErrors`
-// the last failure so the question can say what went wrong.
-const attachments = reactive<Record<string, ChatAttachment[]>>({});
-type UploadingFile = { key: string; name: string };
-const uploading = reactive<Record<string, UploadingFile[]>>({});
-const uploadErrors = reactive<Record<string, string>>({});
-const dragTarget = ref<string | null>(null);
-let uploadSeq = 0;
-/** The dialog's outcome is decided — answered, cancelled or unmounted. A file
- *  that lands after that belongs to nobody and goes back to the store. */
-let settled = false;
-
-/** Hand one stored answer file back. Fire-and-forget: the dialog is on its way
- *  out, and an orphaned upload is only the sweep's problem. */
-function discardUpload(attachment: ChatAttachment): void {
-  void props.discard?.(attachment).catch(() => {});
-}
-
-/** Every answer file still sitting on the dialog goes back — cancel and unmount
- *  both end with nothing of the user's left unattached. */
-function discardAnswerAttachments(): void {
-  for (const list of Object.values(attachments)) {
-    for (const attachment of list) discardUpload(attachment);
-  }
-}
-
-/** The hidden per-question file pickers, opened by each question's attach
- *  button so the button itself stays the one named control. */
-const fileInputs = ref<Record<string, HTMLInputElement | null>>({});
-function setFileInput(id: string, el: Element | ComponentPublicInstance | null): void {
-  fileInputs.value[id] = el instanceof HTMLInputElement ? el : null;
-}
-
-function pickFiles(q: UserInputQuestion): void {
-  fileInputs.value[q.id]?.click();
-}
-
-/** How many files are attached across the whole dialog, in-flight ones
- *  included — the backend caps the answer at eight in total. */
-const attachedTotal = computed(
-  () =>
-    Object.values(attachments).reduce((sum, list) => sum + list.length, 0) +
-    Object.values(uploading).reduce((sum, list) => sum + list.length, 0),
-);
-
-const uploadingAny = computed(() =>
-  Object.values(uploading).some((list) => list.length > 0),
-);
-
-/** Only questions that actually carry files are sent — an empty map would
- *  read as "these questions had attachments" to nothing, but the backend's
- *  argument is optional, so leave it out entirely. */
-const attachmentAnswers = computed<UserInputAnswerAttachments>(() => {
-  const result: UserInputAnswerAttachments = {};
-  for (const [id, list] of Object.entries(attachments)) {
-    if (list.length > 0) result[id] = list;
-  }
-  return result;
-});
-const hasAnswerAttachments = computed(
-  () => Object.keys(attachmentAnswers.value).length > 0,
-);
-
-function fileExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1
-    ? name.slice(dot + 1, dot + 5).toUpperCase()
-    : "FILE";
-}
-
-function isImage(att: ChatAttachment): boolean {
-  return att.type === "image" || att.mimeType.toLowerCase().startsWith("image/");
-}
-
-/** Upload every file immediately, one request each, so a slow one never holds
- *  the others back. A failure leaves the rest alone and says why in the
- *  question's error line. */
-function attachFiles(q: UserInputQuestion, files: Iterable<File>): void {
-  const upload = props.upload;
-  // A fixed-choice answer is one option and nothing else: no file can ride it.
-  if (!upload || q.fixedChoice) return;
-  for (const file of files) {
-    if (attachedTotal.value >= USER_INPUT_ATTACHMENT_LIMIT) {
-      uploadErrors[q.id] = `You can attach up to ${USER_INPUT_ATTACHMENT_LIMIT} files.`;
-      break;
-    }
-    delete uploadErrors[q.id];
-    const key = `upload-${++uploadSeq}`;
-    const name = file.name || "attachment";
-    (uploading[q.id] ??= []).push({ key, name });
-    void upload(file)
-      .then((attachment) => {
-        uploading[q.id] = (uploading[q.id] ?? []).filter((row) => row.key !== key);
-        // The dialog closed while this was in flight: nobody can send it now.
-        if (settled) {
-          discardUpload(attachment);
-          return;
-        }
-        (attachments[q.id] ??= []).push(attachment);
-      })
-      .catch((error: Error) => {
-        uploading[q.id] = (uploading[q.id] ?? []).filter((row) => row.key !== key);
-        uploadErrors[q.id] = error?.message || `Could not attach ${name}.`;
-      });
-  }
-}
-
-function onFilesPicked(q: UserInputQuestion, event: Event): void {
-  // SAFETY: bound via @change on the question's hidden file <input>, so the
-  // target is that input.
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  // Clear first so re-picking the same file still fires a change.
-  input.value = "";
-  attachFiles(q, files);
-}
-
-// Paste feeds the same list as the picker: a screenshot off the clipboard is
-// an image file, and pasted documents ride as files.
-function onPaste(q: UserInputQuestion, event: ClipboardEvent): void {
-  const files = Array.from(event.clipboardData?.files ?? []);
-  if (files.length === 0) return;
-  event.preventDefault();
-  attachFiles(q, files);
-}
-
-function onDragOver(q: UserInputQuestion, event: DragEvent): void {
-  if (!props.upload || q.fixedChoice) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-  dragTarget.value = q.id;
-}
-
-function onDragLeave(q: UserInputQuestion, event: DragEvent): void {
-  // Crossing between the question's own children is not leaving it.
-  const current = event.currentTarget;
-  const next = event.relatedTarget;
-  if (current instanceof Node && next instanceof Node && current.contains(next)) return;
-  if (dragTarget.value === q.id) dragTarget.value = null;
-}
-
-function onDrop(q: UserInputQuestion, event: DragEvent): void {
-  dragTarget.value = null;
-  attachFiles(q, Array.from(event.dataTransfer?.files ?? []));
-}
-
-function removeAttachment(q: UserInputQuestion, id: string): void {
-  const list = attachments[q.id] ?? [];
-  const gone = list.find((att) => att.id === id);
-  attachments[q.id] = list.filter((att) => att.id !== id);
-  if (gone) discardUpload(gone);
-}
-
-// Clicking an agent image opens the shared image viewer over the dialog.
-const viewedImage = ref<{ src: string; alt: string } | null>(null);
-function openImage(image: ChatAttachment): void {
-  viewedImage.value = { src: `attachment://${image.id}`, alt: image.name };
-}
+// Answer files live in their own lifecycle: uploads start as each file arrives,
+// and the dialog's outcome either hands them to the answer or takes them back.
+const {
+  attachments,
+  uploading,
+  uploadErrors,
+  dragTarget,
+  attachedTotal,
+  uploadingAny,
+  attachmentAnswers,
+  hasAnswerAttachments,
+  attachFiles,
+  removeAttachment,
+  onPaste,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  clearDragTarget,
+  transferToAnswer,
+  discardAll,
+  dispose,
+} = useUserInputAttachments({ upload: props.upload, discard: props.discard });
 
 /** Any question carrying agent media earns a wider card and a taller scroll
  *  area, so a visual gets the same room it has in a reply. */
@@ -298,7 +152,7 @@ function submit(): void {
   cue("press");
   // Everything on the answer is handed over with it: the files are the agent's
   // now, so the unmount must not discard them.
-  settled = true;
+  transferToAnswer();
   // Taken now, not when the exit ends: the asking session is this click's.
   const owner = props.owner;
   close(() =>
@@ -316,8 +170,7 @@ function submit(): void {
 // adapter treats as "declined" so the turn can carry on.
 function cancel(): void {
   if (closing.value) return;
-  settled = true;
-  discardAnswerAttachments();
+  discardAll();
   const owner = props.owner;
   dismiss(() => emit("cancel", props.requestId, owner));
 }
@@ -362,10 +215,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   // The dialog went away without an answer (the host unmounted it, or the
   // request was withdrawn): whatever was uploaded for it is unreferenced.
-  if (!settled) {
-    settled = true;
-    discardAnswerAttachments();
-  }
+  dispose();
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("resize", syncHeight);
   ro?.disconnect();
@@ -390,7 +240,7 @@ onBeforeUnmount(() => {
       aria-modal="true"
       aria-label="The agent is asking a question"
       @dragover.prevent
-      @drop.prevent="dragTarget = null"
+      @drop.prevent="clearDragTarget"
     >
       <div ref="contentEl" class="ask-body flex shrink-0 flex-col">
         <!-- Recessed header band with the arc scoops flowing into the card walls
@@ -421,24 +271,7 @@ onBeforeUnmount(() => {
             <!-- What the agent attached: images from its own attachment store,
                  opened large in the shared viewer, and a live visual drawn by
                  the same frame a reply uses (theme, height reports, expand). -->
-            <div v-if="q.images?.length" class="ask-agent-images">
-              <button
-                v-for="img in q.images"
-                :key="img.id"
-                type="button"
-                class="ask-agent-thumb"
-                :title="`Preview ${img.name}`"
-                :aria-label="`Preview ${img.name}`"
-                @click="openImage(img)"
-              >
-                <img
-                  :src="`attachment://${img.id}`"
-                  :alt="img.name"
-                  loading="lazy"
-                />
-              </button>
-            </div>
-            <VisualFrame v-if="q.visual" :visual="q.visual" />
+            <UserInputQuestionMedia :images="q.images" :visual="q.visual" />
 
             <!-- Option list: radio-like for single-select, checkbox-like for
                  multi. The mark fills with the accent once picked. -->
@@ -525,75 +358,16 @@ onBeforeUnmount(() => {
                  hidden picker exist only when the host can store them; drop
                  and paste land on the whole question. Chips show what will
                  ride the answer, with in-flight rows and a last-error line. -->
-            <div v-if="props.upload && !q.fixedChoice" class="ask-attach">
-              <input
-                :ref="(el) => setFileInput(q.id, el)"
-                type="file"
-                multiple
-                class="ask-file-input"
-                tabindex="-1"
-                aria-hidden="true"
-                @change="onFilesPicked(q, $event)"
-              />
-              <button
-                type="button"
-                class="ask-attach-btn"
-                aria-label="Attach images or files"
-                title="Attach images or files"
-                @click="pickFiles(q)"
-              >
-                <HugeiconsIcon :icon="Attachment01Icon" :size="15" :stroke-width="1.8" />
-              </button>
-
-              <div
-                v-if="attachments[q.id]?.length || uploading[q.id]?.length"
-                class="ask-chips"
-              >
-                <span
-                  v-for="att in attachments[q.id]"
-                  :key="att.id"
-                  class="ask-chip"
-                  :title="`${att.name} (${formatFileSize(att.sizeBytes)})`"
-                >
-                  <img
-                    v-if="isImage(att)"
-                    class="ask-chip__thumb"
-                    :src="`attachment://${att.id}`"
-                    :alt="att.name"
-                  />
-                  <span v-else class="ask-chip__ext">{{ fileExtension(att.name) }}</span>
-                  <span class="ask-chip__name">{{ att.name }}</span>
-                  <button
-                    type="button"
-                    class="ask-chip__remove"
-                    :aria-label="`Remove ${att.name}`"
-                    :title="`Remove ${att.name}`"
-                    @click="removeAttachment(q, att.id)"
-                  >
-                    <HugeiconsIcon :icon="Cancel01Icon" :size="11" :stroke-width="2.2" />
-                  </button>
-                </span>
-
-                <span
-                  v-for="file in uploading[q.id]"
-                  :key="file.key"
-                  class="ask-chip ask-chip--uploading"
-                >
-                  <span class="ask-chip__name">{{ file.name }}</span>
-                  <span class="ask-chip__state">Uploading…</span>
-                </span>
-              </div>
-
-              <span
-                v-if="attachedTotal >= USER_INPUT_ATTACHMENT_LIMIT"
-                class="ask-attach-hint"
-              >
-                {{ USER_INPUT_ATTACHMENT_LIMIT }} files max
-              </span>
-            </div>
-            <p v-if="uploadErrors[q.id]" class="ask-attach-error" role="alert">
-              {{ uploadErrors[q.id] }}
-            </p>
+            <UserInputAnswerFiles
+              v-if="props.upload && !q.fixedChoice"
+              :attachments="attachments[q.id] ?? []"
+              :uploading="uploading[q.id] ?? []"
+              :error="uploadErrors[q.id]"
+              :total="attachedTotal"
+              :limit="USER_INPUT_ATTACHMENT_LIMIT"
+              @files="attachFiles(q, $event)"
+              @remove="removeAttachment(q.id, $event)"
+            />
           </div>
         </div>
 
@@ -613,14 +387,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </UiModalShell>
-  <!-- The agent's image opened over the dialog, in the same viewer the
-       visuals use. -->
-  <VisualImageViewer
-    v-if="viewedImage"
-    :src="viewedImage.src"
-    :alt="viewedImage.alt"
-    @close="viewedImage = null"
-  />
 </template>
 
 <style scoped>
@@ -697,149 +463,10 @@ onBeforeUnmount(() => {
   color: var(--ink);
 }
 
-/* What the agent attached to the prompt — a compact thumbnail row for images,
-   and the reply's own visual frame below them, filling the card's width. */
-.ask-agent-images {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ask-agent-thumb {
-  width: 72px;
-  height: 72px;
-  flex: none;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--btn-border);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  cursor: zoom-in;
-  transition: border-color 0.18s ease;
-}
-.ask-agent-thumb:hover,
-.ask-agent-thumb:focus-visible {
-  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
-}
-.ask-agent-thumb img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-/* The answer's own attachments: one quiet paperclip button, then a wrap of
-   chips — image thumbnails or a file-type badge, the name, and a remove ✕. */
-.ask-attach {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.ask-file-input {
-  display: none;
-}
-.ask-attach-btn {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    color 0.18s ease;
-}
-.ask-attach-btn:hover,
-.ask-attach-btn:focus-visible {
-  background: var(--hover);
-  color: var(--ink);
-}
-.ask-chips {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ask-chip {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 3px;
-  border: 1px solid var(--btn-border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-  font-size: 12px;
-  line-height: 1.2;
-}
-.ask-chip__thumb {
-  width: 22px;
-  height: 22px;
-  flex: none;
-  border-radius: 5px;
-  object-fit: cover;
-}
-.ask-chip__ext {
-  display: inline-flex;
-  min-width: 22px;
-  height: 22px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 3px;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--ink) 7%, transparent);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-}
-.ask-chip__name {
-  min-width: 0;
-  max-width: 14rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-soft);
-}
-.ask-chip__state {
-  flex: none;
-  color: var(--muted);
-  font-size: 11px;
-}
-.ask-chip--uploading {
-  opacity: 0.75;
-}
-.ask-chip__remove {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    color 0.18s ease;
-}
-.ask-chip__remove:hover,
-.ask-chip__remove:focus-visible {
-  background: var(--hover);
-  color: var(--ink);
-}
-.ask-attach-hint,
+/* The footer's upload status line. */
 .ask-upload-note {
   color: var(--muted);
   font-size: 11px;
-}
-.ask-attach-error {
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--danger, #d9544f);
 }
 /* The whole question is the drop target, so a file dragged over any part of it
    reads as landing here. */

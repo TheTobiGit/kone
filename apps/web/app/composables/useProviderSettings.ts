@@ -361,8 +361,10 @@ export function useProviderSettings() {
     for (const v of vars) {
       const name = v.name.trim();
       if (!name) continue;
-      const item: ProviderEnvVar = { name, value: v.value };
-      if (v.secret) item.secret = true;
+      const secret = v.secret === true;
+      const item: ProviderEnvVar = secret
+        ? { name, value: "", secret: true }
+        : { name, value: v.value };
       clean.push(item);
     }
     await write(provider, { env: clean.length ? clean : undefined });

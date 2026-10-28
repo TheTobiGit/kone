@@ -491,6 +491,66 @@ describe("providerSettings legacy renderer import", () => {
   });
 });
 
+describe("providerSettings credential boundary", () => {
+  it("persists ordinary env values but never a secret literal", () => {
+    patchProviderSettings("codex", {
+      env: [
+        { name: "OPENAI_BASE_URL", value: "https://proxy.example/v1" },
+        { name: "OPENAI_API_KEY", value: "sk-live-literal", secret: true },
+      ],
+    });
+
+    const expected = [
+      { name: "OPENAI_BASE_URL", value: "https://proxy.example/v1" },
+      { name: "OPENAI_API_KEY", value: "", secret: true },
+    ];
+    expect(readProviderSettings().codex?.env).toEqual(expected);
+    expect(readProviderSettingsSnapshot().settings.codex?.env).toEqual(expected);
+
+    const text = readFileSync(settingsFile(), "utf8");
+    expect(text).not.toContain("sk-live-literal");
+    expect(text).toContain("https://proxy.example/v1");
+  });
+
+  it("drops a legacy literal secret on load, persists the redaction, and never prints the value", () => {
+    const literal = "sk-legacy-literal";
+    writeFileSync(
+      settingsFile(),
+      JSON.stringify({
+        version: 1,
+        revision: 2,
+        settings: {
+          codex: {
+            env: [
+              { name: "OPENAI_API_KEY", value: literal, secret: true },
+              { name: "OPENAI_BASE_URL", value: "https://proxy.example/v1" },
+            ],
+          },
+        },
+      }),
+    );
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const expected = [
+        { name: "OPENAI_API_KEY", value: "", secret: true },
+        { name: "OPENAI_BASE_URL", value: "https://proxy.example/v1" },
+      ];
+      expect(readProviderSettings().codex?.env).toEqual(expected);
+      expect(readProviderSettingsSnapshot().settings.codex?.env).toEqual(expected);
+
+      const disk = readFileSync(settingsFile(), "utf8");
+      expect(disk).not.toContain(literal);
+      expect(disk).toContain("https://proxy.example/v1");
+
+      const warnings = warn.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(warnings).toContain("OPENAI_API_KEY");
+      expect(warnings).not.toContain(literal);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("providerSettings file permissions", () => {
   it("persists provider-settings.json with owner-only 0600 permissions on POSIX, even when replacing a 0644 file", () => {
     if (process.platform === "win32") return;
@@ -503,5 +563,6 @@ describe("providerSettings file permissions", () => {
       env: [{ name: "OPENAI_API_KEY", value: "sk-secret", secret: true }],
     });
     expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(file, "utf8")).not.toContain("sk-secret");
   });
 });
