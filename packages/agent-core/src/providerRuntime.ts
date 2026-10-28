@@ -471,7 +471,17 @@ export class ProviderRuntime {
     if (!runtimeSettingsChanged(before, after)) return;
     this.retireProviderRuntime(provider);
     await this.options.retireSessions(provider);
-    void this.discover();
+    // Finish health discovery before querying models on the same CLI. Settings
+    // writes stay non-blocking, and successful catalog commits notify every window.
+    void this.discover().then((found) => {
+      if (isProviderEnabled(provider) && found.some((status) =>
+        status.provider === provider && status.available,
+      )) {
+        return this.refreshProviderModels(provider);
+      }
+    }).catch((error) => {
+      console.error("[agent] provider settings refresh failed:", error);
+    });
   }
 
   /** Drop every cache derived from the provider's current runtime: quota reads,
