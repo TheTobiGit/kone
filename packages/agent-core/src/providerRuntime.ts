@@ -72,6 +72,8 @@ export class ProviderRuntime {
    *  CLI and two writers for one disk snapshot, so each round starts when the
    *  previous one settles. */
   private rounds: Promise<unknown> = Promise.resolve();
+  /** A probe started before retirement cannot publish the old runtime's row. */
+  private runtimeGeneration = 0;
   private warming: Promise<void> | null = null;
   private readonly invalidateQuota: (provider: ProviderKind) => void;
 
@@ -164,16 +166,27 @@ export class ProviderRuntime {
     // otherwise pay for that twice and race each other to the disk snapshot.
     this.discovering ??= this.queueRound(async () => {
       try {
-        const settings = readProviderSettings();
-        const cached = readProviderCache().statuses;
-        const probed = await Promise.all(
-          [...this.adaptersByKind.values()].map((adapter) =>
-            this.probeProvider(adapter, settings, cached),
-          ),
-        );
-        const statuses = stabilizeProviderStatuses(cached, probed);
-        this.publishStatuses(statuses);
-        return statuses;
+        for (;;) {
+          const generation = this.runtimeGeneration;
+          const settings = readProviderSettings();
+          const cached = readProviderCache().statuses;
+          const probed = await Promise.all(
+            [...this.adaptersByKind.values()].map((adapter) =>
+              this.probeProvider(adapter, settings, cached),
+            ),
+          );
+          if (generation !== this.runtimeGeneration) {
+            // An old probe may have refilled its adapter cache AFTER retirement
+            // cleared it. Drop that result before probing the new configuration.
+            for (const adapter of this.adaptersByKind.values()) {
+              adapter.invalidateDiscoveryCaches?.();
+            }
+            continue;
+          }
+          const statuses = stabilizeProviderStatuses(cached, probed);
+          this.publishStatuses(statuses);
+          return statuses;
+        }
       } finally {
         this.discovering = null;
       }
@@ -236,23 +249,26 @@ export class ProviderRuntime {
     provider: ProviderKind,
   ): Promise<{ observed: ProviderStatus; published: ProviderStatus }> {
     const adapter = this.adapter(provider);
-    adapter.invalidateDiscoveryCaches?.();
+    return this.queueRound(async () => {
+      for (;;) {
+        const generation = this.runtimeGeneration;
+        adapter.invalidateDiscoveryCaches?.();
+        const probed = await this.probeProvider(
+          adapter, readProviderSettings(), readProviderCache().statuses,
+        );
+        if (generation !== this.runtimeGeneration) continue;
 
-    const probed = await this.queueRound(() =>
-      this.probeProvider(adapter, readProviderSettings(), readProviderCache().statuses),
-    );
-
-    // Re-read AFTER the probe: a full discovery that published a newer round
-    // while this CLI was answering must keep its other rows. Folding into the
-    // pre-probe snapshot would overwrite them with stale data.
-    const cached = readProviderCache().statuses;
-    const [folded] = stabilizeProviderStatuses(cached, [probed]);
-    if (!folded) throw new Error(`No provider status for ${provider}.`);
-    const merged = cached.some((status) => status.provider === provider)
-      ? cached.map((status) => (status.provider === provider ? folded : status))
-      : [...cached, folded];
-    this.publishStatuses(merged);
-    return { observed: probed, published: folded };
+        // Fold into the cache AFTER the probe, preserving newer unrelated rows.
+        const cached = readProviderCache().statuses;
+        const [folded] = stabilizeProviderStatuses(cached, [probed]);
+        if (!folded) throw new Error(`No provider status for ${provider}.`);
+        const merged = cached.some((status) => status.provider === provider)
+          ? cached.map((status) => (status.provider === provider ? folded : status))
+          : [...cached, folded];
+        this.publishStatuses(merged);
+        return { observed: probed, published: folded };
+      }
+    });
   }
 
   /** Confirm that an in-app sign-in just succeeded, then retire everything
@@ -423,6 +439,7 @@ export class ProviderRuntime {
   /** Drop every cache derived from the provider's current runtime: quota reads,
    *  adapter discovery state, and the in-memory model catalog. */
   private retireProviderRuntime(provider: ProviderKind): void {
+    this.runtimeGeneration += 1;
     this.invalidateQuota(provider);
     this.adaptersByKind.get(provider)?.invalidateDiscoveryCaches?.();
     this.catalogs.delete(provider);
