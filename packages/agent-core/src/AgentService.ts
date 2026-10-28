@@ -867,6 +867,10 @@ export class AgentService {
     return this.providers.onProvidersChanged(listener);
   }
 
+  onModelsChanged(listener: (provider: ProviderKind, models: ModelDescriptor[]) => void): () => void {
+    return this.providers.onModelsChanged(listener);
+  }
+
   listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
     return this.providers.listModels(provider);
   }

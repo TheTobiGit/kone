@@ -536,6 +536,11 @@ const api = {
       ipcRenderer.on("agent:providers-changed", listener);
       return () => ipcRenderer.removeListener("agent:providers-changed", listener);
     },
+    onModelsChanged: (cb: (provider: ProviderKind, models: ModelDescriptor[]) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, provider: ProviderKind, models: ModelDescriptor[]) => cb(provider, models);
+      ipcRenderer.on("agent:models-changed", listener);
+      return () => ipcRenderer.removeListener("agent:models-changed", listener);
+    },
     models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
       ipcRenderer.invoke("agent:models", provider),
     // Per-provider install settings (custom CLI binary path, …). Read once on

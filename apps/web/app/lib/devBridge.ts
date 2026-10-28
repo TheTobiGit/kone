@@ -244,6 +244,8 @@ function createDevAgent(
         providerListeners.delete(cb);
       };
     },
+    // The demo catalog is static, so it has no model changes to announce.
+    onModelsChanged: () => () => {},
     models: (provider) => Promise.resolve(MOCK_MODELS[provider] ?? []),
     getSettingsSnapshot: () => Promise.resolve(settingsSnapshot()),
     // Importing once bumps the revision, exactly like the main process; a
