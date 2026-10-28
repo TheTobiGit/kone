@@ -1483,11 +1483,11 @@ export type CreateSideChatResult = {
 };
 
 // ── thread handoff (mirror packages/agent-core/src/types.ts) ───────────────
-// Handing a thread to another provider/model continues the same task under
-// new ownership: the renderer mints threadId + requestId, the desktop side
-// imports the full transcript, and the handoff streams as
-// `thread.handoff-created`. Many handoffs may leave one source; a handoff
-// may itself be handed off again once it has run a native turn.
+// Handing a thread to a provider/model — another one or the source's own —
+// continues the same task under new ownership: the renderer mints threadId +
+// requestId, the desktop side imports the full transcript, and the handoff
+// streams as `thread.handoff-created`. Many handoffs may leave one source; a
+// handoff may itself be handed off again once it has run a native turn.
 
 export type CreateHandoffInput = {
   /** Caller-chosen idempotency key. Same requestId replayed with the same
@@ -1498,7 +1498,9 @@ export type CreateHandoffInput = {
   threadId: string;
   /** The thread being handed off. */
   sourceThreadId: string;
-  /** The provider/model the handoff continues on. Provider is required. */
+  /** The provider/model the handoff continues on. Provider is required.
+   *  Naming the source's own provider/model starts a fresh continuation, not a
+   *  resume. */
   target: {
     provider: ProviderKind;
     model?: string;
@@ -3527,10 +3529,10 @@ export type KoneAgentApi = {
    *  `thread.sidechat-created`; its first send carries the imported-transcript
    *  bootstrap. */
   createSideChat: (input: CreateSideChatInput) => Promise<CreateSideChatResult>;
-  /** Hand a thread to another provider/model. The renderer mints the thread
-   *  id; a replayed id resolves "exists". The handoff streams as
-   *  `thread.handoff-created`; its first send carries the handed-transcript
-   *  bootstrap. */
+  /** Hand a thread to a provider/model — another one or the source's own. The
+   *  renderer mints the thread id; a replayed id resolves "exists". The handoff
+   *  streams as `thread.handoff-created`; its first send carries the
+   *  handed-transcript bootstrap. */
   createHandoff: (input: CreateHandoffInput) => Promise<CreateHandoffResult>;
   handIn: (input: HandInInput) => Promise<HandInResult>;
   /** Fork a thread at one of its user blocks (edit-and-resend of an earlier

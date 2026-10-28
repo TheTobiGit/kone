@@ -197,7 +197,7 @@ describe("createHandoffThread", () => {
     expect(b.status).toBe("created");
   });
 
-  test("refuses an unknown source, an empty source, and a target identical to the source", async () => {
+  test("refuses an unknown source and an empty source", async () => {
     const { createHandoffThread } = await import("./handoff.js");
     const { getConversationStore } = await import("./ConversationStore.js");
     const store = getConversationStore();
@@ -222,15 +222,6 @@ describe("createHandoffThread", () => {
         target: { provider: "claudeAgent" },
       }),
     ).toThrow(/no conversation/);
-    expect(() =>
-      createHandoffThread({
-        requestId: "r-z",
-        threadId: "h-z",
-        sourceThreadId: "t-src",
-      kind: "handoff",
-        target: { provider: "codex", model: "gpt-x" },
-      }),
-    ).toThrow(/different provider or model/);
   });
 
   test("a handoff must run a native turn before it can itself be handed off", async () => {
@@ -342,6 +333,164 @@ describe("createHandoffThread", () => {
     expect(links[0]!.handedAt).toBeGreaterThan(0);
     expect(links[1]).toMatchObject({ provider: "opencode" });
     expect(store.continuationsFromSource("missing")).toEqual([]);
+  });
+});
+
+describe("createHandoffThread to the same provider and model", () => {
+  test("an explicit identical provider and model mints a fresh continuation, never the source", async () => {
+    await seedSource();
+    const { createHandoffThread } = await import("./handoff.js");
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+    const sourceBlocksBefore = store.loadThread("t-src")!.blocks.map((b) => b.id);
+
+    const result = createHandoffThread({
+      requestId: "r-same",
+      threadId: "h-same",
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      target: { provider: "codex", model: "gpt-x" },
+    });
+    expect(result).toMatchObject({
+      status: "created",
+      threadId: "h-same",
+      provider: "codex",
+      model: "gpt-x",
+    });
+    // Never the source: a distinct thread id resolves, not a resume.
+    expect(result.threadId).not.toBe("t-src");
+
+    const continuation = store.loadThread("h-same")!;
+    expect(continuation.provider).toBe("codex");
+    expect(continuation.model).toBe("gpt-x");
+    // The whole transcript is imported as real history, not inherited by
+    // reference.
+    expect(continuation.blocks.map((b) => (b.role === "user" ? b.text : "[assistant]"))).toEqual([
+      "first question",
+      "[assistant]",
+      "second question",
+      "[assistant]",
+    ]);
+    for (const block of continuation.blocks) {
+      expect(block.source).toBe("fork-import");
+    }
+    const meta = store.threadMeta("h-same");
+    expect(meta?.sourceThreadId).toBe("t-src");
+    expect(meta?.forkContext).toMatchObject({
+      sourceThreadId: "t-src",
+      bootstrapStatus: "pending",
+      forkKind: "handoff",
+      sourceProvider: "codex",
+      sourceModel: "gpt-x",
+    });
+
+    // The source is untouched: same blocks, no fork context of its own.
+    expect(store.loadThread("t-src")!.blocks.map((b) => b.id)).toEqual(sourceBlocksBefore);
+    expect(store.threadForkContext("t-src")).toBeNull();
+  });
+
+  test("an omitted target model inherits the source's own on the same provider", async () => {
+    await seedSource();
+    const { createHandoffThread } = await import("./handoff.js");
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+
+    const result = createHandoffThread({
+      requestId: "r-inherit",
+      threadId: "h-inherit",
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      target: { provider: "codex" },
+    });
+    expect(result.status).toBe("created");
+    expect(result.model).toBe("gpt-x");
+    expect(store.loadThread("h-inherit")!.model).toBe("gpt-x");
+    expect(store.threadForkContext("h-inherit")?.sourceModel).toBe("gpt-x");
+  });
+
+  test("a same-provider handoff of an unnamed-model source still continues", async () => {
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+    store.ensureThread({ threadId: "t-nomodel", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-nomodel", text: "hello", at: 10 });
+
+    const { createHandoffThread } = await import("./handoff.js");
+    const result = createHandoffThread({
+      requestId: "r-nomodel",
+      threadId: "h-nomodel",
+      sourceThreadId: "t-nomodel",
+      kind: "handoff",
+      target: { provider: "codex" },
+    });
+    expect(result.status).toBe("created");
+    expect(result.model).toBeUndefined();
+    expect(store.threadForkContext("h-nomodel")?.sourceModel).toBeUndefined();
+  });
+
+  test("the identical-target continuation gets the normal pending bootstrap exactly once", async () => {
+    await seedSource();
+    const { createHandoffThread, HANDOFF_INTRO, HANDOFF_BOUNDARY_INSTRUCTION } =
+      await import("./handoff.js");
+    const { sidechatBootstrapForTurn } = await import("./sidechat.js");
+    const { getConversationStore } = await import("./ConversationStore.js");
+    const store = getConversationStore();
+
+    createHandoffThread({
+      requestId: "r-same-boot",
+      threadId: "h-same-boot",
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      target: { provider: "codex", model: "gpt-x" },
+    });
+    expect(store.threadForkContext("h-same-boot")?.bootstrapStatus).toBe("pending");
+
+    const preamble = sidechatBootstrapForTurn("h-same-boot", "continue");
+    expect(preamble).toContain(HANDOFF_INTRO);
+    expect(preamble).toContain("handed off from another thread");
+    expect(preamble).toContain(HANDOFF_BOUNDARY_INSTRUCTION);
+    expect(preamble).toContain("first question");
+    expect(preamble).toContain("<latest_user_message>\ncontinue\n</latest_user_message>");
+
+    // Settling the first turn consumes it — the bootstrap never runs twice.
+    store.recordUserBlock({ threadId: "h-same-boot", text: "continue", at: 300 });
+    store.applyEvent(turnStarted("h-same-boot", "turn-9", 310));
+    store.applyEvent(textItem("h-same-boot", "turn-9", "i-9", "on it"));
+    store.applyEvent(turnCompleted("h-same-boot", "turn-9", 350));
+    expect(store.threadForkContext("h-same-boot")?.bootstrapStatus).toBe("completed");
+    expect(sidechatBootstrapForTurn("h-same-boot", "again")).toBeNull();
+  });
+
+  test("an identical-target handoff stays idempotent and gated before re-handoff", async () => {
+    await seedSource();
+    const { createHandoffThread, handoffEligibility } = await import("./handoff.js");
+
+    const first = createHandoffThread({
+      requestId: "r-idem",
+      threadId: "h-idem",
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      target: { provider: "codex", model: "gpt-x" },
+    });
+    expect(first.status).toBe("created");
+
+    // A replay of the same minted id resolves "exists" on that same fresh
+    // thread — never the source.
+    const replay = createHandoffThread({
+      requestId: "r-idem",
+      threadId: "h-idem",
+      sourceThreadId: "t-src",
+      kind: "handoff",
+      target: { provider: "codex", model: "gpt-x" },
+    });
+    expect(replay).toMatchObject({ status: "exists", threadId: "h-idem" });
+    expect(replay.threadId).not.toBe("t-src");
+
+    // The re-handoff gate is unchanged: a continuation with no native turn of
+    // its own cannot be handed off again.
+    expect(handoffEligibility("h-idem", { kind: "handoff" })).toEqual({
+      ok: false,
+      reason: "Run at least one turn before handing this thread off again",
+    });
   });
 });
 

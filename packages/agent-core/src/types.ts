@@ -592,9 +592,9 @@ export type CreateSideChatResult = {
   status: "created" | "exists";
 };
 
-/** Hand a thread to another provider/model. Unlike a side chat (one per
- *  source, reference-only, never re-handed), a handoff is an ownership
- *  transfer: the new thread continues the same task on the target
+/** Hand a thread to a provider/model — another one or the source's own. Unlike
+ *  a side chat (one per source, reference-only, never re-handed), a handoff is
+ *  an ownership transfer: the new thread continues the same task on the target
  *  provider/model from the imported transcript, and it may itself be handed
  *  off again once it has run a native turn. Many handoffs may leave one
  *  source — each is its own continuation. */
@@ -607,10 +607,10 @@ export type CreateHandoffInput = {
   threadId: string;
   /** The thread being handed off. */
   sourceThreadId: string;
-  /** The provider/model the handoff continues on. Provider is required — a
-   *  handoff that names no target is just a duplicate. Model falls back to
-   *  the source's when staying on the same provider, else the target
-   *  provider's default. */
+  /** The provider/model the handoff continues on. Provider is required.
+   *  Model falls back to the source's when staying on the same provider, else
+   *  the target provider's default. Naming the source's own provider/model is
+   *  allowed — it starts a fresh continuation, not a resume. */
   target: {
     provider: ProviderKind;
     model?: string;
@@ -1178,10 +1178,10 @@ export type ForkContext = {
    *  from an edited earlier message: its copied prefix is real history shown
    *  in the timeline (never hidden like side-chat reference context), and its
    *  first turn continues the conversation rather than starting a bounded
-   *  side investigation. A `"handoff"` fork hands the whole conversation to
-   *  another provider/model: same continuation framing as an edit fork, but
-   *  the import covers the full transcript and the bootstrap names the
-   *  source provider as the previous owner. */
+   *  side investigation. A `"handoff"` fork hands the whole conversation to a
+   *  provider/model (another one or the source's own): same continuation
+   *  framing as an edit fork, but the import covers the full transcript and
+   *  the bootstrap names the source provider as the previous owner. */
   forkKind?: ForkKind;
   /** The source thread's provider at import time. Durable provenance — the
    *  source row may be deleted or re-pathed later, but the handoff still
@@ -1207,18 +1207,17 @@ export type ForkContext = {
 /** The user-initiated fork kinds. `"side_chat"` borrows the transcript as
  *  reference-only context for a bounded side investigation; `"edit"` rewinds
  *  to an earlier user message and continues from an edited replacement;
- *  `"handoff"` hands the whole conversation to another provider/model, which
- *  continues the same task from the imported transcript; `"branch"` takes the
- *  conversation from a chosen reply instead of from its end — the same
- *  continuation as a handoff, cut short.
+ *  `"handoff"` hands the whole conversation to a provider/model — another one
+ *  or the source's own — which continues the same task from the imported
+ *  transcript; `"branch"` takes the conversation from a chosen reply instead
+ *  of from its end — the same continuation as a handoff, cut short.
  *
  *  A branch is a separate kind rather than a handoff with a cut point
  *  because the two answer different questions: a handoff asks "who continues
- *  this?", a branch asks "from where?". They diverge on what a legal target
- *  is (a branch to the same provider and model is the normal case), on the
- *  wording the new session is bootstrapped with, and on what the timeline
- *  should call the marker. One field the renderer can switch on keeps all
- *  three from having to re-derive it from the presence of a cut point. */
+ *  this?", a branch asks "from where?". They diverge on the wording the new
+ *  session is bootstrapped with and on what the timeline should call the
+ *  marker. One field the renderer can switch on keeps both from having to
+ *  re-derive it from the presence of a cut point. */
 export type ForkKind = "side_chat" | "edit" | "handoff" | "branch";
 
 /** Whether a stored fork context marks an edit-and-resend retry rather than a
