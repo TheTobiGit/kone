@@ -300,6 +300,57 @@ describe("ProviderRuntime model catalogs", () => {
 });
 
 describe("ProviderRuntime settings application", () => {
+  test.each([
+    { name: "home", before: { homeDir: "/old/home" }, after: { homeDir: "/new/home" } },
+    { name: "environment", before: { env: [{ name: "PROFILE", value: "old" }] }, after: { env: [{ name: "PROFILE", value: "new" }] } },
+    { name: "binary", before: { binaryPath: "/old/cli" }, after: { binaryPath: "/new/cli" } },
+    { name: "enable", before: { enabled: false }, after: { enabled: true } },
+  ])("changing $name refreshes and publishes the new profile's catalog", async ({ before, after }) => {
+    writeProviderSettings("antigravity", before);
+    const { runtime, adapter } = harness("antigravity");
+    adapter.models = [{ id: "old-profile-model" }];
+    await runtime.listModels("antigravity");
+    const newModels = [{ id: "new-profile-model" }];
+    adapter.models = newModels;
+    const published = Promise.withResolvers<ModelDescriptor[]>();
+    runtime.onModelsChanged((_provider, models) => published.resolve(models));
+    writeProviderSettings("antigravity", after);
+
+    try {
+      await runtime.applyProviderSettings("antigravity", before, after);
+      await runtime.discover();
+
+      expect(adapter.listModelsCalls).toBe(2);
+      expect(await published.promise).toEqual(newModels);
+      expect(runtime.knownCatalog("antigravity")).toEqual(newModels);
+      expect(runtime.cachedSurface().models.antigravity).toEqual(newModels);
+    } finally {
+      writeProviderSettings("antigravity", {});
+    }
+  });
+
+  test("disabling a provider does not probe its catalog", async () => {
+    const { runtime, adapter } = harness("antigravity");
+    writeProviderSettings("antigravity", { enabled: false });
+    try {
+      await runtime.applyProviderSettings("antigravity", {}, { enabled: false });
+      await runtime.discover();
+
+      expect(adapter.listModelsCalls).toBe(0);
+    } finally {
+      writeProviderSettings("antigravity", {});
+    }
+  });
+
+  test("settings for an absent adapter do not probe another provider's catalog", async () => {
+    const { runtime, adapter } = harness("antigravity");
+
+    await runtime.applyProviderSettings("codex", {}, { homeDir: "/new/home" });
+    await runtime.discover();
+
+    expect(adapter.listModelsCalls).toBe(0);
+  });
+
   test.each(["discovery", "health check"] as const)(
     "a settings change during %s discards the old probe and refreshes",
     async (kind) => {
@@ -353,10 +404,12 @@ describe("ProviderRuntime settings application", () => {
     const moved: ProviderConfig = { binaryPath: "/new/cline" };
 
     await runtime.applyProviderSettings("cline", before, moved);
+    await runtime.discover();
 
     expect(adapter.configs.at(-1)).toEqual(moved);
     expect(retired).toEqual(["cline"]);
     expect(invalidatedQuota).toEqual(["cline"]);
+    const modelProbes = adapter.listModelsCalls;
 
     const cosmetic: ProviderConfig = { ...moved, hiddenModels: ["one-model"] };
     await runtime.applyProviderSettings("cline", moved, cosmetic);
@@ -364,5 +417,6 @@ describe("ProviderRuntime settings application", () => {
     expect(adapter.configs.at(-1)).toEqual(cosmetic);
     expect(retired).toEqual(["cline"]);
     expect(invalidatedQuota).toEqual(["cline"]);
+    expect(adapter.listModelsCalls).toBe(modelProbes);
   });
 });
