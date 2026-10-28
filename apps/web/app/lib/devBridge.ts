@@ -176,7 +176,9 @@ function createDevGit(): KoneGitApi {
       contributors: (dir) => later(world.mockGhContributors(dir)),
       commitAuthors: () => later(world.mockCommitAuthors()),
       me: () => later(world.mockGhMe()),
-      prs: (dir, opts) => later(world.mockPrs(dir, opts?.state ?? "open")),
+      // A pull request list comes from GitHub, not from disk, so it lands a
+      // second or two behind the local reads: the gap the list's plan is for.
+      prs: (dir, opts) => later(world.mockPrs(dir, opts?.state ?? "open"), 1400 + Math.random() * 600),
       // A copy, as IPC hands over: the demo's actions change the world in place,
       // and the card has to see a new object to notice.
       prDetail: (_dir, number, section) => later(
