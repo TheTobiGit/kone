@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -6,7 +6,9 @@ import { createInterface } from "node:readline";
 
 import { OPENCODE_BINARY } from "./opencodeHome.js";
 import { createOpenCodeServerMarker, OpenCodeServerLedger } from "./opencodeServerLedger.js";
+import { killTree } from "./spawn.js";
 import { userDataPath } from "./userDataDir.js";
+import { spawnLaunch, type LaunchDeps } from "./windowsLaunch.js";
 
 let serverLedger: OpenCodeServerLedger | undefined;
 let orphanServersReaped: Promise<void> | undefined;
@@ -116,21 +118,37 @@ async function startOpenCodeServerOnce(input: {
   /** Invoked synchronously with the child right after spawn, so a background
    *  boot can be tracked (and torn down) before it becomes ready. */
   onChild?: (child: ChildProcess) => void;
+  /** Injects the platform and spawn the launch is resolved for/with (see
+   *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. */
+  launch?: LaunchDeps;
 }): Promise<OpenCodeServer> {
   startOrphanReapInBackground();
   const marker = createOpenCodeServerMarker();
+  const platform = input.launch?.platform ?? process.platform;
   // Port 0 asks the OS for an ephemeral port at bind time and the server
   // prints the bound URL on its listening line (parsed below). Reserving a
   // port up front instead — bind, read, close, re-bind — leaves a window
   // where anything else can take the port, turning a routine start into an
   // EADDRINUSE failure and a full retry cycle.
-  const child = spawn(input.binary || OPENCODE_BINARY, ["serve", `--hostname=127.0.0.1`, `--port=0`], {
-    cwd: input.cwd,
-    env: { ...input.env, KONE_OPENCODE_SERVER: marker },
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const launched = spawnLaunch(
+    input.binary || OPENCODE_BINARY,
+    ["serve", `--hostname=127.0.0.1`, `--port=0`],
+    {
+      cwd: input.cwd,
+      env: { ...input.env, KONE_OPENCODE_SERVER: marker },
+      detached: platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+    input.launch,
+  );
+  if (!launched.ok) {
+    // A launch that cannot happen — nothing on PATH, or a shim Windows cannot
+    // start — takes the path the child's "error" event would have taken: the
+    // boot rejects with the reason and there is no child to track or dispose.
+    throw launched.error;
+  }
+  const child = launched.child;
   if (child.pid !== undefined && process.platform !== "win32") {
     recordLedgerEntry(child.pid, marker);
   }
@@ -143,9 +161,14 @@ async function startOpenCodeServerOnce(input: {
     if (disposed) return;
     disposed = true;
     if (child.pid) {
-      try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM"); } catch { /* already gone */ }
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-      try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGKILL"); } catch { /* already gone */ }
+      if (process.platform === "win32") {
+        // The pid is cmd.exe's, not the CLI's: only the whole tree dies.
+        await killTree(child.pid);
+      } else {
+        try { process.kill(-child.pid, "SIGTERM"); } catch { /* already gone */ }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
       await removeLedgerEntry(child.pid);
     }
   };
@@ -199,14 +222,18 @@ async function disposeUnready(child: ChildProcess): Promise<void> {
     return;
   }
   if (pid !== undefined) {
-    // Signal the group first (serve runs detached so this reaches the
-    // children it forked during startup), falling back to the bare pid.
-    let groupSignaled = false;
-    if (process.platform !== "win32") {
+    if (process.platform === "win32") {
+      // The wrapper's pid is cmd.exe's; a bare SIGKILL would leave the real
+      // CLI running, so the whole tree goes.
+      await killTree(pid);
+    } else {
+      // Signal the group first (serve runs detached so this reaches the
+      // children it forked during startup), falling back to the bare pid.
+      let groupSignaled = false;
       try { process.kill(-pid, "SIGKILL"); groupSignaled = true; } catch { /* fall through to the bare pid */ }
-    }
-    if (!groupSignaled) {
-      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      if (!groupSignaled) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      }
     }
   }
   // Bounded reap wait so a retry (or a background prewarm) never outruns the
@@ -227,6 +254,10 @@ type LaunchInput = {
   env: NodeJS.ProcessEnv;
   /** CLI executable to serve from; defaults to `opencode` on PATH. */
   binary?: string;
+  /** Injects the platform and spawn every boot for this launch is resolved
+   *  for/with (see windowsLaunch.ts's `spawnLaunch`); production leaves it out,
+   *  and it is not part of the spare key — the machine is the same either way. */
+  launch?: LaunchDeps;
 };
 
 /** A stable digest of the environment a server was booted with. Hashed rather
@@ -259,6 +290,7 @@ async function startWithRetries(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   binary?: string;
+  launch?: LaunchDeps;
 }): Promise<OpenCodeServer> {
   let lastError: Error | undefined;
   for (let attempt = 0; ; attempt += 1) {

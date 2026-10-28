@@ -1,3 +1,4 @@
+import { buildProviderChildEnv } from "../providerChildEnv.js";
 // approach) and returns aggregated buckets. This is the source of truth for
 // overall Claude + Codex usage — including sessions never driven through kone.
 
@@ -233,8 +234,8 @@ export async function scanTranscriptUsage(options: {
 
   await ensureScanCacheLoaded();
 
-  const claudeDir = resolveClaudeTranscriptDir(resolveClaudeConfigDir());
-  const codexDir = path.join(resolveCodexHome(), "sessions");
+  const claudeDir = resolveClaudeTranscriptDir(resolveClaudeConfigDir(buildProviderChildEnv("claudeAgent")));
+  const codexDir = path.join(resolveCodexHome(buildProviderChildEnv("codex")), "sessions");
 
   const dirs: { provider: TranscriptProviderKind; dir: string }[] = [
     { provider: "claude", dir: claudeDir },

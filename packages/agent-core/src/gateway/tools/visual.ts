@@ -95,14 +95,14 @@ export interface VisualToolOptions {
   measureBudgetMs?: number;
 }
 
-const MEASURE_BUDGET_MS = 6_000;
+export const MEASURE_BUDGET_MS = 6_000;
 /** Turns whose visuals are remembered, for the per-turn cap and for answering
  *  a retried call with the visual it already showed. Oldest go first. */
 const TRACKED_TURNS = 256;
 
 // ── local images ─────────────────────────────────────────────────────────────
 
-const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
+export const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -136,7 +136,7 @@ function fileOf(written: string): string {
   return /^[A-Za-z]:/.test(written) ? written.replace(/\\\\/g, "\\") : written;
 }
 
-interface InlinedVisual {
+export interface InlinedVisual {
   html: string;
   /** Paths the visual names that hold no readable file. */
   missing: string[];
@@ -169,7 +169,7 @@ async function readImage(written: string): Promise<{ uri: string } | null> {
  *  visual that looks finished and is not. So is a visual that would outgrow the
  *  stored limit once embedded, counted per occurrence before anything is
  *  built, since one image named twenty times is embedded twenty times. */
-async function inlineLocalImages(html: string): Promise<InlinedVisual> {
+export async function inlineLocalImages(html: string): Promise<InlinedVisual> {
   const occurrences = new Map<string, number>();
   const count = (written: string): void => void occurrences.set(written, (occurrences.get(written) ?? 0) + 1);
   for (const match of html.matchAll(QUOTED_IMAGE_PATH)) count(match[2]!);
@@ -213,7 +213,7 @@ async function inlineLocalImages(html: string): Promise<InlinedVisual> {
 
 /** A file name a visual can be saved under: its title, with nothing a file
  *  system would refuse. */
-function visualFileName(title: string): string {
+export function visualFileName(title: string): string {
   const stem = title
     .replace(/[\\/:*?"<>|\p{Cc}]+/gu, " ")
     .replace(/\s+/g, " ")
@@ -241,7 +241,7 @@ function previewText(preview: VisualPreview, missing: string[]): string {
 
 /** The measurement, or nothing when it fails or outlasts the budget: showing
  *  never fails because the visual could not be measured. */
-async function measureWithin(
+export async function measureWithin(
   measure: VisualMeasurer | undefined,
   html: string,
   budgetMs: number,

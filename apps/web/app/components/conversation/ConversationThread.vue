@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, toRef, watch } from "vue";
+import ThreadPullRequestModal from "~/components/conversation/ThreadPullRequestModal.vue";
+import { PULL_REQUEST_OPENER, type PullRequestLink } from "~/utils/pullRequestLink";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -36,6 +38,8 @@ import type { EffortTier } from "~/utils/modelCatalog";
 import { deriveTurnSettingMarks, type TurnSettingChange } from "~/utils/turnSettingMarkers";
 import TurnCheckpointRestore from "~/components/conversation/TurnCheckpointRestore.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
+import { isReferenceAttachment } from "~/utils/composerReferences";
+import { resendDraft } from "~/utils/turnResend";
 import { useSearchLanding } from "~/composables/useSearchLanding";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import type { ResponseDisplay } from "~/utils/responseDisplay";
@@ -54,6 +58,7 @@ import { IMAGE_CWD_KEY, IMAGE_THREAD_KEY } from "~/utils/markdownImageSource";
 import TextSwap from "~/components/ui/TextSwap.vue";
 import ReplyRef from "~/components/conversation/ReplyRef.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
+import ResponseTrace from "~/components/conversation/ResponseTrace.vue";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -115,6 +120,9 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
+  /** The thread's name, as its header shows it — what a request's trace says
+   *  it was sent to. */
+  threadTitle?: string;
   /** The session's stored-transcript read came back empty-handed — the only
    *  thing that puts the "didn't load" banner up. */
   loadFailed?: boolean;
@@ -173,14 +181,27 @@ provide(IMAGE_CWD_KEY, () => props.cwd ?? null);
 // The session's own id, present from the start; `threadId` is absent on a blank column.
 provide(IMAGE_THREAD_KEY, () => props.agentSeed ?? props.threadId ?? null);
 
+const prPreview = ref<{ cwd: string; link: PullRequestLink; origin: DOMRect | null } | null>(null);
+const prBridge = useGit();
+watch(() => props.cwd, () => {
+  prPreview.value = null;
+});
+
+provide(PULL_REQUEST_OPENER, (link, origin) => {
+  if (!props.cwd || !prBridge.available) return false;
+  prPreview.value = { cwd: props.cwd, link, origin };
+  return true;
+});
+
 const emit = defineEmits<{
   "to-scratchpad": [text: string];
   /** Re-send the user request that precedes a failed turn. The host owns the
-   *  send path (ThreadStrip forwards this to the session's `send`). */
-  retry: [text: string];
+   *  send path (ThreadStrip forwards this to the session's `send`). A
+   *  reference-only request is valid and carries its attachments. */
+  retry: [text: string, attachments?: ChatAttachment[]];
   /** Edit-and-resend of the last user turn: send the edited text as a NEW
-   *  user turn on this thread. */
-  resend: [text: string];
+   *  user turn on this thread, keeping the turn's attachments. */
+  resend: [text: string, attachments?: ChatAttachment[]];
   /** Edit-and-resend of an earlier user turn: fork the thread at that block
    *  (the source is never mutated) and start the fork's first turn from the
    *  edited text. The host owns the fork path. */
@@ -366,6 +387,26 @@ function clock(at: number): string {
 function canActOn(block: AssistantBlock): boolean {
   return block.state === "completed" && !!assistantText(block);
 }
+// ── a reply's trace ──────────────────────────────────────────────────────────
+// Opens over the thread, grown from the reply it was asked for on. It reads the
+// whole turn: a steer splits one reply into pieces that share its turnId.
+const traced = ref<{ turnId: string; origin: DOMRect | null } | null>(null);
+function openResponseTrace(block: AssistantBlock, button: HTMLElement): void {
+  traced.value = { turnId: block.turnId, origin: button.closest(".stack")?.getBoundingClientRect() ?? null };
+  cue("press");
+}
+const tracedPieces = computed(() => {
+  const turnId = traced.value?.turnId;
+  return turnId
+    ? props.blocks.filter((b): b is AssistantBlock => b.role === "assistant" && b.turnId === turnId)
+    : [];
+});
+/** The request the traced turn answers: the one that opened its first piece's exchange. */
+const tracedRequest = computed(() => {
+  const first = tracedPieces.value[0];
+  const opener = first && allExchanges.value.find((ex) => ex.blocks.includes(first))?.blocks[0];
+  return opener?.role === "user" ? opener : undefined;
+});
 /** A settled reply with a file restore to offer. */
 function hasTurnCheckpoint(block: AssistantBlock): boolean {
   return block.state !== "running" && hasCheckpoint(block) && !!props.threadId;
@@ -411,7 +452,14 @@ function partitionAttachments(attachments?: ChatAttachment[]) {
   const images: ChatAttachment[] = [];
   const videos: ChatAttachment[] = [];
   const files: ChatAttachment[] = [];
+  const references: ChatAttachment[] = [];
   for (const att of attachments ?? []) {
+    if (att.type === "reference") {
+      // A reference-shaped record with a broken payload is neither a quote nor
+      // a file; drawing it as either would invent content that was not sent.
+      if (isReferenceAttachment(att)) references.push(att);
+      continue;
+    }
     if (isImageAttachment(att)) {
       images.push(att);
     } else if (isVideoAttachment(att)) {
@@ -420,14 +468,16 @@ function partitionAttachments(attachments?: ChatAttachment[]) {
       files.push(att);
     }
   }
-  return { images, videos, files };
+  return { images, videos, files, references };
 }
 export type AttachmentPartition = {
   images: ChatAttachment[];
   videos: ChatAttachment[];
   files: ChatAttachment[];
+  /** Text selections the user attached; rendered as inspectable quotes. */
+  references: ChatAttachment[];
 };
-const EMPTY_PARTITION: AttachmentPartition = { images: [], videos: [], files: [] };
+const EMPTY_PARTITION: AttachmentPartition = { images: [], videos: [], files: [], references: [] };
 // One exchange = one request + the assistant turn(s) answering it, with the
 // per-row lookups the template used to recompute (some twice, some 5x+ per
 // render) derived once here: the request text (channel reply-ref + retry),
@@ -438,6 +488,9 @@ type EnrichedExchange = {
   key: string;
   blocks: ThreadBlock[];
   requestText: string;
+  /** What rode the request: retry re-sends these so a quote or file is not
+   *  silently dropped from the turn it is retrying. */
+  requestAttachments: ChatAttachment[] | undefined;
   /** The agent that wrote the request, or the courier that carried it, when
    *  it was not the user. */
   requestFrom: SpeakingSender | null;
@@ -445,6 +498,9 @@ type EnrichedExchange = {
    *  quotes. */
   requestIsNotice: boolean;
   reply: AssistantBlock | undefined;
+  /** The reply whose turn the request's trace reads: its own, or for a steer
+   *  the turn never continued after, the reply above that took it in. */
+  traceReply: AssistantBlock | undefined;
   receipt: ReceiptState;
   parts: Map<string, AttachmentPartition>;
 };
@@ -608,11 +664,16 @@ function userRequestFor(block: AssistantBlock): string {
   }
   return "";
 }
-function retryTurn(block: AssistantBlock, requestText: string): void {
+function retryTurn(
+  block: AssistantBlock,
+  requestText: string,
+  attachments?: ChatAttachment[],
+): void {
   const text = requestText || userRequestFor(block);
-  if (!text.trim() || props.busy) return;
+  const draft = resendDraft(text, attachments);
+  if (!draft || props.busy) return;
   cue("press");
-  emit("retry", text);
+  emit("retry", draft.text, draft.attachments);
 }
 function dismissTurnError(block: AssistantBlock): void {
   dismissedTurnErrors[block.id] = true;
@@ -627,14 +688,18 @@ function dismissTurnError(block: AssistantBlock): void {
 // (the transcript keeps the original either way — rolling it back would
 // rewrite history the replies after it already answered).
 const lastUserBlockId = computed(() => lastUserBlock()?.id ?? null);
-function saveUserEdit(block: Extract<ThreadBlock, { role: "user" }>, text: string): void {
-  const trimmed = text.trim();
-  if (!trimmed || props.busy) return;
+function saveUserEdit(
+  block: Extract<ThreadBlock, { role: "user" }>,
+  text: string,
+  attachments?: ChatAttachment[],
+): void {
+  const draft = resendDraft(text, attachments);
+  if (!draft || props.busy) return;
   cue("press");
   // The last user turn is still replaceable by a follow-up; anything earlier
   // has replies after it, so the edit branches the thread at that block.
-  if (block.id === lastUserBlockId.value) emit("resend", trimmed);
-  else emit("edit-fork", block.id, trimmed);
+  if (block.id === lastUserBlockId.value) emit("resend", draft.text, draft.attachments);
+  else emit("edit-fork", block.id, draft.text);
 }
 
 // ── a stored conversation whose transcript never arrived ─────────────────────
@@ -717,17 +782,23 @@ const allExchanges = computed<EnrichedExchange[]>(() => {
         key: b.id,
         blocks: [b],
         requestText: b.role === "user" ? b.text : "",
+        requestAttachments: b.role === "user" ? b.attachments : undefined,
         requestFrom: b.role === "user" && isSpeakingSender(b.sender) ? b.sender : null,
         requestIsNotice: b.role === "user" && b.sender?.kind === "system",
         reply: undefined,
+        traceReply: undefined,
         receipt: "sent",
         parts,
       });
     } else groups[groups.length - 1]!.blocks.push(b);
   }
+  let above: AssistantBlock | undefined;
   for (const g of groups) {
     const reply = g.blocks.find((b): b is AssistantBlock => b.role === "assistant");
     g.reply = reply;
+    const first = g.blocks[0];
+    g.traceReply = reply ?? (first?.role === "user" && first.steered ? above : undefined);
+    if (g.traceReply) above = g.traceReply;
     g.receipt = !reply ? "sent" : reply.state === "running" ? "delivered" : "read";
     for (const b of g.blocks) {
       if (b.role === "user" && b.attachments?.length && !g.parts.has(b.id)) {
@@ -1357,7 +1428,10 @@ watch(
           :busy="busy"
           :copied-path-id="copiedPathId"
           :time="clock(block.at)"
-          @save="(text) => saveUserEdit(block, text)"
+          :reply="ex.traceReply"
+          :trace-thread-id="agentSeed ?? threadId ?? null"
+          :thread-title="threadTitle"
+          @save="(text, attachments) => saveUserEdit(block, text, attachments)"
           @copy="copyUserRequest(block)"
           @scratchpad="addUserRequestToScratchpad(block)"
           @preview="openLightbox"
@@ -1396,19 +1470,20 @@ watch(
                  as one more icon and only stays up while it is asking or
                  answering (see conversationStyles.css). -->
             <template
-              v-if="floatActs && !spec.sideActs && (canActOn(block) || hasTurnCheckpoint(block))"
+              v-if="floatActs && !spec.sideActs && block.state !== 'running'"
               #actions
             >
               <TurnActions
-                v-if="canActOn(block)"
                 kind="kone"
                 :copied="copied === block.id"
                 :allow-scratchpad="allowScratchpad"
                 :allow-branch="allowBranch"
+                allow-trace
                 :busy="busy"
-                :can-act="true"
+                :can-act="canActOn(block)"
                 @copy="copy(block)"
                 @scratchpad="addToScratchpad(block)"
+                @trace="openResponseTrace(block, $event)"
                 @fork="emit('branch-fork', block.id)"
               />
               <TurnCheckpointRestore
@@ -1440,7 +1515,7 @@ watch(
           >
             <p class="body body--error">{{ block.error }}</p>
             <div class="turn-fail__actions">
-              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block, ex.requestText)">
+              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block, ex.requestText, ex.requestAttachments)">
                 <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
                 <span>Retry</span>
               </button>
@@ -1472,15 +1547,16 @@ watch(
               >{{ statusFor(block).text }}</span
             >
             <TurnActions
-              v-if="block.state === 'completed' && assistantText(block)"
               kind="kone"
               :copied="copied === block.id"
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
+              allow-trace
               :busy="busy"
-              :can-act="true"
+              :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
+              @trace="openResponseTrace(block, $event)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1492,19 +1568,20 @@ watch(
           </div>
           <!-- The chat's seat: beside the bubble, level with its time. -->
           <span
-            v-if="spec.sideActs && block.state !== 'running' && (canActOn(block) || hasTurnCheckpoint(block))"
+            v-if="spec.sideActs && block.state !== 'running'"
             class="side-acts"
           >
             <TurnActions
-              v-if="canActOn(block)"
               kind="kone"
               :copied="copied === block.id"
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
+              allow-trace
               :busy="busy"
-              :can-act="true"
+              :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
+              @trace="openResponseTrace(block, $event)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1624,6 +1701,25 @@ watch(
         </div>
       </Transition>
     </Teleport>
+
+    <ResponseTrace
+      v-if="traced && tracedPieces.length"
+      :pieces="tracedPieces"
+      :request="tracedRequest"
+      :thread-id="agentSeed ?? threadId ?? null"
+      :thread-title="threadTitle ?? ''"
+      :origin="traced.origin"
+      :now="now"
+      @close="traced = null"
+    />
+    <ThreadPullRequestModal
+      v-if="prPreview"
+      :key="`${prPreview.cwd}:${prPreview.link.repository}:${prPreview.link.number}`"
+      :cwd="prPreview.cwd"
+      :link="prPreview.link"
+      :origin="prPreview.origin"
+      @close="prPreview = null"
+    />
 </template>
 
 <style scoped>

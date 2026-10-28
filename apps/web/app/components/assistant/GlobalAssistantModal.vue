@@ -31,12 +31,20 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
 import ThreadInteractionOverlay from "~/components/thread/ThreadInteractionOverlay.vue";
 import {
+  mergeComposerAttachments,
   normalizeComposerDraft,
   setInlineThread,
   type ComposerDraft,
   type QueuedTurnEntry,
 } from "~/composables/useAgent";
-import type { ApprovalDecision, ChatAttachment, SkillReference, UserInputAnswers } from "~/types/desktop";
+import type {
+  ApprovalDecision,
+  ChatAttachment,
+  SkillReference,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+} from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -48,6 +56,7 @@ import { useSound } from "~/composables/useSound";
 import { dedupeMentionProjects } from "~/utils/composerMentions";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { formatDayDivider } from "~/utils/threadDates";
+import { resendDraft } from "~/utils/turnResend";
 import { useShortcuts } from "~/composables/useShortcuts";
 import type { SurfaceId } from "~/utils/surfaceTop";
 import { ownsKey } from "~/utils/surfaceKeys";
@@ -159,12 +168,17 @@ const askOpen = computed(
   () => Boolean(pendingUserInput.value) || Boolean(pendingApproval.value),
 );
 
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
-  void session.value?.respondUserInput(requestId, answers);
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+  owner?: UserInputOwner,
+): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string): void {
-  void session.value?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, {});
 }
 function onRespondApproval(requestId: string, decision: ApprovalDecision): void {
   void session.value?.respondApproval(requestId, decision);
@@ -302,7 +316,7 @@ async function onSend(
   // project because a project has a team; this one has no project and no
   // roster, so a binding here would only pin a name that is never shown.
   await composer.syncTarget();
-  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills, steer: draft.steer });
+  await s.send({ text: draft.text, attachments: mergeComposerAttachments(await upload(draft.files), draft.references), skills: draft.skills, steer: draft.steer });
   // The list is titled from the conversation, so a send is when a row's name
   // (and its place in the order) can change.
   void refreshThreads();
@@ -312,6 +326,15 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   const s = session.value;
   if (!s) return;
   await s.sendQueuedEntryNow(entry);
+}
+
+/** Retry / resend of a turn keeps the attachment metadata it carried, so a
+ *  reference-only request stays retryable and its quote is not dropped. */
+async function onRetry(text: string, attachments?: ChatAttachment[]): Promise<void> {
+  const s = session.value;
+  const draft = resendDraft(text, attachments);
+  if (!s || !draft || s.busy.value) return;
+  await s.send(draft);
 }
 
 /** Edit-and-resend of an earlier message: fork the thread at that block and
@@ -520,8 +543,8 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
               :has-older="session?.hasOlder.value"
               :loading-older="session?.loadingOlder.value"
               :older-error="session?.olderError.value"
-              @retry="onSend"
-              @resend="onSend"
+              @retry="onRetry"
+              @resend="onRetry"
               @edit-fork="onEditFork"
               @retry-load="session ? session.openStored(session.threadId.value) : undefined"
               @load-older="session?.loadOlder()"
@@ -581,6 +604,9 @@ async function onEditFork(blockId: string, text: string): Promise<void> {
             :user-input="pendingUserInput"
             :approval="pendingApproval"
             :approval-queue="session?.pendingApprovals.value"
+            :upload="session?.uploadAttachment"
+            :discard="session?.discardAttachment"
+            :owner="session ?? undefined"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
             @decide="onRespondApproval"

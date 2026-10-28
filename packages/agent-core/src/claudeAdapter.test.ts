@@ -437,9 +437,11 @@ describe("Claude context fill", () => {
     await flush();
 
     const usage = ofType(events, "thread.token-usage.updated");
-    expect(usage).toHaveLength(1);
-    expect(usage[0].usage.total).toBe(85_510);
-    expect(usage[0].usage.contextUsed).toBe(43_205);
+    // The result is the authoritative reading: the live mid-turn fills precede
+    // it, but only it carries the billed total.
+    const final = usage.find((event) => event.usage.total !== undefined);
+    expect(final?.usage.total).toBe(85_510);
+    expect(final?.usage.contextUsed).toBe(43_205);
   });
 
   test("a streamed call's output settles on message_delta, not the placeholder", async () => {
@@ -466,7 +468,10 @@ describe("Claude context fill", () => {
     });
     await flush();
 
-    expect(ofType(events, "thread.token-usage.updated")[0].usage.contextUsed).toBe(32_206);
+    const final = ofType(events, "thread.token-usage.updated").find(
+      (event) => event.usage.total !== undefined,
+    );
+    expect(final?.usage.contextUsed).toBe(32_206);
   });
 
   test("a turn that made no call leaves the fill unreported", async () => {
@@ -479,6 +484,100 @@ describe("Claude context fill", () => {
     const usage = ofType(events, "thread.token-usage.updated");
     expect(usage).toHaveLength(1);
     expect(usage[0].usage.contextUsed).toBeUndefined();
+  });
+
+  test("a streamed call emits a live context-only reading before the result", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    const stream = (event: ClaudeJsonObject): void => {
+      state.feed!.push({ type: "stream_event", parent_tool_use_id: null, uuid: "s", session_id: "x", event });
+    };
+    stream({
+      type: "message_start",
+      message: { usage: { input_tokens: 2, cache_read_input_tokens: 31_616, cache_creation_input_tokens: 130, output_tokens: 2 } },
+    });
+    await flush();
+
+    // No result yet: the prompt plus the start's placeholder output, and no
+    // spend — a mid-turn total would be counted again when the result lands.
+    const started = ofType(events, "thread.token-usage.updated");
+    expect(started).toHaveLength(1);
+    expect(started[0].usage).toEqual({
+      contextUsed: 31_750,
+      contextWindow: 200_000,
+      compactsAutomatically: true,
+    });
+
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 458 } });
+    await flush();
+    const settled = ofType(events, "thread.token-usage.updated");
+    expect(settled).toHaveLength(2);
+    expect(settled[1].usage).toEqual({
+      contextUsed: 32_206,
+      contextWindow: 200_000,
+      compactsAutomatically: true,
+    });
+
+    state.feed!.push({
+      type: "result",
+      subtype: "success",
+      num_turns: 1,
+      is_error: false,
+      usage: { input_tokens: 2, cache_read_input_tokens: 31_616, cache_creation_input_tokens: 130, output_tokens: 458 },
+    });
+    await flush();
+    const final = ofType(events, "thread.token-usage.updated").find(
+      (event) => event.usage.total !== undefined,
+    );
+    expect(final?.usage.total).toBe(32_206);
+    expect(final?.usage.contextUsed).toBe(32_206);
+  });
+
+  test("live readings track each call's own fill, not the turn's summed spend", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    assistantCall("a-1", { input_tokens: 5, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 2_000, output_tokens: 300 });
+    await flush();
+    assistantCall("a-2", { input_tokens: 5, cache_read_input_tokens: 42_000, cache_creation_input_tokens: 1_000, output_tokens: 200 });
+    await flush();
+
+    const live = ofType(events, "thread.token-usage.updated");
+    expect(live).toHaveLength(2);
+    // Each call's prompt + its own output — never the two calls summed.
+    expect(live[0].usage.contextUsed).toBe(42_305);
+    expect(live[0].usage.total).toBeUndefined();
+    expect(live[0].usage.input).toBeUndefined();
+    expect(live[0].usage.output).toBeUndefined();
+    expect(live[1].usage.contextUsed).toBe(43_205);
+    expect(live[1].usage.total).toBeUndefined();
+  });
+
+  test("an identical live reading is not emitted twice", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "hello" });
+    const usage = { input_tokens: 5, cache_read_input_tokens: 1_000, output_tokens: 100 };
+    assistantCall("a-1", usage);
+    await flush();
+    assistantCall("a-2", usage);
+    await flush();
+
+    const live = ofType(events, "thread.token-usage.updated");
+    expect(live).toHaveLength(1);
+    expect(live[0].usage.contextUsed).toBe(1_105);
+  });
+
+  test("no live reading without a running turn", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    // A settled assistant message outside any turn still updates lastCall, but
+    // there is no turn whose meter it could move.
+    assistantCall("a-1", { input_tokens: 5, output_tokens: 100 });
+    await flush();
+
+    expect(ofType(events, "thread.token-usage.updated")).toHaveLength(0);
   });
 });
 

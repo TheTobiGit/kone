@@ -170,17 +170,18 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 43 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 44 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(43);
+    expect(version.user_version).toBe(44);
     expect(columnNames(raw, "subagents")).toContain("duration_ms");
     expect(columnNames(raw, "threads")).toContain("pending_selection_json");
     expect(columnNames(raw, "queued_turns")).toContain("provider");
+    expect(columnNames(raw, "turn_usage")).toContain("usage_session_id");
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -293,6 +294,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 41, name: "ThreadReferencesAndSubagentDuration" },
       { migration_id: 42, name: "ProviderSelection" },
       { migration_id: 43, name: "ThreadTasks" },
+      { migration_id: 44, name: "TurnUsageSession" },
     ]);
 
     const idx = raw
@@ -1368,6 +1370,66 @@ describe("live capture contracts", () => {
     raw.close();
   });
 
+  test("a context-only snapshot refreshes the meter without touching the turn's audit row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "claudeAgent"));
+    // A live mid-turn fill carries no spend, so it must not upsert the audit
+    // row and blank the numbers the real usage event just wrote.
+    // SAFETY: the literal is the context-only usage payload under test.
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "claudeAgent",
+      at: 16,
+      source: "kone.store",
+      usage: { contextUsed: 90_000, contextWindow: 200_000, compactsAutomatically: true },
+    } as RuntimeEvent);
+
+    expect(store.threadMeta("t-1")?.contextUsed).toBe(90_000);
+    const raw = rawDb();
+    // SAFETY: the event written above lands exactly these columns.
+    const usage = raw
+      .prepare(`SELECT * FROM turn_usage WHERE thread_id = 't-1' AND turn_id = 'turn-1'`)
+      .get() as { input_tokens: number; output_tokens: number; total_tokens: number; at: number };
+    expect(usage.input_tokens).toBe(100);
+    expect(usage.output_tokens).toBe(50);
+    expect(usage.total_tokens).toBe(150);
+    expect(usage.at).toBe(15); // the context-only event left it alone
+    raw.close();
+  });
+
+  test("a turn's usage row names the model a reroute swapped in", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex", model: "gpt-5" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent({
+      type: "model.rerouted",
+      threadId: "t-1",
+      provider: "codex",
+      at: 11,
+      source: "kone.store",
+      fromModel: "gpt-5",
+      toModel: "gpt-5-mini",
+    });
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "codex"));
+    expect(store.listTurnUsage("t-1")[0]?.model).toBe("gpt-5-mini");
+  });
+
+  test("a usage row written before models were stamped keeps its model unknown", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
+    store.applyEvent(turnStarted("t-1", "turn-1", 10));
+    store.applyEvent(tokenUsage("t-1", 15, { input: 100, output: 50, total: 150 }, "claudeAgent"));
+    const raw = rawDb();
+    raw.prepare(`UPDATE turn_usage SET provider = NULL, model = NULL WHERE thread_id = 't-1'`).run();
+    raw.close();
+    const [row] = store.listTurnUsage("t-1");
+    expect(row?.model).toBeNull();
+    expect(row?.provider).toBeNull();
+  });
+
   test("a Claude thread is priced per bucket, cache reads at the cache rate", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "claudeAgent", model: "claude-opus-5" });
@@ -2121,6 +2183,21 @@ describe("queued turns schema", () => {
         thread_id  TEXT PRIMARY KEY,
         agent_id   TEXT,
         settled_at INTEGER NOT NULL
+      );
+      -- Same reason: migration 44 adds a column to the baseline's audit table.
+      CREATE TABLE turn_usage (
+        thread_id             TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+        turn_id               TEXT NOT NULL,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        total_tokens          INTEGER,
+        cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
+        provider              TEXT,
+        model                 TEXT,
+        at                    INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id)
       );
       CREATE TABLE schema_migrations (
         migration_id INTEGER PRIMARY KEY,

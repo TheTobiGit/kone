@@ -484,7 +484,7 @@ const hoverRows = computed(() => {
   background-color: color-mix(in srgb, var(--ground) 97%, transparent);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent),
-    0 10px 28px -10px color-mix(in srgb, var(--ink) 24%, transparent);
+    0 10px 28px -10px rgb(0 0 0 / 24%);
   font-size: 12px;
   transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }

@@ -8,6 +8,7 @@
 import { z } from "zod";
 
 import { MessageSenderSchema, type MessageSender } from "./messageSender.js";
+import { TextReferenceSchema, type TextReference } from "./textReference.js";
 
 // ── format ────────────────────────────────────────────────────────────────────
 
@@ -89,7 +90,9 @@ const ExportAttachmentSchema = z.object({
   name: z.string(),
   mimeType: z.string(),
   sizeBytes: z.number(),
-  type: z.enum(["image", "file"]),
+  type: z.enum(["image", "file", "reference"]),
+  /** Present only on a reference: the exact selected text and provenance. */
+  reference: TextReferenceSchema.optional(),
 });
 
 export type ThreadExportPlanTask = {
@@ -212,7 +215,8 @@ export type ThreadExportBlock = {
     name: string;
     mimeType: string;
     sizeBytes: number;
-    type: "image" | "file";
+    type: "image" | "file" | "reference";
+    reference?: TextReference;
   }>;
   effort?: string;
   model?: string;

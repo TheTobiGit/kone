@@ -57,7 +57,7 @@ const JOB_DRAIN_ORDER = `sort_key ASC,
                           created_at ASC,
                           rowid ASC`;
 
-/** List order: what the bench shows. The drain order decides among queued rows
+/** List order: what a list of jobs shows. The drain order decides among queued rows
  *  — so the top queued row is the next one to run — and everything settled
  *  falls below it newest-first, which is reading order rather than queue order.
  *  Built from JOB_DRAIN_ORDER rather than restating it: the two disagreeing is
@@ -160,7 +160,7 @@ export class JobRepo {
    *  sort in opposite directions on purpose: queued rows run oldest-first, so
    *  showing them newest-first would put the next thing to run at the bottom,
    *  while a settled row is history and the most recent is the one worth
-   *  seeing. Everything else the bench groups by status, so within-group order
+   *  seeing. Everything else the list groups by status, so within-group order
    *  is all this has to get right. */
   listJobs(projectPath: string): JobRow[] {
     const db = this.dbh.handle();
@@ -182,10 +182,10 @@ export class JobRepo {
   }
 
   /** Every job the store holds, across every project, in the same order one
-   *  project's list uses. The bench is one list for all of them: a job is
-   *  queued against a checkout, but the person watching the queue has one
-   *  attention, and a per-project bench hides the fact that four projects are
-   *  each running something.
+   *  project's list uses. One list spans all of them: a job is queued against a
+   *  checkout, but the person watching the queue has one attention, and a
+   *  per-project list hides the fact that four projects are each running
+   *  something.
    *
    *  Queued rows stay oldest-first, which keeps each project's rows in the
    *  order its runner will take them even though the list is interleaved —
@@ -562,7 +562,7 @@ export class JobRepo {
     }
   }
 
-  /** Every attempt at a job, newest first — the order the bench's detail panel reads
+  /** Every attempt at a job, newest first — the order a job's detail view reads
    *  them, where the current attempt is the one that matters and the earlier
    *  ones are history. */
   listJobRuns(jobId: string): JobRunRow[] {

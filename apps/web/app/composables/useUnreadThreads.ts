@@ -1,7 +1,7 @@
 import { shallowRef, watch, type Ref } from "vue";
 import { tryOnScopeDispose } from "@vueuse/core";
 import type { RuntimeEvent } from "~/types/desktop";
-import { isThreadUnread, markThreadVisited, ROW_CHANGING_EVENTS } from "~/utils/sessionList";
+import { isRowChangingEvent, isThreadUnread, markThreadVisited } from "~/utils/sessionList";
 
 /**
  * Which of a project's threads have spoken since you last had them in front of
@@ -71,7 +71,7 @@ let detachEvents: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onRuntimeEvent(event: RuntimeEvent): void {
-  if (!ROW_CHANGING_EVENTS.has(event.type)) return;
+  if (!isRowChangingEvent(event)) return;
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
     refreshTimer = null;

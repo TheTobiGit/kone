@@ -39,6 +39,7 @@ import type {
   GitHubIssueCreateOptions,
   GitHubMergeMethod,
   GitHubPrAction,
+  GitHubPullRequestSection,
   GitHubPrCreateOptions,
   GitPullOptions,
   GitPushOptions,
@@ -403,7 +404,7 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle(
     "github:pr-detail",
-    (_event, dir: string, number: number) => github.prDetail(dir, number),
+    (_event, dir: string, number: number, section?: GitHubPullRequestSection) => github.prDetail(dir, number, section),
   );
   ipcMain.handle(
     "github:pr-diff",

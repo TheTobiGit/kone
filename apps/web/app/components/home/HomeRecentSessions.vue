@@ -600,7 +600,7 @@ function hasMetricValue(s: SessionSummary): boolean {
 .rs__switch-btn--on {
   background: var(--ground);
   color: var(--ink);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
 }
 .rs__hicon {
   flex-shrink: 0;

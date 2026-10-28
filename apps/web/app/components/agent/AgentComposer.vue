@@ -27,12 +27,13 @@ import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type {
-  AttachmentKind,
+  ChatAttachment,
   InteractionMode,
   ProviderKind,
   ProviderStatus,
   SkillReference,
   StepWait,
+  TextReference,
   ThreadEnvMode,
 } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
@@ -42,6 +43,10 @@ import { useComposerQueueReturn } from "~/composables/useComposerQueueReturn";
 import { useShortcuts } from "~/composables/useShortcuts";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
+import { useComposerReferences } from "~/composables/useComposerReferences";
+import { placeReferencePreview, useReferencePreview } from "~/composables/useReferencePreview";
+import { referenceGlance, splitReferenceAttachments } from "~/utils/composerReferences";
+
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
 import { useComposerTrigger } from "~/composables/useComposerTrigger";
@@ -71,6 +76,7 @@ import {
   type ModelOption,
 } from "~/utils/modelCatalog";
 import { PROVIDER_BRAND } from "~/utils/modelPicker";
+import { canSignIn as canSignInProvider } from "~/utils/providerLogin";
 import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 
 // "Agent input — states" board. One object walks four states:
@@ -91,8 +97,8 @@ import { OFFERED_PROVIDERS } from "~/utils/providerOffer";
 // the parent stays oblivious to whether a provider bakes it into ids or a flag.
 
 const props = defineProps<{
-  /** Which surface this is: a turn spoken into a thread, or a job filed on the
-   *  bench. It selects the affordance set and nothing else — the name field,
+  /** Which surface this is: a turn spoken into a thread, or a job filed onto
+   *  the queue. It selects the affordance set and nothing else — the name field,
    *  the park control and the project picker on a job; the queued-turn strip,
    *  the stop square and the thread label on a turn.
    *
@@ -164,6 +170,11 @@ const props = defineProps<{
    *  leaves a stray keystroke and Escape to that one, so a single key never
    *  wakes or closes every composer on screen at once. */
   background?: boolean;
+  /** Mounted but off screen — a parked ask owns this composer's spot. The
+   *  state (draft, chips, references, uploaded files) has to survive the wait,
+   *  so the card is hidden rather than unmounted, and it must not take input
+   *  that belongs to the ask. */
+  inactive?: boolean;
   /** Narrows where the unsent draft is kept, for a surface holding several
    *  composers over one project: without it they would share one draft, and
    *  text typed into one would come back in all of them. */
@@ -321,9 +332,33 @@ const { prefs: composerPrefs } = useComposerPrefs();
 const noProvider = computed(() => !props.healthStatus);
 const providerMarks = OFFERED_PROVIDERS.map((provider) => PROVIDER_BRAND[provider]);
 
+// A signed-out provider is the one block the user can clear from the composer:
+// its CLI has a login command, so the tray can hand that to the sign-in modal
+// instead of only re-checking. Whether it does is the shared login table's
+// answer, not this surface's — Droid is the one provider without a login
+// subcommand (it pairs a device on first run) — and a composer with no health
+// row has no provider to name.
+const canSignIn = computed(
+  () =>
+    props.healthStatus?.readiness === "needs-login" &&
+    canSignInProvider(props.healthStatus.provider),
+);
+const signIn = useProviderSignIn();
+const { openProviderSetup } = useSettingsSurface();
+
+function onSignIn() {
+  if (props.healthStatus) signIn.open(props.healthStatus.provider);
+}
+
+/** "Open provider setup" is a deep link, not a detour: the drawer opens on
+ *  Providers with this provider already selected. */
+function onProviderSetup() {
+  if (props.healthStatus) openProviderSetup(props.healthStatus.provider);
+}
+
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 
-/** A job is written on a bench that spans every project, so being aimed at one
+/** A job is written for a queue that spans every project, so being aimed at one
  *  is something it acquires rather than something it inherits from the surface
  *  it was opened on. A turn is always spoken inside a project already open. */
 const isJob = computed(() => props.kind === "job");
@@ -603,6 +638,7 @@ const skills = useComposerSkills({
   setEditorFromText: (value, saved) => setMentionEditorFromText(value, saved),
   markSkillChips: (isAvailable) => markSkillChips(isAvailable),
   getSetDraft: () => setDraft,
+  restoreReferences: (saved) => restoreReferenceValues(saved),
   cueError: () => cue("refuse"),
   flashNotice: (message) => flash(message),
 });
@@ -650,6 +686,8 @@ const {
   draftParts,
   markSkillChips,
   setEditorFromText: setMentionEditorFromText,
+  setEditorFromLiteralText: setMentionEditorFromLiteralText,
+  appendEditorLiteralText,
   clearEditor: clearMentionEditor,
   focusEditorEnd,
   insertTextAtCaret,
@@ -678,7 +716,9 @@ const {
   getScope: () => props.draftScope,
   getText: () => text.value,
   getSkills: () => skills.currentDraftSkills(),
+  getReferences: () => referenceSnapshot(),
   setEditorFromText: (val, saved) => skills.restoreEditorFromText(val, saved),
+  setReferences: (saved) => replaceReferences(saved),
 });
 
 /** A picked row runs in place of a send. Most consume the token and never
@@ -693,6 +733,7 @@ function runSlashCommand(name: string, focus: string, opts: { fromMenu: boolean 
     else {
       clearComposerEditor();
       clearAttachments();
+      clearReferences();
       syncSoon();
     }
   }
@@ -835,6 +876,232 @@ const {
   syncSoon,
 });
 
+// ── references (text selections attached as context) ────────────────────────
+// A reference never enters the editable field: it rides beside the prose as an
+// attachment-shaped chip, can be inspected in full and removed, and is merged
+// into the draft's attachments at send. The same state keeps the scoped draft.
+const {
+  references,
+  hasReferences,
+  add: addReferenceState,
+  remove: removeReferenceState,
+  clear: clearReferences,
+  restore: restoreReferenceAttachments,
+  restoreReferences: restoreReferenceValues,
+  replace: replaceReferences,
+  snapshot: referenceSnapshot,
+  attachments: referenceAttachments,
+} = useComposerReferences();
+
+/** Add one selection to this composer without touching the text. Returns once
+ *  the card is awake so the chip is visible when the caller's click lands. */
+async function addReference(reference: TextReference): Promise<void> {
+  if (isJob.value) return;
+  await wake();
+  if (!addReferenceState(reference)) return;
+  cue("press");
+  syncSoon();
+}
+
+function removeReference(id: string): void {
+  hideRefTipFor(id);
+  removeReferenceState(id);
+  cue("collapse");
+  syncSoon();
+}
+
+// ── reference preview ─────────────────────────────────────────────────────
+// One floating panel for whichever reference chip is hovered or focused. It
+// lives on <body> so the composer's own clipping never cuts a long selection
+// short, and it stays open while the pointer or focus is in either the chip or
+// the panel. The open/close rules live in the composable so the hover gap and
+// focus return can be tested without a DOM.
+const refTipId = `ref-tip-${Math.random().toString(36).slice(2, 9)}`;
+const {
+  preview: refTip,
+  open: openRefTipState,
+  close: closeRefTipState,
+  enter: enterRefTipRegion,
+  leave: leaveRefTipPointer,
+  focusEnter: focusRefTipRegion,
+  focusLeave: leaveRefTipFocus,
+  allowsFocusOpen,
+  focusTrigger: focusRefTipTrigger,
+  hideIf: hideRefTipFor,
+  hideMissing: hideRefTipsMissing,
+} = useReferencePreview();
+const refTipPanel = ref<HTMLElement | null>(null);
+
+const refTipStyle = computed(() => {
+  const tip = refTip.value;
+  if (!tip) return {};
+  const { left, maxWidth, top, bottom, maxHeight } = placeReferencePreview(tip.anchor, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  return {
+    left: `${left}px`,
+    maxWidth: `${maxWidth}px`,
+    maxHeight: `${maxHeight}px`,
+    ...(top === null ? { bottom: `${bottom ?? 0}px` } : { top: `${top}px` }),
+  };
+});
+
+/** The whole chip, whichever inner element raised the event. */
+function refChipOf(event: Event): HTMLElement | null {
+  const target = event.currentTarget;
+  if (!(target instanceof Element)) return null;
+  return target.closest(".ref-chip");
+}
+
+function openRefTip(reference: ChatAttachment, event: Event): void {
+  const text = reference.reference?.text ?? "";
+  const chip = refChipOf(event);
+  if (!text || !chip) return;
+  openRefTipState({
+    id: reference.id,
+    text,
+    anchor: chip.getBoundingClientRect(),
+    trigger: chip.querySelector<HTMLElement>(".ref-chip__body"),
+  });
+}
+
+function onRefChipEnter(reference: ChatAttachment, event: MouseEvent): void {
+  enterRefTipRegion("chip");
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+}
+
+function onRefChipLeave(): void {
+  leaveRefTipPointer("chip");
+}
+
+function onRefChipFocusIn(reference: ChatAttachment, event: FocusEvent): void {
+  focusRefTipRegion("chip");
+  // Only the body opens the panel. Tab from the body moves to the remove
+  // button; reopening there would fight the tab that just left the panel.
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(".ref-chip__body")) return;
+  if (!allowsFocusOpen()) return;
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+}
+
+function onRefChipFocusOut(event: FocusEvent): void {
+  const chip = refChipOf(event);
+  // Move between the chip's own body and its remove button: still one chip.
+  if (chip && event.relatedTarget instanceof Node && chip.contains(event.relatedTarget)) return;
+  leaveRefTipFocus("chip");
+}
+
+/** Escape closes the preview first; only a second Escape reaches the composer. */
+function onRefChipEscape(event: KeyboardEvent): void {
+  if (!refTip.value) return;
+  event.stopPropagation();
+  closeRefTipState();
+}
+
+/** Enter, click or ArrowDown on a chip moves focus into the panel, where the
+ *  arrow, page and Home/End keys scroll the full selection. */
+async function focusRefTip(reference: ChatAttachment, event: Event): Promise<void> {
+  if (refTip.value?.id !== reference.id) openRefTip(reference, event);
+  await nextTick();
+  refTipPanel.value?.focus({ preventScroll: true });
+}
+
+function onRefTipFocusOut(event: FocusEvent): void {
+  if (refTipPanel.value && event.relatedTarget instanceof Node && refTipPanel.value.contains(event.relatedTarget)) return;
+  leaveRefTipFocus("panel");
+}
+
+/** Scroll keys stay in the panel: they move its full-text scroller, never the
+ *  thread pane behind it. The default is untouched, so native scrolling works. */
+const REF_TIP_SCROLL_KEYS = new Set([
+  "ArrowDown",
+  "ArrowUp",
+  "PageDown",
+  "PageUp",
+  "Home",
+  "End",
+]);
+
+function onRefTipKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    refocusRefTipTrigger();
+    return;
+  }
+  if (event.key === "Tab") {
+    // Close on Tab and let the browser continue from the trigger, so one Tab
+    // leaves the panel and the next one moves on from the chip.
+    refocusRefTipTrigger();
+    return;
+  }
+  if (REF_TIP_SCROLL_KEYS.has(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    event.stopPropagation();
+  }
+}
+
+function refocusRefTipTrigger(): void {
+  if (!refTip.value) return;
+  focusRefTipTrigger();
+}
+
+/** Keep the panel pinned to its chip if the page scrolls or the window
+ *  changes size while it is open. */
+function refreshRefTipAnchor(): void {
+  const tip = refTip.value;
+  if (!tip) return;
+  const chip = tip.trigger?.closest(".ref-chip");
+  if (!chip || !chip.isConnected) {
+    closeRefTipState();
+    return;
+  }
+  refTip.value = { ...tip, anchor: chip.getBoundingClientRect() };
+}
+
+useEventListener(window, "resize", refreshRefTipAnchor);
+useEventListener(window, "scroll", refreshRefTipAnchor, { capture: true, passive: true });
+
+// A click anywhere else dismisses the preview; the composer's own click-away
+// must ignore the teleported panel (see the onClickOutside options below).
+useEventListener(
+  () => globalThis.document,
+  "pointerdown",
+  (event) => {
+    if (!refTip.value) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".ref-tip, .ref-chip")) return;
+    closeRefTipState();
+  },
+  { capture: true },
+);
+
+// The preview must never outlive what it describes: the folded card, a parked
+// ask, or the reference itself.
+watch(open, (isOpen) => {
+  if (!isOpen) closeRefTipState();
+});
+watch(
+  () => props.inactive,
+  (inactive) => {
+    if (inactive) closeRefTipState();
+  },
+);
+watch(
+  () => references.value.map((reference) => reference.id),
+  (ids) => hideRefTipsMissing(ids),
+);
+
+/** Put handed-back attachments (a queued row's Edit, a Stop's return) on the
+ *  draft: references become chips again and files go through the ordinary
+ *  upload restore. */
+async function restoreDraftAttachments(list: readonly ChatAttachment[]): Promise<void> {
+  const { files, references: refs } = splitReferenceAttachments(list);
+  if (refs.length) restoreReferenceAttachments(refs);
+  if (files.length) await restoreUploaded(files);
+}
+
 function onPaste(e: ClipboardEvent) {
   const files = e.clipboardData?.files;
   if (files && files.length > 0) {
@@ -856,13 +1123,17 @@ let lastCard = false;
 
 const hasText = computed(() => text.value.trim().length > 0);
 const armed = computed(
-  () => hasText.value || hasAttachments.value || (isJob.value && hasTitle.value),
+  () =>
+    hasText.value ||
+    hasAttachments.value ||
+    (!isJob.value && hasReferences.value) ||
+    (isJob.value && hasTitle.value),
 );
 /** Whether the primary commit would actually land. A turn only needs writing;
  *  a job also needs somewhere to run, and queuing an unaimed one would file
  *  something the dispatcher can never pick up. */
 const commitReady = computed(() => (isJob.value ? armed.value && hasProject.value : armed.value));
-const card = computed(() => hasAttachments.value);
+const card = computed(() => hasAttachments.value || (!isJob.value && hasReferences.value));
 
 // Read the surface's natural height at its open width. Mid-wake the surface is
 // still orb-wide (its width eases out a beat later), and text wrapped that
@@ -934,19 +1205,23 @@ function syncSoon() {
 onClickOutside(
   dock,
   (event) => {
+    // A parked ask owns the surface; a click on it is not a click away from a
+    // composer the user cannot see. Keeping the card open means it comes back
+    // with the draft and any reference added while the ask waited.
+    if (props.inactive) return;
     // The picker lives outside our dock, so its clicks read as "outside" — but it
     // is our own surface, one step removed. Don't collapse while it's up.
     if (props.picking || agentPickerOpen.value) return;
     // Folding on a click away is a setting; off, the card stays until Escape.
     if (!composerPrefs.value.foldOnBlur) return;
     const target = event.target;
-    if (target instanceof Element && target.closest("[data-agent-dock]")) {
+    if (target instanceof Element && target.closest("[data-agent-dock], .ref-tip")) {
       return;
     }
     close();
   },
   {
-    ignore: ["[data-agent-dock]"],
+    ignore: ["[data-agent-dock]", ".ref-tip"],
   },
 );
 const registerEscape = useThreadEscape();
@@ -954,12 +1229,19 @@ registerEscape("picker", () => Boolean(props.picking), null);
 registerEscape("picker", () => agentPickerOpen.value, () => {
   agentPickerOpen.value = false;
 });
-registerEscape("composer", () => open.value && !props.alwaysOpen && !props.background, close);
+registerEscape("composer", () => open.value && !props.alwaysOpen && !props.background && !props.inactive, close);
 
 /** The agent picker's Escape, taken in the capture phase so one press closes
  *  one layer: without this the surface behind the composer — a portal that
  *  answers Escape of its own — would take the same press and leave too. */
 function onEscapeCapture(event: KeyboardEvent): void {
+  // The floating preview is the top layer inside the composer: the first
+  // Escape dismisses it and never reaches the picker or the composer's close.
+  if (refTip.value) {
+    event.stopPropagation();
+    closeRefTipState();
+    return;
+  }
   if (!agentPickerOpen.value) return;
   event.stopPropagation();
   agentPickerOpen.value = false;
@@ -979,6 +1261,7 @@ function onSurfaceClick() {
 // a key pressed while another field is focused, or one hit while a file detail
 // is up (the composer is inert then).
 async function onGlobalKey(e: KeyboardEvent) {
+  if (props.inactive) return;
   if (!composerPrefs.value.typeToWake || props.background) return;
   if (open.value || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   // Single printable char only — "a", "1", "?" pass; "Enter"/"Tab"/arrows don't.
@@ -986,6 +1269,7 @@ async function onGlobalKey(e: KeyboardEvent) {
   // SAFETY: a non-element target would fail the contentEditable and tag-name probes below,
   // so the keystroke is ignored either way.
   const t = e.target as HTMLElement | null;
+  if (t?.closest(".ref-tip")) return;
   if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
   // A file detail is open → the composer is inert; leave the keystroke alone.
   if (dock.value?.closest("[inert]")) return;
@@ -1046,6 +1330,10 @@ function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) 
     const draft: ComposerDraft = { text: turn.input };
     if (files.length) draft.files = files;
     if (turn.skills.length) draft.skills = turn.skills;
+    // References are already metadata-only; the host merges them with the
+    // uploaded files so a text selection never needs an upload.
+    const refs = referenceAttachments();
+    if (refs.length) draft.references = refs;
     const dispatch = resolveFollowUpDispatch({
       behavior: composerPrefs.value.followUp,
       busy: props.busy ?? false,
@@ -1058,6 +1346,7 @@ function dispatchDraft(intent: "queued" | "draft" = "queued", opposite = false) 
   cue("send");
   clearComposerEditor();
   clearAttachments();
+  clearReferences();
   syncSoon();
 }
 
@@ -1097,7 +1386,7 @@ async function onQueueEdit(entry: QueuedTurnEntry) {
   if (isEffortTier(entry.effort) && entry.effort !== props.reasoning) emit("update:reasoning", entry.effort);
   if (isInteractionMode(entry.mode) && entry.mode !== props.mode) emit("update:mode", entry.mode);
   await setDraft(skills.draftFromTurn(entry.input || "", picked), picked);
-  if (entry.attachments?.length) await restoreUploaded(entry.attachments);
+  if (entry.attachments?.length) await restoreDraftAttachments(entry.attachments);
 }
 
 // Stop hands the queued messages back into the field (see
@@ -1109,7 +1398,7 @@ const handBack = useComposerQueueReturn({
   currentSkills: () => skills.currentDraftSkills(),
   draftFromTurn: (input, picked) => skills.draftFromTurn(input, picked),
   setDraft: (draft, picked) => setDraft(draft, picked),
-  restoreUploaded: (list) => restoreUploaded(list),
+  restoreUploaded: (list) => restoreDraftAttachments(list),
 });
 onMounted(() => {
   restoreDraft();
@@ -1122,6 +1411,9 @@ onUnmounted(() => {
   clearAttachments();
 });
 watch(text, scheduleDraftSave);
+// A reference changes the draft as much as a keystroke does, so it is saved
+// on the same clock.
+watch(references, scheduleDraftSave, { deep: true });
 // Let hosts work ahead of the send off the same text. Emitted raw — the host
 // decides what is worth warming, so a keystroke here never costs a call by
 // itself.
@@ -1136,6 +1428,33 @@ async function setDraft(draft: string, saved?: readonly SkillReference[]) {
   syncSoon();
 }
 
+/** Seed the field with ordinary text, replacing what was there — no `/name` or
+ *  `@path` re-chipping. This is the New Thread path: a selection has to stay
+ *  the words the user selected, while `setDraft` keeps its restore semantics
+ *  for a queue row or a refused send. */
+async function seedDraft(value: string) {
+  await wake();
+  await nextTick();
+  setMentionEditorFromLiteralText(value);
+  trigger.dismiss();
+  focusEditorEnd();
+  syncSoon();
+}
+
+/** Add text after whatever is already written, keeping the existing words,
+ *  skill chips and references. Unlike setDraft this never replaces the draft;
+ *  it exists for routing a selection into a blank pane that already holds an
+ *  unsent draft. The added text is placed verbatim as one text node, so a
+ *  selection shaped like a command is never turned into a chip. */
+async function appendDraft(value: string): Promise<void> {
+  await wake();
+  await nextTick();
+  appendEditorLiteralText(value);
+  trigger.dismiss();
+  focusEditorEnd();
+  syncSoon();
+}
+
 function focus() {
   if (!open.value) {
     void wake();
@@ -1144,7 +1463,7 @@ function focus() {
   field.value?.focus();
 }
 
-defineExpose({ wake, setDraft, focus });
+defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
 </script>
 
 <template>
@@ -1221,14 +1540,18 @@ defineExpose({ wake, setDraft, focus });
 
     <!-- Top status tray — the send-block reason, hanging off the top of the
          card. Only rendered while blocked, so an unblocked composer is
-         exactly what it was. -->
+         exactly what it was. A signed-out provider also gets the two ways
+         forward here: sign in, or open its setup. -->
     <ComposerStatusTray
       :expanded="open"
       :closing="closing"
       :blocked-reason="blockedReason"
       :health-status="healthStatus"
       :health-checking="healthChecking"
+      :can-sign-in="canSignIn"
       @recheck="emit('recheck')"
+      @signin="onSignIn"
+      @setup="onProviderSetup"
     />
 
     <!-- One surface, morphing. Closed it's the orb; open it's the card. -->
@@ -1294,6 +1617,65 @@ defineExpose({ wake, setDraft, focus });
             <span v-if="notice" class="chips__notice">{{ notice }}</span>
           </div>
         </Transition>
+
+        <!-- References ride beside the attachment chips: the selection once,
+             in one line. Opening the chip shows the exact text in a scrollable
+             panel; the text itself never enters the editable field. -->
+        <Transition name="fade">
+          <div v-if="open && hasReferences" class="chips chips--refs" aria-label="Referenced text">
+            <div
+              v-for="ref in references"
+              :key="ref.id"
+              class="ref-chip"
+              @mouseenter="onRefChipEnter(ref, $event)"
+              @mouseleave="onRefChipLeave"
+              @focusin="onRefChipFocusIn(ref, $event)"
+              @focusout="onRefChipFocusOut"
+              @keydown.esc="onRefChipEscape"
+            >
+              <button
+                type="button"
+                class="ref-chip__body"
+                aria-haspopup="dialog"
+                :aria-expanded="refTip?.id === ref.id"
+                :aria-controls="refTip?.id === ref.id ? refTipId : undefined"
+                @click.stop="focusRefTip(ref, $event)"
+                @keydown.down.prevent.stop="focusRefTip(ref, $event)"
+              >
+                <span class="ref-chip__quote" aria-hidden="true">“</span>
+                <span class="ref-chip__text">{{ referenceGlance(ref.reference?.text ?? "") }}</span>
+              </button>
+              <button
+                type="button"
+                class="chip__remove"
+                :aria-label="`Remove the reference from ${ref.name}`"
+                @click.stop.prevent="removeReference(ref.id)"
+              >
+                <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </Transition>
+        <Teleport to="body">
+          <div
+            v-if="refTip"
+            :id="refTipId"
+            ref="refTipPanel"
+            class="ref-tip"
+            role="dialog"
+            aria-modal="false"
+            aria-label="Referenced text"
+            tabindex="-1"
+            :style="refTipStyle"
+            @mouseenter="enterRefTipRegion('panel')"
+            @mouseleave="leaveRefTipPointer('panel')"
+            @focusin="focusRefTipRegion('panel')"
+            @focusout="onRefTipFocusOut"
+            @keydown="onRefTipKeydown"
+          >{{ refTip.text }}</div>
+        </Teleport>
 
         <!-- Dormant face -->
         <div class="face" aria-hidden="true">
@@ -1601,8 +1983,8 @@ defineExpose({ wake, setDraft, focus });
         <span class="tray__label">{{ routingNote }}</span>
       </span>
       <!-- Where it runs. A picker on a job and a label on a turn: a turn is
-           spoken inside a project that is already open, but a job is written on
-           a bench that spans all of them, so being aimed is something it
+           spoken inside a project that is already open, but a job is written
+           for a queue that spans all of them, so being aimed is something it
            acquires. Unset is the state a fresh job opens in, and it names
            itself as the thing still missing rather than rendering nothing. -->
       <button
@@ -1710,5 +2092,81 @@ defineExpose({ wake, setDraft, focus });
   gap: 3px;
   opacity: 0.38;
   filter: grayscale(1);
+}
+
+/* A reference chip: the selection in one line, read as a quote rather than a
+   file. Opening it shows the full text in the floating preview. */
+.chips--refs {
+  padding-top: 8px;
+}
+.ref-chip {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--faint);
+}
+.ref-chip__body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 4px 7px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.ref-chip__body:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: 7px;
+}
+.ref-chip__quote {
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 14px;
+}
+.ref-chip__text {
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-chip > .chip__remove {
+  margin: 0 5px 0 0;
+}
+/* Same surface as the thread's hover labels, but this one is interactive: it
+   wraps, keeps the selection's line breaks, and scrolls the full text with the
+   pointer or the keyboard. */
+.ref-tip {
+  position: fixed;
+  z-index: 60;
+  max-width: min(400px, calc(100vw - 16px));
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: var(--ink);
+  color: var(--ground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: auto;
+}
+.ref-tip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 </style>

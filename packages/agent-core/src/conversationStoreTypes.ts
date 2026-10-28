@@ -313,7 +313,19 @@ export function serializeSkillReferences(skills: SkillReference[] | undefined): 
 export function serializeAttachments(attachments: ChatAttachment[] | undefined): string | null {
   if (!attachments || attachments.length === 0) return null;
   return JSON.stringify(
-    attachments.map(({ type, id, name, mimeType, sizeBytes }) => ({ type, id, name, mimeType, sizeBytes })),
+    attachments.map(({ type, id, name, mimeType, sizeBytes, reference }) => {
+      const row: ChatAttachment = { type, id, name, mimeType, sizeBytes };
+      // A reference's payload is its text and provenance, not a file on disk.
+      // Dropping it here would leave a turn that renders a quote but sends
+      // nothing to the provider.
+      if (reference) {
+        row.reference = { text: reference.text, sourcePaneId: reference.sourcePaneId };
+        if (reference.sourceThreadId) row.reference.sourceThreadId = reference.sourceThreadId;
+        if (reference.sourceMessageId) row.reference.sourceMessageId = reference.sourceMessageId;
+        if (reference.sourceTitle) row.reference.sourceTitle = reference.sourceTitle;
+      }
+      return row;
+    }),
   );
 }
 
@@ -1081,6 +1093,16 @@ export type TurnUsageRecord = {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;
+  /** Who answered the turn, as the usage row recorded it; null on rows
+   *  written before the columns were filled. */
+  provider: string | null;
+  model: string | null;
+  /** The provider-native session this row's counter belongs to. Running-total
+   *  providers report one counter per session, so a row is only comparable
+   *  with another row carrying the same id. Null on rows written before the
+   *  column existed (or by a provider that named no session); those fall back
+   *  to the old provider/hand-in reading. */
+  usageSessionId: string | null;
   at: number;
 };
 

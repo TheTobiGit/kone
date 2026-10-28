@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -10,7 +10,9 @@ import { buildDroidEnv, DROID_BINARY } from "./droidHome.js";
 import { ANTGRAVITY_BINARY } from "./antigravityHome.js";
 import { buildOpenCodeEnv } from "./opencodeHome.js";
 import { buildAgentEnv } from "./processEnv.js";
+import { killTree } from "./spawn.js";
 import type { ProviderKind } from "./types.js";
+import { spawnLaunch, type LaunchDeps } from "./windowsLaunch.js";
 
 // Thread/conversation naming. Flow:
 //   1. First send → deterministic word-cap fallback (instant sidebar label).
@@ -34,6 +36,18 @@ const CLAUDE_TITLE_MODEL = "claude-haiku-4-5";
 const OPENCODE_TITLE_MODEL = "opencode-go/deepseek-v4-flash";
 const CURSOR_TITLE_MODEL = "composer-2.5-fast";
 const TITLE_GENERATION_TIMEOUT_MS = 45_000;
+
+/** The launch seam title generation accepts: windowsLaunch's own deps (the
+ *  platform a launch is resolved for and the spawn that starts it) plus the
+ *  pieces a one-shot call's teardown needs, so the failure paths can be
+ *  exercised without a 45-second wait or a Windows host. Production passes
+ *  none of it, so the real platform, spawn, timeout and tree kill apply. */
+export type ThreadTitleLaunchDeps = LaunchDeps & {
+  /** ms — how long the one-shot CLI may run, instead of the 45s default. */
+  timeoutMs?: number;
+  /** The teardown for a timed-out Windows launch (spawn.ts's killTree). */
+  killTree?: (pid: number | undefined) => Promise<void>;
+};
 
 /** Shape each CLI's JSON output may take; every field optional because the
  *  decode is best-effort and callers probe before reading. */
@@ -190,7 +204,8 @@ export function extractTitle(raw: string): string | null {
 
 /** Ask the thread's own provider for a short title. Returns null on any
  *  failure so the caller can keep the fallback. Uses the user's own CLI
- *  login — kone never injects credentials. */
+ *  login — kone never injects credentials. `launch` is the test seam
+ *  described by ThreadTitleLaunchDeps; production leaves it out. */
 export async function generateThreadTitle(input: {
   cwd: string;
   message: string;
@@ -198,8 +213,12 @@ export async function generateThreadTitle(input: {
   /** The thread's selected model. Only OpenCode uses it, since which
    *  models work depends on the account (see generateWithOpenCode). */
   model?: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
-  return requestGeneratedTitle({ ...input, prompt: buildThreadTitlePrompt(input.message) });
+  return requestGeneratedTitle({
+    ...input,
+    prompt: buildThreadTitlePrompt(input.message),
+  });
 }
 
 /** Regenerate a title from a whole-conversation context (see
@@ -212,11 +231,13 @@ export async function generateThreadTitleFromContext(input: {
   context: string;
   provider: ProviderKind;
   model?: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   return requestGeneratedTitle({
     cwd: input.cwd,
     provider: input.provider,
     model: input.model,
+    launch: input.launch,
     prompt: buildContextThreadTitlePrompt(input.context),
   });
 }
@@ -248,25 +269,35 @@ async function requestGeneratedTitle(input: {
   prompt: string;
   provider: ProviderKind;
   model?: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   try {
     const raw =
       input.provider === "claudeAgent"
-        ? await generateWithClaude({ cwd: input.cwd, prompt: input.prompt })
+        ? await generateWithClaude({ cwd: input.cwd, prompt: input.prompt, launch: input.launch })
         : input.provider === "opencode"
-          ? await generateWithOpenCode({ cwd: input.cwd, prompt: input.prompt, model: input.model })
+          ? await generateWithOpenCode({
+              cwd: input.cwd,
+              prompt: input.prompt,
+              model: input.model,
+              launch: input.launch,
+            })
           : input.provider === "cursor"
-            ? await generateWithCursor({ cwd: input.cwd, prompt: input.prompt })
+            ? await generateWithCursor({ cwd: input.cwd, prompt: input.prompt, launch: input.launch })
             : input.provider === "droid"
-              ? await generateWithDroid({ cwd: input.cwd, prompt: input.prompt })
+              ? await generateWithDroid({ cwd: input.cwd, prompt: input.prompt, launch: input.launch })
               : input.provider === "cline"
                 ? // No one-shot surface worth spawning: `cline` prompt mode runs a
                   // full agent session on the user's account, so a title is not
                   // worth a turn. The thread keeps its message-derived title.
                   null
                 : input.provider === "antigravity"
-                  ? await generateWithAntigravity({ cwd: input.cwd, prompt: input.prompt })
-                  : await generateWithCodex({ cwd: input.cwd, prompt: input.prompt });
+                  ? await generateWithAntigravity({
+                      cwd: input.cwd,
+                      prompt: input.prompt,
+                      launch: input.launch,
+                    })
+                  : await generateWithCodex({ cwd: input.cwd, prompt: input.prompt, launch: input.launch });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;
@@ -280,6 +311,7 @@ async function requestGeneratedTitle(input: {
 async function generateWithCodex(input: {
   cwd: string;
   prompt: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   const tmp = os.tmpdir();
   const id = randomUUID();
@@ -290,7 +322,7 @@ async function generateWithCodex(input: {
     await fs.writeFile(schemaPath, JSON.stringify(TITLE_SCHEMA), "utf8");
     await fs.writeFile(outputPath, "", "utf8");
 
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "codex");
     const stdout = await runCli({
       command: "codex",
       args: [
@@ -313,6 +345,7 @@ async function generateWithCodex(input: {
       env,
       stdin: input.prompt,
       timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+      launch: input.launch,
     });
     if (stdout === null) return null;
     const fromFile = (await fs.readFile(outputPath, "utf8")).trim();
@@ -328,6 +361,7 @@ async function generateWithCodex(input: {
 async function generateWithClaude(input: {
   cwd: string;
   prompt: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   const env = await buildClaudeEnv();
   return runCli({
@@ -348,6 +382,7 @@ async function generateWithClaude(input: {
     env,
     stdin: input.prompt,
     timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+    launch: input.launch,
   });
 }
 
@@ -362,6 +397,7 @@ async function generateWithOpenCode(input: {
   cwd: string;
   prompt: string;
   model?: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   const env = await buildOpenCodeEnv();
   const models = [...new Set([input.model, OPENCODE_TITLE_MODEL].filter((m): m is string => Boolean(m)))];
@@ -373,6 +409,7 @@ async function generateWithOpenCode(input: {
       env,
       stdin: "",
       timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+      launch: input.launch,
     });
     if (!raw) continue;
     const title = raw.split(/\r?\n/).map(extractTitle).find((value): value is string => Boolean(value));
@@ -384,7 +421,11 @@ async function generateWithOpenCode(input: {
 /** One-shot `cursor-agent --print` with plain text. Titles run through Cursor's
  *  cheap in-house model on the print CLI — the interactive ACP protocol is the
  *  turn transport, not a one-shot text surface. */
-async function generateWithCursor(input: { cwd: string; prompt: string }): Promise<string | null> {
+async function generateWithCursor(input: {
+  cwd: string;
+  prompt: string;
+  launch?: ThreadTitleLaunchDeps;
+}): Promise<string | null> {
   const env = await buildCursorEnv();
   return runCli({
     command: "cursor-agent",
@@ -393,6 +434,7 @@ async function generateWithCursor(input: { cwd: string; prompt: string }): Promi
     env,
     stdin: "",
     timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+    launch: input.launch,
   });
 }
 
@@ -407,7 +449,11 @@ async function generateWithCursor(input: { cwd: string; prompt: string }): Promi
  *  kone can name that is safe for everyone, and the user's configured default is
  *  the only one guaranteed to be valid for them. A failure here is cheap: the
  *  caller keeps the deterministic word-cap fallback title. */
-async function generateWithDroid(input: { cwd: string; prompt: string }): Promise<string | null> {
+async function generateWithDroid(input: {
+  cwd: string;
+  prompt: string;
+  launch?: ThreadTitleLaunchDeps;
+}): Promise<string | null> {
   const env = await buildDroidEnv();
   return runCli({
     command: DROID_BINARY,
@@ -416,6 +462,7 @@ async function generateWithDroid(input: { cwd: string; prompt: string }): Promis
     env,
     stdin: "",
     timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+    launch: input.launch,
   });
 }
 
@@ -427,8 +474,9 @@ async function generateWithDroid(input: { cwd: string; prompt: string }): Promis
 async function generateWithAntigravity(input: {
   cwd: string;
   prompt: string;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
-  const env = await buildAgentEnv();
+  const env = await buildAgentEnv(undefined, "antigravity");
   return runCli({
     command: ANTGRAVITY_BINARY,
     args: [
@@ -444,11 +492,18 @@ async function generateWithAntigravity(input: {
     env,
     stdin: "",
     timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+    launch: input.launch,
   });
 }
 
 /** Spawn a CLI with the prompt on stdin. Returns stdout on success, null on
- *  spawn failure / non-zero exit / timeout. */
+ *  spawn failure / non-zero exit / timeout.
+ *
+ *  The launch goes through windowsLaunch's `spawnLaunch`, so on Windows an npm
+ *  `.cmd` shim is started through cmd.exe and a shim Windows cannot run is the
+ *  same "no title" a spawn error gives. The timeout tears down the whole tree on
+ *  Windows: the child is cmd.exe, and killing only it would leave the CLI it
+ *  wrapped running. */
 function runCli(input: {
   command: string;
   args: string[];
@@ -456,14 +511,27 @@ function runCli(input: {
   env: NodeJS.ProcessEnv;
   stdin: string;
   timeoutMs: number;
+  launch?: ThreadTitleLaunchDeps;
 }): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn(input.command, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const launched = spawnLaunch<ChildProcessWithoutNullStreams>(
+      input.command,
+      input.args,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+      input.launch,
+    );
+    if (!launched.ok) {
+      // A launch that cannot happen (no such CLI, or a shim Windows cannot
+      // start) is the fallback path, not an exception.
+      resolve(null);
+      return;
+    }
+    const child = launched.child;
 
     let stdout = "";
     let settled = false;
@@ -475,9 +543,14 @@ function runCli(input: {
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      if ((input.launch?.platform ?? process.platform) === "win32") {
+        // Fire and forget: the caller only needs the title call to be over.
+        void (input.launch?.killTree ?? killTree)(child.pid);
+      } else {
+        child.kill("SIGTERM");
+      }
       finish(null);
-    }, input.timeoutMs);
+    }, input.launch?.timeoutMs ?? input.timeoutMs);
 
     child.stdout.on("data", (buf: Buffer) => {
       stdout += buf.toString();

@@ -547,6 +547,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     this.version = null;
   }
 
+  invalidateDiscoveryCaches(): void {
+    this.modelsCache = null;
+    this.version = null;
+  }
+
   async discover(): Promise<ProviderStatus> {
     const env = await buildOpenCodeEnv(); const result = await probeResult(this.binary, ["--version"], env, 5_000);
     // A version probe that never came back says nothing about the install — the
@@ -674,7 +679,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // Imported at call time: promptAttachments reaches the attachment store,
     // which pulls in node:sqlite — a static import would make this module
     // unloadable outside the Electron runtime.
-    const { buildOpenCodeAttachmentParts, composePromptText } = await import("../promptAttachments.js");
+    const { buildOpenCodeAttachmentParts, buildReferenceBlock, composePromptText } = await import("../promptAttachments.js");
     const files = await buildOpenCodeAttachmentParts(input.attachments);
     // The ladder is applied to the session when it opens (and on resume); a
     // mode change mid-session would otherwise silently never take effect —
@@ -695,7 +700,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // the very first user turn so the agent knows the gateway tools exist.
     // No skill input kone drives on this server: an invoked skill's SKILL.md
     // is inlined after the prompt.
-    const composed = await inlineSkills(composePromptText(text, ""), input.skills);
+    const composed = await inlineSkills(
+      composePromptText(text, buildReferenceBlock(input.attachments)),
+      input.skills,
+    );
     const prompt = koneHostContextForFirstRun({
       prompt: composed,
       runOrdinal: session.runOrdinal + 1,

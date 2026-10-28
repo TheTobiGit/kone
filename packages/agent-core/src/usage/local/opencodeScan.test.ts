@@ -35,17 +35,19 @@ const T0 = Date.parse("2026-09-28T10:00:00.000Z");
 let dataDir: string | null = null;
 
 afterEach(() => {
-  delete process.env.OPENCODE_DATA_DIR;
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   dataDir = null;
 });
 
 function withDatabase(build: (db: Database) => void): void {
   dataDir = mkdtempSync(path.join(tmpdir(), "kone-opencode-scan-"));
-  process.env.OPENCODE_DATA_DIR = dataDir;
   const db = new Database(path.join(dataDir, "opencode.db"));
   build(db);
   db.close();
+}
+
+function scanEnv(): NodeJS.ProcessEnv {
+  return dataDir ? { OPENCODE_DATA_DIR: dataDir } : {};
 }
 
 /** Token payload shape for the v2 log fixtures below. */
@@ -75,7 +77,11 @@ describe("scanOpenCodeUsage", () => {
       insert.run("msg_3", "ses_a", "assistant", T0 - 86_400_000, v2Message({ input: 999, output: 1 }));
     });
 
-    const { records, sources } = await scanOpenCodeUsage({ sinceMs: T0 - 1000, untilMs: T0 + 1000 });
+    const { records, sources } = await scanOpenCodeUsage({
+      sinceMs: T0 - 1000,
+      untilMs: T0 + 1000,
+      env: scanEnv(),
+    });
 
     expect(sources[0]?.messagesFromDb).toBe(1);
     expect(records).toHaveLength(1);
@@ -107,7 +113,11 @@ describe("scanOpenCodeUsage", () => {
       );
     });
 
-    const { records } = await scanOpenCodeUsage({ sinceMs: T0 - 1000, untilMs: T0 + 1000 });
+    const { records } = await scanOpenCodeUsage({
+      sinceMs: T0 - 1000,
+      untilMs: T0 + 1000,
+      env: scanEnv(),
+    });
 
     expect(records).toHaveLength(1);
     expect(records[0]?.cwd).toBe("/work/legacy");

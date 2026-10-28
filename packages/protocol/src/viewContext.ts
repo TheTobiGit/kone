@@ -196,13 +196,6 @@ const ViewLayerSchema = z.discriminatedUnion("surface", [
     pane: z.enum(["idle", "composer", "reader"]),
     thread: ViewThreadRefSchema.optional(),
   }),
-  z.object({
-    surface: z.literal("bench"),
-    ...LayerBase,
-    composing: z.boolean(),
-    /** Job counts by group label, in the bench's own order. */
-    jobs: list(z.object({ group: Text, count: z.number().int().nonnegative() })),
-  }),
   z.object({ surface: z.literal("settings"), ...LayerBase, pane: Text }),
   z.object({ surface: z.literal("search"), ...LayerBase, query: Text }),
   z.object({
@@ -220,7 +213,6 @@ const ViewSurfaceSchema = z.enum([
   "project",
   "studio",
   "inbox",
-  "bench",
   "settings",
   "search",
   "modal",
@@ -383,7 +375,6 @@ const SETTINGS_PANE_WORDS: Record<string, string> = {
   composer: "Composer",
   studio: "Studio",
   inbox: "Inbox",
-  bench: "Bench",
   assistant: "Assistant",
   providers: "Providers",
   agentsUsage: "Agents usage",
@@ -520,11 +511,6 @@ function layerLines(layer: ViewLayer, brief: boolean): string[] {
       }
       if (layer.pane === "composer") return [`The inbox, showing ${list} with a new-thread composer open.`];
       return [`The inbox, showing ${list} with no thread picked.`];
-    }
-    case "bench": {
-      const counts = layer.jobs.filter((j) => j.count > 0);
-      const jobs = counts.length ? counts.map((j) => `${j.count} ${j.group.toLowerCase()}`).join(", ") : "no jobs";
-      return [`The bench (the job queue): ${jobs}.${layer.composing ? " A new-job composer is open." : ""}`];
     }
     case "settings":
       return [`Settings, open on ${SETTINGS_PANE_WORDS[layer.pane] ?? layer.pane}.`];

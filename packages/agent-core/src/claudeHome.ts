@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { buildAgentEnv, type PathHit } from "./processEnv.js";
+import { buildAgentEnv, pathEnvKey, type PathHit } from "./processEnv.js";
 
 // Auth/env helpers for the Claude adapter, the analogue of codexHome.ts. Same
 // "bring your own subscription" stance: kone never runs `claude login`, never
@@ -109,7 +109,7 @@ function locateInstalledClaude(input: {
   const names = claudeCandidateNames(input.binary, input.platform);
   const separator = input.platform === "win32" ? ";" : ":";
   const dirs = [
-    ...(input.env.PATH ?? "").split(separator).filter(Boolean),
+    ...(input.env[pathEnvKey(input.env, input.platform)] ?? "").split(separator).filter(Boolean),
     path.join(input.homeDir, ".local", "bin"),
   ];
   for (const dir of dirs) {
@@ -288,7 +288,7 @@ export function hasLocalOAuthLogin(env: NodeJS.ProcessEnv = process.env): boolea
  *  wins over a leaked key. The SDK's `env` option REPLACES the child env, so we
  *  must pass a complete environment, not a patch. */
 export async function buildClaudeEnv(base: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
-  const env = await buildAgentEnv(base);
+  const env = await buildAgentEnv(base, "claudeAgent");
   if (hasLocalOAuthLogin(env) && !hasExternalAuthOverride(env)) {
     for (const key of DIRECT_CREDENTIAL_KEYS) delete env[key];
   }

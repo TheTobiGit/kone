@@ -282,20 +282,30 @@ export class TranscriptRepo {
     if (!db) return [];
     try {
       // SAFETY: the projection names exactly the turn_usage columns this
-      // schema creates, aliased to the record's camelCase fields.
+      // schema creates, aliased to the record's camelCase fields. Rows written
+      // before provider and model were stamped keep them unknown: the thread's
+      // current pick may not be what answered an older turn, and a guess
+      // would price it at the wrong model's rates. `usage_session_id` is NULL
+      // on rows written before migration 44 (and on a row whose event named no
+      // session), which the trace reads as "boundary unknown". Ties on `at`
+      // fall back to rowid, the durable write order: a counter's step needs the
+      // earlier row to come first, and turn ids carry no such order.
       const rows = db
         .prepare(
-          `SELECT turn_id AS turnId,
-                  input_tokens AS inputTokens,
-                  output_tokens AS outputTokens,
-                  total_tokens AS totalTokens,
-                  cache_read_tokens AS cacheReadTokens,
-                  cache_creation_tokens AS cacheCreationTokens,
-                  reasoning_tokens AS reasoningTokens,
-                  at
-             FROM turn_usage
-            WHERE thread_id = ?
-            ORDER BY at ASC, turn_id ASC`,
+          `SELECT u.turn_id AS turnId,
+                  u.input_tokens AS inputTokens,
+                  u.output_tokens AS outputTokens,
+                  u.total_tokens AS totalTokens,
+                  u.cache_read_tokens AS cacheReadTokens,
+                  u.cache_creation_tokens AS cacheCreationTokens,
+                  u.reasoning_tokens AS reasoningTokens,
+                  u.provider AS provider,
+                  u.model AS model,
+                  u.usage_session_id AS usageSessionId,
+                  u.at AS at
+             FROM turn_usage u
+            WHERE u.thread_id = ?
+            ORDER BY u.at ASC, u.rowid ASC`,
         )
         .all(threadId) as TurnUsageRecord[];
       return rows;

@@ -1,11 +1,11 @@
 import { detectAntigravityCredential, fetchAntigravityQuota } from "./antigravity.js";
 import { detectClaudeCredential, fetchClaudeQuota } from "./claude.js";
-import { fetchCodexQuota } from "./codex.js";
+import { detectCodexCredential, fetchCodexQuota } from "./codex.js";
 import { fetchCursorQuota, detectCursorCredential } from "./cursor.js";
 import { detectDroidCredential, fetchDroidQuota } from "./droid.js";
 import { fetchOpenCodeQuota, detectOpenCodeDatabase } from "./opencode.js";
 import { createRateLimitResilience } from "./rateLimitResilience.js";
-import { readSecureFile, sanitizeError } from "./security.js";
+import { sanitizeError } from "./security.js";
 import { emptyReport } from "./types.js";
 import type { QuotaCapableProvider, QuotaProviderReport } from "./types.js";
 
@@ -53,9 +53,6 @@ const CACHE_TTL_MS = 60_000;
 // uncached so a fresh login (or a repaired credential) shows the moment it lands.
 const DEGRADED_CACHE_TTL_MS = 15_000;
 
-const CODEX_AUTH_PATH = `${process.env.HOME ?? ""}/.codex/auth.json`;
-const CODEX_OPENAI_AUTH_PATH = `${process.env.HOME ?? ""}/Library/Application Support/com.openai.codex/auth.json`;
-
 type CacheEntry = { at: number; report: QuotaProviderReport; ttlMs: number };
 const cache = new Map<QuotaCapableProvider, CacheEntry>();
 
@@ -64,6 +61,11 @@ const cache = new Map<QuotaCapableProvider, CacheEntry>();
  *  because the startup warm and the pane's own open can ask for the same
  *  provider within the same tick. */
 const inFlight = new Map<QuotaCapableProvider, Promise<QuotaProviderReport>>();
+const quotaGeneration = new Map<QuotaCapableProvider, number>();
+
+function currentQuotaGeneration(provider: QuotaCapableProvider): number {
+  return quotaGeneration.get(provider) ?? 0;
+}
 
 const resilience = createRateLimitResilience();
 
@@ -81,12 +83,28 @@ export function quotaCapableProviders(): QuotaCapableProvider[] {
   return ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 }
 
-/** Drop the in-memory quota cache, any in-flight read, and all remembered
- *  rate-limit state. Tests use this so one case cannot leak into the next. */
-export function resetQuotaStateForTests(): void {
+/** Drop cached quota state for one provider (e.g. when its homeDir, env, or
+ *  sign-in changes) or for all providers when omitted. */
+export function invalidateProviderQuotaCache(provider?: QuotaCapableProvider): void {
+  if (provider) {
+    quotaGeneration.set(provider, currentQuotaGeneration(provider) + 1);
+    cache.delete(provider);
+    inFlight.delete(provider);
+    resilience.forget(provider);
+    return;
+  }
+  for (const p of quotaCapableProviders()) {
+    quotaGeneration.set(p, currentQuotaGeneration(p) + 1);
+  }
   cache.clear();
   inFlight.clear();
   resilience.reset();
+}
+
+/** Drop the in-memory quota cache, any in-flight read, and all remembered
+ *  rate-limit state. Tests use this so one case cannot leak into the next. */
+export function resetQuotaStateForTests(): void {
+  invalidateProviderQuotaCache();
 }
 
 /** The provider's own reset time from a report, epoch millis, only when at
@@ -144,15 +162,17 @@ const QUOTA_CAPABLE_PROVIDERS = new Set<string>(quotaCapableProviders());
  *  presence probes (Claude Code and the Cursor CLI both keep their login
  *  there these days) run under a short timeout so a first-read prompt can
  *  never hold the page open. */
-export async function detectProviderCredential(provider: QuotaCapableProvider): Promise<boolean> {
+export async function detectProviderCredential(
+  provider: QuotaCapableProvider,
+  env?: NodeJS.ProcessEnv,
+): Promise<boolean> {
   try {
-    if (provider === "opencode") return await detectOpenCodeDatabase();
+    if (provider === "opencode") return await detectOpenCodeDatabase(env);
     if (provider === "cursor") return await detectCursorCredential();
     if (provider === "claudeAgent") return await detectClaudeCredential();
     if (provider === "antigravity") return await detectAntigravityCredential();
     if (provider === "droid") return await detectDroidCredential();
-    if ((await readSecureFile(CODEX_AUTH_PATH, 64 * 1024)) !== null) return true;
-    return (await readSecureFile(CODEX_OPENAI_AUTH_PATH, 64 * 1024).catch(() => null)) !== null;
+    return await detectCodexCredential();
   } catch (error) {
     // A permissions/symlink refusal reads the same as "nothing to connect to"
     // here — fetchProviderQuota is what surfaces the real accessDenied.
@@ -169,6 +189,9 @@ export async function detectProviderCredential(provider: QuotaCapableProvider): 
 export async function fetchProviderQuota(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean } = {},
+  /** The provider's resolved child environment. Internal seam: renderer IPC
+   *  never supplies this, so a window cannot redirect a usage read. */
+  env?: NodeJS.ProcessEnv,
 ): Promise<QuotaProviderReport> {
   const cached = cache.get(provider);
   if (!opts.force && cached && Date.now() - cached.at < cached.ttlMs) return cached.report;
@@ -183,7 +206,10 @@ export async function fetchProviderQuota(
   const pending = inFlight.get(provider);
   if (pending) return pending;
 
-  const run = runProviderQuota(provider, opts).finally(() => inFlight.delete(provider));
+  const generation = currentQuotaGeneration(provider);
+  const run = runProviderQuota(provider, opts, env, generation).finally(() => {
+    if (inFlight.get(provider) === run) inFlight.delete(provider);
+  });
   inFlight.set(provider, run);
   return run;
 }
@@ -191,9 +217,13 @@ export async function fetchProviderQuota(
 async function runProviderQuota(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean },
+  env: NodeJS.ProcessEnv | undefined,
+  generation: number,
 ): Promise<QuotaProviderReport> {
+  const isCurrent = () => currentQuotaGeneration(provider) === generation;
   try {
-    const result = await fetchFor(provider, opts);
+    const result = await fetchFor(provider, opts, env);
+    if (!isCurrent()) return result.report;
 
     if (result.retryAfterSeconds !== undefined) {
       // A 429: begin the cooldown and serve the last clean snapshot (flagged
@@ -248,6 +278,13 @@ async function runProviderQuota(
     // is a last-resort guard so a defect there still can't escape
     // fetchProviderQuota's "always resolves to a report" contract.
     console.warn(`Provider quota unavailable: ${sanitizeError(error)}`);
+    if (!isCurrent()) {
+      return emptyReport(
+        provider,
+        "transientFailure",
+        "Something went wrong reading this provider's usage.",
+      );
+    }
     cache.delete(provider);
     const served =
       resilience.serveOnFailure(
@@ -273,6 +310,7 @@ type FetchResult = { report: QuotaProviderReport; retryAfterSeconds?: number };
 function fetchFor(
   provider: QuotaCapableProvider,
   opts: { allowKeychain?: boolean; signal?: AbortSignal },
+  env: NodeJS.ProcessEnv | undefined,
 ): Promise<FetchResult> {
   switch (provider) {
     case "claudeAgent":
@@ -282,7 +320,7 @@ function fetchFor(
     case "cursor":
       return fetchCursorQuota({ allowKeychain: opts.allowKeychain, signal: opts.signal });
     case "opencode":
-      return fetchOpenCodeQuota({ signal: opts.signal });
+      return fetchOpenCodeQuota({ signal: opts.signal, env }); // undefined builds it in opencode.ts
     case "antigravity":
       return fetchAntigravityQuota({ signal: opts.signal });
     case "droid":

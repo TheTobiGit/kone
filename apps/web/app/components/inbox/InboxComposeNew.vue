@@ -33,7 +33,7 @@ import { agentIdentity } from "~/utils/agentIdentity";
 import type { ChatAttachment, SkillReference } from "~/types/desktop";
 import { useWorkspaceChoice } from "~/composables/useWorkspaceChoice";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
+import { mergeComposerAttachments, normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
 
@@ -198,6 +198,7 @@ async function onSend(
     // leave you looking at the message you wrote, not at a thread that exists
     // with nothing in it.
     const uploaded = await upload(draft.files);
+    const attachments = mergeComposerAttachments(uploaded, draft.references);
     // A session already here means an earlier send failed and this is another
     // try at it. Its settings are the session's own by then — the composer has
     // been writing picks straight into it — so the draft is not put back over
@@ -225,7 +226,7 @@ async function onSend(
     const id = s.threadId.value;
     if (id) await composer.settleAndPin(draft.text, id);
     // Not awaited: see the handover note above.
-    const sent = s.send({ text: draft.text, attachments: uploaded, skills: draft.skills });
+    const sent = s.send({ text: draft.text, attachments, skills: draft.skills });
     // The send gate can still refuse on a status that went stale under the
     // composer, and a refusal writes no block. Then nothing was started and
     // there is nothing to hand over — stay here, with the session's error on

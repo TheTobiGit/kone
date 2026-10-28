@@ -680,6 +680,7 @@ function dockVars(id: string): Record<string, string> {
                     :now="now"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
+                    :thread-title="c.session.title.value"
                     :load-failed="c.session.transcriptLoadFailed.value"
                     :agent-seed="c.session.threadId.value"
                     :loading="c.session.sessionState.value === 'starting'"
@@ -693,8 +694,8 @@ function dockVars(id: string): Record<string, string> {
                     :hand-ins="c.session.handInRecords.value"
                     :cwd="c.session.worktreePath.value ?? projectPath ?? null"
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
-                    @retry="(text) => onRetryTurn(c, text)"
-                    @resend="(text) => onResendTurn(c, text)"
+                    @retry="(text, attachments) => onRetryTurn(c, text, attachments)"
+                    @resend="(text, attachments) => onResendTurn(c, text, attachments)"
                     @edit-fork="(blockId, text) => emit('edit-fork', c.id, blockId, text)"
                     @branch-fork="(blockId) => emit('branch-fork', c.id, blockId)"
                     @retry-load="() => onRetryLoad(c)"
@@ -1658,7 +1659,7 @@ function dockVars(id: string): Record<string, string> {
   cursor: pointer;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
-    0 2px 8px color-mix(in srgb, var(--ink) 4%, transparent);
+    0 2px 8px rgb(0 0 0 / 4%);
   transition:
     background-color 0.18s ease,
     box-shadow 0.18s ease,
@@ -1680,7 +1681,7 @@ function dockVars(id: string): Record<string, string> {
   background: color-mix(in srgb, var(--hover) 45%, var(--ground));
   box-shadow:
     0 0 0 1.5px color-mix(in srgb, var(--ink) 22%, transparent),
-    0 4px 16px color-mix(in srgb, var(--ink) 7%, transparent);
+    0 4px 16px rgb(0 0 0 / 7%);
 }
 .rail.is-overview .col.is-focused:hover {
   background: color-mix(in srgb, var(--accent) 3.5%, var(--ground));

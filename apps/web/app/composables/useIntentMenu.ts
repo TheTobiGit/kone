@@ -162,6 +162,10 @@ export interface IntentContext {
   sessions: IntentRecentSession[];
   /** Whether the studio plane holds any rows to go back to. */
   studioHasRows: boolean;
+  /** Whether the inbox portal is live. Parked, every row that would land there
+   *  is left out rather than offered and then refused (see ENABLED_PORTALS in
+   *  usePortals). */
+  inboxEnabled: boolean;
   /** Whether the settings drawer is already revealed — its go-to hides then,
    *  the way no view names itself. */
   settingsOpen: boolean;
@@ -245,6 +249,15 @@ function surfaceGotoItems(ctx: IntentContext): IntentItem[] {
   );
 }
 
+/** The inbox is one destination from three of the views, and a parked inbox is
+ *  offered from none: one row to add, one condition to read. */
+const GOTO_INBOX: IntentItem = {
+  id: "goto-inbox",
+  label: "Go to Inbox",
+  icon: "inbox",
+  action: { kind: "goto", view: "inbox" },
+};
+
 // Each view names where you can go from it — never where you already are — so
 // the top card reads as "from here" rather than a fixed nav dump.
 function gotoItems(ctx: IntentContext): IntentItem[] {
@@ -267,7 +280,7 @@ function gotoItems(ctx: IntentContext): IntentItem[] {
           action: { kind: "open-row-page", path: row.projectPath, name: row.name },
         });
       }
-      items.push({ id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } });
+      if (ctx.inboxEnabled) items.push(GOTO_INBOX);
       break;
     }
     case "inbox": {
@@ -307,7 +320,7 @@ function gotoItems(ctx: IntentContext): IntentItem[] {
         });
       }
       if (ctx.studioHasRows) items.push({ id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } });
-      items.push({ id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } });
+      if (ctx.inboxEnabled) items.push(GOTO_INBOX);
       break;
     }
     default: {
@@ -315,7 +328,7 @@ function gotoItems(ctx: IntentContext): IntentItem[] {
       items = [
         ...surfaceGotoItems(ctx),
         { id: "goto-studio", label: "Go to Studio", icon: "studio", action: { kind: "goto", view: "studio" } },
-        { id: "goto-inbox", label: "Go to Inbox", icon: "inbox", action: { kind: "goto", view: "inbox" } },
+        ...(ctx.inboxEnabled ? [GOTO_INBOX] : []),
         { id: "goto-launcher", label: "All projects", icon: "launcher", action: { kind: "goto", view: "launcher" } },
       ];
       break;

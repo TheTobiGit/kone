@@ -15,6 +15,7 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { turnTraces } from "@kone/agent-core/turnTraces.js";
 import { initHandOffLifecycle } from "@kone/agent-core/handOffLifecycle.js";
 import { JobRunner } from "@kone/agent-core/jobRunner.js";
 import { ScheduleRunner } from "@kone/agent-core/scheduleRunner.js";
@@ -54,6 +55,7 @@ import {
   currentView,
 } from "../modules/appState/index.js";
 import { getTerminalManager } from "../modules/terminal/index.js";
+import { registerProviderSignInIpc } from "./providerSignInIpc.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { listInvokableSkillsChecked } from "@kone/agent-core/skillInvocation.js";
@@ -101,6 +103,8 @@ import type {
   CreateSideChatInput,
   ForkThreadAtBlockInput,
   InteractionMode,
+  GlobalProviderSettingsPatch,
+  LegacyRendererProviderSettings,
   ProviderConfig,
   ProviderKind,
   RewindConversationOnlyInput,
@@ -109,6 +113,7 @@ import type {
   SessionStartInput,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
 } from "@kone/agent-core/types.js";
 import type { TurnSelection } from "@kone/agent-core/selection.js";
 
@@ -136,7 +141,7 @@ let service: AgentService | null = null;
 /** The gateway instance (lazily created with the service). */
 let gateway: GatewayHandle | null = null;
 
-/** The bench runner, built alongside the dispatcher it drives. Null until
+/** The queue runner, built alongside the dispatcher it drives. Null until
  *  registerAgentIpc runs, so the event tap below tolerates its absence rather
  *  than assuming a boot order. */
 let jobRunner: JobRunner | null = null;
@@ -170,17 +175,6 @@ const STREAM_ONLY_EVENT_TYPES: ReadonlySet<RuntimeEvent["type"]> = new Set<Runti
   "thread.inbox-changed",
   "thread.tasks-updated",
 ]);
-
-/** The bench runner, once registerAgentIpc has built it. Resolved lazily by
- *  the bench IPC handlers rather than handed to them at registration: the two
- *  modules are registered independently and neither should have to know which
- *  went first. Null means the agent layer is not up, and a queued job simply
- *  waits for the next drain. */
-export function getJobRunner(): JobRunner | null {
-  return jobRunner;
-}
-
-export function getScheduleRunner(): ScheduleRunner | null { return scheduleRunner; }
 
 /** Rename a thread's generated worktree branch after its title. Refuses when
  *  the branch has an upstream or already heads a pull request: moving either
@@ -326,7 +320,7 @@ export function registerAgentIpc(): void {
   dispatcher.recoverRestartBackgroundNotesAtBoot();
   void dispatcher.resumeQuitInterruptedChatsAtBoot();
 
-  // The bench runner: queued jobs become threads through the same dispatcher
+  // The queue runner: queued jobs become threads through the same dispatcher
   // every other thread goes through, so a job behaves exactly like a thread
   // someone started by hand — it is only the deciding that is automatic.
   jobRunner = new JobRunner({
@@ -733,6 +727,25 @@ export function registerAgentIpc(): void {
     }
   });
 
+  // Account switches may change models while health stays ready -> ready.
+  svc.onModelsChanged((provider, models) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("agent:models-changed", provider, models);
+    }
+  });
+
+  // Provider settings live in the main process's file, so every window gets
+  // each write pushed rather than polling or keeping its own copy. Same
+  // machine-wide broadcast as above: no subscriber set to respect, and the
+  // renderer drops a push whose revision it already holds.
+  svc.onProviderSettingsChanged((snapshot) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("agent:settings-changed", snapshot);
+    }
+  });
+
   // Discovery + models (read-only probes of the user's installed CLIs).
   // `agent:surface` is the instant one — last known statuses + catalogs off the
   // disk cache, no CLI spawned — so the renderer can present a real provider
@@ -752,6 +765,38 @@ export function registerAgentIpc(): void {
     "agent:set-settings",
     (_event, provider: ProviderKind, config: ProviderConfig) =>
       svc.setProviderSettings(provider, config),
+  );
+  ipcMain.handle(
+    "agent:patch-settings",
+    (_event, provider: ProviderKind, patch: ProviderConfig) =>
+      svc.patchProviderSettings(provider, patch),
+  );
+  ipcMain.handle(
+    "agent:patch-global-settings",
+    (_event, patch: GlobalProviderSettingsPatch) =>
+      svc.patchGlobalProviderSettings(patch),
+  );
+  ipcMain.handle(
+    "agent:check-provider-binary",
+    (_event, provider: ProviderKind, binaryPath?: string) =>
+      svc.checkProviderBinary(provider, binaryPath),
+  );
+  ipcMain.handle(
+    "agent:refresh-models",
+    (_event, provider: ProviderKind) => svc.refreshProviderModels(provider),
+  );
+  ipcMain.handle(
+    "agent:check-provider",
+    (_event, provider: ProviderKind) => svc.checkProvider(provider),
+  );
+
+  // The renderer mirror of the settings file: a snapshot plus a subscription
+  // (agent:settings-changed) rather than a copy it has to keep in sync. The
+  // legacy import lands the old localStorage values once, on first open.
+  ipcMain.handle("agent:settings-snapshot", () => svc.getProviderSettingsSnapshot());
+  ipcMain.handle(
+    "agent:import-legacy-settings",
+    (_event, legacy: LegacyRendererProviderSettings) => svc.importLegacyProviderSettings(legacy),
   );
 
   // The handoff history cap is part of provider settings, but its own getter
@@ -777,6 +822,10 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:update-provider", (_event, provider: ProviderKind) =>
     svc.updateProvider(provider),
   );
+
+  // In-app provider sign-in: its own module, since the handler owns a live-run
+  // registry (timeout, PTY, renderer watchers) rather than just an IPC binding.
+  registerProviderSignInIpc(svc);
 
   // Subscribe/unsubscribe the calling renderer to the event stream. Subscribe
   // always runs the reload-recovery replay — see eventSubscriptions.ts for why
@@ -805,6 +854,12 @@ export function registerAgentIpc(): void {
   // uploads on pick/drop/paste, then sends the turn with the returned ids.
   ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
     attachments.save(input),
+  );
+  // Forget an upload the user never sent — a removed chip, a cancelled answer
+  // dialog. Only the named thread's attachment is touched; false means there
+  // was nothing of its to remove.
+  ipcMain.handle("agent:discard-attachment", (_event, threadId: string, attachmentId: string) =>
+    getAttachmentStore().discard(attachmentId, threadId),
   );
   ipcMain.handle("agent:get-attachment-path", (_event, attachmentId: string) => {
     return attachments.resolveAbsPath(attachmentId);
@@ -916,8 +971,13 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle(
     "agent:respond-user-input",
-    (_event, threadId: string, requestId: string, answers: UserInputAnswers) =>
-      svc.respondToUserInput(threadId, requestId, answers),
+    (
+      _event,
+      threadId: string,
+      requestId: string,
+      answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
+    ) => svc.respondToUserInput(threadId, requestId, answers, attachments),
   );
   // Nested subagent controls — scoped to one run inside a turn, so stopping or
   // steering a child never touches the parent conversation.
@@ -1038,6 +1098,12 @@ export function registerAgentIpc(): void {
   // so this is always the full list, never a page.
   ipcMain.handle("agent:history-compactions", (_event, threadId: string) =>
     store.listCompactions(threadId),
+  );
+  // Every turn's trace on a thread, oldest first — tokens, cost and who
+  // answered, for the trace a request opens. One row per turn that reported
+  // usage, so always the whole list.
+  ipcMain.handle("agent:history-turn-traces", (_event, threadId: string) =>
+    turnTraces(store, threadId),
   );
   // Continuation links leaving a source thread, oldest first — the timeline's
   // "Handed to" markers. Few rows ever (one per continuation), so this is

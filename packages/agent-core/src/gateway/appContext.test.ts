@@ -112,7 +112,7 @@ describe("kone host context (app-context injection)", () => {
   });
 
   test("every prompt channel names the same blocking question tool", () => {
-    const tools = createRegistry(createQuestionTools(async () => ({}))).listToolPrompts();
+    const tools = createRegistry(createQuestionTools(async () => ({ answers: {} }))).listToolPrompts();
     const guidance = tools.flatMap((tool) => tool.guidelines);
     expect(guidance.length).toBeGreaterThan(0);
     const channels = [

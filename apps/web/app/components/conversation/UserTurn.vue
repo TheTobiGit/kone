@@ -9,7 +9,7 @@ import {
   Folder01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import type { ThreadBlock } from "~/composables/useAgent";
+import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import type { ChatAttachment } from "~/types/desktop";
 import type {
   AttachmentPartition,
@@ -20,6 +20,7 @@ import SkillChip from "~/components/composer/SkillChip.vue";
 import YouHead from "~/components/conversation/YouHead.vue";
 import ReceiptTicks from "~/components/conversation/ReceiptTicks.vue";
 import TurnActions from "~/components/conversation/TurnActions.vue";
+import RequestTrace from "~/components/conversation/RequestTrace.vue";
 import { formatFileSize } from "~/utils/formatFile";
 
 // One user turn, extracted from ConversationThread: the request bubble (or its
@@ -59,13 +60,19 @@ const props = defineProps<{
   copiedPathId: string | null;
   /** The bubble's corner clock. */
   time: string;
+  /** The reply this request started, for its trace. */
+  reply?: AssistantBlock;
+  /** The thread's durable id and name, for its trace. */
+  traceThreadId?: string | null;
+  threadTitle?: string;
 }>();
 
 const emit = defineEmits<{
   /** The edit was saved — the thread routes it (resend when last, fork when
    *  earlier). The draft stays open here until the thread's busy gate passes,
-   *  mirroring the old save: an empty or busy save keeps editing. */
-  save: [text: string];
+   *  mirroring the old save: an empty or busy save keeps editing. The turn's
+   *  attachments ride along so a quote or file is not lost. */
+  save: [text: string, attachments?: ChatAttachment[]];
   copy: [];
   scratchpad: [];
   preview: [att: ChatAttachment, turnAttachments: ChatAttachment[] | undefined];
@@ -110,7 +117,7 @@ function saveEdit(): void {
   editing.value = false;
   draft.value = "";
   cue("press");
-  emit("save", text);
+  emit("save", text, props.block.attachments);
 }
 
 // ── long requests fold ──────────────────────────────────────────────────────
@@ -126,10 +133,22 @@ function toggleExpand(): void {
   cue(expanded.value ? "expand" : "collapse");
 }
 
+// ── trace ───────────────────────────────────────────────────────────────────
+// The request's trace opens over the thread, grown from the bubble.
+const bubbleEl = ref<HTMLElement | null>(null);
+const traceOrigin = ref<DOMRect | null>(null);
+const tracing = ref(false);
+function openTrace(): void {
+  traceOrigin.value = bubbleEl.value?.getBoundingClientRect() ?? null;
+  tracing.value = true;
+  cue("press");
+}
+
 // While editing the footer is the edit's controls; otherwise it's the actions
 // row — but only when this style gives the footer the row (the head-seated
-// styles dock into the head or the command line instead).
-const showFoot = computed(() => props.block.text && (editing.value || props.acts === "foot"));
+// styles dock into the head or the command line instead). A request of only
+// attachments or skills still has a trace to open, so it keeps the row.
+const showFoot = computed(() => editing.value || props.acts === "foot");
 </script>
 
 <template>
@@ -141,7 +160,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     <!-- Who asked — the styles that sit the request among the replies
          give it the same face-and-name head a reply has. -->
     <YouHead v-if="showHead" :stamp="headStamp">
-      <template v-if="acts === 'head' && !editing && block.text" #actions>
+      <template v-if="acts === 'head' && !editing" #actions>
         <TurnActions
           kind="you"
           :copied="copied"
@@ -149,7 +168,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
           :can-act="!!block.text"
           @edit="startEdit"
           @copy="emit('copy')"
+          allow-trace
           @scratchpad="emit('scratchpad')"
+          @trace="openTrace"
         />
       </template>
     </YouHead>
@@ -181,6 +202,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     </div>
     <div
       v-else-if="block.text"
+      ref="bubbleEl"
       class="body body--you selectable"
       :class="{ 'body--you-expanded': expanded }"
     >
@@ -200,7 +222,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         :can-act="!!block.text"
         @edit="startEdit"
         @copy="emit('copy')"
+        allow-trace
         @scratchpad="emit('scratchpad')"
+        @trace="openTrace"
       />
       <button
         v-if="isLong"
@@ -227,8 +251,22 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         :path="skill.path"
       />
     </div>
+    <!-- Text the user attached as a reference: a quote they can open to the
+         exact selected bytes. It carries provenance, never a text guess. -->
+    <div v-if="parts.references.length" class="you-references" aria-label="Referenced text">
+      <details v-for="ref in parts.references" :key="ref.id" class="you-reference">
+        <summary class="you-reference__summary">
+          <span class="you-reference__quote" aria-hidden="true">“</span>
+          <span class="you-reference__name">{{ ref.name }}</span>
+        </summary>
+        <pre class="you-reference__text">{{ ref.reference?.text }}</pre>
+      </details>
+    </div>
     <!-- What was attached to this turn -->
-    <div v-if="block.attachments?.length" class="you-attachments selectable">
+    <div
+      v-if="parts.images.length || parts.videos.length || parts.files.length"
+      class="you-attachments selectable"
+    >
       <!-- Images thumbnail grid -->
       <div
         v-if="parts.images.length"
@@ -304,7 +342,7 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
     </div>
     <!-- The chat's seat: beside the bubble, level with its time. -->
     <TurnActions
-      v-if="acts === 'side' && !editing && block.text"
+      v-if="acts === 'side' && !editing"
       class="side-acts"
       kind="you"
       :copied="copied"
@@ -312,7 +350,9 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
       :can-act="!!block.text"
       @edit="startEdit"
       @copy="emit('copy')"
+      allow-trace
       @scratchpad="emit('scratchpad')"
+      @trace="openTrace"
     />
     <div v-if="showFoot" class="you-foot" :class="{ 'you-foot--editing': editing }">
       <!-- While editing this turn the footer is the edit's controls;
@@ -340,9 +380,20 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
         :can-act="!!block.text"
         @edit="startEdit"
         @copy="emit('copy')"
+        allow-trace
         @scratchpad="emit('scratchpad')"
+        @trace="openTrace"
       />
     </div>
+    <RequestTrace
+      v-if="tracing"
+      :block="block"
+      :reply="reply"
+      :thread-id="traceThreadId ?? null"
+      :thread-title="threadTitle ?? ''"
+      :origin="traceOrigin"
+      @close="tracing = false"
+    />
   </div>
 </template>
 
@@ -428,6 +479,65 @@ const showFoot = computed(() => props.block.text && (editing.value || props.acts
   justify-content: flex-end;
   gap: 6px;
   max-width: 80%;
+}
+/* References sit where attachments do, as quote blocks. Closed they are one
+   quiet line; opened they show the selection byte-for-byte. */
+.you-references {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 80%;
+}
+.you-reference {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--chip);
+}
+.you-reference__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 16px;
+}
+.you-reference__summary::-webkit-details-marker {
+  display: none;
+}
+.you-reference__summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: 7px;
+}
+.you-reference__quote {
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 14px;
+}
+.you-reference__name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.you-reference__text {
+  margin: 0;
+  padding: 8px 10px 10px;
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .you-foot {
   display: flex;

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import GitSpacePullRequestSection from "~/components/git-space/GitSpacePullRequestSection.vue";
+import type { PullRequestSectionState } from "~/composables/usePullRequestSections";
 import type {
   GitHubCheckCounts,
   GitHubPullRequestDetail,
   GitHubReviewer,
+  GitHubPullRequestSection,
 } from "~/types/desktop";
 import { changeBar, checkDuration, prDate } from "~/utils/prFormat";
 import { PR_STAND, prStandOf, type PrStand } from "~/utils/prStand";
@@ -20,7 +23,8 @@ import { PR_STAND, prStandOf, type PrStand } from "~/utils/prStand";
 // close controls under the verdict through the `act` slot.
 
 const props = defineProps<{
-  pr: GitHubPullRequestDetail;
+  pr: GitHubPullRequestDetail | null;
+  sections: Record<GitHubPullRequestSection, PullRequestSectionState>;
   checkCounts: GitHubCheckCounts;
   /** One face per person, as the card reads them. */
   reviewers: (GitHubReviewer & { stale: boolean })[];
@@ -31,7 +35,18 @@ const emit = defineEmits<{
   tab: [tab: "checks" | "files"];
   showFile: [path: string];
   openUrl: [url: string];
+  retry: [section: GitHubPullRequestSection];
 }>();
+
+const verdictSections: GitHubPullRequestSection[] = ["summary", "merge", "checks", "conversation"];
+const verdictState = computed(() => ({
+  ready: verdictSections.every((section) => props.sections[section].ready),
+  pending: verdictSections.some((section) => props.sections[section].pending),
+  error: verdictSections.map((section) => props.sections[section].error).find(Boolean) ?? null,
+}));
+function retryVerdict() {
+  for (const section of verdictSections) if (props.sections[section].error) emit("retry", section);
+}
 
 // ── the verdict ──────────────────────────────────────────────────────────────
 
@@ -58,6 +73,7 @@ const TONE = {
 
 function whyOf(stand: PrStand): string | null {
   const p = props.pr;
+  if (!p) return null;
   const c = props.checkCounts;
   switch (stand) {
     case "merged": {
@@ -91,6 +107,7 @@ function whyOf(stand: PrStand): string | null {
 }
 
 const verdict = computed<Verdict>(() => {
+  if (!props.pr) return { word: "", why: null, tone: "flat" };
   const stand = prStandOf({
     ...props.pr,
     reviewers: props.reviewers,
@@ -113,7 +130,7 @@ const checkBrief = computed(() => {
 });
 /** Anything not green, a few at most. */
 const attention = computed(() => {
-  const runs = props.pr.checkRuns;
+  const runs = props.pr?.checkRuns ?? [];
   const failing = runs.filter((c) => c.state === "failing");
   const pending = runs.filter((c) => c.state === "pending");
   return [...failing, ...pending].slice(0, 4);
@@ -121,10 +138,10 @@ const attention = computed(() => {
 
 // ── files ────────────────────────────────────────────────────────────────────
 
-const filePeak = computed(() => Math.max(1, ...props.pr.files.map((f) => f.additions + f.deletions)));
+const filePeak = computed(() => Math.max(1, ...(props.pr?.files ?? []).map((f) => f.additions + f.deletions)));
 /** The biggest few files. */
 const biggest = computed(() =>
-  [...props.pr.files].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions)).slice(0, 5),
+  [...(props.pr?.files ?? [])].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions)).slice(0, 5),
 );
 function fileBar(f: { additions: number; deletions: number }, max: number) {
   return changeBar(f, filePeak.value, max);
@@ -142,6 +159,7 @@ function plural(n: number, word: string): string {
 <template>
   <aside class="prv__side">
     <div class="prv__block prv__verdictblock" style="--i: 0">
+      <GitSpacePullRequestSection label="Merge status" variant="merge" v-bind="verdictState" @retry="retryVerdict">
       <p class="prv__big" :class="`prv__big--${verdict.tone}`">
         <i class="prv__big-dot" />
         {{ verdict.word }}
@@ -149,17 +167,20 @@ function plural(n: number, word: string): string {
       <p v-if="verdict.why" class="prv__sub">{{ verdict.why }}</p>
       <!-- What can be done about it: the card fills this in. -->
       <slot name="act" />
+      </GitSpacePullRequestSection>
     </div>
 
-    <div v-if="pr.checkRuns.length" class="prv__block" style="--i: 1">
+    <div class="prv__block" style="--i: 1">
       <div class="prv__label">
         <span class="prv__label-name">Checks</span>
         <button type="button" class="prv__label-go" @click="emit('tab', 'checks')">All</button>
       </div>
-      <div class="prv__ringrow">
+      <GitSpacePullRequestSection label="Checks" variant="checks" v-bind="sections.checks" @retry="emit('retry', 'checks')">
+      <div v-if="pr?.checkRuns.length" class="prv__ringrow">
         <GitSpaceChecksRing :counts="checkCounts" :size="52" :stroke="5" />
         <p class="prv__ringbrief">{{ checkBrief }}</p>
       </div>
+      <p v-else class="prv__sub">No checks ran on this pull request.</p>
       <div v-if="attention.length" class="prv__attn">
         <button
           v-for="c in attention"
@@ -175,14 +196,17 @@ function plural(n: number, word: string): string {
           <span class="prv__dim">{{ checkDuration(c) }}</span>
         </button>
       </div>
+      </GitSpacePullRequestSection>
     </div>
 
     <div class="prv__block" style="--i: 2">
       <div class="prv__label">
         <span class="prv__label-name">Reviews</span>
       </div>
+      <GitSpacePullRequestSection label="Reviews" variant="reviews" v-bind="sections.conversation" @retry="emit('retry', 'conversation')">
       <GitSpaceReviewers v-if="reviewers.length" :reviewers="reviewers" :size="30" />
       <p class="prv__sub">{{ reviewSentence }}</p>
+      </GitSpacePullRequestSection>
     </div>
 
     <div class="prv__block" style="--i: 3">
@@ -190,10 +214,12 @@ function plural(n: number, word: string): string {
         <span class="prv__label-name">Changes</span>
         <button type="button" class="prv__label-go" @click="emit('tab', 'files')">Files</button>
       </div>
+      <GitSpacePullRequestSection label="Changes" variant="changes" v-bind="sections.files" @retry="emit('retry', 'files')">
+      <template v-if="pr">
       <p class="prv__changes">
         <span class="prv__add">+{{ pr.additions }}</span>
         <span class="prv__del">−{{ pr.deletions }}</span>
-        <span class="prv__dim">{{ plural(pr.changedFiles, "file") }} · {{ plural(pr.commits.length, "commit") }}</span>
+        <span class="prv__dim">{{ plural(pr.changedFiles, "file") }}<template v-if="sections.conversation.ready"> · {{ plural(pr.commits.length, "commit") }}</template></span>
       </p>
       <div class="prv__sizes">
         <button
@@ -211,9 +237,11 @@ function plural(n: number, word: string): string {
           </span>
         </button>
       </div>
+      </template>
+      </GitSpacePullRequestSection>
     </div>
 
-    <div v-if="pr.labels.length || pr.milestone || pr.assignees.length" class="prv__block" style="--i: 4">
+    <div v-if="sections.summary.ready && pr && (pr.labels.length || pr.milestone || pr.assignees.length)" class="prv__block" style="--i: 4">
       <div v-if="pr.labels.length" class="prv__tags">
         <span v-for="l in pr.labels" :key="l.name" class="prv__tag" :title="l.description ?? l.name">
           <i class="prv__dot" :style="{ backgroundColor: `#${l.color}` }" />{{ l.name }}

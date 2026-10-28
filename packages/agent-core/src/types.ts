@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { TextReference } from "@kone/protocol/text-reference";
 import type { WorktreeSetupSnapshot } from "./worktreeSetup.js";
 
 // ── Agent provider data model ───────────────────────────────────────────────
@@ -90,6 +91,7 @@ export type ProviderStatus = {
 /** A model the provider can run, from its own `list models` surface. */
 export type ModelDescriptor = {
   /** Stable id passed back on a turn (what the CLI's --model flag expects). */
+  custom?: boolean;
   id: string;
   label: string;
   /** Provider-reported native context capacity, when available. */
@@ -287,26 +289,43 @@ export type Session = {
 // IPC (agent:upload-attachment), written to a per-user attachments dir, and
 // read back off disk by each adapter at dispatch, where they're re-encoded
 // into whatever that CLI wants (Codex data-URL image item / Claude base64
-// image block / an on-disk-path text block for non-image files). Mirror any
-// change in apps/web/app/types/desktop.d.ts.
+// image block / an on-disk-path text block for non-image files). A
+// `reference` attachment is the exception: it carries a text selection and its
+// provenance in `reference`, needs no upload, and is inlined by the prompt
+// builders. Mirror any change in apps/web/app/types/desktop.d.ts.
 
 /** How an attachment is fed to the agent. `image` → a native vision block for
  *  providers that support it; `file` (PDFs, docs, code, anything non-image, and
  *  images a provider can't render) → an on-disk path the agent reads with its
- *  own file tools. */
-export type AttachmentKind = "image" | "file";
+ *  own file tools; `reference` → text selected from the conversation, inlined
+ *  verbatim by the prompt builders (no file on disk). */
+export type AttachmentKind = "image" | "file" | "reference";
 
 /** The bytes-free attachment metadata that rides a turn and is persisted with
- *  the user block. `id` doubles as the on-disk addressing key. */
+ *  the user block. `id` doubles as the on-disk addressing key for images and
+ *  files; a reference has no bytes and its text lives in `reference`. */
 export type ChatAttachment = {
   type: AttachmentKind;
   /** kone-minted id (also the stored file's name stem). */
   id: string;
-  /** Original file name — shown in the chip and named in the path block. */
+  /** Original file name — shown in the chip and named in the path block — or
+   *  a short title for a reference. */
   name: string;
   mimeType: string;
   sizeBytes: number;
+  /** Present only on `type: "reference"`: the exact selected text and its
+   *  provenance. */
+  reference?: TextReference;
 };
+
+/** Whether an attachment is a conversation reference rather than a file on
+ *  disk. References skip upload, path resolution and the file registry.
+ *
+ *  One implementation for the whole app: the protocol's guard validates the
+ *  exact text payload too (see packages/protocol/src/textReference.ts), so a
+ *  reference-shaped record with no payload is never treated as a quote. */
+export { isReferenceAttachment } from "@kone/protocol/text-reference";
+
 
 /** Upload payload: the renderer ships the raw bytes (base64, no data: prefix)
  *  exactly once; the main process persists them and returns the ChatAttachment
@@ -758,12 +777,39 @@ export type UserInputQuestion = {
   options: UserInputQuestionOption[];
   /** Whether more than one option may be picked. Defaults to single-select. */
   multiSelect?: boolean;
+  /** The provider takes back only one of the offered options (Antigravity's
+   *  native questions): no typed answer, and no files on the answer. */
+  fixedChoice?: boolean;
+  /** Images the agent attached to the question (kone's `ask_question` only):
+   *  already in the thread's attachment store, drawn from `attachment://`. */
+  images?: ChatAttachment[];
+  /** A live visual the agent attached to the question (kone's `ask_question`
+   *  only), stored and drawn exactly like one `visual_show` puts in a reply. */
+  visual?: QuestionVisual;
+};
+
+/** A dynamic visual inside a question: the same record `visual_show` answers
+ *  with (@kone/protocol/visual-render's VisualRef), restated here so the
+ *  renderer's mirror needs no protocol import. */
+export type QuestionVisual = {
+  attachmentId: string;
+  title: string;
+  height: number;
+  heights?: Array<[number, number]>;
 };
 
 /** The user's answers, keyed by question id → a single value (free text, or a
  *  single choice's label) or an array of labels (multi-select). `null` means the
  *  question was skipped — e.g. the whole request was cancelled/interrupted. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
+
+/** Files the user attached to their answers, keyed by question id: uploaded
+ *  through the composer's attachment path (agent:upload-attachment) before
+ *  the answer is sent, so only bytes-free metadata rides the answer. */
+export type UserInputAnswerAttachments = Record<string, ChatAttachment[]>;
+
+/** How many files one answer may carry, across all its questions. */
+export const MAX_USER_INPUT_ANSWER_ATTACHMENTS = 8;
 
 // ── persisted conversation history ───────────────────────────────────────────
 // What the ConversationStore reads back off disk. Kept in the renderer's own
@@ -1822,7 +1868,7 @@ export type RuntimeEventSource =
  *  and still recognize one that arrives out of turn. */
 export type ThreadWorkspaceStep = "fetch" | "create" | "link" | "start";
 
-/** Where a job sits on the bench. Declared here rather than beside the job row
+/** Where a job sits on the queue. Declared here rather than beside the job row
  *  because the runtime event carries it and conversationStoreTypes already
  *  imports this module — the other direction would close a cycle. */
 export type JobStatus =
@@ -2104,8 +2150,8 @@ export type RuntimeEvent =
       smoothing?: boolean;
       ligatures?: boolean;
     })
-  // A project's bench changed: a job was filed, claimed, settled, or swept.
-  // Carries only what changed and where, never the row — the bench re-reads
+  // A project's queue changed: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — a listener re-reads
   // the project's list, so the store stays the single copy of the queue and a
   // stale payload can never disagree with the order the runner will take.
   //
@@ -2277,7 +2323,8 @@ export type RuntimeEvent =
       questions: UserInputQuestion[];
     })
   // The parked question has been answered (or cancelled) — clear the prompt.
-  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers; subagentToolUseId?: string })
+  // `attachments` holds what the user attached to each answer, when anything.
+  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers; attachments?: UserInputAnswerAttachments; subagentToolUseId?: string })
   // The provider is asking for the user's go-ahead before the agent runs
   // something (a shell command, a file change, a permission grant) and the
   // turn is parked until they decide (respondToRequest). `approval` carries
@@ -2475,28 +2522,99 @@ export interface ProviderAdapter {
  *  subscription" holds: kone never stores credentials — only how to reach the
  *  CLI the user already installed + logged into. An empty/absent field means
  *  "use the adapter's built-in default" (e.g. resolve `codex` on PATH). */
+export type ProviderEnvVar = {
+  name: string;
+  /** A literal value for an ordinary variable. Always empty when `secret` is
+   *  true: kone never stores a credential. */
+  value: string;
+  /** Read the same-named variable from the inherited environment instead of
+   *  storing it. `value` is ignored and persisted as empty. */
+  secret?: boolean;
+};
+
 export type ProviderConfig = {
   /** Override the CLI executable — an absolute path or a name on PATH. Empty
    *  falls back to the adapter's default (`codex` / `opencode`). Ignored by
    *  providers with no external binary (Claude). */
   binaryPath?: string;
-  /** Antigravity ACP sign-in method (`oauth-personal` / `oauth-business`).
-   *  Empty means the adapter default (personal Google account). */
-  antigravityAuthMethod?: string;
-  /** Gemini Enterprise license scope for the `oauth-business` method. */
-  antigravityGcpProject?: string;
-  antigravityGcpLocation?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Whether the provider is shown in the model picker when enabled (default:
+   *  true). Separate from `enabled`, so a provider can stay enabled for
+   *  existing threads while hidden from the picker rail. */
+  showInPicker?: boolean;
   /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays into
    *  a session on this provider. The budget is still sized down from the target
    *  model's window, native usage, the new prompt and headroom; this only caps
    *  it. Absent uses the built-in default (see contextHandoff.ts). */
   handoffTokenCap?: number;
+  /** Model family keys hidden from the picker for this provider (opt-out;
+   *  absent/empty means every model is shown). */
+  hiddenModels?: string[];
+  /** User-added custom model slugs for this provider. */
+  customModels?: string[];
+  /** Optional override for the provider CLI's home / config directory. */
+  homeDir?: string;
+  /** Per-provider environment variables passed to spawned CLI processes.
+   *  Ordinary entries carry a stored value; secret entries name a variable
+   *  kone inherits from its own environment and never stores. */
+  env?: ProviderEnvVar[];
+  /** Resume a thread limited on this provider at the provider's reset
+   *  (default: true). Off still marks the thread limited. */
+  resumeAtReset?: boolean;
+  /** Snooze a thread limited on this provider until the reset (default:
+   *  false). Needs a known reset; none means no snooze. */
+  snoozeWhenLimited?: boolean;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
+/** Top-level provider settings fields shared across providers. */
+export type GlobalProviderSettingsPatch = {
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
+};
+
+/** Outcome of probing a provider's CLI binary path immediately. */
+export type ProviderBinaryCheckResult = {
+  provider: ProviderKind;
+  binary: string | null;
+  ok: boolean;
+  version: string | null;
+  resolvedPath: string | null;
+  error?: string;
+};
+
+/** Outcome of explicitly refreshing a provider's model catalog. */
+export type ProviderModelsRefreshResult = {
+  provider: ProviderKind;
+  models: ModelDescriptor[];
+  error?: string;
+};
+
+/** The whole provider-settings store as a renderer receives it — the main
+ *  process's file is the only source of truth, and every write is pushed. */
+export type ProviderSettingsSnapshot = {
+  /** Monotonic write counter of the settings file; a renderer ignores a push
+   *  whose revision is not newer than the one it holds. */
+  revision: number;
+  settings: ProviderSettingsMap;
+  /** True until the renderer's legacy localStorage values have been imported
+   *  once. */
+  legacyImportPending: boolean;
+  /** User-configured provider order for the deck and model picker. */
+  providerOrder?: ProviderKind[];
+  /** Background health check interval in seconds (0 = disabled; default 300). */
+  healthCheckIntervalSec?: number;
+};
+
+/** The pre-store values a renderer may still hold in localStorage, sent up once
+ *  so they are folded into the file rather than lost. */
+export type LegacyRendererProviderSettings = {
+  enabled?: Partial<Record<ProviderKind, boolean>>;
+  hiddenModels?: Partial<Record<ProviderKind, string[]>>;
+};
 
 // ── Install maintenance (see providerMaintenance.ts) ─────────────────────────
 

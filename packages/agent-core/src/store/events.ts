@@ -151,6 +151,11 @@ export class EventIngestRepo {
    *  so the stored one is stale) — and on a compaction boundary that arrives
    *  without one, for the same reason. */
   private readonly knownResumeAnchors = new Map<string, string | null>();
+  /** The model a provider swapped a thread's requests to (`model.rerouted`),
+   *  keyed by thread, for as long as the session that rerouted lives. Usage
+   *  rows stamp it in place of the thread's model while the thread still
+   *  names the model that was swapped away. */
+  private readonly reroutes = new Map<string, { from: string; to: string }>();
 
   private captureResumeSessionAtFromEvent(db: DatabaseSync, event: RuntimeEvent): void {
     const anchor = event.refs?.resumeSessionAt ?? null;
@@ -430,30 +435,46 @@ export class EventIngestRepo {
               .get(event.threadId) as { turn_id: string | null } | undefined;
             if (turnRow?.turn_id) {
               const { input, output } = event.usage;
-              // The cache/reasoning split rides on `event.usage` as extra
-              // properties beyond TokenUsage's declared shape (see
-              // TokenUsageSplits in usage/report.ts for why it isn't a
-              // first-class field on that type yet) — every adapter now
-              // attaches it, defaulting to 0 itself where it has no such
-              // count, but this read defaults again so a payload from an
-              // adapter this store doesn't recognise (or a test) still
-              // records real zeros instead of throwing.
-              // SAFETY: the split counts ride beyond TokenUsage's declared
-              // fields; every read below defaults them.
-              const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
-              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, {
-                input,
-                output,
-                total,
-                cacheReadTokens: splits.cacheReadTokens ?? 0,
-                cacheCreationTokens: splits.cacheCreationTokens ?? 0,
-                reasoningTokens: splits.reasoningTokens ?? 0,
-              });
+              // A context-only snapshot — the live mid-turn fill — refreshes
+              // the meter columns above but carries no spend. Folding it into
+              // the audit row would upsert it with nulls, wiping the numbers
+              // a real usage event already recorded, so only a payload that
+              // reports at least one billed count counts here.
+              const hasSpend =
+                (input !== undefined && input !== null && Number.isFinite(input)) ||
+                (output !== undefined && output !== null && Number.isFinite(output)) ||
+                (total !== undefined && total !== null && Number.isFinite(total));
+              if (hasSpend) {
+                // The cache/reasoning split rides on `event.usage` as extra
+                // properties beyond TokenUsage's declared shape (see
+                // TokenUsageSplits in usage/report.ts for why it isn't a
+                // first-class field on that type yet) — every adapter now
+                // attaches it, defaulting to 0 itself where it has no such
+                // count, but this read defaults again so a payload from an
+                // adapter this store doesn't recognise (or a test) still
+                // records real zeros instead of throwing.
+                // SAFETY: the split counts ride beyond TokenUsage's declared
+                // fields; every read below defaults them.
+                const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
+                this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, event.provider, {
+                  input,
+                  output,
+                  total,
+                  cacheReadTokens: splits.cacheReadTokens ?? 0,
+                  cacheCreationTokens: splits.cacheCreationTokens ?? 0,
+                  reasoningTokens: splits.reasoningTokens ?? 0,
+                }, event.refs?.conversationId || null);
+              }
             }
           });
           break;
         }
+        case "model.rerouted": {
+          this.reroutes.set(event.threadId, { from: event.fromModel, to: event.toModel });
+          break;
+        }
         case "session.exited": {
+          this.reroutes.delete(event.threadId);
           // Seal any turn left running when the process died — mirrors the
           // renderer marking in-flight assistant blocks as failed.
           // SAFETY: the projection names only the live items' turn ids, read
@@ -838,12 +859,21 @@ export class EventIngestRepo {
    *  hasn't reported one yet and a provider that structurally never will
    *  should look identical in this table (both "no cache tokens for this
    *  turn"), so SUM() over the column is always correct without a COALESCE
-   *  at every read site. */
+   *  at every read site.
+   *
+   *  `usageSessionId` is the provider-native session the counter belongs to
+   *  (the same id the envelope carries as `refs.conversationId`). Running-total
+   *  providers keep one cumulative counter per session, so the trace reads two
+   *  rows as comparable only when both name the same session — never by
+   *  guessing from provider, model or timestamp. It stays NULL when the event
+   *  names no session, which is the honest "boundary unknown" state for rows
+   *  written before this column existed. */
   private recordTurnUsage(
     db: DatabaseSync,
     threadId: string,
     turnId: string,
     at: number,
+    provider: string,
     usage: {
       input?: number;
       output?: number;
@@ -852,12 +882,15 @@ export class EventIngestRepo {
       cacheCreationTokens?: number;
       reasoningTokens?: number;
     },
+    usageSessionId: string | null,
   ): void {
     db.prepare(
       `INSERT INTO turn_usage
          (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
-          cache_read_tokens, cache_creation_tokens, reasoning_tokens, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, provider, model,
+          usage_session_id, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+               (SELECT CASE WHEN model = ? THEN ? ELSE model END FROM threads WHERE thread_id = ?), ?, ?)
        ON CONFLICT(thread_id, turn_id) DO UPDATE SET
          input_tokens          = excluded.input_tokens,
          output_tokens         = excluded.output_tokens,
@@ -865,6 +898,9 @@ export class EventIngestRepo {
          cache_read_tokens     = excluded.cache_read_tokens,
          cache_creation_tokens = excluded.cache_creation_tokens,
          reasoning_tokens      = excluded.reasoning_tokens,
+         provider              = excluded.provider,
+         model                 = excluded.model,
+         usage_session_id      = excluded.usage_session_id,
          at                    = excluded.at`,
     ).run(
       threadId,
@@ -875,6 +911,11 @@ export class EventIngestRepo {
       Math.round(usage.cacheReadTokens ?? 0),
       Math.round(usage.cacheCreationTokens ?? 0),
       Math.round(usage.reasoningTokens ?? 0),
+      provider,
+      this.reroutes.get(threadId)?.from ?? null,
+      this.reroutes.get(threadId)?.to ?? null,
+      threadId,
+      usageSessionId,
       at,
     );
   }

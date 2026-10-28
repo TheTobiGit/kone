@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { buildProviderChildEnv } from "../../providerChildEnv.js";
 import { DatabaseSync } from "../../sqlite.js";
 import { z } from "zod";
 
@@ -160,12 +161,16 @@ async function readLegacySessionDirectories(dir: string): Promise<Map<string, st
 export async function scanOpenCodeUsage(options: {
   sinceMs: number;
   untilMs: number;
+  /** The OpenCode provider's resolved env. Omitted, it is built from the
+   *  provider settings, so the scan reads the same profile its CLI does. */
+  env?: NodeJS.ProcessEnv;
 }): Promise<{ records: UsageRecord[]; sources: OpenCodeScanStats[] }> {
   const records: UsageRecord[] = [];
   const seenMessageIds = new Set<string>();
   const sources: OpenCodeScanStats[] = [];
+  const env = options.env ?? buildProviderChildEnv("opencode");
 
-  for (const dir of resolveOpenCodeDataDirs()) {
+  for (const dir of resolveOpenCodeDataDirs(env)) {
     let exists = false;
     try {
       await fs.access(dir);

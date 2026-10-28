@@ -334,7 +334,13 @@ function insertForkEditedBlock(
  *  keeps its suffix). One `INSERT INTO ... SELECT` per table with the thread
  *  id overridden at copy time: no row interface to drift out of step with
  *  the schema, and new sequence numbers assigned in arrival order so the
- *  (turn_id, seq) read the timeline uses comes back identical. */
+ *  (turn_id, seq) read the timeline uses comes back identical.
+ *
+ *  Usage rows keep the provider session they came from. A row written before
+ *  usage rows carried that id gets a fork-local tally id derived from the
+ *  source's hand-in boundaries instead: the fork does not copy hand-ins, so
+ *  without it the copied history would read as one endless session and
+ *  subtract across counters that were never comparable. */
 function copyForkSatellites(
   db: DatabaseSync,
   sourceThreadId: string,
@@ -364,13 +370,18 @@ function copyForkSatellites(
   db.prepare(
     `INSERT INTO turn_usage (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
                              cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-                             provider, model, at)
-     SELECT ?, turn_id, input_tokens, output_tokens, total_tokens,
-            cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-            provider, model, at
-       FROM turn_usage
-      WHERE thread_id = ? AND turn_id IN (${placeholders})`,
-  ).run(threadId, sourceThreadId, ...turnIds);
+                             provider, model, usage_session_id, at)
+     SELECT ?, u.turn_id, u.input_tokens, u.output_tokens, u.total_tokens,
+            u.cache_read_tokens, u.cache_creation_tokens, u.reasoning_tokens,
+            u.provider, u.model,
+            COALESCE(u.usage_session_id,
+                     'fork-tally:' || (SELECT COUNT(*) FROM thread_hand_ins h
+                                        WHERE h.thread_id = ? AND h.at <= u.at)),
+            u.at
+       FROM turn_usage u
+      WHERE u.thread_id = ? AND u.turn_id IN (${placeholders})
+      ORDER BY u.at, u.rowid`,
+  ).run(threadId, sourceThreadId, sourceThreadId, ...turnIds);
   db.prepare(
     `INSERT INTO item_text_chunks (thread_id, turn_id, item_id, seq, text_json, char_len)
      SELECT ?, turn_id, item_id, seq, text_json, char_len

@@ -29,8 +29,13 @@ test("reap keeps signaling a verified group after its leader exits on SIGTERM", 
       descendantAlive = !state.startsWith("Z");
     } catch { descendantAlive = false; }
     expect(descendantAlive).toBe(false);
-    let groupAlive = true;
-    try { process.kill(-pid, 0); } catch { groupAlive = false; }
+    // A dropped entry means nothing in the group can still run. Zombies may
+    // linger where init is slow to reap them, so count only live members.
+    const listing = await new Promise<string>((resolve, reject) => execFile("ps", ["-axo", "pgid=,stat="], (error, stdout) => error ? reject(error) : resolve(stdout)));
+    const groupAlive = listing.split("\n").some((line) => {
+      const [rowPgid, stat] = line.trim().split(/\s+/);
+      return Number(rowPgid) === pid && !stat?.startsWith("Z");
+    });
     const entries: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (Array.isArray(entries) && entries.length === 0) expect(groupAlive).toBe(false);
   } finally {

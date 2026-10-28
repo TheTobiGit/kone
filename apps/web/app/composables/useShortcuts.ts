@@ -62,26 +62,9 @@ const ACTIONS: ShortcutAction[] = [
     rebindable: true,
     personalize: true,
   },
-  {
-    id: "open-inbox",
-    label: "Open the inbox",
-    hint: "Bring the inbox over whatever you are looking at; press again to send it away.",
-    description: "Every agent that has said something or is waiting on you, in one list.",
-    group: "Inbox",
-    default: "mod+i",
-    rebindable: true,
-    personalize: true,
-  },
-  {
-    id: "open-bench",
-    label: "Open the bench",
-    hint: "Bring the bench over whatever you are looking at; press again to send it away.",
-    description: "Work you have described and queued, run one job at a time.",
-    group: "Bench",
-    default: "mod+j",
-    rebindable: true,
-    personalize: true,
-  },
+  // The inbox's summon (⌘I) is parked with its portal: a registered action with
+  // nothing to open would list a key that does nothing. Restore it beside
+  // ENABLED_PORTALS in usePortals.
   {
     id: "open-assistant",
     label: "Summon the assistant",

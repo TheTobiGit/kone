@@ -20,6 +20,7 @@ import type {
   StoredThreadMeta,
   StoredThreadPage,
   TokenUsage,
+  UserInputAnswerAttachments,
   UserInputAnswers,
 } from "~/types/desktop";
 import { useAgentProviders } from "~/composables/useAgentProviders";
@@ -41,6 +42,7 @@ import {
   type HandInOutcome,
   type TurnDraft,
   normalizeTurnDraft,
+  referencesOfAttachments,
   turnLabel,
 } from "./agentTypes";
 
@@ -758,11 +760,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   function rejectSend(
     blockId: string,
     message: string,
-    sent: Pick<SendRejection, "input" | "skills">,
+    sent: Pick<SendRejection, "input" | "skills"> & { attachments?: ChatAttachment[] },
   ): void {
     blocks.value = blocks.value.filter((b) => b.id !== blockId);
     error.value = message;
-    sendRejection.value = { at: Date.now(), message, ...sent };
+    const rejection: SendRejection = { at: Date.now(), message, input: sent.input, skills: sent.skills };
+    const references = referencesOfAttachments(sent.attachments);
+    if (references.length > 0) rejection.references = references;
+    sendRejection.value = rejection;
   }
 
   /** Send a user turn. Pushes the user block immediately when idle; the reply
@@ -863,7 +868,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // anchor to it (the store journals the block under its own id).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
-      rejectSend(blockId, peelIpcError(e, "Could not send to the agent"), { input: trimmed, skills });
+      rejectSend(blockId, peelIpcError(e, "Could not send to the agent"), { input: trimmed, skills, attachments: files });
     } finally {
       dispatching.value = false;
     }
@@ -963,7 +968,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
       steerWaits.offer(result?.afterStep);
     } catch (e) {
-      rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills });
+      rejectSend(blockId, peelIpcError(e, "Could not steer the agent"), { input: trimmed, skills, attachments: files });
     } finally {
       dispatching.value = false;
     }
@@ -1077,6 +1082,18 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     const data = await fileToBase64(file);
     return api.uploadAttachment({ threadId: threadId.value, name, mimeType, data });
+  }
+  /** Forget an upload the user never sent — a removed chip, a cancelled answer
+   *  dialog. Best effort: a failed discard only leaves an orphan for the
+   *  startup sweep, so it never surfaces to the user. */
+  async function discardAttachment(attachment: ChatAttachment): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.discardAttachment(threadId.value, attachment.id);
+    } catch {
+      // Nothing to tell the user: the file simply stays orphan-eligible.
+    }
   }
   async function getAttachmentPath(attachmentId: string): Promise<string | null> {
     const api = bridge();
@@ -1360,6 +1377,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     sendQueuedEntryNow,
     reorderQueuedTurns,
     uploadAttachment,
+    discardAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
     demo: (opts?: { fast?: boolean }) => mock?.demo(opts),
@@ -1845,6 +1863,11 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
+  const discardAttachment = (attachment: ChatAttachment): Promise<void> => {
+    const s = active.value;
+    if (!s) return Promise.resolve();
+    return s.discardAttachment(attachment);
+  };
   const getAttachmentPath = (attachmentId: string): Promise<string | null> => {
     const s = active.value;
     if (!s) return Promise.resolve(null);
@@ -1863,8 +1886,12 @@ export function useAgent(options: UseAgentOptions) {
   const steerSubagent = async (toolUseId: string, message: string) => {
     await active.value?.steerSubagent(toolUseId, message);
   };
-  const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
-    await active.value?.respondUserInput(requestId, answers);
+  const respondUserInput = async (
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
+  ) => {
+    await active.value?.respondUserInput(requestId, answers, attachments);
   };
   const respondApproval = async (requestId: string, decision: ApprovalDecision) => {
     await active.value?.respondApproval(requestId, decision);
@@ -2244,6 +2271,7 @@ export function useAgent(options: UseAgentOptions) {
     sendQueuedEntryNow,
     reorderQueuedTurns,
     uploadAttachment,
+    discardAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
     demo,

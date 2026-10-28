@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { PORTAL_FADE_MS, usePortals } from "./usePortals";
-import type { PortalClock } from "./usePortals";
+import { isPortalEnabled, PORTAL_FADE_MS, usePortals } from "./usePortals";
+import type { PortalClock, PortalId } from "./usePortals";
 import type { Cue } from "./useSound";
+
+/** Both portals live: the harness exercises the handoff the stack describes,
+ *  whether or not the app currently enables the inbox. */
+const ALL_PORTALS: ReadonlySet<PortalId> = new Set<PortalId>(["studio", "inbox"]);
 
 interface ScheduledTask {
   run: () => void;
@@ -56,6 +60,7 @@ function harness(): PortalHarness {
 
   const portals = usePortals({
     clock: ctl.clock,
+    enabled: ALL_PORTALS,
     cue: (name: Cue): void => {
       cued.push(name);
     },
@@ -224,63 +229,16 @@ describe("usePortals — going down to a fresh portal", () => {
     expect(portals.activePortal.value).toBe("inbox");
   });
 
-  test("leaving a fresh studio goes back to the bench", () => {
-    const { portals, runFrames } = harness();
-    portals.summon("bench");
-    portals.summon("studio");
-    runFrames();
-
-    portals.toggleStudio();
-    runFrames();
-
-    expect(portals.activePortal.value).toBe("bench");
-  });
-
-  test("leaving a fresh inbox goes back to the bench", () => {
-    const { portals, runFrames } = harness();
-    portals.summon("bench");
-    portals.summon("inbox");
-    runFrames();
-
-    portals.toggleInbox();
-    runFrames();
-
-    expect(portals.activePortal.value).toBe("bench");
-  });
-
-  test("a downward chain rewinds in order before reaching home", () => {
-    const { portals, runFrames } = harness();
-    portals.summon("inbox");
-    portals.summon("bench");
-    portals.summon("studio");
-    runFrames();
-    expect(portals.activePortal.value).toBe("studio");
-
-    portals.dismiss();
-    runFrames();
-    expect(portals.activePortal.value).toBe("bench");
-
-    portals.dismiss();
-    runFrames();
-    expect(portals.activePortal.value).toBe("inbox");
-
-    portals.dismiss();
-    runFrames();
-    expect(portals.activePortal.value).toBeNull();
-  });
-
   test("travelling back within the stack drops the covers from the trail", () => {
     const { portals, runFrames } = harness();
     portals.summon("studio");
     portals.summon("inbox");
-    portals.summon("bench");
     portals.summon("studio");
     runFrames();
     expect(portals.activePortal.value).toBe("studio");
 
-    // The bench and the inbox were left by travelling back, not stacked
-    // underneath, so leaving the studio reaches home rather than reopening
-    // one of them.
+    // The inbox was left by travelling back, not stacked underneath, so
+    // leaving the studio reaches home rather than reopening it.
     portals.dismiss();
     runFrames();
     expect(portals.activePortal.value).toBeNull();
@@ -307,15 +265,28 @@ describe("usePortals — pre-emption", () => {
     portals.summon("studio");
     expect(liveFrames({ frames }).length).toBe(1);
 
-    // The bench arrives over both of them; the pending inbox close is dropped
-    // so the inbox stays open underneath the bench.
-    portals.summon("bench");
+    // Re-summoning the inbox abandons its own pending close, so the frame
+    // never takes it away: it stays frontmost with the plane open underneath.
+    portals.summon("inbox");
     expect(liveFrames({ frames }).length).toBe(0);
     runFrames();
     expect(portals.studioOpen.value).toBe(true);
     expect(portals.inboxOpen.value).toBe(true);
-    expect(portals.benchOpen.value).toBe(true);
-    expect(portals.activePortal.value).toBe("bench");
+    expect(portals.activePortal.value).toBe("inbox");
+  });
+
+  test("the inbox key puts the inbox away only when it is frontmost", () => {
+    const { portals } = harness();
+    portals.toggleInbox();
+    expect(portals.inboxOpen.value).toBe(true);
+
+    portals.toggleInbox();
+    expect(portals.inboxOpen.value).toBe(false);
+
+    // With the inbox shut, the key opens it over the studio.
+    portals.summon("studio");
+    portals.toggleInbox();
+    expect(portals.activePortal.value).toBe("inbox");
   });
 
   test("the studio key mid-handoff means go to the studio", () => {
@@ -388,113 +359,73 @@ describe("usePortals — frontmost naming and CSS sync", () => {
   });
 });
 
-describe("usePortals — the bench as a third portal", () => {
-  test("the bench opens over the inbox, which stays open underneath", () => {
-    const { portals, frames } = harness();
-    portals.summon("inbox");
-    portals.summon("bench");
-
-    expect(portals.benchOpen.value).toBe(true);
-    expect(portals.inboxOpen.value).toBe(true);
-    expect(portals.activePortal.value).toBe("bench");
-    expect(liveFrames({ frames }).length).toBe(0);
-  });
-
-  test("leaving the bench goes back to the inbox", () => {
-    const { portals } = harness();
-    portals.summon("inbox");
-    portals.summon("bench");
-    portals.toggleBench();
-
-    expect(portals.benchOpen.value).toBe(false);
-    expect(portals.inboxOpen.value).toBe(true);
-    expect(portals.activePortal.value).toBe("inbox");
-  });
-
-  test("studio, inbox, bench stack three deep and unwind in order", () => {
-    const { portals } = harness();
-    portals.summon("studio");
-    portals.summon("inbox");
-    portals.summon("bench");
-
-    expect(portals.activePortal.value).toBe("bench");
-    portals.dismiss();
-    expect(portals.activePortal.value).toBe("inbox");
-    portals.dismiss();
-    expect(portals.activePortal.value).toBe("studio");
-    portals.dismiss();
-    expect(portals.activePortal.value).toBeNull();
-  });
-
-  test("going down from the bench to a fresh plane closes on the next frame", () => {
-    const { portals, frames, runFrames } = harness();
-    portals.summon("bench");
-    portals.summon("studio");
-
-    expect(portals.studioOpen.value).toBe(true);
-    expect(portals.benchOpen.value).toBe(true);
-    expect(liveFrames({ frames }).length).toBe(1);
-
-    runFrames();
-    expect(portals.benchOpen.value).toBe(false);
-    expect(portals.activePortal.value).toBe("studio");
-  });
-
-  test("going down to an already-open inbox closes the bench at once", () => {
-    const { portals, frames } = harness();
-    portals.summon("inbox");
-    portals.summon("bench");
-    portals.summon("inbox");
-
-    expect(portals.inboxOpen.value).toBe(true);
-    expect(portals.benchOpen.value).toBe(false);
-    expect(portals.activePortal.value).toBe("inbox");
-    expect(liveFrames({ frames }).length).toBe(0);
-  });
-
-  test("a switch that skips a rung keeps everything below the arrival", () => {
-    const { portals, runFrames } = harness();
-    portals.summon("studio");
-    portals.summon("bench");
-
-    expect(portals.benchOpen.value).toBe(true);
-    expect(portals.studioOpen.value).toBe(true);
-    expect(portals.inboxOpen.value).toBe(false);
-
-    runFrames();
-    expect(portals.activePortal.value).toBe("bench");
-  });
-
-  test("the bench key puts the bench away only when it is frontmost", () => {
-    const { portals, runFrames } = harness();
-    portals.toggleBench();
-    expect(portals.benchOpen.value).toBe(true);
-
-    portals.toggleBench();
-    expect(portals.benchOpen.value).toBe(false);
-
-    // From under another portal, the key means "go to the bench".
-    portals.summon("bench");
-    portals.summon("inbox");
-    runFrames();
-    expect(portals.activePortal.value).toBe("inbox");
-    portals.toggleBench();
-    expect(portals.activePortal.value).toBe("bench");
-  });
-
+describe("usePortals — a portal arriving under the frontmost one", () => {
   test("going down, the arriving portal is the covered one until the frame runs", () => {
     const { portals, runFrames } = harness();
-    portals.summon("bench");
+    portals.summon("inbox");
     portals.summon("studio");
 
-    // The plane is already painted underneath; the bench is still the
+    // The plane is already painted underneath; the inbox is still the
     // frontmost thing, fading out over it.
     expect(portals.portalState("studio")).toBe("covered");
-    expect(portals.portalState("bench")).toBe("active");
-    expect(portals.portalState("inbox")).toBe("hidden");
+    expect(portals.portalState("inbox")).toBe("active");
 
     runFrames();
     expect(portals.portalState("studio")).toBe("active");
-    expect(portals.portalState("bench")).toBe("hidden");
+    expect(portals.portalState("inbox")).toBe("hidden");
+  });
+});
+
+describe("usePortals — a parked portal", () => {
+  test("the shipped set parks the inbox and keeps the studio", () => {
+    expect(isPortalEnabled("studio")).toBe(true);
+    expect(isPortalEnabled("inbox")).toBe(false);
+  });
+
+  test("summoning a parked portal does nothing at all — no cue, no frame, no state", () => {
+    const ctl = manualClock();
+    const cued: Cue[] = [];
+    const portals = usePortals({
+      clock: ctl.clock,
+      enabled: new Set<PortalId>(["studio"]),
+      cue: (name: Cue): void => {
+        cued.push(name);
+      },
+    });
+
+    portals.summon("inbox");
+
+    expect(portals.inboxOpen.value).toBe(false);
+    expect(portals.activePortal.value).toBeNull();
+    expect(cued).toEqual([]);
+    expect(ctl.frames.length).toBe(0);
+  });
+
+  test("its own key is inert rather than a silent handoff", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.toggleInbox();
+
+    expect(portals.inboxOpen.value).toBe(false);
+    expect(portals.activePortal.value).toBeNull();
+  });
+
+  test("a jump to a thread records nothing while the inbox is parked", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.jumpToThread({ projectPath: "/p", threadId: "t-1" });
+
+    expect(portals.pendingThreadJump.value).toBeNull();
+    expect(portals.activePortal.value).toBeNull();
+  });
+
+  test("the studio still opens and dismisses normally", () => {
+    const portals = usePortals({ enabled: new Set<PortalId>(["studio"]) });
+
+    portals.toggleStudio();
+    expect(portals.activePortal.value).toBe("studio");
+
+    portals.toggleStudio();
+    expect(portals.activePortal.value).toBeNull();
   });
 });

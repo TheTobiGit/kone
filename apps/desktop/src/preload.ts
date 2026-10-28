@@ -6,7 +6,6 @@ import type {
   AgentRecord,
   ConversationSearchHit,
   ConversationSearchOptions,
-  JobRow,
   QueuedTurnRow,
   ScratchpadRecord,
   StoredStudioLayout,
@@ -41,6 +40,7 @@ import type {
 import type { WorktreeSetupSnapshot } from "@kone/agent-core/worktreeSetup.js";
 import type { InboxEntry } from "@kone/agent-core/inboxView.js";
 import type { BoardView } from "@kone/agent-core/boardView.js";
+import type { TurnTraceRecord } from "@kone/agent-core/turnTraces.js";
 import type { KoneTaskList } from "@kone/protocol/kone-tasks";
 import type {
   ThreadExportDialogResult,
@@ -64,14 +64,21 @@ import type {
   HandInRecord,
   HandInResult,
   InteractionMode,
+  GlobalProviderSettingsPatch,
+  LegacyRendererProviderSettings,
   ModelDescriptor,
   PreviewTurnCheckpointResult,
   ProfileStats,
+  ProviderBinaryCheckResult,
   ProviderSurfaceSnapshot,
   ProviderConfig,
   ProviderKind,
   ProviderMaintenance,
+  ProviderModelsRefreshResult,
   ProviderSettingsMap,
+  ProviderSettingsSnapshot,
+  ProviderSignInCommand,
+  ProviderSignInStartInput,
   ProviderStatus,
   ProviderUpdateResult,
   RevertTurnCheckpointResult,
@@ -87,6 +94,7 @@ import type {
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputAnswerAttachments,
   UserInputRespondResult,
 } from "@kone/agent-core/index.js";
 import type { AgentEventFrame } from "@kone/agent-core/eventSubscriptions.js";
@@ -103,27 +111,13 @@ import type {
   TerminalSessionSnapshot,
   TerminalWriteInput,
 } from "./modules/terminal/index.js";
+import type { ProviderSignInStart } from "./agent/providerSignInIpc.js";
 import type {
   ScratchpadDeleteInput,
   ScratchpadListInput,
   ScratchpadSaveInput,
   ScratchpadSaveResult,
 } from "./modules/scratchpad/index.js";
-import type {
-  BenchCreateInput,
-  BenchJobDetail,
-  BenchJobIdInput,
-  BenchListInput,
-  BenchQueueInput,
-  BenchReorderInput,
-  BenchUpdateInput,
-  ScheduleCreateInput,
-  ScheduleIdInput,
-  ScheduleListInput,
-  ScheduleRow,
-  ScheduleRunNowResult,
-  ScheduleUpdateInput,
-} from "./modules/bench/index.js";
 import type { JevRouteInput, JevRouteResult, JevStatus } from "./modules/jev/index.js";
 import type {
   RosterBindInput,
@@ -194,6 +188,7 @@ import type {
   GitHubPrCreateResult,
   GitHubPullRequest,
   GitHubPullRequestDetail,
+  GitHubPullRequestSection,
   GitHubRepoInfo,
   GitHubStatus,
   GitHubUser,
@@ -222,6 +217,24 @@ function ensureAgentEventListening(): void {
     }
   });
   void ipcRenderer.invoke("agent:subscribe");
+}
+
+// The terminal event stream gets the same fan-out contract. It matters more
+// here: unsubscribing on ANY detach tells the main process to stop sending to
+// the whole renderer, so a second listener (the sign-in modal) detaching would
+// silently kill the project terminal strip's stream. One renderer listener,
+// subscribed on the first callback and released on the last.
+type TerminalEventCallback = (event: TerminalEvent) => void;
+const terminalEventCallbacks = new Set<TerminalEventCallback>();
+let terminalEventListening = false;
+function ensureTerminalEventListening(): void {
+  if (terminalEventListening) return;
+  terminalEventListening = true;
+  ipcRenderer.on("terminal:event", (_event: IpcRendererEvent, event: TerminalEvent) => {
+    const callbacks = [...terminalEventCallbacks];
+    for (const cb of callbacks) cb(event);
+  });
+  void ipcRenderer.invoke("terminal:subscribe");
 }
 
 const api = {
@@ -394,8 +407,8 @@ const api = {
         ipcRenderer.invoke("github:issue-comment", dir, number, body),
       createIssue: (dir: string, opts: GitHubIssueCreateOptions): Promise<GitHubIssueCreateResult> =>
         ipcRenderer.invoke("github:create-issue", dir, opts),
-      prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>
-        ipcRenderer.invoke("github:pr-detail", dir, number),
+      prDetail: (dir: string, number: number, section?: GitHubPullRequestSection): Promise<GitHubPullRequestDetail | null> =>
+        ipcRenderer.invoke("github:pr-detail", dir, number, section),
       prDiff: (dir: string, number: number): Promise<GitFileDiff[]> =>
         ipcRenderer.invoke("github:pr-diff", dir, number),
       commitAuthors: (dir: string): Promise<GitCommitAuthors | null> =>
@@ -523,6 +536,11 @@ const api = {
       ipcRenderer.on("agent:providers-changed", listener);
       return () => ipcRenderer.removeListener("agent:providers-changed", listener);
     },
+    onModelsChanged: (cb: (provider: ProviderKind, models: ModelDescriptor[]) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, provider: ProviderKind, models: ModelDescriptor[]) => cb(provider, models);
+      ipcRenderer.on("agent:models-changed", listener);
+      return () => ipcRenderer.removeListener("agent:models-changed", listener);
+    },
     models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
       ipcRenderer.invoke("agent:models", provider),
     // Per-provider install settings (custom CLI binary path, …). Read once on
@@ -531,6 +549,38 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    /** Merge only the given fields onto the provider's current entry in main;
+     *  an `undefined` value clears that field. */
+    patchSettings: (provider: ProviderKind, patch: ProviderConfig): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:patch-settings", provider, patch),
+    patchGlobalSettings: (patch: GlobalProviderSettingsPatch): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:patch-global-settings", patch),
+    checkProviderBinary: (provider: ProviderKind, binaryPath?: string): Promise<ProviderBinaryCheckResult> =>
+      ipcRenderer.invoke("agent:check-provider-binary", provider, binaryPath),
+    refreshModels: (provider: ProviderKind): Promise<ProviderModelsRefreshResult> =>
+      ipcRenderer.invoke("agent:refresh-models", provider),
+    checkProvider: (provider: ProviderKind): Promise<ProviderStatus> =>
+      ipcRenderer.invoke("agent:check-provider", provider),
+    /** The whole settings store plus its revision — the renderer mirrors this
+     *  instead of keeping a copy of its own. */
+    getSettingsSnapshot: (): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:settings-snapshot"),
+    /** Hand the store the values the old renderer kept in localStorage; it
+     *  imports them once and resolves to the resulting snapshot. */
+    importLegacySettings: (
+      legacy: LegacyRendererProviderSettings,
+    ): Promise<ProviderSettingsSnapshot> =>
+      ipcRenderer.invoke("agent:import-legacy-settings", legacy),
+    /** Settings changed in the main process — this window's write or another
+     *  window's. Machine-wide push; returns an unsubscribe fn. */
+    onSettingsChanged: (
+      cb: (snapshot: ProviderSettingsSnapshot) => void,
+    ): (() => void) => {
+      const listener = (_event: IpcRendererEvent, snapshot: ProviderSettingsSnapshot) =>
+        cb(snapshot);
+      ipcRenderer.on("agent:settings-changed", listener);
+      return () => ipcRenderer.removeListener("agent:settings-changed", listener);
+    },
     /** The provider's handoff history cap in tokens (its own getter/setter so a
      *  settings surface can read/write just the number; the setter merges). */
     getHandoffBudget: (provider: ProviderKind): Promise<number> =>
@@ -568,6 +618,9 @@ const api = {
     // ChatAttachment the composer then carries on its next turn.
     uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
       ipcRenderer.invoke("agent:upload-attachment", input),
+    /** Forget an uploaded file that was never sent with an answer. */
+    discardAttachment: (threadId: string, attachmentId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:discard-attachment", threadId, attachmentId),
     getAttachmentPath: (attachmentId: string): Promise<string | null> =>
       ipcRenderer.invoke("agent:get-attachment-path", attachmentId),
     showAttachmentInFolder: (attachmentId: string): Promise<boolean> =>
@@ -628,8 +681,9 @@ const api = {
       threadId: string,
       requestId: string,
       answers: UserInputAnswers,
+      attachments?: UserInputAnswerAttachments,
     ): Promise<UserInputRespondResult> =>
-      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
+      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers, attachments),
     stopSubagent: (threadId: string, toolUseId: string): Promise<void> =>
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
     steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>
@@ -704,6 +758,10 @@ const api = {
         ipcRenderer.invoke("agent:history-thread", threadId),
       compactions: (threadId: string): Promise<CompactionRecord[]> =>
         ipcRenderer.invoke("agent:history-compactions", threadId),
+      // Every turn's trace on a thread, oldest first: tokens, cost and who
+      // answered.
+      turnTraces: (threadId: string): Promise<TurnTraceRecord[]> =>
+        ipcRenderer.invoke("agent:history-turn-traces", threadId),
       // Continuation links leaving a source thread, oldest first — the
       // timeline's "Handed to" markers.
       continuationsFromSource: (sourceThreadId: string): Promise<ContinuationLink[]> =>
@@ -957,14 +1015,30 @@ const api = {
     ack: (input: TerminalAckInput): Promise<void> =>
       ipcRenderer.invoke("terminal:ack", input),
     onEvent: (cb: (event: TerminalEvent) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, ev: TerminalEvent) => cb(ev);
-      ipcRenderer.on("terminal:event", listener);
-      void ipcRenderer.invoke("terminal:subscribe");
+      ensureTerminalEventListening();
+      terminalEventCallbacks.add(cb);
       return () => {
-        ipcRenderer.removeListener("terminal:event", listener);
-        void ipcRenderer.invoke("terminal:unsubscribe");
+        terminalEventCallbacks.delete(cb);
+        if (terminalEventCallbacks.size === 0) {
+          terminalEventListening = false;
+          ipcRenderer.removeAllListeners("terminal:event");
+          void ipcRenderer.invoke("terminal:unsubscribe");
+        }
       };
     },
+  },
+  providerSignIn: {
+    // The renderer names a provider; the main process resolves the CLI's own
+    // login command. Nothing here can name a command or carry a credential.
+    // The sign-in PTY id is minted in main and returned by `start`; any id the
+    // renderer sends is ignored. `check` is the dialog's confirmation step, so
+    // a ready answer also retires what the previous sign-in left behind.
+    command: (provider: ProviderKind): Promise<ProviderSignInCommand | null> =>
+      ipcRenderer.invoke("provider-signin:command", provider),
+    start: (input: ProviderSignInStartInput): Promise<ProviderSignInStart> =>
+      ipcRenderer.invoke("provider-signin:start", input),
+    check: (provider: ProviderKind): Promise<ProviderStatus> =>
+      ipcRenderer.invoke("provider-signin:check", provider),
   },
   scratchpad: {
     list: (input: ScratchpadListInput): Promise<ScratchpadRecord[]> =>
@@ -973,41 +1047,6 @@ const api = {
       ipcRenderer.invoke("scratchpad:save", input),
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),
-  },
-  bench: {
-    list: (input: BenchListInput): Promise<JobRow[]> => ipcRenderer.invoke("bench:list", input),
-    detail: (input: BenchJobIdInput): Promise<BenchJobDetail | null> =>
-      ipcRenderer.invoke("bench:detail", input),
-    create: (input: BenchCreateInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:create", input),
-    update: (input: BenchUpdateInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:update", input),
-    setQueued: (input: BenchQueueInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:set-queued", input),
-    requeue: (input: BenchJobIdInput): Promise<JobRow | null> =>
-      ipcRenderer.invoke("bench:requeue", input),
-    reorder: (input: BenchReorderInput): Promise<boolean> =>
-      ipcRenderer.invoke("bench:reorder", input),
-    delete: (input: BenchJobIdInput): Promise<boolean> =>
-      ipcRenderer.invoke("bench:delete", input),
-  },
-  schedules: {
-    list: (input: ScheduleListInput): Promise<ScheduleRow[]> =>
-      ipcRenderer.invoke("schedules:list", input),
-    get: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:get", input),
-    create: (input: ScheduleCreateInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:create", input),
-    update: (input: ScheduleUpdateInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:update", input),
-    pause: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:pause", input),
-    resume: (input: ScheduleIdInput): Promise<ScheduleRow | null> =>
-      ipcRenderer.invoke("schedules:resume", input),
-    runNow: (input: ScheduleIdInput): Promise<ScheduleRunNowResult> =>
-      ipcRenderer.invoke("schedules:run-now", input),
-    delete: (input: ScheduleIdInput): Promise<boolean> =>
-      ipcRenderer.invoke("schedules:delete", input),
   },
   jev: {
     status: (): Promise<JevStatus> => ipcRenderer.invoke("jev:status"),

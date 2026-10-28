@@ -6,8 +6,12 @@ import type { StudioLayout } from "~/types/studio";
 import type { AgentSender, CourierSender, MessageSender } from "@kone/protocol/message-sender";
 import type { ContractTerms } from "@kone/protocol/contract";
 import type { KoneTask, KoneTaskList } from "@kone/protocol/kone-tasks";
+import type { TextReference } from "@kone/protocol/text-reference";
 export type { AgentSender, MessageSender, SenderRelationship } from "@kone/protocol/message-sender";
 export type { ContractTerms } from "@kone/protocol/contract";
+/** A text selection attached to a composer as context. Defined once in the
+ *  protocol package so the renderer, main process and adapters agree. */
+export type { TextReference } from "@kone/protocol/text-reference";
 
 /** A pull request linked to a thread (mirrors agent-core ThreadPullRequestLink). */
 export type LinkedThreadPullRequest = {
@@ -529,6 +533,9 @@ export type GitHubPrCommit = {
   relative: string;
 };
 
+/** Independently fetched regions of the pull request details view. */
+export type GitHubPullRequestSection = "summary" | "conversation" | "checks" | "files" | "merge";
+
 /** A pull request in full — everything the dedicated view draws, in one read.
  *  Deliberately not an extension of `GitHubPullRequest`: the summary row names
  *  its author with a bare login, and this one carries a whole person. */
@@ -882,7 +889,7 @@ export type KoneGithubApi = {
   issueAction: (dir: string, number: number, action: "close" | "reopen", reason?: GitHubIssueCloseReason) => Promise<void>;
   issueComment: (dir: string, number: number, body: string) => Promise<void>;
   createIssue: (dir: string, opts: GitHubIssueCreateOptions) => Promise<GitHubIssueCreateResult>;
-  prDetail: (dir: string, number: number) => Promise<GitHubPullRequestDetail | null>;
+  prDetail: (dir: string, number: number, section?: GitHubPullRequestSection) => Promise<GitHubPullRequestDetail | null>;
   prDiff: (dir: string, number: number) => Promise<GitFileDiff[]>;
   commitAuthors: (dir: string) => Promise<GitCommitAuthors | null>;
   /** Open a URL in the user's real browser. */
@@ -929,6 +936,16 @@ export type ProviderStatus = {
 /** The user's persisted per-provider install settings (mirrors
  *  packages/agent-core/src/types.ts). Credential-free by design — only how to
  *  reach the CLI the user already installed + logged into. */
+export type ProviderEnvVar = {
+  name: string;
+  /** A literal value for an ordinary variable. Always empty when `secret` is
+   *  true: kone never stores a credential. */
+  value: string;
+  /** Read the same-named variable from the inherited environment instead of
+   *  storing it. `value` is ignored and persisted as empty. */
+  secret?: boolean;
+};
+
 export type ProviderConfig = {
   /** Override the CLI executable (absolute path or a name on PATH). Empty falls
    *  back to the adapter default (`codex` / `opencode`); ignored by providers
@@ -936,12 +953,73 @@ export type ProviderConfig = {
   binaryPath?: string;
   /** Whether the provider is enabled across the app (default: true). */
   enabled?: boolean;
+  /** Whether the provider is shown in the model picker when enabled (default:
+   *  true). Separate from `enabled`. */
+  showInPicker?: boolean;
   /** Upper bound, in tokens, on the history a handoff/hand-in/fork replays on
    *  this provider (default 16000; clamped 1024–64000). */
   handoffTokenCap?: number;
+  /** Model family keys hidden from the picker for this provider (opt-out;
+   *  absent/empty means every model is shown). */
+  hiddenModels?: string[];
+  /** User-added custom model slugs for this provider. */
+  customModels?: string[];
+  /** Optional override for the provider CLI's home / config directory. */
+  homeDir?: string;
+  /** Per-provider environment variables passed to spawned CLI processes.
+   *  Ordinary entries carry a stored value; secret entries name a variable
+   *  kone inherits from its own environment and never stores. */
+  env?: ProviderEnvVar[];
+  /** Resume a thread limited on this provider at the provider's reset
+   *  (default: true). Off still marks the thread limited. */
+  resumeAtReset?: boolean;
+  /** Snooze a thread limited on this provider until the reset (default:
+   *  false). Needs a known reset; none means no snooze. */
+  snoozeWhenLimited?: boolean;
+};
+
+export type GlobalProviderSettingsPatch = {
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
+};
+
+export type ProviderBinaryCheckResult = {
+  provider: ProviderKind;
+  binary: string | null;
+  ok: boolean;
+  version: string | null;
+  resolvedPath: string | null;
+  error?: string;
+};
+
+export type ProviderModelsRefreshResult = {
+  provider: ProviderKind;
+  models: ModelDescriptor[];
+  error?: string;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
+/** The whole provider-settings store as a renderer receives it (mirrors
+ *  packages/agent-core/src/types.ts). */
+export type ProviderSettingsSnapshot = {
+  /** Monotonic write counter of the settings file; a renderer ignores a push
+   *  whose revision is not newer than the one it holds. */
+  revision: number;
+  settings: ProviderSettingsMap;
+  /** True until the renderer's legacy localStorage values have been imported
+   *  once. */
+  legacyImportPending: boolean;
+  providerOrder?: ProviderKind[];
+  healthCheckIntervalSec?: number;
+};
+
+/** The pre-store values a renderer may still hold in localStorage, sent up once
+ *  so they are folded into the file rather than lost. */
+export type LegacyRendererProviderSettings = {
+  enabled?: Partial<Record<ProviderKind, boolean>>;
+  hiddenModels?: Partial<Record<ProviderKind, string[]>>;
+};
 
 // ── Install maintenance (mirrors packages/agent-core/src/providerMaintenance.ts) ─
 
@@ -1000,6 +1078,8 @@ export type ProviderUpdateResult = {
 export type ModelDescriptor = {
   id: string;
   label: string;
+  /** True when added by the user via customModels rather than discovered from the CLI. */
+  custom?: boolean;
   /** Provider-reported native context capacity, when available. */
   contextWindowTokens?: number;
   /** Real reasoning-effort ids this model supports (Codex's `model/list`
@@ -1130,16 +1210,20 @@ export type Session = {
 
 // ── Attachments (mirror packages/agent-core/src/types.ts) ─────────────────────
 /** How an attachment is fed to the agent. `image` → native vision block;
- *  `file` → an on-disk path the agent reads with its own tools. */
-export type AttachmentKind = "image" | "file";
+ *  `file` → an on-disk path the agent reads with its own tools; `reference` →
+ *  a text selection inlined as user-provided context (no file on disk). */
+export type AttachmentKind = "image" | "file" | "reference";
 
-/** Bytes-free attachment metadata that rides a turn. */
+/** Bytes-free attachment metadata that rides a turn. A reference carries its
+ *  actual text and provenance in `reference`, so it needs no upload. */
 export type ChatAttachment = {
   type: AttachmentKind;
   id: string;
   name: string;
   mimeType: string;
   sizeBytes: number;
+  /** Present only on `type: "reference"`. */
+  reference?: TextReference;
 };
 
 /** Upload payload — raw bytes (base64, no data: prefix) sent once over IPC. */
@@ -1604,11 +1688,28 @@ export type UserInputQuestion = {
   question: string;
   options: UserInputQuestionOption[];
   multiSelect?: boolean;
+  /** Only an offered option can be sent back: no typed answer, no files. */
+  fixedChoice?: boolean;
+  /** Images the agent attached (kone's ask_question), drawn from `attachment://`. */
+  images?: ChatAttachment[];
+  /** A live visual the agent attached (kone's ask_question), drawn like a reply's. */
+  visual?: QuestionVisual;
+};
+
+/** A dynamic visual inside a question — the VisualRef `visual_show` records. */
+export type QuestionVisual = {
+  attachmentId: string;
+  title: string;
+  height: number;
+  heights?: Array<[number, number]>;
 };
 
 /** Answers keyed by question id → free text / single label, an array of labels
  *  (multi-select), or null when skipped. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
+
+/** Files the user attached to their answers, keyed by question id. */
+export type UserInputAnswerAttachments = Record<string, ChatAttachment[]>;
 
 /** Whether the backend still owned the parked question. Answers resolve
  *  the waiting tool directly; stale or cancelled requests send no message. */
@@ -2007,10 +2108,11 @@ export type RuntimeEvent =
       smoothing?: boolean;
       ligatures?: boolean;
     })
-  // A project's bench moved: a job was filed, claimed, settled, or swept.
-  // Carries only what changed and where, never the row — the bench re-reads
-  // the project's list, so the store stays the single copy of the queue and a
-  // stale payload can never disagree with the order the runner will take.
+  // A project's queue moved: a job was filed, claimed, settled, or swept.
+  // Carries only what changed and where, never the row — a queue surface
+  // re-reads the project's list, so the store stays the single copy of the
+  // queue and a stale payload can never disagree with the order the runner
+  // will take.
   // `threadId` is the job's thread when one exists and the empty string when
   // the change belongs to no thread; consumers key off projectPath.
   | (AgentBaseEvent & {
@@ -2137,7 +2239,12 @@ export type RuntimeEvent =
       turnId?: string;
       questions: UserInputQuestion[];
     })
-  | (AgentBaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
+  | (AgentBaseEvent & {
+      type: "user-input.resolved";
+      requestId: string;
+      answers: UserInputAnswers;
+      attachments?: UserInputAnswerAttachments;
+    })
   // The provider is asking for the user's go-ahead before the agent runs
   // something and the turn is parked until they decide (respondToRequest).
   // `subagentToolUseId` scopes the ask to a nested subagent run.
@@ -2504,6 +2611,24 @@ export type CompactionRecord = {
   afterTokens: number | null;
 };
 
+/** One turn's trace: its token counts as the provider last reported them,
+ *  who answered it, and what it cost at the current price list. Counts the
+ *  provider never reported are null; cost is null when the model has no
+ *  price. */
+export type TurnTraceRecord = {
+  turnId: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  provider: string | null;
+  model: string | null;
+  costUsd: number | null;
+  at: number;
+};
+
 /** One ranked full-text conversation search hit. `blockId` is the block
  *  itself for prompt hits and the assistant block carrying the turn for item
  *  hits (null when the turn has no block yet); `itemId` is set only on item
@@ -2609,6 +2734,9 @@ export type KoneAgentHistoryApi = {
   /** Every settled compaction boundary on a thread, oldest first — what the
    *  timeline renders its "when/where compacted" markers from. */
   compactions: (threadId: string) => Promise<CompactionRecord[]>;
+  /** Every turn's trace on a thread, oldest first — what a request's trace
+   *  reads its tokens, cost and model from. Optional: older shells lack it. */
+  turnTraces?: (threadId: string) => Promise<TurnTraceRecord[]>;
   /** Every continuation forked from a source thread, oldest first — what the
    *  timeline renders its "Handed to" markers from. */
   continuationsFromSource: (sourceThreadId: string) => Promise<ContinuationLink[]>;
@@ -3226,6 +3354,8 @@ export type KoneAgentApi = {
    *  the user signed into while the app was open. Fires only when a round
    *  actually differs. Returns an unsubscribe fn. */
   onProvidersChanged: (cb: (statuses: ProviderStatus[]) => void) => () => void;
+  /** A current catalog pushed to every window after a successful model probe. */
+  onModelsChanged: (cb: (provider: ProviderKind, models: ModelDescriptor[]) => void) => () => void;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
   /** The user's persisted per-provider install settings (custom binary path, …). */
   getSettings: () => Promise<ProviderSettingsMap>;
@@ -3235,6 +3365,37 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** Merge just these fields onto the provider's current entry in main (an
+   *  `undefined` value clears that field), so two windows editing different
+   *  fields never undo each other. Rejects when the write could not be saved. */
+  patchSettings: (
+    provider: ProviderKind,
+    patch: ProviderConfig,
+  ) => Promise<ProviderSettingsSnapshot>;
+  patchGlobalSettings: (
+    patch: GlobalProviderSettingsPatch,
+  ) => Promise<ProviderSettingsSnapshot>;
+  checkProviderBinary: (
+    provider: ProviderKind,
+    binaryPath?: string,
+  ) => Promise<ProviderBinaryCheckResult>;
+  refreshModels: (
+    provider: ProviderKind,
+  ) => Promise<ProviderModelsRefreshResult>;
+  checkProvider: (provider: ProviderKind) => Promise<ProviderStatus>;
+  /** The whole settings store plus its revision — the renderer mirrors this
+   *  rather than keeping a copy of its own. */
+  getSettingsSnapshot: () => Promise<ProviderSettingsSnapshot>;
+  /** Hand the store the renderer's legacy localStorage values; it imports them
+   *  once and resolves to the resulting snapshot. Rejects when the import could
+   *  not be saved, leaving it pending for the next load. */
+  importLegacySettings: (
+    legacy: LegacyRendererProviderSettings,
+  ) => Promise<ProviderSettingsSnapshot>;
+  /** A settings write landed in the main process — this window's or another
+   *  window's. Ignore a snapshot whose revision is not newer. Returns an
+   *  unsubscribe fn. */
+  onSettingsChanged: (cb: (snapshot: ProviderSettingsSnapshot) => void) => () => void;
   /** The provider's handoff history cap in tokens. */
   getHandoffBudget: (provider: ProviderKind) => Promise<number>;
   /** Set one provider's handoff history cap; merges and resolves to the
@@ -3348,6 +3509,8 @@ export type KoneAgentApi = {
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
    *  ChatAttachment the composer then carries on its next turn. */
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
+  /** Forget an uploaded file that was never sent with an answer. */
+  discardAttachment: (threadId: string, attachmentId: string) => Promise<boolean>;
   /** Return the verified absolute path on disk for an attachment ID. */
   getAttachmentPath: (attachmentId: string) => Promise<string | null>;
   /** Reveal an attachment in the host's file manager (Finder / Explorer). */
@@ -3395,10 +3558,13 @@ export type KoneAgentApi = {
     decision: ApprovalDecision,
   ) => Promise<void>;
   /** Answer a pending question, resolving its waiting tool request. */
+  /** `attachments` are files already uploaded (uploadAttachment) for each
+   *  question's answer, keyed by question id. */
   respondUserInput: (
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
+    attachments?: UserInputAnswerAttachments,
   ) => Promise<UserInputRespondResult>;
   /** Stop one nested subagent run without ending the parent turn. No-op on
    *  providers without a nested-agent surface. */
@@ -3585,6 +3751,68 @@ export type KoneTerminalApi = {
   onEvent: (cb: (event: TerminalEvent) => void) => () => void;
 };
 
+// ── Provider sign-in (in-app login terminal) ─────────────────────────────────
+// "Sign in" runs the provider CLI's OWN login command in a kone PTY. The main
+// process resolves the command from the provider and its configured executable
+// (ProviderConfig.binaryPath) — the renderer never names a command, so this
+// cannot be turned into "run anything". kone never sees or stores the
+// credential: the CLI writes it wherever it always does, and "Check
+// authentication" only re-reads provider health.
+
+/** The login command kone would run for a provider, resolved in the main process. */
+export type ProviderSignInCommand = {
+  provider: ProviderKind;
+  /** What the user sees and can copy, e.g. "cursor-agent login" or
+   *  "/opt/bin/codex login" when a custom executable is set. */
+  display: string;
+  /** Where it runs, tilde-abbreviated for display, e.g. "~". */
+  cwd: string;
+  /** How the CLI finishes: "browser" opens a sign-in page, "terminal" asks
+   *  its questions in the terminal (e.g. opencode's provider menu). */
+  finish: "browser" | "terminal";
+};
+
+export type ProviderSignInStartInput = {
+  provider: ProviderKind;
+  /** @deprecated Ignored by the main process: sign-in PTY ids are main-generated.
+   *  The renderer still supplies a provisional id for the dev stand-in. */
+  terminalId: string;
+  /** Initial grid. */
+  cols?: number;
+  rows?: number;
+};
+
+export type ProviderSignInStart =
+  | {
+      ok: true;
+      /** Main-generated PTY id the renderer attaches to. Present from the real
+       *  main process; the browser dev stand-in may omit it. */
+      terminalId?: string;
+      command: ProviderSignInCommand;
+      snapshot: TerminalSessionSnapshot;
+    }
+  | {
+      ok: false;
+      /** Null when this provider has no login subcommand at all (Droid). */
+      command: ProviderSignInCommand | null;
+      /** One plain sentence, e.g. "cursor-agent isn't on your PATH." */
+      message: string;
+    };
+
+export type KoneProviderSignInApi = {
+  /** The login command for `provider`, or null when its CLI has none. Never spawns. */
+  command: (provider: ProviderKind) => Promise<ProviderSignInCommand | null>;
+  /** Start the login command in a fresh PTY. */
+  start: (input: ProviderSignInStartInput) => Promise<ProviderSignInStart>;
+  /** Confirm the login this dialog just ran: re-probe this ONE provider
+   *  (dropping its cached probe first) and return its fresh status. A ready
+   *  verdict retires the previous credential's sessions and cached quota/models
+   *  — including an account switch that stays `ready` throughout — and the
+   *  result is folded into the shared surface and pushed on
+   *  agent:providers-changed. */
+  check: (provider: ProviderKind) => Promise<ProviderStatus>;
+};
+
 export type ScratchpadRecord = {
   id: string;
   projectPath: string;
@@ -3640,146 +3868,11 @@ export type KoneScratchpadApi = {
   delete: (input: ScratchpadDeleteInput) => Promise<void>;
 };
 
-// ── the bench ───────────────────────────────────────────────────────────────
+// ── the job queue ───────────────────────────────────────────────────────────
 
-/** Where a job sits on the bench. `draft` is work described and parked;
+/** Where a job sits on the queue. `draft` is work described and parked;
  *  `queued` is the only state the runner takes from. */
 export type JobStatus = "draft" | "queued" | "running" | "done" | "failed" | "cancelled";
-
-/** One attempt's own state, which is not the job's: a failed run can sit under
- *  a job the user re-queued, and the bench shows both without either lying. */
-export type JobRunStatus = "claimed" | "running" | "done" | "failed" | "cancelled";
-
-/** Where a job runs, as the composer captured it — the session-start fields
- *  and nothing else. */
-export type JobTarget = {
-  provider: ProviderKind;
-  model?: string;
-  effort?: string;
-  mode?: InteractionMode;
-  workspace?: { mode: "local" | "worktree"; branch?: string; base?: string };
-  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
-};
-
-export type JobRow = {
-  jobId: string;
-  projectPath: string;
-  title: string;
-  body: string;
-  status: JobStatus;
-  target: JobTarget;
-  createdAt: number;
-  updatedAt: number;
-  sortKey?: number;
-  startedAt?: number;
-  endedAt?: number;
-  /** The branch the job's latest attempt actually ran on, read back from the
-   *  thread that attempt opened. Observed, not chosen — `target.workspace` is
-   *  the request, and a job in the project's own checkout requests nothing — so
-   *  this is the only field that says where the work landed. Absent until a run
-   *  has started, because until then the checkout can still move. */
-  branch?: string;
-};
-
-export type JobRunRow = {
-  runId: string;
-  jobId: string;
-  attempt: number;
-  status: JobRunStatus;
-  createdAt: number;
-  threadId?: string;
-  claimedBy?: string;
-  claimedAt?: number;
-  leaseExpiresAt?: number;
-  startedAt?: number;
-  endedAt?: number;
-  error?: string;
-};
-
-/** Fields an edit may change. Absent leaves alone; null clears. Status is not
- *  here — moving between states goes through the named calls so the
- *  timestamps stay consistent. */
-export type JobPatch = {
-  title?: string;
-  body?: string;
-  target?: JobTarget;
-  sortKey?: number | null;
-};
-
-/** No project means every project's jobs — the bench is one list across all
- *  of them, and a single project's queue is the narrower read. */
-export type BenchListInput = { projectPath?: string };
-export type BenchJobIdInput = { jobId: string };
-export type BenchCreateInput = {
-  jobId: string;
-  projectPath: string;
-  title: string;
-  body: string;
-  status: "draft" | "queued";
-  target: JobTarget;
-  attachments?: ChatAttachment[];
-};
-export type BenchUpdateInput = { jobId: string; patch: JobPatch };
-export type BenchQueueInput = { jobId: string; queued: boolean };
-export type BenchReorderInput = { projectPath: string; jobIds: string[] };
-
-/** One job plus its attempts — what the detail panel reads. */
-export type BenchJobDetail = { job: JobRow; runs: JobRunRow[] };
-
-export type KoneBenchApi = {
-  list: (input: BenchListInput) => Promise<JobRow[]>;
-  detail: (input: BenchJobIdInput) => Promise<BenchJobDetail | null>;
-  create: (input: BenchCreateInput) => Promise<JobRow | null>;
-  update: (input: BenchUpdateInput) => Promise<JobRow | null>;
-  setQueued: (input: BenchQueueInput) => Promise<JobRow | null>;
-  requeue: (input: BenchJobIdInput) => Promise<JobRow | null>;
-  reorder: (input: BenchReorderInput) => Promise<boolean>;
-  delete: (input: BenchJobIdInput) => Promise<boolean>;
-};
-
-export type ScheduleJobTemplate = {
-  title: string;
-  body: string;
-  target: JobTarget;
-  attachments?: ChatAttachment[];
-};
-export type ScheduleRow = {
-  scheduleId: string;
-  projectPath: string;
-  title: string;
-  cron: string;
-  jobTemplate: ScheduleJobTemplate;
-  paused: boolean;
-  nextRunAt: number | null;
-  lastRunAt: number | null;
-  lastJobId: string | null;
-  createdAt: number;
-  updatedAt: number;
-};
-export type ScheduleListInput = { projectPath?: string };
-export type ScheduleIdInput = { scheduleId: string };
-export type ScheduleCreateInput = {
-  scheduleId: string;
-  projectPath: string;
-  title: string;
-  cron: string;
-  jobTemplate: ScheduleJobTemplate;
-};
-export type ScheduleUpdateInput = {
-  scheduleId: string;
-  patch: { title?: string; cron?: string; jobTemplate?: ScheduleJobTemplate };
-};
-export type ScheduleRunNowResult = { job: JobRow | null; reason?: string };
-export type KoneSchedulesApi = {
-  list: (input: ScheduleListInput) => Promise<ScheduleRow[]>;
-  get: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  create: (input: ScheduleCreateInput) => Promise<ScheduleRow | null>;
-  update: (input: ScheduleUpdateInput) => Promise<ScheduleRow | null>;
-  pause: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  resume: (input: ScheduleIdInput) => Promise<ScheduleRow | null>;
-  runNow: (input: ScheduleIdInput) => Promise<ScheduleRunNowResult>;
-  delete: (input: ScheduleIdInput) => Promise<boolean>;
-};
 
 // ── jev, the router ─────────────────────────────────────────────────────────
 // Picking who answers is its own decision, made before a session exists, so it
@@ -4356,9 +4449,8 @@ export type KoneDesktopApi = {
   system: KoneSystemApi;
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
+  providerSignIn: KoneProviderSignInApi;
   scratchpad: KoneScratchpadApi;
-  bench: KoneBenchApi;
-  schedules: KoneSchedulesApi;
   jev: KoneJevApi;
   studio: KoneStudioApi;
   roster: KoneRosterApi;

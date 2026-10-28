@@ -79,9 +79,13 @@ const catalogs = computed<Partial<Record<ProviderKind, ModelOption[]>>>(() => {
 // One rail entry per ready, enabled provider, each filtered through the same
 // per-model visibility the providers pane writes. No agent pin narrows it here —
 // a default belongs to the app, not to whichever agent the composer points at.
-const enabledReady = computed(() =>
-  providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
-);
+const enabledReady = computed(() => {
+  const allowed = providers.ready.value.filter((s) =>
+    providerSettings.isShownInPicker(s.provider),
+  );
+  const order = providerSettings.orderProviders(allowed.map((s) => s.provider));
+  return [...allowed].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+});
 const pickerProviders = computed<PickerProvider[]>(() => {
   const visible = providerSettings.modelVisiblePredicate.value;
   return enabledReady.value.map((s) => {
@@ -821,7 +825,7 @@ function resetBehaviour() {
   background-color: var(--ground);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent),
-    0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
+    0 1px 3px rgb(0 0 0 / 10%);
   transform: translateX(calc(100% * var(--i)));
   transition: transform 320ms var(--cp-ease-move);
 }

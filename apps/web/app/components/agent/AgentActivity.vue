@@ -23,11 +23,13 @@ const lastAnnounce: Announcement = { text: "", at: 0 };
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import ActivityStep from "~/components/conversation/ActivityStep.vue";
+import WebFavicon from "~/components/conversation/web/WebFavicon.vue";
+import { parseSiteTarget } from "~/utils/siteChip";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import {
   activityEntries,
@@ -36,9 +38,20 @@ import {
   type ActivityEntry,
   type Segment,
 } from "~/utils/conversationSegments";
-import { toolMeta, type HugeIcon } from "~/utils/toolPresentation";
+import { toolMeta, toolStatus, toolTargetRaw, type HugeIcon } from "~/utils/toolPresentation";
 import type { ActivityFold } from "~/utils/responseDisplay";
 import { thinkingOrbHue } from "~/utils/toolOrbDraw";
+import {
+  WEB_TRAIL,
+  fetchTargetUrl,
+  isWebFetchTool,
+  isWebSearchTool,
+  parseWebPage,
+  parseWebSearchHits,
+  webKey,
+  type WebRead,
+  type WebTrail,
+} from "~/utils/webToolResult";
 
 // ── Agent activity ─────────────────────────────────────────────────────────────
 //
@@ -106,7 +119,47 @@ const props = withDefaults(defineProps<{
 const WINDOW = 5;
 const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as const;
 
-const entries = computed(() => activityEntries(props.segments));
+const allEntries = computed(() => activityEntries(props.segments));
+
+// Everything this batch did on the web, so a search row can grow the pages the
+// agent went on to read under its own hits — the one place both are in view.
+// A fetch only joins a search that came before it, so the trail stays in the
+// order things happened, and only while that search is still among the last
+// WINDOW rows: a read the live ticker would otherwise hide keeps its own row.
+const webTrail = computed<WebTrail>(() => {
+  const reads = new Map<string, Map<string, WebRead>>();
+  const absorbed = new Set<string>();
+  // Each hit's latest search, with the row index that search sits at.
+  const latestSearchOf = new Map<string, { key: string; at: number }>();
+  let rows = 0;
+  for (const e of allEntries.value) {
+    if (e.type === "tool" && isWebSearchTool(e.item.name)) {
+      // Only a search that draws its trail (see `ActivityStep`) can hold reads.
+      if (toolStatus(e.item) !== "error" && toolTargetRaw(e.item)) {
+        for (const h of parseWebSearchHits(e.item.detail)) latestSearchOf.set(webKey(h.url), { key: e.key, at: rows });
+      }
+    } else if (e.type === "tool" && isWebFetchTool(e.item.name)) {
+      const url = fetchTargetUrl(toolTargetRaw(e.item));
+      const search = url ? latestSearchOf.get(webKey(url)) : undefined;
+      const state = toolStatus(e.item);
+      const page = parseWebPage(e.item.detail);
+      // A finished page the trail can't show keeps its own row, raw output and all.
+      if (url && search && search.at >= rows - WINDOW && !(state === "done" && !page)) {
+        const own = reads.get(search.key) ?? new Map<string, WebRead>();
+        own.set(webKey(url), { state, page });
+        reads.set(search.key, own);
+        absorbed.add(e.key);
+        continue;
+      }
+    }
+    rows++;
+  }
+  return { reads, absorbed };
+});
+provide(WEB_TRAIL, webTrail);
+
+// A fetch told under its search takes no row (and no ticker slot) of its own.
+const entries = computed(() => allEntries.value.filter((e) => !webTrail.value.absorbed.has(e.key)));
 const total = computed(() => entries.value.length);
 
 // The batch is active only while the turn runs and this is the live tail group.
@@ -398,7 +451,7 @@ watch(wantRows, (want) => {
 });
 watch(rowList, () => void nextTick(sync));
 
-const batchKey = computed(() => entries.value[0]?.key ?? "");
+const batchKey = computed(() => allEntries.value[0]?.key ?? "");
 
 onMounted(async () => {
   // Row content grows too — a thinking row streams its text — so watch the box
@@ -446,10 +499,28 @@ type Glyph = { icon: HugeIcon; hue: string; label: string };
 function glyphOf(e: ActivityEntry): Glyph {
   if (e.type === "thinking") return { icon: AiBrain01Icon, hue: thinkingOrbHue(), label: "Thinking" };
   const m = toolMeta(e.item.name);
+  // Searches and the pages read off them are one trip out: they share a chip.
+  if (m.family === "web") return { icon: m.icon, hue: m.hue, label: "Web" };
   return { icon: m.icon, hue: m.hue, label: m.label };
 }
 
-type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: number };
+type Chip = { key: string; icon: HugeIcon; hue: string; label: string; count: number; faces: string[] };
+
+/** The sites a web step read, for its chip's faces: a fetch's own page, or the
+ *  hits of a search that the agent went on to open. */
+function webFaces(e: ActivityEntry): string[] {
+  if (e.type !== "tool") return [];
+  if (isWebSearchTool(e.item.name)) {
+    const reads = webTrail.value.reads.get(e.key);
+    if (!reads) return [];
+    return parseWebSearchHits(e.item.detail)
+      .filter((h) => { const r = reads.get(webKey(h.url)); return r !== undefined && r.state !== "error"; })
+      .map((h) => parseSiteTarget(h.url).host);
+  }
+  if (!isWebFetchTool(e.item.name) || toolStatus(e.item) === "error") return [];
+  const url = fetchTargetUrl(toolTargetRaw(e.item));
+  return url ? [parseSiteTarget(url).host] : [];
+}
 
 // History strip — merge *consecutive* same-type actions into one ×N chip, keyed
 // by the run's first entry so the element stays put while its count climbs (the
@@ -460,7 +531,9 @@ const historyChips = computed<Chip[]>(() => {
     const g = glyphOf(e);
     const last = out[out.length - 1];
     if (last && last.label === g.label) last.count++;
-    else out.push({ key: e.key, icon: g.icon, hue: g.hue, label: g.label, count: 1 });
+    else out.push({ key: e.key, icon: g.icon, hue: g.hue, label: g.label, count: 1, faces: [] });
+    const chip = out[out.length - 1]!;
+    for (const face of webFaces(e)) if (!chip.faces.includes(face)) chip.faces.push(face);
   }
   return out;
 });
@@ -546,10 +619,22 @@ function stepProps(e: ActivityEntry) {
             :animate="{ opacity: 1, scale: 1, y: 0 }"
             :exit="{ opacity: 0, scale: 0.6 }"
             :transition="SPRING"
-            :title="chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
+            :title="chip.faces.length ? `Read ${chip.faces.join(', ')}` : chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
           >
             <HugeiconsIcon :icon="chip.icon" :size="14" :stroke-width="1.8" />
-            <span v-if="chip.count > 1" class="head__count">×{{ chip.count }}</span>
+            <!-- A trip to the web keeps the faces of the pages it read. -->
+            <span v-if="chip.faces.length" class="head__faces">
+              <WebFavicon
+                v-for="host in chip.faces.slice(0, 3)"
+                :key="host"
+                class="head__face"
+                :host="host"
+                :size="14"
+                round
+              />
+              <span v-if="chip.faces.length > 3" class="head__count">+{{ chip.faces.length - 3 }}</span>
+            </span>
+            <span v-else-if="chip.count > 1" class="head__count">×{{ chip.count }}</span>
           </motion.span>
         </AnimatePresence>
       </span>
@@ -677,6 +762,20 @@ function stepProps(e: ActivityEntry) {
   gap: 2px;
   color: var(--hue, var(--muted));
   opacity: 0.85;
+}
+.head__faces {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 3px;
+}
+.head__face {
+  box-shadow: 0 0 0 1.5px var(--ground);
+}
+.head__face + .head__face {
+  margin-left: -4px;
+}
+.head__faces .head__count {
+  margin-left: 3px;
 }
 .head__count {
   font-family: var(--font-mono);

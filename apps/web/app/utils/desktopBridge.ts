@@ -3,6 +3,8 @@ import type {
   KoneAgentHistoryApi,
   KoneFsApi,
   KoneGitApi,
+  KoneProviderSignInApi,
+  KoneTerminalApi,
 } from "~/types/desktop";
 import type { createMockTurnRunner } from "~/composables/agentMock";
 
@@ -20,11 +22,21 @@ import type { createMockTurnRunner } from "~/composables/agentMock";
  *  is a superset, so either one satisfies it. */
 export type DesktopAgentReach = Pick<
   KoneAgentApi,
-  "surface" | "warm" | "discover" | "onProvidersChanged" | "models" | "maintenance" | "updateProvider"
+  | "surface"
+  | "warm"
+  | "discover"
+  | "onProvidersChanged"
+  | "onModelsChanged"
+  | "models"
+  | "maintenance"
+  | "updateProvider"
+  | "getSettingsSnapshot"
+  | "importLegacySettings"
+  | "onSettingsChanged"
 > & {
   history: Pick<
     KoneAgentHistoryApi,
-    "list" | "archive" | "remove" | "setPinned" | "setDone" | "setVisited" | "threadPage"
+    "list" | "archive" | "remove" | "setPinned" | "setDone" | "setVisited" | "threadPage" | "turnTraces"
   >;
 };
 
@@ -33,6 +45,12 @@ export type DesktopReach = {
   fs: KoneFsApi;
   git: KoneGitApi;
   agent: DesktopAgentReach;
+  /** Filesystem, git and the agent are what most surfaces ask for; the
+   *  terminal registry and in-app sign-in are here because the dev stand-in
+   *  serves them too, so a browser demo can run a scripted login. The real
+   *  preload carries both, and is a superset of this. */
+  terminal?: KoneTerminalApi;
+  providerSignIn?: KoneProviderSignInApi;
 };
 
 /** What the dev plugin installs: the reachable slice, plus the scripted turn

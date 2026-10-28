@@ -1,8 +1,13 @@
+import { buildProviderChildEnv } from "./providerChildEnv.js";
+import { setEnvVar, windowsEnvKey } from "./envKeys.js";
+import type { ProviderKind } from "./types.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+
+export { windowsEnvKey } from "./envKeys.js";
 
 // Environment for spawned agent CLIs. The rule (kone's "bring your own
 // subscription" stance): inherit the user's environment and let each CLI read
@@ -51,11 +56,27 @@ export function windowsCliDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   return [`${profile}\\.local\\bin`, `${profile}\\.bun\\bin`, `${profile}\\scoop\\shims`];
 }
 
+/** The env key that holds PATH. On win32 that is whichever casing Node would
+ *  pass to the child (`windowsEnvKey`; a spread `process.env` usually carries
+ *  `Path`, and an exact `PATH` always sorts first) — reading `env.PATH` there
+ *  misses the real PATH, and writing it leaves the child two variables. Every
+ *  other platform's env is case-sensitive: always `PATH`. */
+export function pathEnvKey(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") return "PATH";
+  return windowsEnvKey(env, "PATH") ?? "PATH";
+}
+
 /** The inherited env with the known Windows CLI dirs appended to PATH (existing
- *  entries win; deduped). PATH is `;`-separated on Windows. */
+ *  entries win; deduped). PATH is `;`-separated on Windows, and lives under
+ *  the key casing Node would pass to the child (see `pathEnvKey`); any other
+ *  casing of PATH is dropped, so the launch resolver and the child see one. */
 export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  const seen = new Set((env.PATH ?? "").split(";").filter(Boolean));
+  const key = pathEnvKey(env, "win32");
+  const seen = new Set((env[key] ?? "").split(";").filter(Boolean));
   const merged = [...seen];
   for (const dir of windowsCliDirs(env)) {
     if (dir && !seen.has(dir)) {
@@ -63,7 +84,7 @@ export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.
       merged.push(dir);
     }
   }
-  env.PATH = merged.join(";");
+  setEnvVar(env, key, merged.join(";"), "win32");
   return env;
 }
 
@@ -73,29 +94,33 @@ export function mergeWindowsPath(base: NodeJS.ProcessEnv = process.env): NodeJS.
  *  merge is the known install dirs instead of a shell probe. */
 export async function buildAgentEnv(
   base: NodeJS.ProcessEnv = process.env,
+  provider?: ProviderKind,
 ): Promise<NodeJS.ProcessEnv> {
-  if (process.platform === "win32") return mergeWindowsPath(base);
-  const env: NodeJS.ProcessEnv = { ...base };
-  const shellPath = await loginShellPath();
-  if (shellPath) {
-    const seen = new Set((env.PATH ?? "").split(":").filter(Boolean));
-    const merged = [...seen];
-    for (const dir of shellPath.split(":")) {
-      if (dir && !seen.has(dir)) {
-        seen.add(dir);
-        merged.push(dir);
+  let env: NodeJS.ProcessEnv;
+  if (process.platform === "win32") {
+    env = mergeWindowsPath(base);
+  } else {
+    env = { ...base };
+    const shellPath = await loginShellPath();
+    if (shellPath) {
+      const seen = new Set((env.PATH ?? "").split(":").filter(Boolean));
+      const merged = [...seen];
+      for (const dir of shellPath.split(":")) {
+        if (dir && !seen.has(dir)) {
+          seen.add(dir);
+          merged.push(dir);
+        }
       }
-    }
-    // Common install dirs, in case the shell probe missed them.
-    for (const dir of [`${os.homedir()}/.local/bin`, `${os.homedir()}/.bun/bin`]) {
-      if (!seen.has(dir)) {
-        seen.add(dir);
-        merged.push(dir);
+      for (const dir of [`${os.homedir()}/.local/bin`, `${os.homedir()}/.bun/bin`]) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          merged.push(dir);
+        }
       }
+      env.PATH = merged.join(":");
     }
-    env.PATH = merged.join(":");
   }
-  return env;
+  return provider ? buildProviderChildEnv(provider, env) : env;
 }
 
 // ── PATH lookup ──────────────────────────────────────────────────────────────
@@ -124,7 +149,7 @@ export function findOnPathEntry(
   platform: NodeJS.Platform = process.platform,
 ): PathHit | null {
   const separator = platform === "win32" ? ";" : ":";
-  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
+  for (const dir of (env[pathEnvKey(env, platform)] ?? "").split(separator).filter(Boolean)) {
     for (const name of candidateNames(binary, platform)) {
       const candidate = path.join(dir, name);
       if (!fs.existsSync(candidate)) continue;

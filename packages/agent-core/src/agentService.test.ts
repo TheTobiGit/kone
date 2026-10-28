@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -9,15 +9,22 @@ import type { QueuedTurnEnqueueInput } from "./conversationStoreTypes.js";
 import type {
   ModelDescriptor,
   ProviderAdapter,
+  ProviderConfig,
   ProviderKind,
+  ProviderStatus,
   QueuedTurnRow,
   QueuedTurnStore,
   SendTurnInput,
+  Session,
+  SessionStartInput,
   StoredThreadMeta,
   ThreadCompactionCapability,
   TurnStartResult,
   UserInputRespondResult,
 } from "./types.js";
+import { cacheStatuses } from "./providerCache.js";
+import { writeProviderSettings } from "./providerSettings.js";
+import { StartCancelled } from "./types.js";
 
 // AgentService is exercised with fake adapters INJECTED through its options
 // (adapters + store) — no module is mocked, so this file can never shadow a
@@ -47,7 +54,7 @@ type EmitEvent = (event: import("./types.js").RuntimeEvent) => void;
 /** The fake every adapter module exports: captures the emit closure (so the
  *  test can emit like the provider would) and records stopSession calls (so
  *  the wedge watchdog is observable). */
-class FakeAdapter {
+class FakeAdapter implements ProviderAdapter {
   capabilities = {
     sessionModelSwitch: "unsupported" as const,
     streamsText: false,
@@ -71,7 +78,7 @@ class FakeAdapter {
   static instances: FakeAdapter[] = [];
   constructor(
     public emit: EmitEvent,
-    readonly provider: string,
+    readonly provider: ProviderKind,
   ) {
     FakeAdapter.emits.push({ provider, emit });
     FakeAdapter.instances.push(this);
@@ -89,21 +96,37 @@ class FakeAdapter {
   setLivenessHook(hook: (threadId: string) => void): void {
     this.alive = hook;
   }
-  // The fake is injected as a `ProviderAdapter` wholesale (see the cast where
-  // `adapters` is built); these stub methods are never called by the tests, so
-  // they return the emptiest thing that reads as "nothing here".
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  async discover(): Promise<unknown> {
-    return [];
+  async discover(): Promise<ProviderStatus> {
+    return {
+      provider: this.provider,
+      label: this.provider,
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+    };
   }
-  async listModels(): Promise<unknown[]> {
+  async listModels(): Promise<ModelDescriptor[]> {
     return FakeAdapter.models[this.provider] ?? [];
   }
   /** Per-provider catalogs the window-resolution tests warm. */
   static models: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  async startSession(): Promise<unknown> {
-    return {};
+  /** When set, the next startSession waits on it before resolving — a session
+   *  start the test can hold open across a provider-runtime transition. One
+   *  start only. */
+  static startGate: Promise<void> | null = null;
+  async startSession(input: SessionStartInput): Promise<Session> {
+    if (FakeAdapter.startGate) {
+      const gate = FakeAdapter.startGate;
+      FakeAdapter.startGate = null;
+      await gate;
+    }
+    return {
+      threadId: input.threadId,
+      provider: this.provider,
+      cwd: input.cwd,
+      status: "ready",
+      mode: input.mode ?? "ask",
+    };
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const turnId = `turn-${++FakeAdapter.turnCounter}`;
@@ -124,7 +147,13 @@ class FakeAdapter {
   async respondToUserInput(): Promise<UserInputRespondResult> {
     return { owned: true };
   }
-  async listSessions(): Promise<unknown[]> {
+  /** The service's settings hook, as a real adapter keeps it — every config it
+   *  was handed, so a test can see what a write applied. */
+  configs: ProviderConfig[] = [];
+  setConfig(config: ProviderConfig): void {
+    this.configs.push(config);
+  }
+  async listSessions(): Promise<Session[]> {
     return [];
   }
   async hasSession(): Promise<boolean> {
@@ -414,6 +443,18 @@ describe("AgentService recovery bookkeeping", () => {
     expect(pending[0].requestId).toBe("req-2");
   });
 
+  test("files on a fixed-choice provider question are refused, not dropped", async () => {
+    const base = { ...codexBase, threadId: "t-fixed-choice" };
+    codexEmit({ ...base, type: "user-input.requested" as const, requestId: "req-fixed", turnId: "turn-1",
+      questions: [{ id: "q", header: "Q", question: "Which one?", options: [{ label: "Beta" }], fixedChoice: true }] });
+    const file = { type: "file" as const, id: "att_fixed", name: "brief.pdf", mimeType: "application/pdf", sizeBytes: 5 };
+    await expect(service.respondToUserInput(base.threadId, "req-fixed", { q: "Beta" }, { q: [file] }))
+      .rejects.toThrow("only takes one of its options");
+    // The adapter answers it without files; its resolution clears the ask.
+    codexEmit({ ...base, type: "user-input.resolved" as const, requestId: "req-fixed", answers: { q: "Beta" } });
+    expect(service.pendingInteractions().find((p) => p.requestId === "req-fixed")).toBeUndefined();
+  });
+
   test("Kone questions park the live turn, recover after reload, and answer without sending", async () => {
     const base = { ...codexBase, threadId: "t-kone-question" };
     codexEmit({ ...base, type: "turn.started", turnId: "question-turn" });
@@ -424,7 +465,7 @@ describe("AgentService recovery bookkeeping", () => {
     if (!pending) throw new Error("missing recoverable question");
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: "user-input" });
     expect(await service.respondToUserInput(base.threadId, pending.requestId, { q0: "Blue" })).toEqual({ owned: true });
-    expect(await answer).toEqual({ q0: "Blue" });
+    expect(await answer).toEqual({ answers: { q0: "Blue" } });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
     expect(service.threadRuntime(base.threadId)).toMatchObject({ busy: true, parked: null });
     expect(FakeAdapter.sentTurns).toHaveLength(sentBefore);
@@ -438,9 +479,9 @@ describe("AgentService recovery bookkeeping", () => {
     const answer = service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn",
       questions: [{ id: "q0", header: "Question", question: "Which one?", options: [] }] });
     codexEmit({ ...base, type: "turn.aborted", turnId: "question-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(service.pendingInteractions().find((p) => p.threadId === base.threadId)).toBeUndefined();
-    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({});
+    expect(await service.askUser({ ...base, cwd: "/tmp", turnId: "question-turn", questions: [] })).toEqual({ answers: {} });
   });
 
   test("a provider's question and a Kone question on one thread show one at a time, and none is hidden", async () => {
@@ -466,7 +507,7 @@ describe("AgentService recovery bookkeeping", () => {
       questions: [{ id: "q", header: "Native", question: "Again?" }] });
     expect(parked().map((p) => p.requestId)).toEqual([kone[0]!.requestId]);
     codexEmit({ ...base, type: "turn.aborted", turnId: "overlap-turn", reason: "interrupted" });
-    expect(await answer).toEqual({});
+    expect(await answer).toEqual({ answers: {} });
     expect(parked()).toHaveLength(0);
     expect(shown()).toHaveLength(2);
     // The adapter's late word on the dropped ask still reaches listeners.
@@ -481,6 +522,44 @@ describe("AgentService recovery bookkeeping", () => {
       state: "stopped",
     });
     expect(service.pendingInteractions()).toHaveLength(0);
+  });
+});
+
+describe("AgentService answer attachments", () => {
+  test("a row whose file was unlinked is refused as no longer available", async () => {
+    const { getAttachmentStore, resetAttachmentStoreForTests } = await import("./AttachmentStore.js");
+    const { getConversationStore, resetConversationStoreForTests } = await import("./ConversationStore.js");
+    const attDir = mkdtempSync(path.join(tmpdir(), "kone-agentservice-att-"));
+    // Both singletons are process-wide: drop whatever an earlier suite opened
+    // before pointing them at this test's temp dir.
+    resetAttachmentStoreForTests();
+    resetConversationStoreForTests();
+    setUserDataDir(attDir);
+    try {
+      getConversationStore().ensureThread({ threadId: "t-gone", projectPath: "/tmp", provider: "codex" });
+      const store = getAttachmentStore();
+      const saved = await store.save({
+        threadId: "t-gone",
+        name: "shot.png",
+        mimeType: "image/png",
+        data: Buffer.from([1, 2, 3]).toString("base64"),
+      });
+      const abs = store.resolveAbsPath(saved.id);
+      if (!abs) throw new Error("attachment was not stored");
+      // The row still resolves by id; only the bytes are gone.
+      unlinkSync(abs);
+      await expect(
+        service.respondToUserInput("t-gone", "question:unlinked", { q0: "Here it is" }, { q0: [saved] }),
+      ).rejects.toThrow(`"${saved.name}" is no longer available`);
+    } finally {
+      resetAttachmentStoreForTests();
+      resetConversationStoreForTests();
+      // Later tests in this file may lazily open the real store; point it back
+      // at the file-level temp dir rather than this test's, which is about to
+      // disappear.
+      setUserDataDir(userDataDir);
+      rmSync(attDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1649,7 +1728,7 @@ class CompactFakeAdapter extends FakeAdapter {
 
   constructor(
     emit: EmitEvent,
-    provider: string,
+    provider: ProviderKind,
     readonly native: boolean,
   ) {
     super(emit, provider);
@@ -2098,5 +2177,405 @@ describe("handoff window resolution", () => {
     const service = serviceFor(meta({ model: "small", contextWindow: 128_000 }));
     await service.listModels("codex");
     expect(service.handoffWindowTokensFor("t-window", "foreign-model")).toBe(8_000);
+  });
+});
+
+// These executable fixtures use /bin/sh; injected-platform launch tests cover Windows.
+describe.skipIf(process.platform === "win32")("AgentService.checkProviderBinary", () => {
+  test.each([
+    { name: "silent failure", body: "exit 1", error: "Command exited with code 1." },
+    { name: "diagnostic failure", body: "echo 'broken configuration' >&2; exit 2", error: "broken configuration" },
+    { name: "version then failure", body: "echo 'codex 1.2.3'; exit 3", error: "codex 1.2.3" },
+  ])("rejects a $name", async ({ body, error }) => {
+    const binary = path.join(userDataDir, "version-probe");
+    writeFileSync(binary, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+
+    const result = await service.checkProviderBinary("codex", binary);
+
+    expect(result).toMatchObject({ ok: false, version: null, resolvedPath: binary, error });
+  });
+
+  test("accepts a successful version probe", async () => {
+    const binary = path.join(userDataDir, "version-probe-success");
+    writeFileSync(binary, "#!/bin/sh\necho 'codex 1.2.3'\n", { mode: 0o755 });
+
+    const result = await service.checkProviderBinary("codex", binary);
+
+    expect(result).toMatchObject({ ok: true, version: "1.2.3", resolvedPath: binary });
+  });
+});
+
+describe("AgentService.checkProvider", () => {
+  test("re-probes only the named provider and folds its row into the published surface", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+        message: "Run `codex login` to sign in.",
+      },
+      {
+        provider: "cursor",
+        label: "Cursor",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const probed: ProviderKind[] = [];
+    const serviceWithTwo = new AgentServiceCtor({
+      // SAFETY: two fake adapters are the whole roster this test needs.
+      adapters: (emit) =>
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [
+          (() => {
+            const adapter = new FakeAdapter(emit, "codex");
+            adapter.discover = async (): Promise<ProviderStatus> => {
+              probed.push("codex");
+              return {
+                provider: "codex",
+                label: "Codex",
+                available: true,
+                authStatus: "authenticated",
+                readiness: "ready",
+                authLabel: "ChatGPT Sign-In",
+              };
+            };
+            return adapter;
+          })(),
+          (() => {
+            const adapter = new FakeAdapter(emit, "cursor");
+            adapter.discover = async (): Promise<ProviderStatus> => {
+              probed.push("cursor");
+              return {
+                provider: "cursor",
+                label: "Cursor",
+                available: true,
+                authStatus: "authenticated",
+                readiness: "ready",
+              };
+            };
+            return adapter;
+          })(),
+        ] as unknown as ProviderAdapter[],
+    });
+
+    const published: ProviderStatus[][] = [];
+    serviceWithTwo.onProvidersChanged((statuses) => published.push(statuses));
+
+    const row = await serviceWithTwo.checkProvider("codex");
+
+    // Only the provider being checked was probed, and its fresh verdict (not
+    // the cached "needs-login" row) is what came back.
+    expect(probed).toEqual(["codex"]);
+    expect(row).toMatchObject({
+      provider: "codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "ChatGPT Sign-In",
+      enabled: true,
+      supportsThreadCompaction: false,
+    });
+    // The round was published, and the untouched provider's row was carried
+    // over verbatim rather than re-probed or dropped.
+    expect(published).toHaveLength(1);
+    expect(published[0]?.find((status) => status.provider === "cursor")).toMatchObject({
+      provider: "cursor",
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+
+    await serviceWithTwo.stopAll();
+  });
+
+  test("folds the checked row into the cache as it is AFTER the probe, not before", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+      },
+      {
+        provider: "cursor",
+        label: "Cursor",
+        available: true,
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+      },
+    ]);
+
+    const serviceWithTwo = new AgentServiceCtor({
+      // SAFETY: two fake adapters are the whole roster this test needs.
+      adapters: (emit) =>
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [
+          (() => {
+            const adapter = new FakeAdapter(emit, "codex");
+            adapter.discover = async (): Promise<ProviderStatus> => {
+              // A full discovery lands while this CLI is answering and writes a
+              // newer cursor row. The check must fold into that round, not the
+              // one it started from.
+              cacheStatuses([
+                {
+                  provider: "codex",
+                  label: "Codex",
+                  available: true,
+                  authStatus: "unauthenticated",
+                  readiness: "needs-login",
+                },
+                {
+                  provider: "cursor",
+                  label: "Cursor",
+                  available: true,
+                  authStatus: "authenticated",
+                  readiness: "ready",
+                  authLabel: "fresh@example.com",
+                },
+              ]);
+              return {
+                provider: "codex",
+                label: "Codex",
+                available: true,
+                authStatus: "authenticated",
+                readiness: "ready",
+              };
+            };
+            return adapter;
+          })(),
+          (() => new FakeAdapter(emit, "cursor"))(),
+        ] as unknown as ProviderAdapter[],
+    });
+
+    const published: ProviderStatus[][] = [];
+    serviceWithTwo.onProvidersChanged((statuses) => published.push(statuses));
+
+    const row = await serviceWithTwo.checkProvider("codex");
+
+    expect(row).toMatchObject({ provider: "codex", authStatus: "authenticated", readiness: "ready" });
+    expect(published).toHaveLength(1);
+    expect(published[0]?.find((status) => status.provider === "cursor")).toMatchObject({
+      provider: "cursor",
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "fresh@example.com",
+    });
+
+    await serviceWithTwo.stopAll();
+  });
+
+  test("a disabled provider returns the disabled row without probing it", async () => {
+    writeProviderSettings("codex", { enabled: false });
+    let probed = false;
+    const disabledService = new AgentServiceCtor({
+      // SAFETY: one fake codex adapter is the whole roster this test needs.
+      adapters: (emit) =>
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [
+          (() => {
+            const adapter = new FakeAdapter(emit, "codex");
+            adapter.discover = async (): Promise<ProviderStatus> => {
+              probed = true;
+              return {
+                provider: "codex",
+                label: "Codex",
+                available: true,
+                authStatus: "authenticated",
+                readiness: "ready",
+              };
+            };
+            return adapter;
+          })(),
+        ] as unknown as ProviderAdapter[],
+    });
+
+    try {
+      const row = await disabledService.checkProvider("codex");
+      expect(row).toMatchObject({
+        provider: "codex",
+        available: false,
+        authStatus: "unknown",
+        readiness: "disabled",
+        enabled: false,
+        supportsThreadCompaction: false,
+        message: "Provider is disabled in app settings",
+      });
+      expect(probed).toBe(false);
+    } finally {
+      writeProviderSettings("codex", { enabled: true });
+      await disabledService.stopAll();
+    }
+  });
+
+  test("a ready -> ready sign-in confirmation retires the provider's live session", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const reauthService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-reauth-ready-to-ready";
+      await reauthService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+      expect(FakeAdapter.stopped).not.toContain(thread);
+
+      const row = await reauthService.confirmProviderSignIn("codex");
+
+      // Same ready row as before, but the sign-in means the credential behind
+      // it may now belong to another account — the old session cannot survive.
+      expect(row).toMatchObject({ provider: "codex", readiness: "ready" });
+      expect(FakeAdapter.stopped).toContain(thread);
+    } finally {
+      await reauthService.stopAll();
+    }
+  });
+
+  test("an ordinary health check leaves live sessions alone", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const healthService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-health-ready-to-ready";
+      await healthService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+
+      await healthService.checkProvider("codex");
+
+      // Observing the same account is not a credential change: no teardown.
+      expect(FakeAdapter.stopped).not.toContain(thread);
+    } finally {
+      await healthService.stopAll();
+    }
+  });
+
+  test("a sign-in is not outrun by a session that is still starting", async () => {
+    cacheStatuses([
+      {
+        provider: "codex",
+        label: "Codex",
+        available: true,
+        authStatus: "authenticated",
+        readiness: "ready",
+        authLabel: "person@example.com",
+      },
+    ]);
+
+    const codex = new FakeAdapter(() => {}, "codex");
+    codex.discover = async (): Promise<ProviderStatus> => ({
+      provider: "codex",
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      authLabel: "person@example.com",
+    });
+    const startingService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      adapters: () => [codex],
+    });
+
+    try {
+      const thread = "t-reauth-pending-start";
+      let releaseStart!: () => void;
+      FakeAdapter.startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const starting = startingService.startSession({
+        threadId: thread,
+        provider: "codex",
+        cwd: "/tmp",
+        mode: "ask",
+      });
+
+      await startingService.confirmProviderSignIn("codex");
+      releaseStart();
+
+      // The session was spawned for the old runtime, so it is never adopted:
+      // the start tears it down and reports cancellation.
+      await expect(starting).rejects.toBeInstanceOf(StartCancelled);
+      expect(FakeAdapter.stopped).toContain(thread);
+    } finally {
+      FakeAdapter.startGate = null;
+      await startingService.stopAll();
+    }
+  });
+
+  test("a settings patch merges onto the store and re-points the live adapter", async () => {
+    writeProviderSettings("codex", { enabled: true });
+    const codex = new FakeAdapter(() => {}, "codex");
+    const patchedService = new AgentServiceCtor({
+      // SAFETY: one fake codex adapter is the whole roster this test needs.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: () => [codex] as unknown as ProviderAdapter[],
+    });
+
+    try {
+      const snapshot = patchedService.patchProviderSettings("codex", { hiddenModels: ["gpt-5"] });
+      expect(snapshot.settings.codex).toEqual({ enabled: true, hiddenModels: ["gpt-5"] });
+
+      // A second window's toggle lands on top of the first window's field.
+      patchedService.patchProviderSettings("codex", { enabled: false });
+      expect(codex.configs.at(-1)).toEqual({ enabled: false, hiddenModels: ["gpt-5"] });
+    } finally {
+      writeProviderSettings("codex", { enabled: true });
+      await patchedService.stopAll();
+    }
   });
 });

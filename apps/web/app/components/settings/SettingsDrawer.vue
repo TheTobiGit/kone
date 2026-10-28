@@ -137,8 +137,9 @@ const groups = computed<{ title: string; rows: RootRow[] }[]>(() => [
     title: "Workspaces",
     rows: [
       { pane: "studio", label: "Studio", glyph: "studio" },
-      { pane: "inbox", label: "Inbox", glyph: "inbox" },
-      { pane: "bench", label: "Bench", glyph: "bench" },
+      // Inbox: its page and glyph are built and parked with the portal
+      // (ENABLED_PORTALS in usePortals); a settings row for a surface you
+      // cannot open is a dead end.
       { pane: "assistant", label: "Assistant", glyph: "assistant" },
     ],
   },
@@ -285,7 +286,7 @@ watch(
     <SettingsStudioPane v-if="pane === 'studio'" :open="open" @back="backToRoot" />
 
     <SettingsWorkspacePane
-      v-if="pane === 'inbox' || pane === 'bench' || pane === 'assistant'"
+      v-if="pane === 'inbox' || pane === 'assistant'"
       :key="pane"
       :open="open"
       :workspace="pane"

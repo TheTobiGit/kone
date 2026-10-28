@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import type { PlanTask } from "@kone/protocol/plan-tasks";
 
-import type { ChatAttachment, StoredBlock } from "./types.js";
+import { formatReferencePrompt, referencePromptChars } from "./referencePrompt.js";
+import { isReferenceAttachment, type ChatAttachment, type StoredBlock } from "./types.js";
 
 // Context handoff budgeting and history selection.
 //
@@ -42,8 +43,10 @@ const HANDOFF_HEADROOM_FRACTION = 4;
 
 /** What one attachment costs against the history budget. Images are rendered
  *  into the prompt as bytes by some providers; without dimensions/detail
- *  metadata, reserve above a typical resized image. Other attachments are
- *  path references, so only their descriptor line is reserved. */
+ *  metadata, reserve above a typical resized image. A text reference is
+ *  inlined verbatim, so it is priced by the characters it actually delivers.
+ *  Other attachments are path references, so only their descriptor line is
+ *  reserved. */
 export const ATTACHMENT_IMAGE_TOKENS = 8_192;
 export const ATTACHMENT_OTHER_TOKENS = 4_096;
 
@@ -62,13 +65,20 @@ export function clampHandoffTokenCap(value: number): number {
 }
 
 /** Tokens reserved for a turn's attachments, charged against the history
- *  budget so a message with images cannot crowd out the transcript silently. */
+ *  budget so a message with images cannot crowd out the transcript silently.
+ *  A reference is inlined rather than named, so its own text is what the
+ *  reserve has to cover. */
 export function attachmentTokenAllowance(attachments: readonly ChatAttachment[]): number {
-  return attachments.reduce(
-    (sum, attachment) =>
-      sum + (attachment.type === "image" ? ATTACHMENT_IMAGE_TOKENS : ATTACHMENT_OTHER_TOKENS),
-    0,
-  );
+  return attachments.reduce((sum, attachment) => {
+    if (attachment.type === "reference") {
+      // A broken reference is not inlined (and not a file either), so it costs
+      // nothing against the replay budget.
+      return isReferenceAttachment(attachment)
+        ? sum + Math.ceil(referencePromptChars(attachment.reference) / CHARS_PER_TOKEN)
+        : sum;
+    }
+    return sum + (attachment.type === "image" ? ATTACHMENT_IMAGE_TOKENS : ATTACHMENT_OTHER_TOKENS);
+  }, 0);
 }
 
 /** The effective context window for a replay: an explicitly selected window
@@ -232,9 +242,25 @@ function planTasksText(tasks: readonly PlanTask[] | undefined): string {
  */
 export function historicalBlockText(block: StoredBlock): string | null {
   if (block.role === "user") {
-    const parts = [block.text.trim()];
-    if (block.attachments?.length) {
-      parts.push(`[Attachments: ${block.attachments.map((a) => a.name).join(", ")}]`);
+    const parts: string[] = [];
+    const prose = block.text.trim();
+    if (prose) parts.push(prose);
+    // References are inlined by every send path, so a replay that named only
+    // the attachment would hand a fresh provider session a quote it can never
+    // recover. Their exact bytes travel here too, through the same formatter
+    // the send used.
+    const files: ChatAttachment[] = [];
+    for (const attachment of block.attachments ?? []) {
+      if (attachment.type === "reference") {
+        // A reference-shaped record with a broken payload is still not a file;
+        // it is skipped rather than replayed as a name that names nothing.
+        if (isReferenceAttachment(attachment)) parts.push(formatReferencePrompt(attachment.reference));
+        continue;
+      }
+      files.push(attachment);
+    }
+    if (files.length) {
+      parts.push(`[Attachments: ${files.map((a) => a.name).join(", ")}]`);
     }
     const text = parts.filter((part) => part.length > 0).join("\n");
     return text || null;

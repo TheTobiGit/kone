@@ -31,9 +31,18 @@ import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import { resolveBranchDrift } from "~/utils/branchDrift";
-import type { ApprovalDecision, ChatAttachment, GitRemote, SkillReference, UserInputAnswers } from "~/types/desktop";
+import { resendDraft } from "~/utils/turnResend";
+import type {
+  ApprovalDecision,
+  ChatAttachment,
+  GitRemote,
+  SkillReference,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+} from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
 import type { SessionSummary } from "~/types/session";
-import { normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
+import { mergeComposerAttachments, normalizeComposerDraft, type ComposerDraft, type QueuedTurnEntry } from "~/composables/useAgent";
 
 const props = defineProps<{
   /** The row this pane is showing. Carries the project the thread lives in,
@@ -110,14 +119,20 @@ const composerOpen = ref(false);
 const pendingUserInput = computed(() => session.value?.pendingUserInput.value ?? null);
 const pendingApproval = computed(() => session.value?.pendingApproval.value ?? null);
 
-// Answer the agent's live question — hands the picked answers back so the
-// parked tool call resolves and the turn continues.
-function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
-  void session.value?.respondUserInput(requestId, answers);
+// Answer the agent's live question — hands the picked answers, and any files
+// uploaded for them, back so the parked tool call resolves and the turn
+// continues.
+function onAnswerUserInput(
+  requestId: string,
+  answers: UserInputAnswers,
+  attachments?: UserInputAnswerAttachments,
+  owner?: UserInputOwner,
+): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, answers, attachments);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
-function onCancelUserInput(requestId: string): void {
-  void session.value?.respondUserInput(requestId, {});
+function onCancelUserInput(requestId: string, owner?: UserInputOwner): void {
+  void (owner ?? session.value)?.respondUserInput(requestId, {});
 }
 // Decide a parked tool approval — resolves the parked request and lets the
 // turn continue.
@@ -349,13 +364,22 @@ async function onSend(
   // Only the thread's first turn asks: every later one finds it already
   // decided and leaves both the binding and the router alone.
   if (threadId) await composer.settleAndPin(draft.text, threadId);
-  await s.send({ text: draft.text, attachments: await upload(draft.files), skills: draft.skills, steer: draft.steer });
+  await s.send({ text: draft.text, attachments: mergeComposerAttachments(await upload(draft.files), draft.references), skills: draft.skills, steer: draft.steer });
 }
 
 async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   const s = session.value;
   if (!s) return;
   await s.sendQueuedEntryNow(entry);
+}
+
+/** Retry / resend of a turn keeps the attachment metadata it carried, so a
+ *  reference-only request stays retryable and its quote is not dropped. */
+async function onRetry(text: string, attachments?: ChatAttachment[]): Promise<void> {
+  const s = session.value;
+  const draft = resendDraft(text, attachments);
+  if (!s || !draft || s.busy.value) return;
+  await s.send(draft);
 }
 
 /** Edit-and-resend of an earlier message: fork the thread at that block and
@@ -425,6 +449,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :checkpoints="session?.checkpoints.value ?? []"
         :now="agent.now.value"
         :thread-id="row.threadId"
+        :thread-title="threadTitle"
         :agent-seed="row.threadId"
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"
@@ -433,8 +458,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :loading-older="session?.loadingOlder.value"
         :older-error="session?.olderError.value"
         hide-empty-art
-        @retry="onSend"
-        @resend="onSend"
+        @retry="onRetry"
+        @resend="onRetry"
         @edit-fork="onEditFork"
         @retry-load="session?.openStored(row.threadId)"
         @load-older="session?.loadOlder()"
@@ -532,6 +557,9 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :user-input="pendingUserInput"
       :approval="pendingApproval"
       :approval-queue="session?.pendingApprovals.value"
+      :upload="session?.uploadAttachment"
+      :discard="session?.discardAttachment"
+            :owner="session ?? undefined"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
       @decide="onRespondApproval"

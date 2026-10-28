@@ -526,6 +526,43 @@ describe("OpenCode steerTurn", () => {
     expect(steerBody?.parts.some((part) => part.text === "keep going")).toBe(true);
   });
 
+  test("a text reference reaches OpenCode's prompt text", async () => {
+    const events: RuntimeEvent[] = [];
+    const adapter = new adapterModule.OpenCodeAdapter((event) => events.push(event));
+    await startSession(adapter);
+    await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "opencode",
+      input: "explain this",
+      attachments: [
+        {
+          type: "reference",
+          id: "ref_1",
+          name: "Source",
+          mimeType: "text/plain",
+          sizeBytes: 24,
+          reference: {
+            text: "  const answer = 42;\n\treturn answer;\n",
+            sourcePaneId: "pane-1",
+            sourceThreadId: "thread-1",
+            sourceTitle: "Source",
+          },
+        },
+      ],
+    });
+
+    const promptPosts = calls.filter((c) => c.route === "/session/ses_1/prompt_async");
+    expect(promptPosts.length).toBeGreaterThan(0);
+    // SAFETY: prompt_async posts always carry a JSON body with a parts array.
+    const body = promptPosts[promptPosts.length - 1]?.body as
+      | { parts: Array<{ text?: string }> }
+      | undefined;
+    const text = body?.parts.map((part) => part.text ?? "").join("\n") ?? "";
+    expect(text).toContain("explain this");
+    expect(text).toContain("  const answer = 42;\n\treturn answer;\n");
+    expect(text).toMatch(/^`{3}text$/m);
+  });
+
   test("steer with no live turn falls back to sendTurn", async () => {
     const events: RuntimeEvent[] = [];
     const adapter = new adapterModule.OpenCodeAdapter((event) => events.push(event));

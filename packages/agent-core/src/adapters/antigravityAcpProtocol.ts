@@ -232,6 +232,8 @@ export function toAntigravityQuestion(
       question: questionText.length > 8000 ? `${questionText.slice(0, 7997)}...` : questionText,
       options: labels.map(({ label }) => ({ label, description: label })),
       multiSelect: false,
+      // The reply is one optionId: a typed answer or a file has nowhere to go.
+      fixedChoice: true,
     },
     optionIds: labels.map(({ optionId }) => optionId),
   };

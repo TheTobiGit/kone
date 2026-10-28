@@ -1,185 +1,379 @@
 import { computed, ref } from "vue";
 import { useStorage } from "@vueuse/core";
-import type { ProviderKind, ProviderSettingsMap } from "~/types/desktop";
+import { desktopBridge } from "~/utils/desktopBridge";
+import type {
+  GlobalProviderSettingsPatch,
+  KoneAgentApi,
+  LegacyRendererProviderSettings,
+  ProviderBinaryCheckResult,
+  ModelDescriptor,
+  ProviderConfig,
+  ProviderEnvVar,
+  ProviderKind,
+  ProviderSettingsMap,
+  ProviderSettingsSnapshot,
+} from "~/types/desktop";
 
-// The user's per-provider install settings — the settings-surface companion to
-// useAgentProviders (which only *detects* installed CLIs). Two axes:
-//
-//  • binaryPath — where a provider's CLI actually lives. This has to reach the
-//    Electron main process (the adapters spawn the binary), so it's persisted
-//    through the desktop bridge (koneDesktop.agent.get/setSettings). In `nuxt
-//    dev` there's no bridge, so it falls back to localStorage purely so the
-//    Providers pane stays demoable in the browser.
-//
-//  • enabled — whether a provider shows up in the model-picker rail at all. This
-//    is a pure renderer-side view filter (no bridge needed), so it lives in
-//    localStorage the same way useStripPrefs' motion knobs do, shared at module
-//    scope so flipping it in the drawer updates the rail live.
-//
-// Module-scope state so every surface (the drawer, ProjectView's rail) reads one
-// reactive source and a change in one is seen everywhere without a reload.
+const KNOWN_PROVIDERS: ProviderKind[] = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "droid",
+  "antigravity",
+  "cline",
+];
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity", "cline"];
+const DEFAULT_HANDOFF_CAP = 16_000;
+const MIN_HANDOFF_CAP = 1_024;
+const MAX_HANDOFF_CAP = 64_000;
+const DEFAULT_HEALTH_INTERVAL_SEC = 300;
 
-// Where the dev (no-bridge) fallback stashes binary paths, mirroring the shape
-// the desktop store persists. Kept separate from `enabled` so the two axes never
-// step on each other.
-const DEV_BINARY_KEY = "kone.providers.binaryPaths";
+const LEGACY_ENABLED_KEY = "kone.providers.enabled";
+const LEGACY_HIDDEN_KEY = "kone.models.hidden";
 
-// binaryPath per provider. Authoritative source is the desktop store; this is
-// the renderer's warm mirror of it (populated by load()).
-const binaryPaths = ref<Partial<Record<ProviderKind, string>>>({});
+type SettingsBridge = Partial<
+  Pick<
+    KoneAgentApi,
+    | "getSettings"
+    | "setSettings"
+    | "patchSettings"
+    | "patchGlobalSettings"
+    | "checkProviderBinary"
+    | "getSettingsSnapshot"
+    | "importLegacySettings"
+    | "onSettingsChanged"
+  >
+>;
+
+const settings = ref<ProviderSettingsMap>({});
+const providerOrder = ref<ProviderKind[]>([]);
+const healthCheckIntervalSec = ref<number>(DEFAULT_HEALTH_INTERVAL_SEC);
+const revision = ref(-1);
+let stopListening: (() => void) | null = null;
 let loaded = false;
 
-// Which providers are allowed in the picker rail. Absent = enabled (opt-out), so
-// a fresh install shows every detected provider. Synced across windows.
-const enabledMap = useStorage<Partial<Record<ProviderKind, boolean>>>(
-  "kone.providers.enabled",
-  {},
-  undefined,
-  { listenToStorageChanges: true },
-);
+const binaryPaths = computed<Partial<Record<ProviderKind, string>>>(() => {
+  const out: Partial<Record<ProviderKind, string>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const path = settings.value[provider]?.binaryPath?.trim();
+    if (path) out[provider] = path;
+  }
+  return out;
+});
 
-// Which individual models are hidden from the picker, keyed by provider then by
-// model *family* key (ModelOption.key — the same core the picker groups by). Like
-// enabledMap this is opt-out: a family absent from its provider's list is shown,
-// so a fresh install and every newly-detected model default to visible. A pure
-// renderer-side view filter, so localStorage (synced across windows) is enough.
-const hiddenModels = useStorage<Partial<Record<ProviderKind, string[]>>>(
-  "kone.models.hidden",
-  {},
-  undefined,
-  { listenToStorageChanges: true },
-);
+const enabledMap = computed<Partial<Record<ProviderKind, boolean>>>(() => {
+  const out: Partial<Record<ProviderKind, boolean>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const enabled = settings.value[provider]?.enabled;
+    if (enabled !== undefined) out[provider] = enabled !== false;
+  }
+  return out;
+});
 
-// Whether the providers pane may look up newer CLI versions when it opens. On by
-// default, but genuinely optional: it's a network call about software the user
-// might have pinned deliberately, and kone shouldn't reach out to registries
-// behind the back of someone who'd rather it didn't.
+const hiddenModels = computed<Partial<Record<ProviderKind, string[]>>>(() => {
+  const out: Partial<Record<ProviderKind, string[]>> = {};
+  for (const provider of KNOWN_PROVIDERS) {
+    const hidden = settings.value[provider]?.hiddenModels;
+    if (hidden?.length) out[provider] = [...hidden];
+  }
+  return out;
+});
+
 const updateChecks = useStorage<boolean>("kone.providers.updateChecks", true, undefined, {
   listenToStorageChanges: true,
 });
 
-function bridge() {
-  return import.meta.client ? window.koneDesktop?.agent : undefined;
+function bridge(): SettingsBridge | undefined {
+  const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+  return preload ?? desktopBridge()?.agent;
 }
 
-function readDevBinaryPaths(): Partial<Record<ProviderKind, string>> {
-  if (!import.meta.client) return {};
+function apply(snapshot: ProviderSettingsSnapshot, force = false): void {
+  if (!force && snapshot.revision <= revision.value) return;
+  settings.value = snapshot.settings;
+  providerOrder.value = snapshot.providerOrder ? [...snapshot.providerOrder] : [];
+  healthCheckIntervalSec.value =
+    snapshot.healthCheckIntervalSec ?? DEFAULT_HEALTH_INTERVAL_SEC;
+  revision.value = snapshot.revision;
+}
+
+function listen(api: SettingsBridge): void {
+  if (stopListening || !api.onSettingsChanged) return;
+  stopListening = api.onSettingsChanged(apply);
+}
+
+function readLegacy<T>(key: string): T | undefined {
   try {
-    const raw = localStorage.getItem(DEV_BINARY_KEY);
-    // SAFETY: DEV_BINARY_KEY is written only by writeDevBinaryPaths() below,
-    // from exactly this shape; malformed JSON throws into the catch.
-    return raw ? (JSON.parse(raw) as Partial<Record<ProviderKind, string>>) : {};
+    const raw = localStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed: T | null = JSON.parse(raw);
+    if (parsed === null || !(parsed instanceof Object) || Array.isArray(parsed)) return undefined;
+    return parsed;
   } catch {
-    return {};
+    return undefined;
   }
 }
 
-function writeDevBinaryPaths(map: Partial<Record<ProviderKind, string>>): void {
-  if (!import.meta.client) return;
+function readLegacySettings(): LegacyRendererProviderSettings {
+  return {
+    enabled: readLegacy<Partial<Record<ProviderKind, boolean>>>(LEGACY_ENABLED_KEY),
+    hiddenModels: readLegacy<Partial<Record<ProviderKind, string[]>>>(LEGACY_HIDDEN_KEY),
+  };
+}
+
+function dropLegacySettings(): void {
   try {
-    localStorage.setItem(DEV_BINARY_KEY, JSON.stringify(map));
+    localStorage.removeItem(LEGACY_ENABLED_KEY);
+    localStorage.removeItem(LEGACY_HIDDEN_KEY);
   } catch {
-    // best-effort; a full/blocked localStorage never breaks the pane.
+    // Blocked store: the keys can't be read by anything either.
   }
 }
 
-/** Flatten the desktop store's `{ provider: { binaryPath } }` map into the flat
- *  provider→path shape the pane binds to. */
-function fromSettingsMap(map: ProviderSettingsMap): Partial<Record<ProviderKind, string>> {
-  const out: Partial<Record<ProviderKind, string>> = {};
-  for (const provider of KNOWN_PROVIDERS) {
-    const path = map[provider]?.binaryPath?.trim();
-    if (path) out[provider] = path;
-  }
-  return out;
+function clampCap(raw: number): number {
+  if (!Number.isFinite(raw)) return DEFAULT_HANDOFF_CAP;
+  return Math.min(MAX_HANDOFF_CAP, Math.max(MIN_HANDOFF_CAP, Math.round(raw)));
 }
 
 export function useProviderSettings() {
-  /** Load persisted binary paths and enablement once. Reads the desktop store when present,
-   *  else the dev localStorage fallback. Idempotent. */
   async function load(force = false): Promise<void> {
     if (loaded && !force) return;
     const api = bridge();
-    if (api?.getSettings) {
+    let settled = true;
+    if (api?.getSettingsSnapshot) {
+      listen(api);
       try {
-        const settings = await api.getSettings();
-        binaryPaths.value = fromSettingsMap(settings);
-        const map: Partial<Record<ProviderKind, boolean>> = {};
-        for (const provider of KNOWN_PROVIDERS) {
-          if (settings[provider]?.enabled !== undefined) {
-            map[provider] = settings[provider]?.enabled !== false;
+        const snapshot = await api.getSettingsSnapshot();
+        if (snapshot.legacyImportPending && api.importLegacySettings) {
+          apply(snapshot);
+          try {
+            const imported = await api.importLegacySettings(readLegacySettings());
+            apply(imported);
+            if (imported.legacyImportPending) settled = false;
+            else dropLegacySettings();
+          } catch {
+            settled = false;
           }
+        } else {
+          apply(snapshot);
+          if (!snapshot.legacyImportPending) dropLegacySettings();
         }
-        enabledMap.value = { ...enabledMap.value, ...map };
       } catch {
-        binaryPaths.value = {};
+        settled = false;
       }
-    } else {
-      binaryPaths.value = readDevBinaryPaths();
+    } else if (api?.getSettings) {
+      try {
+        settings.value = await api.getSettings();
+      } catch {
+        settled = false;
+      }
     }
-    loaded = true;
+    loaded = settled;
   }
 
-  /** The configured binary path for a provider, or "" when it runs on default. */
   function binaryPath(provider: ProviderKind): string {
     return binaryPaths.value[provider] ?? "";
   }
 
-  /** Persist a provider's binary path. An empty/blank value clears the override
-   *  (the adapter falls back to its default). Writes through to the desktop
-   *  store (which re-points the live adapter) or the dev fallback. */
-  async function setBinaryPath(provider: ProviderKind, path: string): Promise<void> {
-    const trimmed = path.trim();
-    const next = { ...binaryPaths.value };
-    if (trimmed) next[provider] = trimmed;
-    else delete next[provider];
-    binaryPaths.value = next;
+  async function write(provider: ProviderKind, patch: ProviderConfig): Promise<void> {
+    const next: ProviderConfig = { ...settings.value[provider], ...patch };
+    settings.value = { ...settings.value, [provider]: next };
 
     const api = bridge();
-    if (api?.setSettings) {
+    if (api?.patchSettings) {
       try {
-        const current = (await api.getSettings())[provider] ?? {};
-        binaryPaths.value = fromSettingsMap(
-          await api.setSettings(provider, { ...current, binaryPath: trimmed || undefined }),
-        );
+        apply(await api.patchSettings(provider, patch));
       } catch {
-        // Keep the optimistic in-memory value; the pane still reflects the edit.
+        if (api.getSettingsSnapshot) {
+          try {
+            apply(await api.getSettingsSnapshot(), true);
+          } catch {
+            // Unreadable too; the next push or reload settles it.
+          }
+        }
       }
-    } else {
-      writeDevBinaryPaths(next);
+      return;
+    }
+    if (!api?.setSettings) return;
+    try {
+      const written = await api.setSettings(provider, next);
+      if (!api.getSettingsSnapshot) settings.value = written;
+    } catch {
+      // Keep the optimistic value; the pane still reflects the edit.
     }
   }
 
-  /** Whether a provider may appear in the picker rail (default: yes). */
+  async function writeGlobal(patch: GlobalProviderSettingsPatch): Promise<void> {
+    if (patch.providerOrder !== undefined) {
+      providerOrder.value = [...patch.providerOrder];
+    }
+    if (patch.healthCheckIntervalSec !== undefined) {
+      healthCheckIntervalSec.value = patch.healthCheckIntervalSec;
+    }
+    const api = bridge();
+    if (api?.patchGlobalSettings) {
+      try {
+        apply(await api.patchGlobalSettings(patch));
+      } catch {
+        if (api.getSettingsSnapshot) {
+          try {
+            apply(await api.getSettingsSnapshot(), true);
+          } catch {
+            // Unreadable too.
+          }
+        }
+      }
+    }
+  }
+
+  async function setBinaryPath(provider: ProviderKind, path: string): Promise<void> {
+    await write(provider, { binaryPath: path.trim() || undefined });
+  }
+
+  async function checkBinary(
+    provider: ProviderKind,
+    path?: string,
+  ): Promise<ProviderBinaryCheckResult | null> {
+    const api = bridge();
+    if (!api?.checkProviderBinary) return null;
+    try {
+      return await api.checkProviderBinary(provider, path);
+    } catch {
+      return null;
+    }
+  }
+
   function isEnabled(provider: ProviderKind): boolean {
     return enabledMap.value[provider] !== false;
   }
 
   async function setEnabled(provider: ProviderKind, on: boolean): Promise<void> {
-    enabledMap.value = { ...enabledMap.value, [provider]: on };
-
-    const api = bridge();
-    if (api?.setSettings) {
-      try {
-        const current = (await api.getSettings())[provider] ?? {};
-        await api.setSettings(provider, { ...current, enabled: on });
-      } catch {
-        // Keep optimistic in-memory value
-      }
-    }
+    await write(provider, { enabled: on });
   }
 
-  /** Predicate for filtering a list of provider-tagged rows by the enabled map,
-   *  handed to ProjectView so the rail and boot pick share one rule. */
+  /** Whether a provider is shown in the model picker when enabled (default: true). */
+  function isShownInPicker(provider: ProviderKind): boolean {
+    if (!isEnabled(provider)) return false;
+    return settings.value[provider]?.showInPicker !== false;
+  }
+
+  async function setShownInPicker(provider: ProviderKind, on: boolean): Promise<void> {
+    await write(provider, { showInPicker: on });
+  }
+
+  /** Order a list of provider ids according to the user's persisted `providerOrder`. */
+  function orderProviders(base: readonly ProviderKind[]): ProviderKind[] {
+    const stored = providerOrder.value;
+    if (!stored.length) return [...base];
+    const baseSet = new Set(base);
+    const out: ProviderKind[] = [];
+    for (const p of stored) {
+      if (baseSet.has(p) && !out.includes(p)) out.push(p);
+    }
+    for (const p of base) {
+      if (!out.includes(p)) out.push(p);
+    }
+    return out;
+  }
+
+  /** Move `provider` one step earlier (-1) or later (+1) in `baseOrder` and persist. */
+  async function moveProvider(
+    provider: ProviderKind,
+    delta: -1 | 1,
+    baseOrder: readonly ProviderKind[] = KNOWN_PROVIDERS,
+  ): Promise<void> {
+    const list = orderProviders(baseOrder);
+    const idx = list.indexOf(provider);
+    const target = idx + delta;
+    if (idx < 0 || target < 0 || target >= list.length) return;
+    const a = list[idx];
+    const b = list[target];
+    if (!a || !b) return;
+    list[idx] = b;
+    list[target] = a;
+    await writeGlobal({ providerOrder: list });
+  }
+
+  async function setHealthCheckIntervalSec(seconds: number): Promise<void> {
+    await writeGlobal({ healthCheckIntervalSec: Math.max(0, Math.round(seconds)) });
+  }
+
+  function handoffTokenCap(provider: ProviderKind): number {
+    const raw = settings.value[provider]?.handoffTokenCap;
+    return raw !== undefined ? clampCap(raw) : DEFAULT_HANDOFF_CAP;
+  }
+
+  async function setHandoffTokenCap(provider: ProviderKind, cap: number): Promise<void> {
+    await write(provider, { handoffTokenCap: clampCap(cap) });
+  }
+
+  function customModels(provider: ProviderKind): string[] {
+    const list = settings.value[provider]?.customModels;
+    return list?.length ? [...list] : [];
+  }
+
+  /** Merge user-configured custom model slugs into a provider's descriptor list. */
+  function withCustomModels(
+    provider: ProviderKind,
+    descriptors: readonly ModelDescriptor[],
+  ): ModelDescriptor[] {
+    const slugs = customModels(provider);
+    if (!slugs.length) return [...descriptors];
+    const seen = new Set(descriptors.map((d) => d.id));
+    const extras: ModelDescriptor[] = [];
+    for (const slug of slugs) {
+      if (seen.has(slug)) continue;
+      seen.add(slug);
+      extras.push({ id: slug, label: slug, custom: true });
+    }
+    return [...descriptors, ...extras];
+  }
+
+  async function addCustomModel(provider: ProviderKind, slug: string): Promise<void> {
+    const trimmed = slug.trim();
+    if (!trimmed) return;
+    const current = customModels(provider);
+    if (current.includes(trimmed)) return;
+    await write(provider, { customModels: [...current, trimmed] });
+  }
+
+  async function removeCustomModel(provider: ProviderKind, slug: string): Promise<void> {
+    const next = customModels(provider).filter((s) => s !== slug);
+    await write(provider, { customModels: next.length ? next : undefined });
+  }
+
+  function homeDir(provider: ProviderKind): string {
+    return settings.value[provider]?.homeDir?.trim() ?? "";
+  }
+
+  async function setHomeDir(provider: ProviderKind, path: string): Promise<void> {
+    await write(provider, { homeDir: path.trim() || undefined });
+  }
+
+  function envVars(provider: ProviderKind): ProviderEnvVar[] {
+    const list = settings.value[provider]?.env;
+    return list?.length ? list.map((v) => ({ ...v })) : [];
+  }
+
+  async function setEnvVars(provider: ProviderKind, vars: ProviderEnvVar[]): Promise<void> {
+    const clean: ProviderEnvVar[] = [];
+    for (const v of vars) {
+      const name = v.name.trim();
+      if (!name) continue;
+      const secret = v.secret === true;
+      const item: ProviderEnvVar = secret
+        ? { name, value: "", secret: true }
+        : { name, value: v.value };
+      clean.push(item);
+    }
+    await write(provider, { env: clean.length ? clean : undefined });
+  }
+
   const enabledPredicate = computed(
     () => (provider: ProviderKind) => enabledMap.value[provider] !== false,
   );
 
-  /** Whether a model family may appear in the picker (default: yes). Keyed by
-   *  the family core (ModelOption.key), which is what both the pane's toggle and
-   *  the picker's catalog group by. */
   function isModelHidden(provider: ProviderKind, key: string): boolean {
     return hiddenModels.value[provider]?.includes(key) ?? false;
   }
@@ -191,12 +385,9 @@ export function useProviderSettings() {
         ? current
         : [...current, key]
       : current.filter((k) => k !== key);
-    hiddenModels.value = { ...hiddenModels.value, [provider]: next };
+    void write(provider, { hiddenModels: next });
   }
 
-  /** How many of a provider's families the user has hidden — for the pane's
-   *  count line. Counts only keys still present in the live catalog it's given,
-   *  so a model that's since disappeared doesn't inflate the tally. */
   function hiddenModelCount(provider: ProviderKind, liveKeys: string[]): number {
     const hidden = hiddenModels.value[provider];
     if (!hidden?.length) return 0;
@@ -204,27 +395,73 @@ export function useProviderSettings() {
     return hidden.filter((k) => live.has(k)).length;
   }
 
-  /** Predicate ProjectView filters its picker catalog through, so the pane's
-   *  toggles and the picker share one rule (mirrors enabledPredicate). */
   const modelVisiblePredicate = computed(
     () => (provider: ProviderKind, key: string) =>
       !(hiddenModels.value[provider]?.includes(key) ?? false),
   );
 
+  function resumeAtReset(provider: ProviderKind): boolean {
+    return settings.value[provider]?.resumeAtReset !== false;
+  }
+
+  async function setResumeAtReset(provider: ProviderKind, on: boolean): Promise<void> {
+    await write(provider, { resumeAtReset: on });
+  }
+
+  function snoozeWhenLimited(provider: ProviderKind): boolean {
+    return settings.value[provider]?.snoozeWhenLimited === true;
+  }
+
+  async function setSnoozeWhenLimited(provider: ProviderKind, on: boolean): Promise<void> {
+    await write(provider, { snoozeWhenLimited: on });
+  }
+
   return {
     binaryPaths,
     enabledMap,
     hiddenModels,
+    providerOrder,
+    healthCheckIntervalSec,
     updateChecks,
     load,
     binaryPath,
     setBinaryPath,
+    checkBinary,
     isEnabled,
     setEnabled,
+    isShownInPicker,
+    setShownInPicker,
+    orderProviders,
+    moveProvider,
+    setHealthCheckIntervalSec,
+    handoffTokenCap,
+    setHandoffTokenCap,
+    customModels,
+    withCustomModels,
+    addCustomModel,
+    removeCustomModel,
+    homeDir,
+    setHomeDir,
+    envVars,
+    setEnvVars,
     enabledPredicate,
     isModelHidden,
     setModelHidden,
     hiddenModelCount,
     modelVisiblePredicate,
+    resumeAtReset,
+    setResumeAtReset,
+    snoozeWhenLimited,
+    setSnoozeWhenLimited,
   };
+}
+
+export function resetProviderSettingsForTests(): void {
+  stopListening?.();
+  stopListening = null;
+  settings.value = {};
+  providerOrder.value = [];
+  healthCheckIntervalSec.value = DEFAULT_HEALTH_INTERVAL_SEC;
+  revision.value = -1;
+  loaded = false;
 }

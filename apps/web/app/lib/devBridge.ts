@@ -13,8 +13,11 @@ import type {
   CloneProgress,
   GitActionProgressEvent,
   KoneGitApi,
+  LegacyRendererProviderSettings,
   ProviderKind,
   ProviderMaintenance,
+  ProviderSettingsSnapshot,
+  ProviderStatus,
   ProviderUpdateResult,
   StoredThreadMeta,
 } from "~/types/desktop";
@@ -23,9 +26,20 @@ import { cloneStageAt } from "~/composables/useGitClone";
 import type { DesktopAgentReach, DevBridge } from "~/utils/desktopBridge";
 import * as world from "./devMocks";
 import { devHandOffThreads } from "./devHandOffs";
-import { MOCK_MAINTENANCE, MOCK_MODELS, MOCK_STATUSES } from "./devProviders";
+import { devTurnTraces } from "./devTraces";
+import { MOCK_MAINTENANCE, MOCK_MODELS } from "./devProviders";
+import { createDevProviderSignIn, createDevTerminal, devProviderStatuses } from "./devSignIn";
 
 export function createDevBridge(): DevBridge {
+  // The provider surface's push channel, shared by the dev agent and the
+  // scripted sign-in: a verified login re-reads the demo provider table and
+  // announces it, exactly as `agent:providers-changed` does in the shell.
+  const providerListeners = new Set<(statuses: ProviderStatus[]) => void>();
+  const announceProviders = (): void => {
+    const next = devProviderStatuses();
+    for (const listener of providerListeners) listener(next);
+  };
+
   return {
     fs: {
       home: () => Promise.resolve(world.MOCK_HOME),
@@ -35,7 +49,9 @@ export function createDevBridge(): DevBridge {
       writeProjectFile: (_root, _path, _content) => beat(),
     },
     git: createDevGit(),
-    agent: createDevAgent(),
+    agent: createDevAgent(providerListeners),
+    terminal: createDevTerminal(),
+    providerSignIn: createDevProviderSignIn(announceProviders),
     turnRunner: createMockTurnRunner,
   };
 }
@@ -163,7 +179,10 @@ function createDevGit(): KoneGitApi {
       prs: (dir, opts) => later(world.mockPrs(dir, opts?.state ?? "open")),
       // A copy, as IPC hands over: the demo's actions change the world in place,
       // and the card has to see a new object to notice.
-      prDetail: (_dir, number) => later(structuredClone(world.mockPrDetail(number))),
+      prDetail: (_dir, number, section) => later(
+        structuredClone(world.mockPrDetail(number)),
+        section ? { summary: 180, conversation: 900, checks: 1500, files: 650, merge: 1200 }[section] : undefined,
+      ),
       prDiff: (_dir, number) => later(world.mockPrDiff(number)),
       issues: (dir, opts) => later(world.mockIssues(dir, opts?.state ?? "open")),
       issuesEnabled: () => later(true),
@@ -192,14 +211,60 @@ function createDevGit(): KoneGitApi {
 
 // ── providers and the thread list ─────────────────────────────────────────────
 
-function createDevAgent(): DesktopAgentReach {
-  const snapshot = () => ({ version: 1, savedAt: Date.now(), statuses: MOCK_STATUSES, models: MOCK_MODELS });
+function createDevAgent(
+  providerListeners: Set<(statuses: ProviderStatus[]) => void>,
+): DesktopAgentReach {
+  const snapshot = () => ({
+    version: 1,
+    savedAt: Date.now(),
+    statuses: devProviderStatuses(),
+    models: MOCK_MODELS,
+  });
+  // The stand-in's settings store: nothing stored, but the same revision and
+  // import-once contract as the real one, so a first open exercises the real
+  // path instead of a special case.
+  let settingsRevision = 1;
+  let legacyImported = false;
+  const settingsListeners = new Set<(next: ProviderSettingsSnapshot) => void>();
+  const settingsSnapshot = (): ProviderSettingsSnapshot => ({
+    revision: settingsRevision,
+    settings: {},
+    legacyImportPending: !legacyImported,
+  });
+  const announceSettings = (next: ProviderSettingsSnapshot): void => {
+    for (const listener of settingsListeners) listener(next);
+  };
   return {
     surface: () => Promise.resolve(snapshot()),
     warm: () => Promise.resolve(),
-    discover: () => Promise.resolve(MOCK_STATUSES),
-    onProvidersChanged: () => () => {},
+    discover: () => Promise.resolve(devProviderStatuses()),
+    onProvidersChanged: (cb) => {
+      providerListeners.add(cb);
+      return () => {
+        providerListeners.delete(cb);
+      };
+    },
+    // The demo catalog is static, so it has no model changes to announce.
+    onModelsChanged: () => () => {},
     models: (provider) => Promise.resolve(MOCK_MODELS[provider] ?? []),
+    getSettingsSnapshot: () => Promise.resolve(settingsSnapshot()),
+    // Importing once bumps the revision, exactly like the main process; a
+    // second call is a no-op that returns what is already there.
+    importLegacySettings: (_legacy: LegacyRendererProviderSettings) => {
+      if (!legacyImported) {
+        legacyImported = true;
+        settingsRevision += 1;
+      }
+      const next = settingsSnapshot();
+      announceSettings(next);
+      return Promise.resolve(next);
+    },
+    onSettingsChanged: (cb) => {
+      settingsListeners.add(cb);
+      return () => {
+        settingsListeners.delete(cb);
+      };
+    },
     maintenance: () => Promise.resolve(Object.values(MOCK_MAINTENANCE)),
     // The installer "runs" for a beat and lands on the latest version, so the
     // pane's running → succeeded transition can be seen.
@@ -312,6 +377,7 @@ function createDevHistory(): DesktopAgentReach["history"] {
       threads.delete(threadId);
       return Promise.resolve();
     },
+    turnTraces: (threadId) => later(devTurnTraces(threadId)),
     setPinned: (threadId, pinned) => patch(threadId, { isPinned: pinned }),
     setDone: (threadId, done) => patch(threadId, { doneAt: done ? Date.now() : 0 }),
     setVisited: (threadId, at, force) => {

@@ -1,3 +1,4 @@
+import { buildProviderChildEnv } from "../providerChildEnv.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -38,8 +39,8 @@ export const DROID_HOME_ENV = "DROID_HOME";
 
 export const FACTORY_API_KEY_ENV = "FACTORY_API_KEY";
 
-function droidHomeDir(): string {
-  return process.env[DROID_HOME_ENV]?.trim() || path.join(os.homedir(), ".factory");
+function droidHomeDir(env: NodeJS.ProcessEnv = buildProviderChildEnv("droid")): string {
+  return env[DROID_HOME_ENV]?.trim() || path.join(os.homedir(), ".factory");
 }
 
 /** Credential files the CLI writes once a device-pairing login completes —
@@ -56,10 +57,11 @@ export type DroidDeps = {
 };
 
 function defaultDeps(): DroidDeps {
+  const env = buildProviderChildEnv("droid");
   return {
     fetch: globalThis.fetch,
-    env: process.env,
-    factoryEnvPath: path.join(os.homedir(), ".factory", ".env"),
+    env,
+    factoryEnvPath: path.join(droidHomeDir(env), ".env"),
     readFile: readSecureFile,
     now: Date.now,
   };
@@ -120,10 +122,12 @@ export async function resolveFactoryApiKey(deps: DroidDeps = defaultDeps()): Pro
  *  "connected" here but gets a report that explains the key requirement
  *  rather than a silent "not connected". */
 export async function detectDroidCredential(): Promise<boolean> {
-  if ((await resolveFactoryApiKey()) !== null) return true;
+  const deps = defaultDeps();
+  if ((await resolveFactoryApiKey(deps)) !== null) return true;
+  const home = droidHomeDir(deps.env);
   for (const name of DROID_LOGIN_FILES) {
     try {
-      await fs.access(path.join(droidHomeDir(), name));
+      await fs.access(path.join(home, name));
       return true;
     } catch {
       // Not this one — try the next login file.

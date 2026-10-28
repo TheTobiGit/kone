@@ -198,6 +198,32 @@ describe("prepareCodexHomeOverlay", () => {
     expect(readFileSync(path.join(overlay, "config.toml"), "utf8")).toContain(CODEX_MANAGED_REGION_END);
   });
 
+  test("resolves sourceHome from the passed provider env and replaces links when sourceHome changes", () => {
+    const homeA = makeHome();
+    const homeB = makeHome();
+    const overlay = makeHome() + "/overlay";
+    writeFileSync(path.join(homeA, "auth.json"), '{"OPENAI_API_KEY":"key-a"}');
+    writeFileSync(path.join(homeA, "only-a.txt"), "from-a");
+    writeFileSync(path.join(homeB, "auth.json"), '{"OPENAI_API_KEY":"key-b"}');
+
+    prepareCodexHomeOverlay({
+      endpointUrl: "http://127.0.0.1:41007/mcp",
+      env: { CODEX_HOME: homeA },
+      overlayHome: overlay,
+    });
+    expect(readFileSync(path.join(overlay, "auth.json"), "utf8")).toBe('{"OPENAI_API_KEY":"key-a"}');
+    expect(existsSync(path.join(overlay, "only-a.txt"))).toBe(true);
+
+    // Switching CODEX_HOME to homeB must relink auth.json to homeB and drop stale links to homeA:
+    prepareCodexHomeOverlay({
+      endpointUrl: "http://127.0.0.1:41007/mcp",
+      env: { CODEX_HOME: homeB },
+      overlayHome: overlay,
+    });
+    expect(readFileSync(path.join(overlay, "auth.json"), "utf8")).toBe('{"OPENAI_API_KEY":"key-b"}');
+    expect(existsSync(path.join(overlay, "only-a.txt"))).toBe(false);
+  });
+
   test("linked auth resolves back to the very file codex would read at the real home", () => {
     const source = makeHome();
     writeFileSync(path.join(source, "auth.json"), "AUTH");

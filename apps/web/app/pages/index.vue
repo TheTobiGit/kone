@@ -13,7 +13,13 @@ import type { SurfaceId } from "~/utils/surfaceTop";
 import { requestSearchJump } from "~/composables/useSearchJump";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
 import { useViewFacet } from "~/composables/useViewContext";
+import { isPortalEnabled } from "~/composables/usePortals";
+import { basename } from "~/utils/threadWorkspace";
 import type { SearchJumpRequest } from "~/components/conversation/ConversationSearchModal.vue";
+// Imported by path rather than left to auto-import: this is the one modal every
+// provider entry point funnels into, and naming the file here keeps that single
+// mount obvious at the page shell.
+import ProviderSignInModal from "~/components/provider/ProviderSignInModal.vue";
 
 const project = useProject();
 const { recents, forget, togglePin } = useRecentProjects();
@@ -180,26 +186,31 @@ const {
   openDrawer,
 } = useSettingsSurface();
 
+// Which provider the sign-in modal is up for, shared by every entry point: the
+// provider deck's pill, the provider detail's Sign-in block, the composer's
+// status tray. The mount below is the only listener.
+const signIn = useProviderSignIn();
+
 function onOpenProfile() {
   cue("show");
   openDrawer("profile");
 }
 
-// ── portals: the studio plane and the inbox ─────────────────────────────────
+// ── portals: the studio plane, for now alone ────────────────────────────────
 // One layer over every page, each mounted once for the life of the app. ⌘B
 // summons the studio from wherever you are — a project page or the launcher —
 // because the work it holds is not any one page's; a project's row keeps
-// running whether or not its page is on screen. ⌘I summons the inbox, the
-// studio's opposite number: the same work ordered by what it wants from you,
-// which deliberately never shares the screen with the work surface. The handoff
-// between them (timers, mid-switch dismissal, the fade length the CSS reads)
-// lives in usePortals; this page only binds its state and answers its keys.
+// running whether or not its page is on screen. The studio's opposite number,
+// the inbox, is built but parked while the studio is finished: it is not
+// mounted, has no key, and the menus offer no way there (see ENABLED_PORTALS in
+// usePortals). The handoff machinery still knows both portals, so bringing the
+// inbox back is an id in that set plus the mount below.
 //
 // Leaving a portal by hand (Escape, close button) dismisses through the same
-// path, so dismissing the inbox mid-switch reveals the plane underneath
-// instead of letting the pending switch carry through to the page. A covered
-// portal stays painted underneath but takes no keys and no focus, so one
-// Escape never dismisses both.
+// path, so dismissing one mid-switch reveals the plane underneath instead of
+// letting the pending switch carry through to the page. A covered portal stays
+// painted underneath but takes no keys and no focus, so one Escape never
+// dismisses both.
 const {
   studioOpen,
   activePortal,
@@ -207,8 +218,6 @@ const {
   summon,
   dismiss,
   toggleStudio,
-  toggleInbox,
-  toggleBench,
   portalState,
   pendingThreadJump,
   jumpToThread,
@@ -218,7 +227,9 @@ const {
 // portalState on every render.
 const studioState = computed(() => portalState("studio"));
 const inboxState = computed(() => portalState("inbox"));
-const benchState = computed(() => portalState("bench"));
+// The inbox is parked (see ENABLED_PORTALS): its state stays bound so turning
+// it back on is the mount alone, but nothing mounts or summons it until then.
+const inboxEnabled = isPortalEnabled("inbox");
 // The page under the plane, so a row's request for something the page owns (a
 // file's diff) can be handed down to it.
 const pageRef = ref<{
@@ -269,7 +280,6 @@ const surfaceTop = computed<SurfaceId>(() =>
     launcherModal: isLauncherModalOpen.value,
     intentMenu: intent.isOpen.value,
     assistant: assistantOpen.value,
-    bench: activePortal.value === "bench",
     inbox: activePortal.value === "inbox",
     studio: activePortal.value === "studio",
     settings: settingsOpen.value,
@@ -299,11 +309,10 @@ useViewFacet("home", () => {
 
 const { matchesShortcut } = useShortcuts();
 const { prefs: typePrefs, setSize: setTypeSize } = useTypography();
-// One listener for the four summon hotkeys, so the blocking rule is stated
-// once: while a launcher modal owns the screen the plane, the inbox, the
-// drawer and the assistant would all open underneath it, so none of them
-// fires. Portals stay summonable while settings is revealed, and the studio
-// key still means go-to-studio while the inbox is up (see toggleStudio).
+// One listener for every summon hotkey, so the blocking rule is stated once:
+// while a launcher modal owns the screen the plane, the drawer and the
+// assistant would all open underneath it, so none of them fires. The studio
+// stays summonable while settings is revealed.
 function onSurfaceHotkey(e: KeyboardEvent) {
   if (matchesShortcut("search-conversations", e)) {
     if (isLauncherModalOpen.value) return;
@@ -319,18 +328,6 @@ function onSurfaceHotkey(e: KeyboardEvent) {
     if (isLauncherModalOpen.value) return;
     e.preventDefault();
     toggleStudio();
-    return;
-  }
-  if (matchesShortcut("open-inbox", e)) {
-    if (isLauncherModalOpen.value) return;
-    e.preventDefault();
-    toggleInbox();
-    return;
-  }
-  if (matchesShortcut("open-bench", e)) {
-    if (isLauncherModalOpen.value) return;
-    e.preventDefault();
-    toggleBench();
     return;
   }
   // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so
@@ -384,10 +381,13 @@ onMounted(() => {
 // ── global attention bots ────────────────────────────────────────────────────
 // Every parked thread in the app, one bot each, top-right over any surface.
 // Picking one abandons whatever flow is up (a parked thread outranks picking a
-// folder) and lands the inbox on that thread, where its ask answers inline.
-// Declarative throughout: overlays fall as state, the orchestrator records the
-// jump and summons the inbox, and the inbox routes it out of that state — no
-// component ref, no method call across the tree.
+// folder) and lands on that thread, where its ask can be answered.
+//
+// With the inbox parked there is nowhere to jump into, so the bot opens the
+// thread's project page instead: the studio row mounts on that thread and its
+// ask answers in the column, the same inline affordance the inbox's reading
+// pane would have offered. Turning the inbox back on restores the jump — the
+// branch below reads the one switch, it does not fork the flow.
 function onAttentionOpen(projectPath: string, threadId: string) {
   pickerOpen.value = false;
   cloneOpen.value = false;
@@ -401,7 +401,17 @@ function onAttentionOpen(projectPath: string, threadId: string) {
     return;
   }
   if (assistantOpen.value) toggleAssistant();
-  jumpToThread({ projectPath, threadId });
+
+  if (inboxEnabled) {
+    jumpToThread({ projectPath, threadId });
+
+    return;
+  }
+
+  // The bot carries no project name; the path's last segment is what the
+  // launcher would have called it anyway.
+  cue("open");
+  openProject({ path: projectPath, name: basename(projectPath) }, threadId);
 }
 </script>
 
@@ -482,33 +492,27 @@ function onAttentionOpen(projectPath: string, threadId: string) {
           @open-file="onStudioOpenFile"
         />
 
-        <!-- The inbox, over both the page and the plane. Mounted once alongside
-             them for the same reason: whatever it comes to hold is not any one
-             page's, and it has to survive a project switch. -->
+        <!-- The inbox, over both the page and the plane. Parked while the
+             studio is finished (see ENABLED_PORTALS): the component is whole
+             and its state is bound, but nothing mounts it until the inbox is
+             switched back on. Mounted once alongside its siblings when it is —
+             whatever it comes to hold is not any one page's, and it has to
+             survive a project switch. -->
         <InboxAppInbox
+          v-if="inboxEnabled"
           :state="inboxState"
           :surface-top="surfaceTop"
           :pending-jump="pendingThreadJump"
           @close="() => dismiss('inbox')"
           @jump-consumed="clearThreadJump"
         />
-
-        <!-- The bench, over both. Mounted once like its siblings: the queue it
-             holds belongs to a project, but the portal outlives any one page,
-             and a job keeps running whether or not its project is on screen. -->
-        <BenchAppBench
-          :state="benchState"
-          :surface-top="surfaceTop"
-          @close="() => dismiss('bench')"
-        />
-
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer. It sits
            above everything the stage holds — the page (z-30), the studio plane
-           (z-40), the pill stack and the inbox (z-45), the bench (z-46) — so a
-           tap on the shoved-aside work dismisses the drawer instead of landing
-           on the work underneath. A drawer that can only be left by keyboard is
+           (z-40), the pill stack and the inbox (z-45) — so a tap on the
+           shoved-aside work dismisses the drawer instead of landing on the
+           work underneath. A drawer that can only be left by keyboard is
            a trap: with an opaque portal up, this is the only pointer path back.
            The keyboard half of the same contract is the `inert` above, and the
            surface order in surfaceTop, which both put the drawer in front of
@@ -552,6 +556,17 @@ function onAttentionOpen(projectPath: string, threadId: string) {
     <AssistantGlobalAssistantModal
       v-if="assistantOpen"
       :surface-top="surfaceTop"
+    />
+
+    <!-- The app-level sign-in modal: the composer's tray asks the same composable,
+         and this is the one card that answers it. The settings Providers pane
+         hosts its own copy inside the pane, so this one stays on the app host.
+         Keyed on the provider so switching targets is a fresh run; closing is
+         the modal's own call to `closed()`. -->
+    <ProviderSignInModal
+      v-if="signIn.target.value && signIn.host.value === 'app'"
+      :key="signIn.target.value"
+      :provider="signIn.target.value"
     />
 
     <!-- The conversation-search palette, over every page. Mounted only while

@@ -1,3 +1,4 @@
+import { useProviderSettings } from "~/composables/useProviderSettings";
 import { computed, ref } from "vue";
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "~/types/desktop";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
@@ -21,7 +22,45 @@ let probed = false;
 // Prettified model lists, cached per provider at module scope. Populated on the
 // first `models()` call (or eagerly by `prepare()` at app open) so entering a
 // project reads a warm list instead of re-shelling out to the CLI.
-const modelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+const rawModelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+// A pushed catalog wins over an IPC response captured before it arrived.
+const modelPushRevisions = new Map<ProviderKind, number>();
+const ALL_PROVIDERS: ProviderKind[] = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "droid",
+  "antigravity",
+  "cline",
+];
+
+function stripCustom(list: readonly ModelDescriptor[]): ModelDescriptor[] {
+  return list.filter((d) => !d.custom);
+}
+
+const modelCache = computed<Partial<Record<ProviderKind, ModelDescriptor[]>>>({
+  get() {
+    const ps = useProviderSettings();
+    const out: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
+    for (const p of ALL_PROVIDERS) {
+      const base = stripCustom(rawModelCache.value[p] ?? []);
+      const merged = ps.withCustomModels(p, base);
+      if (merged.length) out[p] = merged;
+    }
+    return out;
+  },
+  set(next) {
+    const clean: Partial<Record<ProviderKind, ModelDescriptor[]>> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (v) {
+        // SAFETY: next is keyed by ProviderKind.
+        clean[k as ProviderKind] = stripCustom(v);
+      }
+    }
+    rawModelCache.value = clean;
+  },
+});
 let preparing: Promise<void> | null = null;
 let refreshing: Promise<void> | null = null;
 let hydrating: Promise<void> | null = null;
@@ -47,9 +86,12 @@ let watching = false;
  *  point at which kone stops caring what its providers are doing). `refreshNow`
  *  is the composable's own `refresh`, which dedupes itself; every instance
  *  closes over the same module state, so whichever one gets here first is as
- *  good as any other. */
+ *  good as any other. Called from the composable body, not from `prepare()`:
+ *  Settings can be reached straight from the home screen without anything having
+ *  asked to prepare the surface, and an in-app sign-in there still has to move
+ *  the row it just verified. */
 function watch(refreshNow: () => Promise<void>): void {
-  if (watching || !import.meta.client) return;
+  if (watching || typeof window === "undefined") return;
   watching = true;
   // The cheap path: the main process announces a discovery round only when it
   // actually differs, so a status corrected in the background lands here with
@@ -59,6 +101,10 @@ function watch(refreshNow: () => Promise<void>): void {
     statuses.value = next;
     probed = true;
     confirmed.value = true;
+  });
+  bridge()?.onModelsChanged((provider, models) => {
+    modelPushRevisions.set(provider, (modelPushRevisions.get(provider) ?? 0) + 1);
+    rawModelCache.value = { ...rawModelCache.value, [provider]: stripCustom(models) };
   });
   // Returning to the app is when a stale row is both most likely and most
   // visible: the user usually left to go run `codex login`.
@@ -112,9 +158,11 @@ export function useAgentProviders() {
    *  re-guessing a name from the id. Cached at module scope after the first
    *  fetch (bypass with `force`). */
   async function models(provider: ProviderKind, force = false): Promise<ModelDescriptor[]> {
-    const cached = modelCache.value[provider];
-    if (cached && !force) return cached;
+    const ps = useProviderSettings();
+    const cached = rawModelCache.value[provider];
+    if (cached?.length && !force) return ps.withCustomModels(provider, cached);
     const api = bridge();
+    const revision = modelPushRevisions.get(provider) ?? 0;
     let raw: ModelDescriptor[];
     if (!api) raw = [];
     else {
@@ -124,10 +172,16 @@ export function useAgentProviders() {
         raw = [];
       }
     }
+    if (revision !== (modelPushRevisions.get(provider) ?? 0)) {
+      return ps.withCustomModels(provider, rawModelCache.value[provider] ?? []);
+    }
     // Only cache a real list — an empty result means the CLI errored or wasn't
     // reachable, and we want the next call to retry rather than serve the miss.
-    if (raw.length) modelCache.value = { ...modelCache.value, [provider]: raw };
-    return raw;
+    const base = stripCustom(raw);
+    if (base.length) {
+      rawModelCache.value = { ...rawModelCache.value, [provider]: base };
+    }
+    return ps.withCustomModels(provider, base.length ? base : (rawModelCache.value[provider] ?? []));
   }
 
   /** Seed statuses + catalogs from the main process's disk snapshot. This spawns
@@ -154,9 +208,11 @@ export function useAgentProviders() {
           // corrects it in the background.
           probed = true;
         }
-        const seeded = Object.entries(snapshot.models).filter(([, list]) => list?.length);
+        const seeded = Object.entries(snapshot.models)
+          .map(([k, list]) => [k, stripCustom(list ?? [])] as const)
+          .filter(([, list]) => list.length > 0);
         if (seeded.length) {
-          modelCache.value = { ...Object.fromEntries(seeded), ...modelCache.value };
+          rawModelCache.value = { ...Object.fromEntries(seeded), ...rawModelCache.value };
         }
       } catch {
         // No snapshot is a soft failure — `refresh()` still has to run.
@@ -189,14 +245,22 @@ export function useAgentProviders() {
       // already started at app launch), so asking here never doubles the CLI
       // spawns, and it writes the result through to the snapshot for next time.
       await api.warm();
+      const revisions = new Map(modelPushRevisions);
       const snapshot = await api.surface();
       if (snapshot.statuses.length) {
         statuses.value = snapshot.statuses;
         probed = true;
         confirmed.value = true;
       }
-      const fresh = Object.entries(snapshot.models).filter(([, list]) => list?.length);
-      if (fresh.length) modelCache.value = { ...modelCache.value, ...Object.fromEntries(fresh) };
+      const fresh = Object.entries(snapshot.models)
+        .map(([k, list]) => [k, stripCustom(list ?? [])] as const)
+        .filter(([key, list]) => {
+          // SAFETY: snapshot.models is keyed by ProviderKind.
+          const provider = key as ProviderKind;
+          return list.length > 0 &&
+            (revisions.get(provider) ?? 0) === (modelPushRevisions.get(provider) ?? 0);
+        });
+      if (fresh.length) rawModelCache.value = { ...rawModelCache.value, ...Object.fromEntries(fresh) };
     })();
     try {
       await refreshing;
@@ -204,6 +268,11 @@ export function useAgentProviders() {
       refreshing = null;
     }
   }
+
+  // Any surface that asks about providers is enough to keep them live — this
+  // is the app's one provider store, and the listener is what makes a sign-in
+  // completed elsewhere (the modal, another window) land here without a reload.
+  watch(refresh);
 
   /** Make the provider surface usable. Hydrates from disk first and returns as
    *  soon as that lands, kicking the live re-probe off behind it — callers that
@@ -214,7 +283,6 @@ export function useAgentProviders() {
   async function prepare(): Promise<void> {
     if (preparing) return preparing;
     preparing = (async () => {
-      watch(refresh);
       await hydrate();
       if (statuses.value.length) void refresh().catch(() => {});
       else await refresh();
@@ -226,11 +294,56 @@ export function useAgentProviders() {
     }
   }
 
+  /** Force a fresh model catalog probe for `provider`, updating `modelCache`
+   *  and returning any discovery error string for the pane. */
+  async function refreshModels(
+    provider: ProviderKind,
+  ): Promise<{ models: ModelDescriptor[]; error: string | null }> {
+    const revision = modelPushRevisions.get(provider) ?? 0;
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.refreshModels) {
+      try {
+        const res = await preload.refreshModels(provider);
+        if (revision !== (modelPushRevisions.get(provider) ?? 0)) {
+          return { models: modelCache.value[provider] ?? [], error: null };
+        }
+        const base = stripCustom(res.models);
+        if (base.length) {
+          rawModelCache.value = { ...rawModelCache.value, [provider]: base };
+        }
+        return { models: res.models, error: res.error ?? null };
+      } catch (error) {
+        return {
+          models: modelCache.value[provider] ?? [],
+          error: revision === (modelPushRevisions.get(provider) ?? 0)
+            ? peelIpcError(error, "Could not refresh models") : null,
+        };
+      }
+    }
+    const list = await models(provider, true);
+    return { models: list, error: null };
+  }
+
+  /** Re-probe a single provider's health immediately. */
+  async function checkProvider(provider: ProviderKind): Promise<ProviderStatus | null> {
+    const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
+    if (preload?.checkProvider) {
+      try {
+        const next = await preload.checkProvider(provider);
+        statuses.value = statuses.value.some((s) => s.provider === provider)
+          ? statuses.value.map((s) => (s.provider === provider ? next : s))
+          : [...statuses.value, next];
+        return next;
+      } catch {
+        return byProvider(provider).value;
+      }
+    }
+    await discover(true);
+    return byProvider(provider).value;
+  }
+
   return {
     statuses,
-    /** The raw per-provider catalogs, reactive — surfaces that derive from them
-     *  (the picker's model list) watch this so a background `refresh()` lands
-     *  without a reload. */
     modelCache,
     ready,
     loading,
@@ -240,6 +353,8 @@ export function useAgentProviders() {
     sendAvailability,
     discover,
     models,
+    refreshModels,
+    checkProvider,
     hydrate,
     refresh,
     prepare,

@@ -120,9 +120,12 @@ mock.module(fileURLToPath(new URL("./jsonRpc.ts", import.meta.url)), () => ({
 // `probe` spawns the real `droid` CLI — the gateway registration step
 // (registerGatewayMcp) drives `droid mcp remove/add` with it, which would
 // mutate the user's persistent droid MCP config and can hang on a daemon.
-// Stub it so the test is hermetic: any probe looks like a success.
+// Preserve the shared module surface while keeping both probe APIs hermetic.
+const actualSpawn = await import("./spawn.js");
 mock.module(fileURLToPath(new URL("./spawn.ts", import.meta.url)), () => ({
+  ...actualSpawn,
   probe: async () => "ok",
+  probeResult: async () => ({ outcome: "ok", stdout: "1.0.0", stderr: "", code: 0 }),
 }));
 
 const { DroidAdapter } = await import("./adapters/DroidAdapter.js");

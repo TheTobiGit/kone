@@ -2,12 +2,22 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
-import type { UserInputAnswers, UserInputQuestion } from "~/types/desktop";
+import type {
+  ChatAttachment,
+  UserInputAnswerAttachments,
+  UserInputAnswers,
+  UserInputQuestion,
+} from "~/types/desktop";
+import type { UserInputOwner } from "~/composables/agentTypes";
+import { useUserInputAttachments } from "~/composables/useUserInputAttachments";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
+import UserInputAnswerFiles from "~/components/ui/UserInputAnswerFiles.vue";
+import UserInputQuestionMedia from "~/components/ui/UserInputQuestionMedia.vue";
 import {
   buildUserInputAnswers,
   emptyUserInputDraft,
+  USER_INPUT_ATTACHMENT_LIMIT,
   type UserInputDraft,
 } from "~/utils/userInputAnswers";
 
@@ -15,9 +25,11 @@ import {
 // folder/model/branch pickers wear — but anchored bottom-centre where the agent
 // composer sits, since it takes the composer's place while a question is up.
 // Each question renders as either a list of selectable options (single- or
-// multi-select) or, when it carries none, a free-text field. Answering hands the
-// picked/typed values back keyed by question id; the parked tool call resolves
-// and the turn continues.
+// multi-select) or, when it carries none, a free-text field. Whatever the agent
+// attached — images from its attachment store, or a live visual — sits under
+// the prompt, and the user may attach files of their own to the answer.
+// Answering hands the picked/typed values, with those files, back keyed by
+// question id; the parked tool call resolves and the turn continues.
 
 const props = defineProps<{
   requestId: string;
@@ -26,19 +38,65 @@ const props = defineProps<{
    *  (fixed), so the scrim dims only the thread and the card lands in its
    *  bottom-centre over the composer's spot. */
   contained?: boolean;
+  /** Upload one picked/dropped/pasted answer file and resolve to its stored
+   *  metadata. Absent hides every attach affordance — a host with nowhere to
+   *  put the bytes offers no button that would fail. */
+  upload?: (file: File) => Promise<ChatAttachment>;
+  /** The session that asked. Handed back with the answer, so it reaches that
+   *  session even when the focus moved on during the exit. */
+  owner?: UserInputOwner;
+  /** Forget an answer file the user removed, or one this dialog closes without
+   *  sending. Absent leaves those bytes to the startup sweep. */
+  discard?: (attachment: ChatAttachment) => Promise<void>;
 }>();
 
 const { cue } = useSound();
 
 const emit = defineEmits<{
-  answer: [requestId: string, answers: UserInputAnswers];
-  cancel: [requestId: string];
+  /** Answers keyed by question id, plus the files that rode each answer (only
+   *  questions that actually carry files appear in the third argument). */
+  answer: [
+    requestId: string,
+    answers: UserInputAnswers,
+    attachments: UserInputAnswerAttachments | undefined,
+    owner: UserInputOwner | undefined,
+  ];
+  cancel: [requestId: string, owner: UserInputOwner | undefined];
 }>();
 
 // Per-question working state, keyed by question id (see UserInputDraft): the
 // picked option labels, whether "write your own" is on, and the typed text.
 const drafts = reactive<Record<string, UserInputDraft>>({});
 for (const q of props.questions) drafts[q.id] = emptyUserInputDraft();
+
+// Answer files live in their own lifecycle: uploads start as each file arrives,
+// and the dialog's outcome either hands them to the answer or takes them back.
+const {
+  attachments,
+  uploading,
+  uploadErrors,
+  dragTarget,
+  attachedTotal,
+  uploadingAny,
+  attachmentAnswers,
+  hasAnswerAttachments,
+  attachFiles,
+  removeAttachment,
+  onPaste,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  clearDragTarget,
+  transferToAnswer,
+  discardAll,
+  dispose,
+} = useUserInputAttachments({ upload: props.upload, discard: props.discard });
+
+/** Any question carrying agent media earns a wider card and a taller scroll
+ *  area, so a visual gets the same room it has in a reply. */
+const hasAgentMedia = computed(() =>
+  props.questions.some((q) => Boolean(q.images?.length || q.visual)),
+);
 
 function draft(q: UserInputQuestion): UserInputDraft {
   return drafts[q.id] ?? (drafts[q.id] = emptyUserInputDraft());
@@ -74,9 +132,13 @@ function activateOther(q: UserInputQuestion): void {
   if (!draft(q).other) toggleOther(q);
 }
 
-// Every question must have an answer before the turn can continue.
-const answers = computed(() => buildUserInputAnswers(props.questions, drafts));
-const canSubmit = computed(() => answers.value !== null);
+// Every question must have an answer before the turn can continue — a file or
+// two counts as one even when nothing is typed or picked. Uploads still in
+// flight hold the send back so the answer leaves with everything on it.
+const answers = computed(() =>
+  buildUserInputAnswers(props.questions, drafts, attachments),
+);
+const canSubmit = computed(() => answers.value !== null && !uploadingAny.value);
 
 // The shell's header-band title: the lone question's header reads best there;
 // with several, a neutral label and each question keeps its own inline header.
@@ -86,16 +148,31 @@ const bandTitle = computed(() =>
 
 function submit(): void {
   const ready = answers.value;
-  if (!ready || closing.value) return;
+  if (!ready || closing.value || uploadingAny.value) return;
   cue("press");
-  close(() => emit("answer", props.requestId, ready));
+  // Everything on the answer is handed over with it: the files are the agent's
+  // now, so the unmount must not discard them.
+  transferToAnswer();
+  // Taken now, not when the exit ends: the asking session is this click's.
+  const owner = props.owner;
+  close(() =>
+    emit(
+      "answer",
+      props.requestId,
+      ready,
+      hasAnswerAttachments.value ? attachmentAnswers.value : undefined,
+      owner,
+    ),
+  );
 }
 
 // Dismiss the question — hands the parked tool call an empty answer, which the
 // adapter treats as "declined" so the turn can carry on.
 function cancel(): void {
   if (closing.value) return;
-  dismiss(() => emit("cancel", props.requestId));
+  discardAll();
+  const owner = props.owner;
+  dismiss(() => emit("cancel", props.requestId, owner));
 }
 
 // surface, but bottom-centre over the composer's spot ───────────────────────────
@@ -136,6 +213,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  // The dialog went away without an answer (the host unmounted it, or the
+  // request was withdrawn): whatever was uploaded for it is unreferenced.
+  dispose();
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("resize", syncHeight);
   ro?.disconnect();
@@ -153,11 +233,14 @@ onBeforeUnmount(() => {
   >
     <div
       v-bind="card"
-      class="modal-card relative z-20 w-full max-w-lg overflow-hidden"
+      class="modal-card relative z-20 w-full overflow-hidden"
+      :class="hasAgentMedia ? 'max-w-2xl' : 'max-w-lg'"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
       role="dialog"
       aria-modal="true"
       aria-label="The agent is asking a question"
+      @dragover.prevent
+      @drop.prevent="clearDragTarget"
     >
       <div ref="contentEl" class="ask-body flex shrink-0 flex-col">
         <!-- Recessed header band with the arc scoops flowing into the card walls
@@ -170,11 +253,25 @@ onBeforeUnmount(() => {
         </div>
 
         <div
-          class="picker-scroll flex max-h-[52vh] flex-col gap-5 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2"
+          class="picker-scroll flex flex-col gap-5 overflow-y-auto overflow-x-hidden px-4 pt-4 pb-2"
+          :class="hasAgentMedia ? 'max-h-[68vh]' : 'max-h-[52vh]'"
         >
-          <div v-for="q in questions" :key="q.id" class="ask-question flex flex-col gap-2.5">
+          <div
+            v-for="q in questions"
+            :key="q.id"
+            class="ask-question flex flex-col gap-2.5"
+            :class="{ 'is-dragging': dragTarget === q.id }"
+            @dragover="onDragOver(q, $event)"
+            @dragleave="onDragLeave(q, $event)"
+            @drop.prevent="onDrop(q, $event)"
+          >
             <span v-if="questions.length > 1" class="ask-header">{{ q.header }}</span>
             <p class="ask-prompt">{{ q.question }}</p>
+
+            <!-- What the agent attached: images from its own attachment store,
+                 opened large in the shared viewer, and a live visual drawn by
+                 the same frame a reply uses (theme, height reports, expand). -->
+            <UserInputQuestionMedia :images="q.images" :visual="q.visual" />
 
             <!-- Option list: radio-like for single-select, checkbox-like for
                  multi. The mark fills with the accent once picked. -->
@@ -206,10 +303,15 @@ onBeforeUnmount(() => {
                 </span>
               </button>
 
-              <!-- Always offer a way out of the presets: an inline "write your
-                   own" row whose typed value replaces (single) or joins (multi)
-                   the picked options. -->
-              <div class="ask-option ask-option--inline" :class="{ 'is-picked': draft(q).other }">
+              <!-- Offer a way out of the presets: an inline "write your own" row
+                   whose typed value replaces (single) or joins (multi) the
+                   picked options. A fixed-choice question takes only an option
+                   back, so it has none. -->
+              <div
+                v-if="!q.fixedChoice"
+                class="ask-option ask-option--inline"
+                :class="{ 'is-picked': draft(q).other }"
+              >
                 <button
                   type="button"
                   class="ask-mark-btn"
@@ -235,6 +337,7 @@ onBeforeUnmount(() => {
                   class="ask-inline-input"
                   placeholder="Write your own…"
                   @focus="activateOther(q)"
+                  @paste="onPaste(q, $event)"
                   @keydown.enter.prevent="submit"
                 />
               </div>
@@ -247,7 +350,23 @@ onBeforeUnmount(() => {
               class="ask-input"
               rows="2"
               placeholder="Type your answer…"
+              @paste="onPaste(q, $event)"
               @keydown.enter.exact.stop
+            />
+
+            <!-- Files the user attaches to this answer. The button and its
+                 hidden picker exist only when the host can store them; drop
+                 and paste land on the whole question. Chips show what will
+                 ride the answer, with in-flight rows and a last-error line. -->
+            <UserInputAnswerFiles
+              v-if="props.upload && !q.fixedChoice"
+              :attachments="attachments[q.id] ?? []"
+              :uploading="uploading[q.id] ?? []"
+              :error="uploadErrors[q.id]"
+              :total="attachedTotal"
+              :limit="USER_INPUT_ATTACHMENT_LIMIT"
+              @files="attachFiles(q, $event)"
+              @remove="removeAttachment(q.id, $event)"
             />
           </div>
         </div>
@@ -255,6 +374,7 @@ onBeforeUnmount(() => {
         <!-- Footer band (scoops up into the card walls) — text-button actions to
              match the folder/model pickers, no filled pill. -->
         <div class="picker-footer flex items-center justify-end gap-6">
+          <span v-if="uploadingAny" class="ask-upload-note" role="status">Uploading…</span>
           <button
             type="button"
             class="picker-action text-ink"
@@ -341,6 +461,19 @@ onBeforeUnmount(() => {
   letter-spacing: -0.01em;
   line-height: 1.35;
   color: var(--ink);
+}
+
+/* The footer's upload status line. */
+.ask-upload-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* The whole question is the drop target, so a file dragged over any part of it
+   reads as landing here. */
+.ask-question.is-dragging {
+  border-radius: 10px;
+  outline: 1.5px dashed color-mix(in srgb, var(--ink) 24%, transparent);
+  outline-offset: 4px;
 }
 
 /* Option rows — the quiet hover fill and pill radius the picker rows wear, with

@@ -10,6 +10,7 @@ import { isWorkspaceCancel } from "@kone/protocol/ipc-error";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
   AdapterCapabilities,
+  ChatAttachment,
   EmitEvent,
   ProviderAdapter,
   QueuedTurnStore,
@@ -60,6 +61,7 @@ class FakeAdapter {
    *  compaction running across a move. */
   declare compactThread?: (threadId: string) => Promise<void>;
   static sent: string[] = [];
+  static sentAttachments: Array<SendTurnInput["attachments"]> = [];
   static sentSkills: Array<SendTurnInput["skills"]> = [];
   static startedCwds: string[] = [];
   static startedAgents: Array<SessionStartInput["agent"]> = [];
@@ -100,6 +102,7 @@ class FakeAdapter {
     FakeAdapter.refuseNext = null;
     if (refused) throw refused;
     FakeAdapter.sent.push(input.input);
+    FakeAdapter.sentAttachments.push(input.attachments);
     FakeAdapter.sentSkills.push(input.skills);
     return { threadId: input.threadId, turnId: `turn-${++FakeAdapter.turnCounter}` };
   }
@@ -122,13 +125,16 @@ class FakeAdapter {
 
 type StoreType = import("./ConversationStore.js").ConversationStore;
 let ConversationStoreCtor: typeof import("./ConversationStore.js").ConversationStore;
+let resetConversationStoreForTests: typeof import("./ConversationStore.js").resetConversationStoreForTests;
 let AgentServiceCtor: typeof import("./AgentService.js").AgentService;
 let initThreadDispatcher: typeof import("./dispatch.js").initThreadDispatcher;
 let IrcMailboxCtor: typeof import("./gateway/tools/irc.js").IrcMailbox;
 
 beforeAll(async () => {
   IrcMailboxCtor = (await import("./gateway/tools/irc.js")).IrcMailbox;
-  ConversationStoreCtor = (await import("./ConversationStore.js")).ConversationStore;
+  const conversationStore = await import("./ConversationStore.js");
+  ConversationStoreCtor = conversationStore.ConversationStore;
+  resetConversationStoreForTests = conversationStore.resetConversationStoreForTests;
   AgentServiceCtor = (await import("./AgentService.js")).AgentService;
   initThreadDispatcher = (await import("./dispatch.js")).initThreadDispatcher;
 });
@@ -352,6 +358,18 @@ function turnStarted(emit: EmitEvent, turnId: string): void {
     source: "codex.app-server",
   } as RuntimeEvent;
   emit(started);
+}
+
+function turnCompleted(emit: EmitEvent, turnId: string): void {
+  // SAFETY: a complete turn.completed literal, the shape an adapter emits.
+  emit({
+    type: "turn.completed",
+    threadId: THREAD,
+    provider: "codex",
+    turnId,
+    at: Date.now(),
+    source: "codex.app-server",
+  } as RuntimeEvent);
 }
 
 describe("thread dispatcher: a steer is the user speaking", () => {
@@ -623,6 +641,145 @@ describe("thread dispatcher native fork startup", () => {
     });
     await dispatcher.startThread({ threadId: "fork-portable-start", provider: "codex", cwd: CWD });
     expect(FakeAdapter.startedForks.at(-1)).toBeUndefined();
+  });
+});
+
+// The edit fork journals the replacement message (carrying what the replaced
+// one carried) and replays only the blocks BEFORE it. So a reference or file
+// on the edited message reaches the provider only if the fork's first send
+// hands it over — the renderer's edit-fork call names the edited text alone.
+describe("thread dispatcher: an edit fork's first turn", () => {
+  const REFERENCE_TEXT = "const retry = () => attempt++;\n  return retry();";
+  const reference: ChatAttachment = {
+    type: "reference",
+    id: "ref-1",
+    name: "Retry loop",
+    mimeType: "text/plain",
+    sizeBytes: REFERENCE_TEXT.length,
+    reference: {
+      text: REFERENCE_TEXT,
+      sourcePaneId: "pane-1",
+      sourceThreadId: "t-source",
+      sourceMessageId: "block-1",
+      sourceTitle: "Retry work",
+    },
+  };
+  const file: ChatAttachment = {
+    type: "file",
+    id: "att-1",
+    name: "leak.ts",
+    mimeType: "text/plain",
+    sizeBytes: 12,
+  };
+
+  beforeEach(() => {
+    // `editFork.ts` reads the module-level store, which outlives one test's
+    // harness; a stale instance would fork against the previous temp dir.
+    resetConversationStoreForTests();
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.sentAttachments.length = 0;
+    FakeAdapter.turnCounter = 0;
+    FakeAdapter.startError = null;
+  });
+
+  test("sends the replaced message's stored reference, with normal attachments intact", async () => {
+    const { store, dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first question" });
+    turnStarted(emit, "turn-1");
+    turnCompleted(emit, "turn-1");
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "second question",
+      attachments: [reference, file],
+    });
+    turnStarted(emit, "turn-2");
+    turnCompleted(emit, "turn-2");
+    await waitFor(() => !service.isThreadBusy(THREAD));
+
+    const sourceBlocks = userBlocks(store);
+    expect(sourceBlocks.map((b) => b.text)).toEqual(["first question", "second question"]);
+    const editedBlockId = sourceBlocks[1]!.id;
+
+    const forked = await dispatcher.forkThreadTurn({
+      requestId: "r-fork",
+      threadId: "t-fork",
+      sourceThreadId: THREAD,
+      blockId: editedBlockId,
+      editedText: "second question, revised",
+    });
+    expect(forked.status).toBe("created");
+
+    // What the fork journaled on the replacement is what the provider gets —
+    // exact reference bytes and provenance, and the file chip untouched.
+    expect(FakeAdapter.sentAttachments.at(-1)).toEqual([reference, file]);
+    // And it can come from nowhere else: the one-shot replay stops before the
+    // edited message, so the quote is not duplicated into the prompt.
+    const forkPrompt = FakeAdapter.sent.at(-1) ?? "";
+    expect(forkPrompt).toContain("second question, revised");
+    expect(forkPrompt).not.toContain(REFERENCE_TEXT);
+    // The silent dispatch journals nothing, so the replacement is still the
+    // only copy of the edited message in the fork.
+    const forkTexts = store
+      .loadThread("t-fork")!
+      .blocks.filter((b) => b.role === "user")
+      .map((b) => b.text);
+    expect(forkTexts).toEqual(["first question", "second question, revised"]);
+  });
+
+  test("a reference-only original message is delivered when it is edited", async () => {
+    const { store, dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "", attachments: [reference] });
+    turnStarted(emit, "turn-1");
+    turnCompleted(emit, "turn-1");
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "and now the follow-up" });
+    turnStarted(emit, "turn-2");
+    turnCompleted(emit, "turn-2");
+    await waitFor(() => !service.isThreadBusy(THREAD));
+
+    const originalId = userBlocks(store)[0]!.id;
+    const forked = await dispatcher.forkThreadTurn({
+      requestId: "r-ref-only",
+      threadId: "t-ref-only",
+      sourceThreadId: THREAD,
+      blockId: originalId,
+      editedText: "start over with the reference",
+    });
+    expect(forked.status).toBe("created");
+
+    // A valid edit of a quote-only message keeps its quote, exactly once.
+    expect(FakeAdapter.sentAttachments.at(-1)).toEqual([reference]);
+    expect(FakeAdapter.sent.at(-1)).toBe("start over with the reference");
+    expect(
+      store
+        .loadThread("t-ref-only")!
+        .blocks.filter((b) => b.role === "user")
+        .map((b) => b.text),
+    ).toEqual(["start over with the reference"]);
+  });
+
+  test("replaying the same fork creation sends no second turn", async () => {
+    const { store, dispatcher, emit, service } = await harness();
+    await dispatcher.sendThreadTurn({
+      threadId: THREAD,
+      input: "second question",
+      attachments: [reference],
+    });
+    turnStarted(emit, "turn-1");
+    turnCompleted(emit, "turn-1");
+    await waitFor(() => !service.isThreadBusy(THREAD));
+    const blockId = userBlocks(store).at(-1)!.id;
+
+    const input = {
+      requestId: "r-idempotent",
+      threadId: "t-idempotent",
+      sourceThreadId: THREAD,
+      blockId,
+      editedText: "second question, revised",
+    };
+    expect((await dispatcher.forkThreadTurn(input)).status).toBe("created");
+    const sentAfterFork = FakeAdapter.sent.length;
+    expect((await dispatcher.forkThreadTurn(input)).status).toBe("exists");
+    expect(FakeAdapter.sent.length).toBe(sentAfterFork);
   });
 });
 

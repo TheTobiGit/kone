@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { nextTick, ref } from "vue";
-import type { InvokableSkill, ProviderKind, SkillReference } from "~/types/desktop";
+import type { InvokableSkill, ProviderKind, SkillReference, TextReference } from "~/types/desktop";
 import type { SendRejection } from "./agentTypes";
 import type { ComposerDraftPart } from "~/utils/composerSkills";
 import { useComposerSkills, type UseComposerSkillsDeps } from "./useComposerSkills";
@@ -35,6 +35,7 @@ type Harness = {
   parts: DraftPartsHolder;
   text: DraftTextHolder;
   restored: { draft: string; skills: readonly SkillReference[] }[];
+  restoredRefs: TextReference[][];
   errorCues: { count: number };
   notices: string[];
   marks: { count: number };
@@ -50,6 +51,7 @@ function harness(
   const parts: DraftPartsHolder = { current: [] };
   const text: DraftTextHolder = { current: "" };
   const restored: { draft: string; skills: readonly SkillReference[] }[] = [];
+  const restoredRefs: TextReference[][] = [];
   const errorCues = { count: 0 };
   const notices: string[] = [];
   const marks = { count: 0 };
@@ -72,6 +74,9 @@ function harness(
     getSetDraft: () => async (draft, saved) => {
       restored.push({ draft, skills: saved ?? [] });
     },
+    restoreReferences: (references) => {
+      restoredRefs.push([...references]);
+    },
     cueError: () => {
       errorCues.count += 1;
     },
@@ -86,6 +91,7 @@ function harness(
     parts,
     text,
     restored,
+    restoredRefs,
     errorCues,
     notices,
     marks,
@@ -175,6 +181,58 @@ describe("useComposerSkills", () => {
     h.setRejection({ at: 1, message: "refused", input: "fix it", skills: [refOf("tdd")] });
     await settle();
     expect(h.restored).toEqual([{ draft: "/tdd fix it", skills: [refOf("tdd")] }]);
+  });
+
+  test("a refusal restores the references the turn carried", async () => {
+    const h = harness([skill("tdd")]);
+    await settle();
+    h.parts.current = [chip("tdd"), prose("fix it")];
+    h.text.current = "/tdd fix it";
+    h.api.composeTurn();
+    h.text.current = "";
+    const reference: TextReference = {
+      text: "quoted\n  bytes",
+      sourcePaneId: "pane-1",
+      sourceThreadId: "thread-1",
+    };
+    h.setRejection({
+      at: 1,
+      message: "refused",
+      input: "fix it",
+      skills: [refOf("tdd")],
+      references: [reference],
+    });
+    await settle();
+    expect(h.restoredRefs).toEqual([[reference]]);
+  });
+
+  test("a refusal hands references back beside the prose the user started since", async () => {
+    const h = harness([skill("tdd")]);
+    await settle();
+    h.parts.current = [chip("tdd"), prose("fix it")];
+    h.text.current = "/tdd fix it";
+    h.api.composeTurn();
+    // The send cleared the field; the next prompt is already being written.
+    h.text.current = "the next prompt";
+    const reference: TextReference = {
+      text: "  exact\n\tbytes  ",
+      sourcePaneId: "pane-1",
+      sourceThreadId: "thread-1",
+      sourceMessageId: "message-1",
+      sourceTitle: "Selection",
+    };
+    h.setRejection({
+      at: 1,
+      message: "refused",
+      input: "fix it",
+      skills: [refOf("tdd")],
+      references: [reference],
+    });
+    await settle();
+    expect(h.restoredRefs).toEqual([[reference]]);
+    // Nothing re-drafts over what the user has typed.
+    expect(h.restored).toEqual([]);
+    expect(h.text.current).toBe("the next prompt");
   });
 
   test("a refusal for another surface's turn rebuilds from what it carried", async () => {

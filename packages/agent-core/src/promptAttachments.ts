@@ -1,6 +1,7 @@
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { pathToFileURL } from "node:url";
-import { CLAUDE_NATIVE_IMAGE_MIME_TYPES, type ChatAttachment } from "./types.js";
+import { CLAUDE_NATIVE_IMAGE_MIME_TYPES, isReferenceAttachment, type ChatAttachment } from "./types.js";
+import { formatReferencePrompt } from "./referencePrompt.js";
 import type { SkillPrompt } from "./skillInvocation.js";
 
 // Turns the bytes-free ChatAttachment metadata that rides a turn into the
@@ -67,11 +68,18 @@ async function resolveAttachments(
   wantsBytes: (att: ChatAttachment) => boolean,
 ): Promise<ResolvedAttachment[]> {
   const store = getAttachmentStore();
-  const located = (attachments ?? []).map((att) => {
-    const absPath = store.resolveAbsPath(att.id);
-    if (!absPath) throw new Error(`Attachment "${att.name}" could not be found. Attach it again and resend.`);
-    return { att, absPath };
-  });
+  // References have no bytes and no registry row; their text is inlined by
+  // buildReferenceBlock instead, so they never reach the disk resolver. The
+  // discriminator alone is enough to keep one out: a reference-shaped record
+  // with a broken payload is still not a file, and must not be looked up (or
+  // reported) as a missing one.
+  const located = (attachments ?? [])
+    .filter((att) => att.type !== "reference")
+    .map((att) => {
+      const absPath = store.resolveAbsPath(att.id);
+      if (!absPath) throw new Error(`Attachment "${att.name}" could not be found. Attach it again and resend.`);
+      return { att, absPath };
+    });
   return Promise.all(
     located.map(async ({ att, absPath }) => ({
       att,
@@ -79,6 +87,20 @@ async function resolveAttachments(
       bytes: wantsBytes(att) ? await store.readBytes(att.id) : null,
     })),
   );
+}
+
+/** The reference prompt blocks for every text reference on a turn, or "" when
+ *  there are none. Each quote is rendered by the shared formatter (see
+ *  referencePrompt.ts) so the bytes are exact and the delimiter is collision-
+ *  safe. A reference-only turn is a valid prompt: this block is the whole
+ *  input. */
+export function buildReferenceBlock(attachments: ChatAttachment[] | undefined): string {
+  const blocks: string[] = [];
+  for (const attachment of attachments ?? []) {
+    if (!isReferenceAttachment(attachment)) continue;
+    blocks.push(formatReferencePrompt(attachment.reference));
+  }
+  return blocks.join("\n\n");
 }
 
 /** The `<attached_files>` prompt block naming each file's on-disk path, or ""
@@ -102,14 +124,18 @@ function fileBlock(entries: FileEntry[]): string {
 export async function buildTextAttachmentBlock(
   attachments: ChatAttachment[] | undefined,
 ): Promise<string> {
+  const referenceBlock = buildReferenceBlock(attachments);
   const resolved = await resolveAttachments(attachments, () => false);
-  return fileBlock(
-    resolved.map(({ att, absPath }) => ({
-      name: att.name,
-      mimeType: att.mimeType,
-      sizeBytes: att.sizeBytes,
-      absPath,
-    })),
+  return composePromptText(
+    referenceBlock,
+    fileBlock(
+      resolved.map(({ att, absPath }) => ({
+        name: att.name,
+        mimeType: att.mimeType,
+        sizeBytes: att.sizeBytes,
+        absPath,
+      })),
+    ),
   );
 }
 
@@ -130,7 +156,7 @@ export async function buildCodexAttachmentInput(
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
 
-  return { imageItems, fileBlock: fileBlock(files) };
+  return { imageItems, fileBlock: composePromptText(buildReferenceBlock(attachments), fileBlock(files)) };
 }
 
 /** Build Claude's image content blocks + a path block for everything else.
@@ -164,7 +190,7 @@ export async function buildClaudeAttachmentContent(
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
 
-  return { imageBlocks, fileBlock: fileBlock(files) };
+  return { imageBlocks, fileBlock: composePromptText(buildReferenceBlock(attachments), fileBlock(files)) };
 }
 
 /** OpenCode accepts attachments as file parts addressed by file:// URLs. */
@@ -198,7 +224,7 @@ export async function buildCursorAttachmentInput(
     files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
   }
 
-  return { imageBlocks, fileBlock: fileBlock(files) };
+  return { imageBlocks, fileBlock: composePromptText(buildReferenceBlock(attachments), fileBlock(files)) };
 }
 
 /** Join the prompt text with an `<attached_files>` block (either may be empty). */

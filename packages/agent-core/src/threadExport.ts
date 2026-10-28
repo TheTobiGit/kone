@@ -38,7 +38,7 @@ import type {
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
-import { copyTurnStamp } from "./types.js";
+import { copyTurnStamp, isReferenceAttachment } from "./types.js";
 import type { StoredThreadPage, TurnUsageRecord } from "./conversationStoreTypes.js";
 
 /** The store surface the export reads. Narrow on purpose: tests drive the
@@ -284,11 +284,24 @@ function renderExportItems(items: RuntimeItem[], level: number): string {
 
 function renderUserBlock(block: Extract<StoredBlock, { role: "user" }>): string {
   const lines = [`## ${senderLabel(block.sender)} · ${isoDate(block.at)}`, "", block.text];
-  if (block.attachments && block.attachments.length > 0) {
+  const attachments = block.attachments ?? [];
+  const references = attachments.filter(isReferenceAttachment);
+  // A reference-shaped record with a broken payload is not a file either;
+  // reading it as an attachment would invent content that was never sent.
+  const files = attachments.filter((attachment) => attachment.type !== "reference");
+  if (references.length > 0) {
+    lines.push("", "Referenced text:");
+    for (const reference of references) {
+      const name = reference.reference.sourceTitle?.trim() || "Selection";
+      const fence = fenceFor(reference.reference.text);
+      lines.push("", `From ${name}:`, "", `${fence}\n${reference.reference.text}\n${fence}`);
+    }
+  }
+  if (files.length > 0) {
     lines.push(
       "",
       "Attachments:",
-      ...block.attachments.map((a) => `- ${a.name} (${a.mimeType}, ${a.sizeBytes} bytes)`),
+      ...files.map((a) => `- ${a.name} (${a.mimeType}, ${a.sizeBytes} bytes)`),
     );
   }
   return lines.join("\n");
@@ -418,13 +431,19 @@ function toExportBlock(block: StoredBlock): ThreadExportBlock {
       at: block.at,
     };
     if (block.attachments !== undefined) {
-      userBlock.attachments = block.attachments.map((a) => ({
-        id: a.id,
-        name: a.name,
-        mimeType: a.mimeType,
-        sizeBytes: a.sizeBytes,
-        type: a.type,
-      }));
+      userBlock.attachments = block.attachments.map((a) => {
+        const attachment: NonNullable<Extract<ThreadExportBlock, { role: "user" }>["attachments"]>[number] = {
+          id: a.id,
+          name: a.name,
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+          type: a.type,
+        };
+        // The JSON export is the lossless one: a reference keeps its exact
+        // text and provenance, so the archive can rebuild the quote.
+        if (a.reference) attachment.reference = { ...a.reference };
+        return attachment;
+      });
     }
     copyTurnStamp(block, userBlock);
     if (block.source === "fork-import") userBlock.source = "fork-import";

@@ -329,7 +329,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  evidence discovery has about whether the binary exists at all. Dropping it
    *  here is what left a missing `claude` indistinguishable from a slow one. */
   private async probeVersion(): Promise<{ version?: string; result: ProbeResult }> {
-    const env = await buildAgentEnv();
+    const env = await buildAgentEnv(undefined, "claudeAgent" );
     // Ask the same binary sessions spawn, so the status row's version is the
     // one whose model catalog the picker shows.
     const executable = resolveClaudeExecutable({ env }) ?? "claude";
@@ -1247,10 +1247,8 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  `compact_metadata` carries the window fill on either side (`pre_tokens`
    *  / `post_tokens`) — the boundary event carries them, and the store
    *  restarts the meter from the post-compaction fill on it. No usage event
-   *  rides along: a context-only usage payload would still upsert the
-   *  per-turn audit row for whatever turn ran last (with null splits,
-   *  clobbering that turn's real numbers), and the boundary already restarts
-   *  the meter — the extra event is redundant. */
+   *  rides along: the boundary already restarts the meter, so an extra
+   *  snapshot would only be redundant. */
   private handleCompactBoundary(session: ClaudeSession, message: SDKMessage): void {
     // The compaction starts a new message chain; the last assistant uuid
     // belongs to the old one and no longer anchors a resume. Dropped before
@@ -1606,6 +1604,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       prompt: (freshInput ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0),
       output: readNumber(usage, "output_tokens") ?? 0,
     };
+    this.emitLiveContext(session);
   }
 
   /** `message_delta` carries the call's settled output count. */
@@ -1613,6 +1612,28 @@ export class ClaudeAdapter implements ProviderAdapter {
     const output = readNumber(usage, "output_tokens");
     if (output === undefined || !session.lastCall) return;
     session.lastCall.output = Math.max(session.lastCall.output, output);
+    this.emitLiveContext(session);
+  }
+
+  /** Push the context fill a running turn has reached, without waiting for the
+   *  result. The result's usage remains the authoritative final snapshot — it
+   *  carries the billed spend and the settled fill, and reconciles whatever
+   *  the meter showed mid-turn. These readings therefore carry ONLY the fill
+   *  (contextUsed/contextWindow), never input/output/total: Claude's total is
+   *  per-turn spend that the store and renderer accumulate, so a mid-turn
+   *  total would count the same tokens again when the result lands. Only a
+   *  live turn gets a reading, and an unchanged fill is not re-emitted. */
+  private emitLiveContext(session: ClaudeSession): void {
+    if (!session.activeTurnId || !session.lastCall) return;
+    const contextWindow = session.autoCompactWindow ?? DEFAULT_CLAUDE_CONTEXT_WINDOW;
+    const callFill = session.lastCall.prompt + session.lastCall.output;
+    const contextUsed =
+      contextWindow !== undefined ? Math.min(callFill, contextWindow) : callFill;
+    if (contextUsed === session.lastLiveContextUsed) return;
+    session.lastLiveContextUsed = contextUsed;
+    const usage: TokenUsage = { contextUsed, compactsAutomatically: true };
+    if (contextWindow !== undefined) usage.contextWindow = contextWindow;
+    this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }
 
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
@@ -1644,6 +1665,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // unreported, so the meter keeps its last real reading.
       const lastCall = session.lastCall ? session.lastCall.prompt + session.lastCall.output : undefined;
       session.lastCall = undefined;
+      session.lastLiveContextUsed = undefined;
       const contextUsed =
         lastCall !== undefined && contextWindow !== undefined
           ? Math.min(lastCall, contextWindow)

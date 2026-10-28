@@ -119,7 +119,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
       for (const [provider, list] of Object.entries(raw)) {
         if (list?.length) next[toProviderKind(provider)] = buildModelCatalog(list, toProviderKind(provider));
       }
-      catalogs.value = { ...catalogs.value, ...next };
+      catalogs.value = next;
     },
     { immediate: true },
   );
@@ -163,11 +163,13 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   // Providers that are installed, enabled in settings, and open to the selected
   // agent. The enable toggle is a picker filter only — it never tears down a
   // session that is already running on one.
-  const enabledReady = computed(() =>
-    providers.ready.value.filter(
-      (s) => providerSettings.isEnabled(s.provider) && providerAllowed(s.provider),
-    ),
-  );
+  const enabledReady = computed(() => {
+    const allowed = providers.ready.value.filter(
+      (s) => providerSettings.isShownInPicker(s.provider) && providerAllowed(s.provider),
+    );
+    const order = providerSettings.orderProviders(allowed.map((s) => s.provider));
+    return [...allowed].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+  });
 
   // The rail the picker shows: one row per offered provider, each catalog put
   // through the same visibility rule the providers pane writes, so a model
@@ -354,8 +356,8 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     }
   }
 
-  // A surface that starts with no project and acquires one — the bench, filing
-  // a job — changes the answer after mount, so this follows the path rather than
+  // A surface that starts with no project and acquires one — a job composer,
+  // filing a job — changes the answer after mount, so this follows the path rather than
   // reading once beside it. Immediate, so a surface that knew its project all
   // along still reads on mount exactly as before.
   watch(() => toValue(o.projectPath), () => void refreshBranch(), { immediate: true });

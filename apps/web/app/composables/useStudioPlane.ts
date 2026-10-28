@@ -13,8 +13,8 @@
 // projects you have work in, and a camera that jumps from the last row back to
 // the first loses you your place in a way a hard end never does.
 
-import { computed, shallowRef, watch } from "vue";
-import type { ComputedRef } from "vue";
+import { computed, readonly, shallowRef, watch } from "vue";
+import type { ComputedRef, Ref } from "vue";
 import { setFocusedRow, studioPlane } from "~/composables/useStudioPersistence";
 import type { PaneId } from "~/types/studio";
 
@@ -27,6 +27,18 @@ export interface PlaneRow {
   name: string;
   paneCount: number;
   focusedId: PaneId | null;
+}
+
+// The camera's zoom: false is the working row filling the viewport, true is the
+// whole plane pulled back. One plane means one zoom, so it lives here with the
+// row set rather than in the component that animates it — the axis and the view
+// can then never disagree about which one is showing.
+const overview = shallowRef(false);
+
+/** Test hook: the plane is module state, so a suite starts from a zoomed-in
+ *  camera rather than inheriting the previous test's zoom. */
+export function __resetStudioOverview(): void {
+  overview.value = false;
 }
 
 function basename(path: string): string {
@@ -50,6 +62,11 @@ export interface UseStudioPlane {
   /** Focus a row by path. Ignores a path with no row — the axis cannot invent
    *  one. Returns whether it landed. */
   focusRow: (projectPath: string) => boolean;
+  /** Whether the camera is pulled back to the whole plane. */
+  overview: Readonly<Ref<boolean>>;
+  enterOverview: () => void;
+  exitOverview: () => void;
+  toggleOverview: () => void;
 }
 
 export function useStudioPlane(): UseStudioPlane {
@@ -116,7 +133,29 @@ export function useStudioPlane(): UseStudioPlane {
     return true;
   }
 
-  return { rows, focusedPath, focusedIndex, stepRow, focusRow };
+  function enterOverview(): void {
+    overview.value = true;
+  }
+
+  function exitOverview(): void {
+    overview.value = false;
+  }
+
+  function toggleOverview(): void {
+    overview.value = !overview.value;
+  }
+
+  return {
+    rows,
+    focusedPath,
+    focusedIndex,
+    stepRow,
+    focusRow,
+    overview: readonly(overview),
+    enterOverview,
+    exitOverview,
+    toggleOverview,
+  };
 }
 
 // Exported for the test — the rail's row name is the one piece of formatting the

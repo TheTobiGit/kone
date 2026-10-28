@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { resolveClaudeInstallation } from "./claudeHome.js";
+import { pathEnvKey } from "./processEnv.js";
 import { runStreaming } from "./spawn.js";
+import type { LaunchDeps } from "./windowsLaunch.js";
 import type {
   ProviderInstallSource,
   ProviderKind,
@@ -193,6 +195,14 @@ const DEFINITIONS = {
   },
 } satisfies Record<ProviderKind, MaintenanceDefinition>;
 
+/** The default executable name for a provider's CLI, before the user's
+ *  binary-path override. Every provider kone can sign in has one, and sign-in
+ *  reuses this table so the login command and maintenance always name the same
+ *  executable. */
+export function defaultProviderBinary(provider: ProviderKind): string {
+  return DEFINITIONS[provider].binary;
+}
+
 // ── versions ──────────────────────────────────────────────────────────────────
 
 type Semver = { major: number; minor: number; patch: number; pre: string[] };
@@ -300,7 +310,7 @@ function locate(
   if (hasSeparator(binary)) return resolve(path.resolve(binary));
 
   const separator = process.platform === "win32" ? ";" : ":";
-  for (const dir of (env.PATH ?? "").split(separator).filter(Boolean)) {
+  for (const dir of (env[pathEnvKey(env)] ?? "").split(separator).filter(Boolean)) {
     for (const name of candidateNames(binary)) {
       const hit = resolve(path.join(dir, name));
       if (hit) return hit;
@@ -636,11 +646,18 @@ export async function resolveProviderMaintenance(input: {
 /** Run the update kone resolved for `provider`. Returns the transcript so the
  *  pane can show what the installer actually said — an update that "failed" is
  *  usually a permissions or prefix problem the output names outright, and
- *  hiding it just sends the user to a terminal to run the command again. */
+ *  hiding it just sends the user to a terminal to run the command again.
+ *
+ *  `launch` injects the platform and spawn the update is resolved for/with (see
+ *  windowsLaunch.ts's `spawnLaunch`); production leaves it out. The package
+ *  manager is a launch of its own: on Windows npm's `npm.cmd` shim cannot be
+ *  spawned directly, so `runStreaming` resolves the bare `npm` to it and wraps
+ *  the run in cmd.exe. */
 export async function runProviderUpdate(input: {
   provider: ProviderKind;
   binaryOverride?: string;
   env: NodeJS.ProcessEnv;
+  launch?: LaunchDeps;
 }): Promise<{ outcome: ProviderUpdateOutcome; message: string | null; output: string | null }> {
   const definition = DEFINITIONS[input.provider];
   if (!definition.binary) {
@@ -668,9 +685,15 @@ export async function runProviderUpdate(input: {
     };
   }
 
-  const separator = process.platform === "win32" ? ";" : ":";
+  // The PATH the package manager runs with has to be written the way the launch
+  // reads it back: on Windows that is `;`, whatever the host running kone is.
+  const platform = input.launch?.platform ?? process.platform;
+  const separator = platform === "win32" ? ";" : ":";
+  // Prepended under the key that already holds PATH (`Path`, usually, on
+  // Windows), so the child never sees two PATH variables.
+  const pathKey = pathEnvKey(input.env, platform);
   const env: NodeJS.ProcessEnv = command.pathPrepend
-    ? { ...input.env, PATH: [command.pathPrepend, input.env.PATH].filter(Boolean).join(separator) }
+    ? { ...input.env, [pathKey]: [command.pathPrepend, input.env[pathKey]].filter(Boolean).join(separator) }
     : { ...input.env };
 
   const run = runStreaming(command.executable, command.args, {
@@ -678,6 +701,7 @@ export async function runProviderUpdate(input: {
     // one cwd that always exists and belongs to nobody's repository.
     cwd: os.homedir(),
     env,
+    launch: input.launch,
   });
   let timedOut = false;
   const timer = setTimeout(() => {

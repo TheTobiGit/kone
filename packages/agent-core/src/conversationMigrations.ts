@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -660,7 +660,7 @@ function migration0008ItemTextChunks(db: DatabaseSync): void {
  *
  *  A job is NOT a thread. A thread is one *attempt* at a job, which is why
  *  the two tables exist rather than a status column on `threads`. The split is
- *  what makes the three things the bench is for possible at all: a draft is
+ *  what makes the three things a queue is for possible at all: a draft is
  *  a job with no runs, a retry is a second run against the same job, and a
  *  job that was started, interrupted and picked up again keeps one identity
  *  across both threads. A status column on `threads` could express none of
@@ -1290,7 +1290,7 @@ function migration0032Continuations(db: DatabaseSync): void {
   `);
 }
 
-/** Persist cron schedules beside the bench queue and mark generated jobs so
+/** Persist cron schedules beside the job queue and mark generated jobs so
  *  schedule overlap checks can follow the exact job row. */
 function migration0033Schedules(db: DatabaseSync): void {
   db.exec(`
@@ -1590,6 +1590,18 @@ function migration0043ThreadTasks(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * The provider-native session each usage audit row's counter belongs to.
+ * Running-total providers keep one cumulative counter per session, so the
+ * trace can only subtract one row from another when both name the same
+ * session. Rows written before this column stay NULL: the boundary is then
+ * genuinely unknown, and the reader keeps the old provider/hand-in reading
+ * for them rather than inventing an identity.
+ */
+function migration0044TurnUsageSession(db: DatabaseSync): void {
+  addColumn(db, "turn_usage", "usage_session_id", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -1634,6 +1646,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 41, name: "ThreadReferencesAndSubagentDuration", run: migration0041ThreadReferences },
   { id: 42, name: "ProviderSelection", run: migration0042ProviderSelection },
   { id: 43, name: "ThreadTasks", run: migration0043ThreadTasks },
+  { id: 44, name: "TurnUsageSession", run: migration0044TurnUsageSession },
 ];
 
 export interface MigrationOptions {

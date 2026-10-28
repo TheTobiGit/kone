@@ -27,7 +27,7 @@ import { LspManager } from "../lsp/manager.js";
 import { createAstTools } from "./tools/ast.js";
 import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
-import { createQuestionTools, type AskUser } from "./tools/questions.js";
+import { createQuestionTools, type AskUser, type QuestionToolOptions } from "./tools/questions.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools, getIrcMailbox, type IrcToolInput } from "./tools/irc.js";
 import type { ThreadRuntime } from "../recipientState.js";
@@ -215,7 +215,7 @@ export interface GatewayInput {
   readProjects?: () => readonly ProjectRosterEntry[] | null;
   /** Re-arm scheduled work after a gateway tool changes a schedule. */
   scheduleChanged?: () => void;
-  /** Wake the bench after a schedule tool files an immediate job. */
+  /** Drain the project after a schedule tool files an immediate job. */
   drainProject?: (projectPath: string) => void;
   /** Starts and drives threads — the same dispatcher the renderer's own "new
    *  thread" path forwards to, so a thread the assistant opens is an ordinary
@@ -409,6 +409,13 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.previewVisual) visualOptions.preview = input.previewVisual;
   if (input.measureVisual) visualOptions.measure = input.measureVisual;
   const visualTools = createVisualTools(visualOptions);
+  // A question can carry the same images and visual a reply can, stored the
+  // same way; the visual's measurer is the one the host wired for `visual_show`.
+  const questionOptions: QuestionToolOptions = {
+    saveAttachment: (upload) => getAttachmentStore().save(upload),
+    discardAttachment: (id, threadId) => getAttachmentStore().discard(id, threadId),
+  };
+  if (input.measureVisual) questionOptions.measure = input.measureVisual;
   // A task list is for any thread with work to lay out, the assistant's too,
   // so the task tools are target "all" and join after the stamped sets.
   const tools = [
@@ -416,7 +423,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...assistantTools,
     ...createTaskTools({ store: input.store, emit: input.emit }),
     ...createAstTools(),
-    ...createQuestionTools(input.askUser),
+    ...createQuestionTools(input.askUser, questionOptions),
     ...visualTools,
   ];
   const registry = createRegistry(tools, { approve: input.approve });
