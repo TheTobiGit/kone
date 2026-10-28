@@ -26,6 +26,7 @@ export type DesktopAgentReach = Pick<
   | "warm"
   | "discover"
   | "onProvidersChanged"
+  | "onModelsChanged"
   | "models"
   | "maintenance"
   | "updateProvider"

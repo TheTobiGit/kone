@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   invalidateProviderQuotaCache,
   isQuotaCapableProvider,
@@ -64,6 +66,7 @@ export class ProviderRuntime {
    *  cold launch can validate a model id without spawning a probe CLI. */
   private readonly catalogs = new Map<ProviderKind, ModelDescriptor[]>();
   private readonly listeners = new Set<(statuses: ProviderStatus[]) => void>();
+  private readonly modelListeners = new Set<(provider: ProviderKind, models: ModelDescriptor[]) => void>();
   /** The discovery round in flight, so concurrent callers share one set of CLI
    *  spawns instead of racing their own. */
   private discovering: Promise<ProviderStatus[]> | null = null;
@@ -301,6 +304,12 @@ export class ProviderRuntime {
     return () => this.listeners.delete(listener);
   }
 
+  /** Model catalogs can change after sign-in even when provider health does not. */
+  onModelsChanged(listener: (provider: ProviderKind, models: ModelDescriptor[]) => void): () => void {
+    this.modelListeners.add(listener);
+    return () => this.modelListeners.delete(listener);
+  }
+
   /** Persist a discovery round and announce it — but only when something the
    *  user could see actually moved. Every probe writes a `checkedAt`-free row,
    *  so an unchanged surface compares equal and stays silent rather than waking
@@ -346,8 +355,18 @@ export class ProviderRuntime {
         const models = await adapter.listModels();
         if (generation === this.runtimeGeneration) {
           if (models.length) {
+            const changed = !isDeepStrictEqual(this.catalogs.get(provider), models);
             this.catalogs.set(provider, models);
             cacheModels(provider, models);
+            if (changed) {
+              for (const listener of this.modelListeners) {
+                try {
+                  listener(provider, models);
+                } catch (error) {
+                  console.error("[agent] provider model listener failed:", error);
+                }
+              }
+            }
           }
           return models;
         }

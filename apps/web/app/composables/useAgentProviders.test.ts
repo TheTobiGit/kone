@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import type { ProviderStatus } from "~/types/desktop";
+import type {
+  ModelDescriptor, ProviderKind, ProviderModelsRefreshResult, ProviderStatus, ProviderSurfaceSnapshot,
+} from "~/types/desktop";
 import { createDevBridge } from "~/lib/devBridge";
 import { installDevBridge } from "~/utils/desktopBridge";
 import { useAgentProviders } from "./useAgentProviders";
@@ -37,23 +39,28 @@ function setGlobal(name: "window" | "document", value: StubGlobal): () => void {
 }
 
 /** The listener's browser globals, for the duration of one test. */
-function withWindow(run: () => void): void {
+async function withWindow(run: () => Promise<void>): Promise<void> {
   const restoreDocument = setGlobal("document", {
     addEventListener: () => {},
     visibilityState: "visible",
   });
   const restoreWindow = setGlobal("window", { addEventListener: () => {} });
   try {
-    run();
+    await run();
   } finally {
     restoreWindow();
     restoreDocument();
   }
 }
 
-test("a provider change from the main process lands without prepare()", () => {
-  withWindow(() => {
+test("provider and catalog changes from main land without prepare() or a focus refresh", async () => {
+  await withWindow(async () => {
     const listeners: ((next: ProviderStatus[]) => void)[] = [];
+    const modelListeners: ((provider: ProviderKind, models: ModelDescriptor[]) => void)[] = [];
+    const oldQuery = Promise.withResolvers<ModelDescriptor[]>();
+    const oldSurface = Promise.withResolvers<ProviderSurfaceSnapshot>();
+    const surfaceStarted = Promise.withResolvers<void>();
+    let modelCalls = 0;
     const base = createDevBridge();
     installDevBridge({
       ...base,
@@ -65,6 +72,18 @@ test("a provider change from the main process lands without prepare()", () => {
             const at = listeners.indexOf(cb);
             if (at >= 0) listeners.splice(at, 1);
           };
+        },
+        onModelsChanged: (cb) => {
+          modelListeners.push(cb);
+          return () => {};
+        },
+        models: () => {
+          modelCalls += 1;
+          return oldQuery.promise;
+        },
+        surface: () => {
+          surfaceStarted.resolve();
+          return oldSurface.promise;
         },
       },
     });
@@ -83,6 +102,44 @@ test("a provider change from the main process lands without prepare()", () => {
       cursor({ readiness: "ready", authStatus: "authenticated", authLabel: "Cursor Pro" }),
     ]);
     expect(providers.ready.value.map((status) => status.provider)).toEqual(["cursor"]);
+
+    providers.modelCache.value = {
+      cursor: [{ id: "old-account-model", label: "Old account" }],
+      codex: [{ id: "unaffected-model", label: "Unaffected" }],
+    };
+    const pending = providers.models("cursor", true);
+    const freshModels = [{ id: "new-account-model", label: "New account" }];
+    for (const listener of modelListeners) listener("cursor", freshModels);
+    expect(providers.modelCache.value.cursor).toEqual(freshModels);
+    expect(providers.modelCache.value.codex).toEqual([{ id: "unaffected-model", label: "Unaffected" }]);
+    expect(await providers.models("cursor")).toEqual(freshModels);
+    expect(modelCalls).toBe(1);
+
+    // An IPC response captured before the push must not restore the old list.
+    oldQuery.resolve([{ id: "old-account-model", label: "Old account" }]);
+    expect(await pending).toEqual(freshModels);
+    expect(providers.modelCache.value.cursor).toEqual(freshModels);
+
+    const refreshing = providers.refresh();
+    await surfaceStarted.promise;
+    const latestModels = [{ id: "latest-account-model", label: "Latest account" }];
+    for (const listener of modelListeners) listener("cursor", latestModels);
+    oldSurface.resolve({
+      version: 1, savedAt: 0, statuses: [], models: { cursor: freshModels },
+    });
+    await refreshing;
+    expect(providers.modelCache.value.cursor).toEqual(latestModels);
+
+    const oldRefresh = Promise.withResolvers<ProviderModelsRefreshResult>();
+    // refreshModels reads the preload directly; only its one method is needed here.
+    Object.defineProperty(window, "koneDesktop", {
+      value: { agent: { refreshModels: () => oldRefresh.promise } }, configurable: true,
+    });
+    const refreshingModels = providers.refreshModels("cursor");
+    for (const listener of modelListeners) listener("cursor", freshModels);
+    oldRefresh.resolve({ provider: "cursor", models: latestModels });
+    expect(await refreshingModels).toEqual({ models: freshModels, error: null });
+    expect(providers.modelCache.value.cursor).toEqual(freshModels);
   });
 });
 

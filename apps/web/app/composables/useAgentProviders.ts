@@ -23,6 +23,8 @@ let probed = false;
 // first `models()` call (or eagerly by `prepare()` at app open) so entering a
 // project reads a warm list instead of re-shelling out to the CLI.
 const rawModelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+// A pushed catalog wins over an IPC response captured before it arrived.
+const modelPushRevisions = new Map<ProviderKind, number>();
 const ALL_PROVIDERS: ProviderKind[] = [
   "codex",
   "claudeAgent",
@@ -100,6 +102,10 @@ function watch(refreshNow: () => Promise<void>): void {
     probed = true;
     confirmed.value = true;
   });
+  bridge()?.onModelsChanged((provider, models) => {
+    modelPushRevisions.set(provider, (modelPushRevisions.get(provider) ?? 0) + 1);
+    rawModelCache.value = { ...rawModelCache.value, [provider]: stripCustom(models) };
+  });
   // Returning to the app is when a stale row is both most likely and most
   // visible: the user usually left to go run `codex login`.
   const recheck = () => {
@@ -156,6 +162,7 @@ export function useAgentProviders() {
     const cached = rawModelCache.value[provider];
     if (cached?.length && !force) return ps.withCustomModels(provider, cached);
     const api = bridge();
+    const revision = modelPushRevisions.get(provider) ?? 0;
     let raw: ModelDescriptor[];
     if (!api) raw = [];
     else {
@@ -164,6 +171,9 @@ export function useAgentProviders() {
       } catch {
         raw = [];
       }
+    }
+    if (revision !== (modelPushRevisions.get(provider) ?? 0)) {
+      return ps.withCustomModels(provider, rawModelCache.value[provider] ?? []);
     }
     // Only cache a real list — an empty result means the CLI errored or wasn't
     // reachable, and we want the next call to retry rather than serve the miss.
@@ -235,6 +245,7 @@ export function useAgentProviders() {
       // already started at app launch), so asking here never doubles the CLI
       // spawns, and it writes the result through to the snapshot for next time.
       await api.warm();
+      const revisions = new Map(modelPushRevisions);
       const snapshot = await api.surface();
       if (snapshot.statuses.length) {
         statuses.value = snapshot.statuses;
@@ -243,7 +254,12 @@ export function useAgentProviders() {
       }
       const fresh = Object.entries(snapshot.models)
         .map(([k, list]) => [k, stripCustom(list ?? [])] as const)
-        .filter(([, list]) => list.length > 0);
+        .filter(([key, list]) => {
+          // SAFETY: snapshot.models is keyed by ProviderKind.
+          const provider = key as ProviderKind;
+          return list.length > 0 &&
+            (revisions.get(provider) ?? 0) === (modelPushRevisions.get(provider) ?? 0);
+        });
       if (fresh.length) rawModelCache.value = { ...rawModelCache.value, ...Object.fromEntries(fresh) };
     })();
     try {
@@ -283,10 +299,14 @@ export function useAgentProviders() {
   async function refreshModels(
     provider: ProviderKind,
   ): Promise<{ models: ModelDescriptor[]; error: string | null }> {
+    const revision = modelPushRevisions.get(provider) ?? 0;
     const preload = typeof window !== "undefined" ? window.koneDesktop?.agent : undefined;
     if (preload?.refreshModels) {
       try {
         const res = await preload.refreshModels(provider);
+        if (revision !== (modelPushRevisions.get(provider) ?? 0)) {
+          return { models: modelCache.value[provider] ?? [], error: null };
+        }
         const base = stripCustom(res.models);
         if (base.length) {
           rawModelCache.value = { ...rawModelCache.value, [provider]: base };
@@ -295,7 +315,8 @@ export function useAgentProviders() {
       } catch (error) {
         return {
           models: modelCache.value[provider] ?? [],
-          error: peelIpcError(error, "Could not refresh models"),
+          error: revision === (modelPushRevisions.get(provider) ?? 0)
+            ? peelIpcError(error, "Could not refresh models") : null,
         };
       }
     }

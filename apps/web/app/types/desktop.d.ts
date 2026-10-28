@@ -3354,6 +3354,8 @@ export type KoneAgentApi = {
    *  the user signed into while the app was open. Fires only when a round
    *  actually differs. Returns an unsubscribe fn. */
   onProvidersChanged: (cb: (statuses: ProviderStatus[]) => void) => () => void;
+  /** A current catalog pushed to every window after a successful model probe. */
+  onModelsChanged: (cb: (provider: ProviderKind, models: ModelDescriptor[]) => void) => () => void;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
   /** The user's persisted per-provider install settings (custom binary path, …). */
   getSettings: () => Promise<ProviderSettingsMap>;

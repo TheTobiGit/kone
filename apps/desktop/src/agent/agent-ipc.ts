@@ -727,6 +727,14 @@ export function registerAgentIpc(): void {
     }
   });
 
+  // Account switches may change models while health stays ready -> ready.
+  svc.onModelsChanged((provider, models) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("agent:models-changed", provider, models);
+    }
+  });
+
   // Provider settings live in the main process's file, so every window gets
   // each write pushed rather than polling or keeping its own copy. Same
   // machine-wide broadcast as above: no subscriber set to respect, and the

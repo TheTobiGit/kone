@@ -213,6 +213,21 @@ describe("ProviderRuntime health checks", () => {
 });
 
 describe("ProviderRuntime model catalogs", () => {
+  test("a ready -> ready sign-in publishes the new account's catalog", async () => {
+    const { runtime, adapter } = harness("antigravity");
+    adapter.models = [{ id: "old-account-model" }];
+    await runtime.listModels("antigravity");
+    const updates: { provider: ProviderKind; models: ModelDescriptor[] }[] = [];
+    runtime.onModelsChanged?.((provider, models) => updates.push({ provider, models }));
+    const newModels = [{ id: "new-account-model", contextWindowTokens: 200_000 }];
+    adapter.models = newModels;
+
+    await runtime.confirmProviderSignIn("antigravity");
+    await runtime.listModels("antigravity");
+
+    expect(updates).toEqual([{ provider: "antigravity", models: newModels }]);
+  });
+
   test.each(["empty", "failure"] as const)(
     "a current runtime's %s refresh preserves its known catalog and reports the error",
     async (outcome) => {
