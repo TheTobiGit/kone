@@ -336,12 +336,30 @@ export class ProviderRuntime {
     return [...models, ...extras];
   }
 
-  async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
-    const models = await this.adapter(provider).listModels();
-    if (models.length) {
-      this.catalogs.set(provider, models);
-      cacheModels(provider, models);
+  /** Both model-fetch paths commit through this guard. A retired probe may
+   *  refill the adapter's own cache on completion, so clear it before retrying. */
+  private async loadModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
+    const adapter = this.adapter(provider);
+    for (;;) {
+      const generation = this.runtimeGeneration;
+      try {
+        const models = await adapter.listModels();
+        if (generation === this.runtimeGeneration) {
+          if (models.length) {
+            this.catalogs.set(provider, models);
+            cacheModels(provider, models);
+          }
+          return models;
+        }
+      } catch (error) {
+        if (generation === this.runtimeGeneration) throw error;
+      }
+      adapter.invalidateDiscoveryCaches?.();
     }
+  }
+
+  async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
+    const models = await this.loadModels(provider);
     return this.withCustomModels(provider, models);
   }
 
@@ -351,23 +369,24 @@ export class ProviderRuntime {
   async refreshProviderModels(provider: ProviderKind): Promise<ProviderModelsRefreshResult> {
     const adapter = this.adapter(provider);
     adapter.invalidateDiscoveryCaches?.();
-    const fallback = this.catalogs.get(provider) ?? readProviderCache().models[provider] ?? [];
     try {
-      const probed = await adapter.listModels();
+      const probed = await this.loadModels(provider);
       if (probed.length > 0) {
-        this.catalogs.set(provider, probed);
-        cacheModels(provider, probed);
         return { provider, models: this.withCustomModels(provider, probed) };
       }
       return {
         provider,
-        models: this.withCustomModels(provider, fallback),
+        models: this.withCustomModels(
+          provider, this.catalogs.get(provider) ?? readProviderCache().models[provider] ?? [],
+        ),
         error: "Provider returned no models.",
       };
     } catch (error) {
       return {
         provider,
-        models: this.withCustomModels(provider, fallback),
+        models: this.withCustomModels(
+          provider, this.catalogs.get(provider) ?? readProviderCache().models[provider] ?? [],
+        ),
         error: error instanceof Error ? error.message : String(error),
       };
     }

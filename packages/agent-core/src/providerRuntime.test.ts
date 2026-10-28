@@ -212,6 +212,78 @@ describe("ProviderRuntime health checks", () => {
   });
 });
 
+describe("ProviderRuntime model catalogs", () => {
+  test.each(["empty", "failure"] as const)(
+    "a current runtime's %s refresh preserves its known catalog and reports the error",
+    async (outcome) => {
+      const { runtime, adapter } = harness("antigravity");
+      const models = [{ id: "current-account-model" }];
+      adapter.models = models;
+      await runtime.listModels("antigravity");
+      adapter.listModels = async () => {
+        if (outcome === "failure") throw new Error("Current account probe failed");
+        return [];
+      };
+
+      const result = await runtime.refreshProviderModels("antigravity");
+
+      expect(result.models).toEqual(models);
+      expect(result.error).toBe(outcome === "failure"
+        ? "Current account probe failed" : "Provider returned no models.");
+      expect(runtime.knownCatalog("antigravity")).toEqual(models);
+    },
+  );
+
+  test("listModels still rejects a current runtime's failed probe", async () => {
+    const { runtime, adapter } = harness("antigravity");
+    adapter.listModels = async () => { throw new Error("Current account probe failed"); };
+
+    await expect(runtime.listModels("antigravity")).rejects.toThrow("Current account probe failed");
+  });
+
+  const cases = ["list", "refresh"] as const;
+  for (const method of cases) {
+    test.each(["models", "empty", "failure"] as const)(
+      `${method} retries a retired account's delayed %s result`,
+      async (outcome) => {
+        const { runtime, adapter } = harness("antigravity");
+        const oldModels = [{ id: "old-account-model" }];
+        const newModels = [{ id: "new-account-model" }];
+        adapter.models = oldModels;
+        await runtime.listModels("antigravity");
+
+        const oldProbe = Promise.withResolvers<ModelDescriptor[]>();
+        let first = true;
+        let cached: ModelDescriptor[] | undefined;
+        adapter.invalidateDiscoveryCaches = () => { cached = undefined; };
+        adapter.listModels = async () => {
+          if (first) {
+            first = false;
+            cached = await oldProbe.promise;
+          }
+          return cached ?? newModels;
+        };
+
+        const pending = method === "list"
+          ? runtime.listModels("antigravity")
+          : runtime.refreshProviderModels("antigravity").then((result) => result.models);
+        await runtime.confirmProviderSignIn("antigravity");
+        // Let the new account's catalog become authoritative before the old
+        // request completes (and potentially refills the adapter's own cache).
+        await runtime.listModels("antigravity");
+        expect(runtime.knownCatalog("antigravity")).toEqual(newModels);
+
+        if (outcome === "failure") oldProbe.reject(new Error("Old account probe failed"));
+        else oldProbe.resolve(outcome === "empty" ? [] : oldModels);
+
+        expect(await pending).toEqual(newModels);
+        expect(runtime.knownCatalog("antigravity")).toEqual(newModels);
+        expect(runtime.cachedSurface().models.antigravity).toEqual(newModels);
+      },
+    );
+  }
+});
+
 describe("ProviderRuntime settings application", () => {
   test.each(["discovery", "health check"] as const)(
     "a settings change during %s discards the old probe and refreshes",
