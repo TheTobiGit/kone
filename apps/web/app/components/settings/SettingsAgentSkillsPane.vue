@@ -68,11 +68,18 @@ function openSkillFromPlugin(skill: SkillEntry) {
   selected.value = skill;
   void skills.openSkill(skill);
 }
-const breadcrumb = computed(() => {
-  if (selected.value) return `Ecosystem / Skills / ${selected.value.displayName ?? selected.value.name}`;
-  if (selectedPlugin.value) return `Ecosystem / Skills / ${selectedPlugin.value.name}`;
-  return "Ecosystem / Skills";
-});
+/** The open skill or plugin's own name — the pane title. The trail around it is
+ *  presentation, so the breadcrumb derives from this rather than the reverse. */
+const detailTitle = computed(() =>
+  selected.value
+    ? (selected.value.displayName ?? selected.value.name)
+    : selectedPlugin.value?.name,
+);
+const breadcrumb = computed(() =>
+  detailTitle.value !== undefined
+    ? `Ecosystem / Skills / ${detailTitle.value}`
+    : "Ecosystem / Skills",
+);
 const atDetail = computed(() => !!selected.value || !!selectedPlugin.value);
 
 const detailScroller = ref<HTMLElement>();
@@ -89,6 +96,7 @@ async function rescan() {
   <SettingsPageShell
     :open="open"
     :breadcrumb="breadcrumb"
+    :title="detailTitle"
     :breadcrumb-icon="PuzzleIcon"
     label="Agent skills settings"
     :scroll="false"

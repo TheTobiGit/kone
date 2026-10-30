@@ -551,7 +551,6 @@ watch(settled, async (done) => {
   align-items: center;
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: -0.01em;
   white-space: nowrap;
   cursor: pointer;
   transition: opacity 0.18s ease;
@@ -576,7 +575,6 @@ watch(settled, async (done) => {
   padding: 6px 14px;
   font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: -0.01em;
   white-space: nowrap;
   cursor: pointer;
   transition: opacity 0.18s ease;

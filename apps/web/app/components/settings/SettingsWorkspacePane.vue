@@ -23,6 +23,7 @@ const meta = META[props.workspace];
   <SettingsPageShell
     :open="open"
     :breadcrumb="`Workspaces / ${meta.name}`"
+    :title="meta.name"
     :breadcrumb-icon="meta.icon"
     :label="`${meta.name} settings`"
     @back="$emit('back')"

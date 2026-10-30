@@ -230,7 +230,6 @@ function cardLabel(row: ProviderPaneRow): string {
 }
 .pp__cardname {
   font-size: 14px;
-  letter-spacing: -0.2px;
   line-height: 1.1;
   color: #fff;
   white-space: nowrap;
@@ -255,7 +254,6 @@ function cardLabel(row: ProviderPaneRow): string {
   background-color: rgba(255, 255, 255, 0.94);
   color: #17171a;
   font-size: 12px;
-  letter-spacing: -0.1px;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
