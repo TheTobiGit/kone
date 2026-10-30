@@ -12,6 +12,7 @@ import type {
   TrendPoint,
 } from "~/types/desktop";
 import { quotaTone, type QuotaProvider, type QuotaTone, type useAgentSettings } from "~/composables/useAgentSettings";
+import { PROVIDER_LABEL } from "~/utils/usageProviders";
 
 // The Limits section: one card per provider the picker offers, so a provider is
 // never silently missing from the page. Every *number* on a card comes from
@@ -33,15 +34,6 @@ const props = withDefaults(
   { foot: true, provider: undefined },
 );
 
-const PROVIDER_LABEL = {
-  codex: "Codex",
-  claudeAgent: "Claude",
-  opencode: "OpenCode",
-  cursor: "Cursor",
-  droid: "Factory Droid",
-  antigravity: "Antigravity",
-  cline: "Cline",
-} satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 const providerBrand = (p: ProviderKind) => SESSION_BRAND[p] ?? "generic";
 
