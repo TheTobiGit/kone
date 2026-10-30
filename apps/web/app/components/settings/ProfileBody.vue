@@ -6,6 +6,7 @@ import { CountUp } from "~/components/ui/count-up";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { sessionBrand, describeModelId } from "~/utils/modelCatalog";
 import type { BrandKey } from "~/utils/modelCatalog";
+import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import { SESSION_BRAND } from "~/types/session";
 import type { ProviderKind } from "~/types/desktop";
 import { EXIT_MS } from "~/composables/useModalExit";
@@ -25,15 +26,6 @@ onMounted(() => {
 });
 
 // ── formatting ────────────────────────────────────────────────────────────
-const PROVIDER_LABEL = {
-  codex: "Codex",
-  claudeAgent: "Claude",
-  opencode: "OpenCode",
-  cursor: "Cursor",
-  droid: "Factory Droid",
-  antigravity: "Antigravity",
-  cline: "Cline",
-} satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 
 // The vendor logomark for a provider row (its own mark) and for a model row

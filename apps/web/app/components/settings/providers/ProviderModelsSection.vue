@@ -268,7 +268,6 @@ function submitCustom() {
 .pp__modelname {
   font-size: 12.5px;
   line-height: 1.25;
-  letter-spacing: -0.1px;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;

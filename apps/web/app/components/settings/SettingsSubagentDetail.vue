@@ -206,6 +206,7 @@ watch(
   <SettingsPageShell
     :open="open"
     :breadcrumb="`Ecosystem / Teams / ${name}`"
+    :title="name"
     :breadcrumb-icon="RoboticIcon"
     :label="name"
     @back="$emit('back')"

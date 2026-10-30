@@ -133,13 +133,6 @@ const LOGIN_COMMANDS = {
   droid: null,
 } as const satisfies Record<ProviderKind, LoginSpec | null>;
 
-/** Default binary names come from providerMaintenance's definitions, so
- *  sign-in and install/maintenance can never disagree about which executable a
- *  provider owns. */
-function defaultBinary(provider: ProviderKind): string {
-  return defaultProviderBinary(provider);
-}
-
 /** The provider's own resolver, where it has one: those map ambiguous override
  *  names onto the executable the adapter would actually spawn (Cursor's `cursor`
  *  / `agent` → `cursor-agent`), so the dialog and the launch agree with
@@ -156,7 +149,7 @@ function binaryFor(provider: ProviderKind, settings: ProviderSettingsMap): strin
     case "droid":
       return resolveDroidBinary(override);
     default:
-      return override?.trim() || defaultBinary(provider);
+      return override?.trim() || defaultProviderBinary(provider);
   }
 }
 
@@ -185,7 +178,10 @@ function launchBinary(
   env: NodeJS.ProcessEnv,
 ): string {
   if (provider === "claudeAgent" && !configuredBinary(provider, settings)) {
-    const executable = resolveClaudeInstallation({ binary: defaultBinary(provider), env }).executable;
+    const executable = resolveClaudeInstallation({
+      binary: defaultProviderBinary(provider),
+      env,
+    }).executable;
     if (executable && !isJavaScriptEntry(executable)) return executable;
   }
   return binaryFor(provider, settings);

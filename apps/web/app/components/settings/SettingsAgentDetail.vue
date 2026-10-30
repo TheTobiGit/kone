@@ -316,6 +316,7 @@ watch(
     v-if="agent"
     :open="open"
     :breadcrumb="`Ecosystem / Teams / ${agent.name}`"
+    :title="agent.name"
     :breadcrumb-icon="UserGroupIcon"
     :label="agent.name"
     @back="$emit('back')"

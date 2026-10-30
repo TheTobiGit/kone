@@ -36,11 +36,13 @@ type IconGlyph = readonly (readonly [string, Readonly<Record<string, string | nu
 const props = withDefaults(
   defineProps<{
     open: boolean;
-    /** The breadcrumb trail, e.g. "Ecosystem / Providers". */
+    /** Where this pane sits, e.g. "Ecosystem / Providers". Its last segment is the
+     *  title fallback, and its full text is the aria-label fallback. */
     breadcrumb: string;
-    /** Glyph of the settings row that opened this pane. Sits in front of the pane
-     *  name, not the whole trail — so "Ecosystem / Providers" reads as a tree with
-     *  the mark on the leaf, not as a third object before the path. */
+    /** The pane's own name, when it is dynamic. Overrides the breadcrumb's last
+     *  segment so a name containing " / " is never cut. */
+    title?: string;
+    /** Glyph of the settings row that opened this pane, in front of the title. */
     breadcrumbIcon?: IconGlyph;
     /** Section aria-label; falls back to the breadcrumb. */
     label?: string;
@@ -87,23 +89,19 @@ function toggleNote() {
   noteOpen.value = !noteOpen.value;
 }
 
-/** "Ecosystem / Skills / foo" → the mark belongs on Skills (the pane), not on foo
- *  (a nested leaf) and not on Agents (the group). One segment is the pane itself. */
-const crumb = computed(() => {
-  const parts = props.breadcrumb.split(" / ").filter(Boolean);
-  if (parts.length <= 1) {
-    // SAFETY: the array literal is empty, so its element type vacuously
-    // matches the string[] the multi-segment branch below fills.
-    return { group: "", pane: parts[0] ?? "", nested: [] as string[] };
-  }
-  return { group: parts[0]!, pane: parts[1]!, nested: parts.slice(2) };
-});
+/** The pane says where you are; the trail above it is not worth the room it
+ *  took. An explicit title wins, because a name may itself contain " / "
+ *  ("Client A / Website"); otherwise use the breadcrumb's last segment, as in
+ *  "Ecosystem / Skills / foo" → "foo". */
+const visibleTitle = computed(
+  () => props.title ?? props.breadcrumb.split(" / ").filter(Boolean).at(-1) ?? "",
+);
 </script>
 
 <template>
   <section class="sps" :aria-label="label ?? breadcrumb">
     <header class="sps__mast" :class="{ 'sps__mast--split': $slots.actions }">
-      <p class="sps__eyebrow">
+      <div class="sps__title">
         <button
           type="button"
           class="sps__back"
@@ -118,28 +116,16 @@ const crumb = computed(() => {
             aria-hidden="true"
           />
         </button>
-        <span class="sps__crumb">
-          <template v-if="crumb.group">
-            <span>{{ crumb.group }}</span>
-            <span class="sps__slash" aria-hidden="true">/</span>
-          </template>
-          <span class="sps__pane">
-            <HugeiconsIcon
-              v-if="breadcrumbIcon"
-              class="sps__crumbglyph"
-              :icon="breadcrumbIcon"
-              :size="12"
-              :stroke-width="1.8"
-              aria-hidden="true"
-            />
-            <span>{{ crumb.pane }}</span>
-          </span>
-          <template v-for="(seg, i) in crumb.nested" :key="i">
-            <span class="sps__slash" aria-hidden="true">/</span>
-            <span>{{ seg }}</span>
-          </template>
-        </span>
-      </p>
+        <HugeiconsIcon
+          v-if="breadcrumbIcon"
+          class="sps__titleglyph"
+          :icon="breadcrumbIcon"
+          :size="13"
+          :stroke-width="1.8"
+          aria-hidden="true"
+        />
+        <span class="sps__titletext">{{ visibleTitle }}</span>
+      </div>
 
       <div v-if="$slots.actions" class="sps__actions">
         <slot name="actions" />
@@ -236,7 +222,7 @@ const crumb = computed(() => {
   padding-inline: 1rem;
   animation: sps-in var(--sps-t-enter) var(--sps-ease) backwards;
 }
-/* A page with a masthead action (Providers' "Check again") puts the breadcrumb and
+/* A page with a masthead action (Providers' "Check again") puts the title and
    the action on one line instead of stacking. */
 .sps__mast--split {
   flex-direction: row;
@@ -245,37 +231,25 @@ const crumb = computed(() => {
   gap: 24px;
 }
 
-.sps__eyebrow {
+.sps__title {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.sps__crumb {
-  display: inline-flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
 }
-.sps__slash {
-  opacity: 0.5;
-}
-/* Icon + pane name as one unit, tighter than the trail's slash gaps so the mark
-   reads as belonging to the leaf rather than sitting in the path. */
-.sps__pane {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-.sps__crumbglyph {
+
+.sps__titleglyph {
   flex-shrink: 0;
   color: var(--muted);
+}
+
+.sps__titletext {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .sps__actions {
@@ -283,9 +257,9 @@ const crumb = computed(() => {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  /* Nudged down so a masthead action sits against the breadcrumb rather than
-     riding above it (the mast is top-aligned so a tall action doesn't drag the
-     breadcrumb down). */
+  /* Nudged down so a masthead action sits against the title rather than riding
+     above it (the mast is top-aligned so a tall action doesn't drag the title
+     down). */
   padding-top: 4px;
 }
 
