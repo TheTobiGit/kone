@@ -1677,16 +1677,6 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
           >{{ refTip.text }}</div>
         </Teleport>
 
-        <!-- Dormant face -->
-        <div class="face" aria-hidden="true">
-          <svg class="face__eyes" viewBox="0 0 104 104">
-            <path d="M32 52 Q40 58 48 52" fill="none" stroke="#241C46" stroke-width="3" stroke-linecap="round" opacity="0.85" />
-            <path d="M56 52 Q64 58 72 52" fill="none" stroke="#241C46" stroke-width="3" stroke-linecap="round" opacity="0.85" />
-          </svg>
-          <span class="face__z face__z--near">z</span>
-          <span class="face__z face__z--far">z</span>
-        </div>
-
         <!-- Field · the text alone. Every control now lives in the bar below it,
              inside the card, so the composer is one object on the ground rather
              than a pill with satellites floating either side. -->

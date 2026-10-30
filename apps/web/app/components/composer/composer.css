@@ -221,34 +221,6 @@ html.dark .dock {
   transition: opacity 0.06s ease;
 }
 
-/* ── Dormant face ─────────────────────────────────────────────────────────── */
-/* Retired: the particle globe is the resting mark now, so the sleeping eyes/z
-   would only poke out past the orb. Kept in the DOM but hidden. */
-.face {
-  position: absolute;
-  inset: 0;
-  display: none;
-  place-items: center;
-  opacity: 1;
-  transition: opacity 0.18s ease;
-  pointer-events: none;
-  animation: breathe 5.5s ease-in-out infinite;
-}
-.surface.is-open .face { opacity: 0; transition: opacity 0.16s ease; }
-.face__eyes { width: 55px; height: 55px; }
-.face__z {
-  position: absolute;
-  font-style: italic;
-  font-weight: 600;
-  color: #b0b2b8;
-}
-.face__z--near { right: 8px; top: 6px; font-size: 12px; }
-.face__z--far { right: 1px; top: -2px; font-size: 9px; color: #c6c8ce; }
-@keyframes breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.04); }
-}
-
 /* ── Field ────────────────────────────────────────────────────────────────── */
 /* Fades in a beat after the expand begins so text never appears mid-squeeze. */
 .field {
@@ -757,9 +729,8 @@ html.dark .dock {
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
+  .surface, .panel, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
   .dock { animation: none; }
-  .face { animation: none; }
   .bar, .tray { transition-duration: 0.01s; transition-delay: 0s; }
   .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
   .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
