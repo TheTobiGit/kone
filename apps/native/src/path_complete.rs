@@ -167,6 +167,79 @@ impl PathCompleter {
     }
 }
 
+/// A view with a single path field completed by a [`PathCompleter`].
+pub trait CompletesPath: 'static + Sized {
+    fn completer(&mut self) -> &mut PathCompleter;
+}
+
+/// Runs inline completion for `input` after a change: on the way in only,
+/// against the parent's children (cached for [`CHILD_CACHE_TTL`]).
+pub fn complete_on_change<T: CompletesPath>(
+    this: &mut T,
+    input: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    let value = input.read(cx).value().to_string();
+    let cursor = input.read(cx).cursor();
+    let completer = this.completer();
+    let previous = std::mem::replace(&mut completer.last_input, value.clone());
+    if !should_complete(&value, &previous, cursor) {
+        return;
+    }
+    let Some((parent, frag)) = split_path_fragment(&completer.home, &value) else {
+        return;
+    };
+    if let Some((names, at)) = completer.child_cache.get(&parent)
+        && at.elapsed() < CHILD_CACHE_TTL
+    {
+        let names = names.clone();
+        apply_completion(this, input, value, frag, names, window, cx);
+        return;
+    }
+    let task = cx.background_spawn(async move {
+        let names = child_dir_names(&parent);
+        (parent, names)
+    });
+    let input = input.clone();
+    cx.spawn_in(window, async move |view, cx| {
+        let (parent, names) = task.await;
+        let Some(names) = names else { return };
+        view.update_in(cx, |this, window, cx| {
+            let completer = this.completer();
+            completer.prune_cache();
+            completer.child_cache.insert(parent, (names.clone(), Instant::now()));
+            apply_completion(this, &input, value, frag, names, window, cx);
+        })
+        .ok();
+    })
+    .detach();
+}
+
+/// Appends the first matching child and selects the appended part, but only
+/// while the field still holds exactly the text the lookup started from.
+fn apply_completion<T: CompletesPath>(
+    this: &mut T,
+    input: &Entity<InputState>,
+    base: String,
+    frag: String,
+    names: Vec<String>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    if input.read(cx).value() != base || input.read(cx).cursor() != base.len() {
+        return;
+    }
+    let Some((completed, start, end)) = find_completion(&base, &frag, &names) else {
+        return;
+    };
+    this.completer().set_text(completed.clone());
+    input.update(cx, |state, cx| {
+        state.set_value(completed, window, cx);
+        state.set_selected_range(start..end, cx);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

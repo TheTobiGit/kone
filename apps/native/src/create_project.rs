@@ -14,10 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{hsla, Palette, Theme};
 
-use crate::path_complete::{
-    child_dir_names, find_completion, should_complete, split_path_fragment, PathCompleter,
-    CHILD_CACHE_TTL,
-};
+use crate::path_complete::{complete_on_change, CompletesPath, PathCompleter};
 use crate::folder_picker::{
     bezier, card_enter_tween, card_fade_tween, collapse, expand, home_dir, input_style,
     paint_footer_band, paint_header_band, sample_hover, scrim_enter_tween, BAND_ARC, BAND_GAP,
@@ -100,6 +97,12 @@ pub struct CreateProject {
     outcome: Option<CreateProjectEvent>,
     _task: Option<Task<()>>,
     _subs: Vec<Subscription>,
+}
+
+impl CompletesPath for CreateProject {
+    fn completer(&mut self) -> &mut PathCompleter {
+        &mut self.completer
+    }
 }
 
 impl CreateProject {
@@ -206,59 +209,8 @@ impl CreateProject {
     }
 
     fn on_location_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let value = self.location.read(cx).value().to_string();
-        let previous = std::mem::replace(&mut self.completer.last_input, value.clone());
-        if !should_complete(&value, &previous, self.location.read(cx).cursor()) {
-            return;
-        }
-        let Some((parent, frag)) = split_path_fragment(&self.completer.home, &value) else {
-            return;
-        };
-        if let Some((names, at)) = self.completer.child_cache.get(&parent)
-            && at.elapsed() < CHILD_CACHE_TTL
-        {
-            let names = names.clone();
-            self.apply_location_completion(value, frag, names, window, cx);
-            return;
-        }
-        let task = cx.background_spawn(async move {
-            let names = child_dir_names(&parent);
-            (parent, names)
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let (parent, names) = task.await;
-            let Some(names) = names else { return };
-            this.update_in(cx, |this, window, cx| {
-                this.completer.prune_cache();
-                this.completer.child_cache.insert(parent, (names.clone(), Instant::now()));
-                this.apply_location_completion(value, frag, names, window, cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn apply_location_completion(
-        &mut self,
-        base: String,
-        frag: String,
-        names: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.location.read(cx).value() != base
-            || self.location.read(cx).cursor() != base.len()
-        {
-            return;
-        }
-        let Some((completed, start, end)) = find_completion(&base, &frag, &names) else {
-            return;
-        };
-        self.completer.set_text(completed.clone());
-        self.location.update(cx, |state, cx| {
-            state.set_value(completed, window, cx);
-            state.set_selected_range(start..end, cx);
-        });
+        let location = self.location.clone();
+        complete_on_change(self, &location, window, cx);
     }
 
     fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
