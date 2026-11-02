@@ -44,6 +44,8 @@ const PANEL_RADIUS: f32 = 8.;
 /// The threads drift ~5px a second, so 8 frames (0.625px a step) still read as
 /// smooth and keep an idle focused window near 3% CPU.
 const ART_FRAME: Duration = Duration::from_millis(125);
+/// Spinner pace while a launcher modal is open (~30 fps).
+const SPIN_FRAME: Duration = Duration::from_millis(33);
 
 pub struct Shell {
     magnets: [Magnet; 3],
@@ -64,15 +66,23 @@ pub struct Shell {
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Only a focused window animates; a background one holds its last frame.
-        let ticker = cx.spawn_in(window, async move |this, cx| loop {
-            cx.background_executor().timer(ART_FRAME).await;
-            let alive = this.update_in(cx, |_, window, cx| {
-                if window.is_window_active() {
-                    cx.notify();
+        // While a launcher modal is up the active row's spinner needs a smoother
+        // pace than the art, but still a timer: not a frame on every vsync.
+        let ticker = cx.spawn_in(window, async move |this, cx| {
+            let mut pace = ART_FRAME;
+            loop {
+                cx.background_executor().timer(pace).await;
+                let alive = this.update_in(cx, |this: &mut Self, window, cx| {
+                    if window.is_window_active() {
+                        cx.notify();
+                    }
+                    this.picker.is_some() || this.creator.is_some() || this.cloner.is_some()
+                });
+                match alive {
+                    Ok(true) => pace = SPIN_FRAME,
+                    Ok(false) => pace = ART_FRAME,
+                    Err(_) => return,
                 }
-            });
-            if alive.is_err() {
-                return;
             }
         });
         Shell {
@@ -100,6 +110,7 @@ impl Shell {
         for m in &mut self.magnets {
             m.release();
         }
+        self.open_error = None;
         let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
         picker.update(cx, |picker, cx| picker.start(window, cx));
         self._picker_sub = Some(cx.subscribe_in(
@@ -278,9 +289,6 @@ impl Render for Shell {
         } else {
             "open"
         };
-        if busy {
-            window.request_animation_frame();
-        }
         let spin = self.started.elapsed().as_secs_f32();
         let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
             let loading = busy && id == session;
