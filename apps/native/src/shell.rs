@@ -54,6 +54,7 @@ pub struct Shell {
     _creator_sub: Option<Subscription>,
     cloner: Option<Entity<crate::clone_modal::CloneModal>>,
     _cloner_sub: Option<Subscription>,
+    create_session: crate::create_project::CreateProjectSession,
     project: Option<crate::projects::OpenProject>,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
@@ -83,6 +84,7 @@ impl Shell {
             _creator_sub: None,
             cloner: None,
             _cloner_sub: None,
+            create_session: Default::default(),
             project: None,
             open_error: None,
             _open_task: None,
@@ -126,12 +128,13 @@ impl Shell {
             m.release();
         }
         self.open_error = None;
-        let creator = cx.new(|cx| crate::create_project::CreateProject::new(window, cx));
+        let creator = cx.new(|cx| crate::create_project::CreateProject::new(&self.create_session, window, cx));
         creator.update(cx, |c, _| c.start());
         self._creator_sub = Some(cx.subscribe_in(
             &creator,
             window,
-            |this, _, event: &crate::create_project::CreateProjectEvent, window, cx| {
+            |this, creator, event: &crate::create_project::CreateProjectEvent, window, cx| {
+                this.create_session = creator.read(cx).session(cx);
                 if let crate::create_project::CreateProjectEvent::Created(path) = event {
                     this.open_project(path.clone(), window, cx);
                 }

@@ -26,6 +26,27 @@ use crate::folder_picker::{
 use crate::projects::{self, CreateOptions};
 use crate::shell::SANS;
 
+#[derive(Clone, Debug)]
+pub struct CreateProjectSession {
+    pub location: Option<String>,
+    pub git: bool,
+    pub readme: bool,
+    pub visibility: projects::RepoVisibility,
+    pub branch: String,
+}
+
+impl Default for CreateProjectSession {
+    fn default() -> Self {
+        Self {
+            location: None,
+            git: false,
+            readme: false,
+            visibility: projects::RepoVisibility::Private,
+            branch: "main".to_string(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum CreateProjectEvent {
     Cancel,
@@ -56,6 +77,7 @@ pub struct CreateProject {
     completer: PathCompleter,
     git: bool,
     readme: bool,
+    pub visibility: projects::RepoVisibility,
     busy: bool,
     error: Option<String>,
     create_hovered: bool,
@@ -74,7 +96,7 @@ pub struct CreateProject {
 }
 
 impl CreateProject {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: &CreateProjectSession, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let colors = Theme::get(cx).colors.clone();
         let home = home_dir();
         // Electron seeds the location to the home directory itself.
@@ -84,9 +106,9 @@ impl CreateProject {
             state
         };
         let name = make(String::new(), "my-project", window, cx);
-        let initial_location = collapse(&home, &home);
+        let initial_location = session.location.clone().unwrap_or_else(|| collapse(&home, &home));
         let location = make(initial_location.clone(), "~/", window, cx);
-        let branch = make("main".into(), "main", window, cx);
+        let branch = make(if session.branch.is_empty() { "main".into() } else { session.branch.clone() }, "main", window, cx);
         let mut completer = PathCompleter::new(home.clone());
         completer.set_text(initial_location);
         let mut subs = Vec::new();
@@ -114,8 +136,9 @@ impl CreateProject {
             location,
             branch,
             completer,
-            git: false,
-            readme: false,
+            git: session.git,
+            readme: session.readme,
+            visibility: session.visibility,
             busy: false,
             error: None,
             create_hovered: false,
@@ -131,6 +154,16 @@ impl CreateProject {
             outcome: None,
             _task: None,
             _subs: subs,
+        }
+    }
+
+    pub fn session(&self, cx: &App) -> CreateProjectSession {
+        CreateProjectSession {
+            location: Some(self.location.read(cx).value().to_string()),
+            git: self.git,
+            readme: self.readme,
+            visibility: self.visibility,
+            branch: self.branch.read(cx).value().to_string(),
         }
     }
 
@@ -590,5 +623,21 @@ impl Render for CreateProject {
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.cancel(window, cx)))
             .child(card)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn test_create_project_session_default() {
+        let session = CreateProjectSession::default();
+        assert_eq!(session.location, None);
+        assert!(!session.git);
+        assert!(!session.readme);
+        assert_eq!(session.visibility, projects::RepoVisibility::Private);
+        assert_eq!(session.branch, "main");
     }
 }

@@ -110,6 +110,14 @@ pub fn open(path: &Path) -> Result<OpenProject, String> {
     })
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepoVisibility {
+    #[default]
+    Private,
+    Public,
+}
+
 /// What the create modal asks for. Mirrors Electron's `CreateProjectOptions`
 /// (`git-core/types.ts`) minus the GitHub remote and setup command.
 #[derive(Clone, Debug)]
