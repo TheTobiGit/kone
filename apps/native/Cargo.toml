@@ -14,3 +14,5 @@ anyhow.workspace = true
 gpui-kit.workspace = true
 kone-theme.workspace = true
 kone-rpc.workspace = true
+image = { version = "0.25", default-features = false }
+smallvec = "1"

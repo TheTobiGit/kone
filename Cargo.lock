@@ -3269,8 +3269,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
+ "image",
  "kone-rpc",
  "kone-theme",
+ "smallvec",
 ]
 
 [[package]]

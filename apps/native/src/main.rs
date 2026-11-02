@@ -1,6 +1,7 @@
 //! kone's native shell.
 
 mod assets;
+mod plasma;
 mod shell;
 
 use gpui_kit::*;
@@ -43,7 +44,7 @@ fn main() {
                     })
                     .detach();
             }
-            cx.new(|_| shell::Shell)
+            cx.new(shell::Shell::new)
         })
         .expect("main window opens");
         cx.activate(true);
