@@ -66,6 +66,7 @@ enum Field {
     Name,
     Location,
     Branch,
+    Command,
 }
 
 pub struct CreateProject {
@@ -74,6 +75,7 @@ pub struct CreateProject {
     name: Entity<InputState>,
     location: Entity<InputState>,
     branch: Entity<InputState>,
+    command: Entity<InputState>,
     completer: PathCompleter,
     git: bool,
     readme: bool,
@@ -109,10 +111,11 @@ impl CreateProject {
         let initial_location = session.location.clone().unwrap_or_else(|| collapse(&home, &home));
         let location = make(initial_location.clone(), "~/", window, cx);
         let branch = make(if session.branch.is_empty() { "main".into() } else { session.branch.clone() }, "main", window, cx);
+        let command = make(String::new(), "npm create vite@latest .", window, cx);
         let mut completer = PathCompleter::new(home.clone());
         completer.set_text(initial_location);
         let mut subs = Vec::new();
-        for (state, field) in [(&name, Field::Name), (&location, Field::Location), (&branch, Field::Branch)] {
+        for (state, field) in [(&name, Field::Name), (&location, Field::Location), (&branch, Field::Branch), (&command, Field::Command)] {
             subs.push(cx.subscribe_in(state, window, move |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { .. } => this.submit(window, cx),
                 InputEvent::Focus => this.ink(field, true, cx),
@@ -135,6 +138,7 @@ impl CreateProject {
             name,
             location,
             branch,
+            command,
             completer,
             git: session.git,
             readme: session.readme,
@@ -239,6 +243,7 @@ impl CreateProject {
             Field::Name => &self.name,
             Field::Location => &self.location,
             Field::Branch => &self.branch,
+            Field::Command => &self.command,
         }
     }
 
@@ -273,12 +278,14 @@ impl CreateProject {
             cx.notify();
             return;
         }
+        let cmd = self.command.read(cx).value().trim().to_string();
         let opts = CreateOptions {
             parent: self.parent(cx),
             name,
             git: self.git,
             readme: self.git && self.readme,
             branch: self.branch.read(cx).value().to_string(),
+            command: if cmd.is_empty() { None } else { Some(cmd) },
         };
         self.busy = true;
         self.error = None;
@@ -330,6 +337,7 @@ impl CreateProject {
         if self.git {
             ring.push(Field::Branch);
         }
+        ring.push(Field::Command);
         let at = ring
             .iter()
             .position(|f| self.input(*f).read(cx).focus_handle(cx).is_focused(window))
@@ -358,6 +366,34 @@ impl CreateProject {
 
 fn label(text: &'static str, c: &Palette) -> Div {
     div().text_size(px(12.)).text_color(hsla(c.muted)).child(text)
+}
+
+fn command_field(input: &Entity<InputState>, focused: bool, c: &Palette) -> Div {
+    div()
+        .h(px(32.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(hsla(if focused { c.ink.alpha(0.22) } else { c.line_soft }))
+        .bg(hsla(c.band.alpha(0.5)))
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(13.))
+                .text_color(hsla(if focused { c.accent } else { c.muted }))
+                .child("$"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .font_family(MONO)
+                .text_size(px(12.))
+                .text_color(hsla(if focused { c.ink } else { c.ink_soft }))
+                .child(Input::new(input)),
+        )
 }
 
 fn field(input: &Entity<InputState>, mono: bool, focused: bool, c: &Palette) -> Div {
@@ -407,10 +443,11 @@ impl Render for CreateProject {
             window.request_animation_frame();
         }
         let focused = |f: &Entity<InputState>, window: &Window, cx: &App| f.read(cx).focus_handle(cx).is_focused(window);
-        let (fn_, fl, fb) = (
+        let (fn_, fl, fb, fc) = (
             focused(&self.name, window, cx),
             focused(&self.location, window, cx),
             focused(&self.branch, window, cx),
+            focused(&self.command, window, cx),
         );
         let name = self.name_text(cx);
         let can_create = projects::valid_name(&name) && !self.busy;
@@ -519,6 +556,19 @@ impl Render for CreateProject {
                 .child(label("Default branch", &c))
                 .child(field(&self.branch, true, fb, &c));
         }
+        let setup_section = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(label("Setup command", &c))
+            .child(command_field(&self.command, fc, &c))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(hsla(c.muted))
+                    .child("Runs in the new folder after it’s created."),
+            );
+        body = body.child(div().h(px(4.))).child(setup_section);
         if let Some(err) = &self.error {
             body = body.child(div().pt(px(6.)).text_size(px(12.)).text_color(hsla(c.danger)).child(err.clone()));
         }
@@ -538,7 +588,11 @@ impl Render for CreateProject {
             }))
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
             .child(div().flex_shrink_0().text_size(px(14.)).text_color(hsla(c.ink)).child(if self.busy {
-                "Creating "
+                if !self.command.read(cx).value().trim().is_empty() {
+                    "Running setup "
+                } else {
+                    "Creating "
+                }
             } else {
                 "Create "
             }))

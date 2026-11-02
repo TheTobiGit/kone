@@ -127,12 +127,54 @@ pub struct CreateOptions {
     pub git: bool,
     pub readme: bool,
     pub branch: String,
+    pub command: Option<String>,
 }
 
 /// A single, safe path segment, the same rule as Electron's `isSafeSegment`.
 pub fn valid_name(name: &str) -> bool {
     let name = name.trim();
     !(name.is_empty() || name == "." || name == "..") && !name.contains(['/', '\\', '\0'])
+}
+
+/// The last non-empty line of a command's stderr, or `fallback` when blank.
+pub fn last_stderr_line(stderr: &str, fallback: &str) -> String {
+    stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Runs a user-supplied setup command inside the new project folder.
+/// Runs through the shell (`sh -c` on Unix, `cmd /C` on Windows) with
+/// GIT_TERMINAL_PROMPT=0 so prompts never hang.
+pub fn run_setup_command(cwd: &Path, command: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    let mut cmd = std::process::Command::new("sh");
+    #[cfg(unix)]
+    cmd.args(["-c", command]);
+
+    #[cfg(windows)]
+    let mut cmd = std::process::Command::new("cmd");
+    #[cfg(windows)]
+    cmd.args(["/C", command]);
+
+    cmd.current_dir(cwd);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("LC_ALL", "C");
+
+    let output = cmd.output().map_err(|e| format!("Failed to run setup command: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let code = output.status.code().unwrap_or(1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let fallback = format!("Command exited with code {code}");
+        Err(last_stderr_line(&stderr, &fallback))
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -180,11 +222,19 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
         io::ErrorKind::AlreadyExists => format!("A folder already exists at {}", target.display()),
         _ => format!("Couldn't create the folder: {e}"),
     })?;
-    if opts.git && opts.readme {
+
+    // A setup command runs first, on the still-empty folder — scaffolders expect that.
+    if let Some(cmd) = opts.command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        run_setup_command(&target, cmd)?;
+    }
+
+    // Seed README.md only if it does not already exist (a setup command might have created it)
+    if opts.git && opts.readme && !target.join("README.md").exists() {
         fs::write(target.join("README.md"), format!("# {name}\n"))
             .map_err(|e| format!("Couldn't write README.md: {e}"))?;
     }
-    if opts.git {
+    // A setup command might have already initialized git; only init when it didn't.
+    if opts.git && !target.join(".git").exists() {
         let branch = match opts.branch.trim() {
             "" => "main",
             b => b,
@@ -201,4 +251,59 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
         }
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn test_valid_name() {
+        assert!(valid_name("my-app"));
+        assert!(valid_name("app_1.0"));
+        assert!(!valid_name(""));
+        assert!(!valid_name("   "));
+        assert!(!valid_name("."));
+        assert!(!valid_name(".."));
+        assert!(!valid_name("foo/bar"));
+        assert!(!valid_name("foo\\bar"));
+        assert!(!valid_name("foo\0bar"));
+    }
+
+    #[test]
+    fn test_last_stderr_line() {
+        assert_eq!(last_stderr_line("line 1\nline 2\nline 3\n", "fallback"), "line 3");
+        assert_eq!(last_stderr_line("only one line", "fallback"), "only one line");
+        assert_eq!(last_stderr_line("", "fallback"), "fallback");
+        assert_eq!(last_stderr_line("  \n   \n", "fallback"), "fallback");
+        assert_eq!(last_stderr_line("error: npm install failed\n", "fallback"), "error: npm install failed");
+    }
+
+    #[test]
+    fn test_run_setup_command_success() {
+        let tmp = std::env::temp_dir().join(format!("kone_setup_test_succ_{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+        let res = run_setup_command(&tmp, "echo hello");
+        let _ = fs::remove_dir_all(&tmp);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_run_setup_command_failure_reports_stderr() {
+        let tmp = std::env::temp_dir().join(format!("kone_setup_test_fail_{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+        let res = run_setup_command(&tmp, "echo \"something went wrong\" >&2; exit 42");
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(res.unwrap_err(), "something went wrong");
+    }
+
+    #[test]
+    fn test_run_setup_command_failure_without_stderr_reports_code() {
+        let tmp = std::env::temp_dir().join(format!("kone_setup_test_nocode_{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+        let res = run_setup_command(&tmp, "exit 7");
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(res.unwrap_err(), "Command exited with code 7");
+    }
 }
