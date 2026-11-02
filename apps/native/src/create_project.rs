@@ -14,6 +14,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{hsla, Palette, Theme};
 
+use crate::path_complete::{
+    child_dir_names, find_completion, should_complete, split_path_fragment, PathCompleter,
+    CHILD_CACHE_TTL,
+};
 use crate::folder_picker::{
     bezier, card_enter_tween, card_fade_tween, collapse, expand, home_dir, input_style,
     paint_footer_band, paint_header_band, sample_hover, scrim_enter_tween, BAND_ARC, BAND_GAP,
@@ -49,6 +53,7 @@ pub struct CreateProject {
     name: Entity<InputState>,
     location: Entity<InputState>,
     branch: Entity<InputState>,
+    completer: PathCompleter,
     git: bool,
     readme: bool,
     busy: bool,
@@ -79,8 +84,11 @@ impl CreateProject {
             state
         };
         let name = make(String::new(), "my-project", window, cx);
-        let location = make(collapse(&home, &home), "~/", window, cx);
+        let initial_location = collapse(&home, &home);
+        let location = make(initial_location.clone(), "~/", window, cx);
         let branch = make("main".into(), "main", window, cx);
+        let mut completer = PathCompleter::new(home.clone());
+        completer.set_text(initial_location);
         let mut subs = Vec::new();
         for (state, field) in [(&name, Field::Name), (&location, Field::Location), (&branch, Field::Branch)] {
             subs.push(cx.subscribe_in(state, window, move |this, _, event: &InputEvent, window, cx| match event {
@@ -88,6 +96,9 @@ impl CreateProject {
                 InputEvent::Focus => this.ink(field, true, cx),
                 InputEvent::Blur => this.ink(field, false, cx),
                 InputEvent::Change => {
+                    if field == Field::Location {
+                        this.on_location_change(window, cx);
+                    }
                     if this.error.take().is_some() {
                         cx.notify();
                     }
@@ -102,6 +113,7 @@ impl CreateProject {
             name,
             location,
             branch,
+            completer,
             git: false,
             readme: false,
             busy: false,
@@ -127,6 +139,66 @@ impl CreateProject {
         self.enter_scrim.animate(1., scrim_enter_tween(), now);
         self.enter_y.animate(0., card_enter_tween(), now);
         self.enter_fade.animate(1., card_fade_tween(), now);
+    }
+
+    fn on_location_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.location.read(cx).value().to_string();
+        let previous = std::mem::replace(&mut self.completer.last_input, value.clone());
+        if !should_complete(&value, &previous, self.location.read(cx).cursor()) {
+            return;
+        }
+        let Some((parent, frag)) = split_path_fragment(&self.completer.home, &value) else {
+            return;
+        };
+        if let Some((names, at)) = self.completer.child_cache.get(&parent)
+            && at.elapsed() < CHILD_CACHE_TTL
+        {
+            let names = names.clone();
+            self.apply_location_completion(value, frag, names, window, cx);
+            return;
+        }
+        let task = cx.background_spawn(async move {
+            let names = child_dir_names(&parent);
+            (parent, names)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (parent, names) = task.await;
+            let Some(names) = names else { return };
+            this.update_in(cx, |this, window, cx| {
+                this.completer.prune_cache();
+                this.completer.child_cache.insert(parent, (names.clone(), Instant::now()));
+                this.apply_location_completion(value, frag, names, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_location_completion(
+        &mut self,
+        base: String,
+        frag: String,
+        names: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.location.read(cx).value() != base
+            || self.location.read(cx).cursor() != base.len()
+        {
+            return;
+        }
+        let Some((completed, start, end)) = find_completion(&base, &frag, &names) else {
+            return;
+        };
+        self.completer.set_text(completed.clone());
+        self.location.update(cx, |state, cx| {
+            state.set_value(completed, window, cx);
+            state.set_selected_range(start..end, cx);
+        });
+    }
+
+    fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.completer.accept_completion(&self.location, window, cx)
     }
 
     fn input(&self, field: Field) -> &Entity<InputState> {
@@ -495,10 +567,19 @@ impl Render for CreateProject {
             .bg(hsla(c.ground.alpha(0.62 * scrim)))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                let location_focused = this.location.read(cx).focus_handle(cx).is_focused(window);
                 match e.keystroke.key.as_str() {
                     "tab" => {
-                        this.tab(e.keystroke.modifiers.shift, window, cx);
+                        if !location_focused || !this.accept_completion(window, cx) {
+                            this.tab(e.keystroke.modifiers.shift, window, cx);
+                        }
                         cx.stop_propagation();
+                    }
+                    "right" if location_focused && this.accept_completion(window, cx) => {
+                        cx.stop_propagation();
+                    }
+                    "/" if location_focused => {
+                        this.accept_completion(window, cx);
                     }
                     "escape" => {
                         this.cancel(window, cx);
