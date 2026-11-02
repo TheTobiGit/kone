@@ -230,6 +230,15 @@ struct RowVisual {
     meta: f32,
 }
 
+/// Where a row is drawn this frame: the lean and flip offsets that move it,
+/// the probe that reports its resting box, and whether a listing swap is still
+/// being measured.
+struct RowPlacement {
+    offset: (f32, f32),
+    probe: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
+    hidden: bool,
+}
+
 pub struct FolderPicker {
     focus: FocusHandle,
     path_input: Entity<InputState>,
@@ -633,12 +642,12 @@ impl FolderPicker {
         else {
             return;
         };
-        if let Some((names, at)) = self.child_cache.get(&parent) {
-            if at.elapsed() < CHILD_CACHE_TTL {
-                let names = names.clone();
-                self.apply_completion(value, frag, names, window, cx);
-                return;
-            }
+        if let Some((names, at)) = self.child_cache.get(&parent)
+            && at.elapsed() < CHILD_CACHE_TTL
+        {
+            let names = names.clone();
+            self.apply_completion(value, frag, names, window, cx);
+            return;
         }
         // Reading a parent can be slow on a network mount; keep it off the
         // frame and complete only if the field is still where it was.
@@ -669,7 +678,7 @@ impl FolderPicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.path_input.read(cx).value().to_string() != base
+        if self.path_input.read(cx).value() != base
             || self.path_input.read(cx).cursor() != base.len()
         {
             return;
@@ -1335,17 +1344,21 @@ impl Render for FolderPicker {
                 };
                 // For the one frame it takes to measure the new slots, a
                 // survivor is held back rather than flashing where it landed.
-                let hidden = self.flip_pending && self.flip_from.contains_key(&keys[index]);
+                let placement = RowPlacement {
+                    offset,
+                    probe,
+                    hidden: self.flip_pending && self.flip_from.contains_key(&keys[index]),
+                };
                 let element = match row {
                     PickerRow::Ascend { .. } => {
                         let on_click = cx.listener(|this, _, window, cx| this.ascend(window, cx));
-                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, &colors, placement, on_click, cx)
                     }
                     PickerRow::Crumb { index, path, current, .. } => {
                         let on_click = cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.click_crumb(index, path.clone(), current, window, cx)
                         });
-                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, &colors, placement, on_click, cx)
                     }
                     PickerRow::Entry { path, name, git } => {
                         let entry = Entry { name, path, git };
@@ -1353,7 +1366,7 @@ impl Render for FolderPicker {
                         let on_click = cx.listener(move |this, event: &ClickEvent, window, cx| {
                             this.click_entry(click.clone(), event, window, cx)
                         });
-                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, &colors, placement, on_click, cx)
                     }
                 };
                 list = list.child(element);
@@ -1632,10 +1645,8 @@ impl PickerRow {
 fn row_element<F>(
     visual: RowVisual,
     hover: f32,
-    hidden: bool,
     colors: &Palette,
-    offset: (f32, f32),
-    probe: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
+    placement: RowPlacement,
     on_click: F,
     cx: &mut Context<FolderPicker>,
 ) -> Div
@@ -1644,6 +1655,7 @@ where
 {
     let hover = hover.clamp(0., 1.);
     let idx = visual.idx;
+    let RowPlacement { offset, probe, hidden } = placement;
     let RowVisual {
         indent,
         name,
