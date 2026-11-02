@@ -27,7 +27,9 @@ pub fn expand(home: &Path, raw: &str) -> PathBuf {
         return home.to_path_buf();
     }
     let path = if let Some(rest) = raw.strip_prefix("~/") {
-        home.join(rest)
+        // `Path::join` with an absolute part replaces the base, so `~//tmp`
+        // would land on `/tmp`; extra slashes after `~` stay under home.
+        home.join(rest.trim_start_matches('/'))
     } else {
         PathBuf::from(raw)
     };
@@ -179,6 +181,14 @@ mod tests {
         assert_eq!(expand(&home, "~/projects/"), home.join("projects"));
         assert_eq!(expand(&home, "/var/log"), PathBuf::from("/var/log"));
         assert_eq!(expand(&home, "/var/log/"), PathBuf::from("/var/log"));
+
+        // Doubled slashes after the tilde stay under home.
+        assert_eq!(expand(&home, "~//tmp/x"), home.join("tmp/x"));
+        assert_eq!(expand(&home, "~///tmp/"), home.join("tmp"));
+        assert_eq!(expand(&home, "~//"), home);
+        assert_eq!(expand(&home, "  ~/a  "), home.join("a"));
+        // `~user` isn't ours to expand; it stays literal.
+        assert_eq!(expand(&home, "~other/x"), PathBuf::from("~other/x"));
 
         assert_eq!(collapse(&home, &home), "~/");
         assert_eq!(collapse(&home, &home.join("projects")), "~/projects");
