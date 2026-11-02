@@ -20,7 +20,7 @@ use gpui_ce_motion::{Bezier, Easing, MotionValue, Spring, Transition};
 use gpui_kit::base::input::{Input, InputEditorStyle, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use kone_rpc::RepoSummary;
+use kone_rpc::{Branch, RepoSummary};
 use kone_theme::{hsla, Palette, Theme};
 
 use crate::magnet::Magnet;
@@ -1741,8 +1741,15 @@ fn git_group(git: &RepoSummary, opacity: f32, diffstat: bool, colors: &Palette) 
                         .size(px(13.))
                         .text_color(hsla(colors.accent)),
                 ),
-        )
-        .child(
+        );
+    // A repo whose HEAD can't be read says nothing rather than guessing.
+    let branch = match &git.branch {
+        Branch::Named(name) => Some(name.as_str()),
+        Branch::Detached(sha) => Some(sha.as_str()),
+        Branch::Unknown => None,
+    };
+    if let Some(branch) = branch {
+        group = group.child(
             div()
                 .min_w(px(0.))
                 .max_w(px(192.))
@@ -1751,8 +1758,9 @@ fn git_group(git: &RepoSummary, opacity: f32, diffstat: bool, colors: &Palette) 
                 .text_size(px(11.5))
                 .line_height(px(13.))
                 .text_color(hsla(colors.muted))
-                .child(git.branch.clone().unwrap_or_else(|| "detached".into())),
+                .child(branch.to_string()),
         );
+    }
     if diffstat && (git.added > 0 || git.removed > 0) {
         group = group.child(
             div()
@@ -1987,15 +1995,15 @@ fn git_dir(dir: &Path) -> Option<PathBuf> {
     Some(if path.is_absolute() { path.to_path_buf() } else { dir.join(path) })
 }
 
-fn read_branch(dir: &Path) -> Option<String> {
-    let git = git_dir(dir)?;
-    let head = fs::read_to_string(git.join("HEAD")).ok()?;
+fn read_branch(dir: &Path) -> Branch {
+    let Some(git) = git_dir(dir) else { return Branch::Unknown };
+    let Ok(head) = fs::read_to_string(git.join("HEAD")) else { return Branch::Unknown };
     let head = head.trim();
     if let Some(name) = head.strip_prefix("ref: refs/heads/") {
-        return Some(name.to_string());
+        return Branch::Named(name.to_string());
     }
     let short: String = head.chars().take(7).collect();
-    (!short.is_empty()).then_some(short)
+    if short.is_empty() { Branch::Unknown } else { Branch::Detached(short) }
 }
 
 /// Placeholder line counts until agent-core serves `git.summary`. Off unless

@@ -70,11 +70,21 @@ pub struct ChangedFile {
     pub removed: u32,
 }
 
+/// Where a repository's HEAD points. `Unknown` means HEAD could not be read at
+/// all, which is different from a detached HEAD with a commit id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Branch {
+    Named(String),
+    Detached(String),
+    #[default]
+    Unknown,
+}
+
 /// A project's working-tree summary, the data a folder tile is drawn from.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RepoSummary {
     pub repo: bool,
-    pub branch: Option<String>,
+    pub branch: Branch,
     pub added: u32,
     pub removed: u32,
     pub files: Vec<ChangedFile>,
