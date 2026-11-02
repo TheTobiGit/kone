@@ -14,10 +14,13 @@ use kone_theme::{Rgba, hsla};
 
 /// Strip height the canvas should be given.
 pub const STRIP: f32 = 40.;
-/// Room each figure gets along the ground.
-const SLOT: f32 = 52.;
-/// Feet sit this far above the panel's bottom edge.
-const FLOOR: f32 = 5.;
+/// Average room each figure gets along the bottom edge.
+const SLOT: f32 = 26.;
+/// Feet touch the panel's bottom edge; this only keeps the stroke's
+/// lower half from being clipped away.
+const FLOOR: f32 = 0.7;
+/// Keeps the end figures clear of the panel's rounded corners.
+const INSET: f32 = 18.;
 
 pub struct Look {
     pub color: Rgba,
@@ -132,31 +135,27 @@ pub fn paint(b: Bounds<Pixels>, t: f32, look: &Look, window: &mut Window) {
         return;
     }
     let ground = y0 + h - FLOOR;
-    let count = (w / SLOT).floor() as usize;
-    let gap = w / count as f32;
+    let span = w - INSET * 2.;
+    if span < SLOT {
+        return;
+    }
+    let count = (span / SLOT).floor() as usize;
+    let gap = span / count as f32;
     let mut pen = Pen { window, color: hsla(look.color.alpha(look.alpha)), seed: 0, stroke: 0 };
 
-    // A faint scribbled ground line, edge to edge.
-    pen.color = hsla(look.color.alpha(look.alpha * 0.45));
-    pen.seed = 0xbeef;
-    let mut gl = Vec::with_capacity(count * 2 + 1);
-    for i in 0..=count * 2 {
-        let x = x0 + i as f32 * gap * 0.5;
-        gl.push((x, ground + 0.5 + (unit(i as u32 ^ 0x51) - 0.5) * 0.9));
-    }
-    pen.line(&gl);
-    pen.color = hsla(look.color.alpha(look.alpha));
-
+    let mut prev = usize::MAX;
     for i in 0..count {
         let seed = hash(i as u32 + 1);
         // Neighbours never share a chore.
         let mut c = seed as usize % CHORES.len();
-        if i > 0 && c == hash(i as u32) as usize % CHORES.len() {
-            c = (c + 1) % CHORES.len();
+        if c == prev {
+            c = (c + 1 + (seed >> 8) as usize % (CHORES.len() - 1)) % CHORES.len();
         }
+        prev = c;
         let scale = 0.85 + unit(seed ^ 3) * 0.3;
-        let jitter = (unit(seed ^ 5) - 0.5) * gap * 0.3;
-        let x = x0 + (i as f32 + 0.5) * gap + jitter;
+        // Uneven spacing so it reads as a crowd, not a row.
+        let jitter = (unit(seed ^ 5) - 0.5) * gap * 0.5;
+        let x = x0 + INSET + (i as f32 + 0.5) * gap + jitter;
         let speed = 0.8 + unit(seed ^ 7) * 0.5;
         let face = if seed & 1 == 0 { 1. } else { -1. };
         pen.seed = seed;
