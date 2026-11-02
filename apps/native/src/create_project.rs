@@ -272,6 +272,11 @@ impl CreateProject {
             cx.notify();
             return;
         }
+        if !self.parent(cx).is_absolute() {
+            self.error = Some("Choose a full location, like ~/projects or /home/you/projects.".into());
+            cx.notify();
+            return;
+        }
         let cmd = self.command.read(cx).value().trim().to_string();
         let repo_raw = self.repo_name.read(cx).value().trim().to_string();
         let opts = CreateOptions {
