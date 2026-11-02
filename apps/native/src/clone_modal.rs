@@ -182,36 +182,7 @@ impl CloneModal {
         };
 
         let parent = self.parent(cx);
-        match std::fs::metadata(&parent) {
-            Ok(m) if m.is_dir() => {}
-            Ok(_) => {
-                self.error = Some("The location is a file, not a folder.".into());
-                cx.notify();
-                return;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.error = Some("The location doesn't exist.".into());
-                cx.notify();
-                return;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                self.error = Some("You don't have permission to use that location.".into());
-                cx.notify();
-                return;
-            }
-            Err(e) => {
-                self.error = Some(format!("Couldn't read the location: {e}"));
-                cx.notify();
-                return;
-            }
-        }
-
         let dest = parent.join(&repo.name);
-        if dest.exists() {
-            self.error = Some(format!("A folder already exists at {}", dest.display()));
-            cx.notify();
-            return;
-        }
 
         self.clone_phase = ClonePhase::Cloning;
         self.busy = true;

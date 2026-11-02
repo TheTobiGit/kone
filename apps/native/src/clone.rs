@@ -3,12 +3,14 @@
 //! Mirrors Electron's `useGitClone.ts` and `packages/git-core/src/clone.ts`.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
         Arc, Mutex,
     },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// A successfully parsed GitHub repository reference.
@@ -35,11 +37,11 @@ pub fn parse_repo_ref(input: &str) -> Option<ParsedRepo> {
         return None;
     }
 
-    let path_part: &str = if s.len() >= 15 && s[..15].eq_ignore_ascii_case("git@github.com:") {
+    let path_part: &str = if s.get(..15).is_some_and(|p| p.eq_ignore_ascii_case("git@github.com:")) {
         &s[15..]
-    } else if let Some(scheme_len) = if s.len() >= 8 && s[..8].eq_ignore_ascii_case("https://") {
+    } else if let Some(scheme_len) = if s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) {
         Some(8)
-    } else if s.len() >= 7 && s[..7].eq_ignore_ascii_case("http://") {
+    } else if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
         Some(7)
     } else {
         None
@@ -49,7 +51,7 @@ pub fn parse_repo_ref(input: &str) -> Option<ParsedRepo> {
         let authority = &after_scheme[..end_of_authority];
         let host_port = authority.split('@').next_back().unwrap_or(authority);
         let host = host_port.split(':').next().unwrap_or(host_port);
-        let host_clean = if host.len() >= 4 && host[..4].eq_ignore_ascii_case("www.") {
+        let host_clean = if host.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("www.")) {
             &host[4..]
         } else {
             host
@@ -61,7 +63,7 @@ pub fn parse_repo_ref(input: &str) -> Option<ParsedRepo> {
         let end_of_path = after_auth.find(['?', '#']).unwrap_or(after_auth.len());
         let path = &after_auth[..end_of_path];
         path.trim_start_matches('/')
-    } else if s.len() >= 11 && s[..11].eq_ignore_ascii_case("github.com/") {
+    } else if s.get(..11).is_some_and(|p| p.eq_ignore_ascii_case("github.com/")) {
         &s[11..]
     } else {
         // owner/repo shorthand: must contain exactly one '/' and both parts match [\w.-]+
@@ -83,7 +85,7 @@ pub fn parse_repo_ref(input: &str) -> Option<ParsedRepo> {
 
     let owner = segs[0];
     let raw_name = segs[1];
-    let name = if raw_name.len() >= 4 && raw_name[raw_name.len() - 4..].eq_ignore_ascii_case(".git") {
+    let name = if raw_name.len() >= 4 && raw_name.get(raw_name.len() - 4..).is_some_and(|p| p.eq_ignore_ascii_case(".git")) {
         &raw_name[..raw_name.len() - 4]
     } else {
         raw_name
@@ -187,6 +189,32 @@ pub fn peel_git_error(stderr: &str, fallback: &str) -> String {
     }
 }
 
+/// How long a clone may run before it's killed, as in git-core.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        // Terminate the process group: send SIGTERM immediately,
+        // then escalate to SIGKILL after 1500 ms on a spawned thread.
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .output();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &format!("-{pid}")])
+                .output();
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+}
+
 /// Thread-safe cancellation controller for a clone session.
 #[derive(Clone, Default)]
 pub struct CloneCanceller {
@@ -203,22 +231,7 @@ impl CloneCanceller {
         self.cancelled.store(true, Ordering::SeqCst);
         let pid = *self.child_pid.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pid) = pid {
-            #[cfg(unix)]
-            {
-                // Terminate the process group
-                let _ = std::process::Command::new("kill")
-                    .args(["-TERM", &format!("-{pid}")])
-                    .output();
-                let _ = std::process::Command::new("kill")
-                    .args(["-KILL", &format!("-{pid}")])
-                    .output();
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .output();
-            }
+            kill_group(pid);
         }
     }
 
@@ -227,8 +240,11 @@ impl CloneCanceller {
     }
 
     fn set_pid(&self, pid: u32) {
-        if let Ok(mut lock) = self.child_pid.lock() {
-            *lock = Some(pid);
+        let mut lock = self.child_pid.lock().unwrap_or_else(|e| e.into_inner());
+        *lock = Some(pid);
+        drop(lock);
+        if self.is_cancelled() {
+            kill_group(pid);
         }
     }
 }
@@ -245,7 +261,7 @@ pub enum CloneUpdate {
 /// Runs `git clone --progress <url> <dest>` on a background thread.
 ///
 /// Communicates progress ticks, cancellation, errors, and completion via `tx`.
-/// Removes the partial folder on cancellation or failure only if we created it.
+/// Clones into a sibling staging dir and renames onto dest only after a zero exit.
 pub fn run_clone(
     url: String,
     dest: PathBuf,
@@ -257,7 +273,7 @@ pub fn run_clone(
         return;
     }
 
-    if dest.exists() {
+    if std::fs::symlink_metadata(&dest).is_ok() {
         let _ = tx.send(CloneUpdate::Error(format!(
             "A folder already exists at {}",
             dest.display()
@@ -265,14 +281,40 @@ pub fn run_clone(
         return;
     }
 
-    if let Some(parent) = dest.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        let _ = tx.send(CloneUpdate::Error(format!(
-            "Couldn't create destination folder: {e}"
-        )));
-        return;
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() {
+        match std::fs::metadata(parent) {
+            Ok(m) if m.is_file() => {
+                let _ = tx.send(CloneUpdate::Error(
+                    "The location is a file, not a folder.".to_string(),
+                ));
+                return;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let _ = tx.send(CloneUpdate::Error(
+                    "You don't have permission to use that location.".to_string(),
+                ));
+                return;
+            }
+            _ => {}
+        }
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            let msg = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                "You don't have permission to use that location.".to_string()
+            } else {
+                format!("Couldn't create destination folder: {e}")
+            };
+            let _ = tx.send(CloneUpdate::Error(msg));
+            return;
+        }
     }
+
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staging = parent.join(format!(".kone-clone-{pid}-{nanos}"));
 
     let _ = tx.send(CloneUpdate::Progress(CloneProgress {
         progress: 0.0,
@@ -281,15 +323,16 @@ pub fn run_clone(
 
     let mut cmd = std::process::Command::new("git");
     cmd.args(["clone", "--progress", "--", &url]);
-    cmd.arg(&dest);
+    cmd.arg(&staging);
     // Never block on an interactive credential prompt for a private repo;
     // fail fast so the UI can surface the auth error instead of hanging.
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GCM_INTERACTIVE", "never");
     cmd.env("GIT_ASKPASS", "");
     cmd.env("LC_ALL", "C");
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -299,6 +342,7 @@ pub fn run_clone(
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
             let _ = tx.send(CloneUpdate::Error(match e.kind() {
                 std::io::ErrorKind::NotFound => "Git isn't installed.".to_string(),
                 _ => format!("Couldn't run git: {e}"),
@@ -310,12 +354,31 @@ pub fn run_clone(
     let pid = child.id();
     canceller.set_pid(pid);
 
+    // Electron's clone gives up after 30 minutes; a silent, hung helper must
+    // not keep the modal busy forever.
+    let finished = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    {
+        let (finished, timed_out) = (finished.clone(), timed_out.clone());
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < CLONE_TIMEOUT {
+                if finished.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            if !finished.load(Ordering::SeqCst) {
+                timed_out.store(true, Ordering::SeqCst);
+                kill_group(pid);
+            }
+        });
+    }
+
     if canceller.is_cancelled() {
-        let _ = child.kill();
+        kill_group(pid);
         let _ = child.wait();
-        if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest);
-        }
+        let _ = std::fs::remove_dir_all(&staging);
         let _ = tx.send(CloneUpdate::Cancelled);
         return;
     }
@@ -345,31 +408,45 @@ pub fn run_clone(
     }
 
     let status = child.wait();
+    finished.store(true, Ordering::SeqCst);
+
+    if timed_out.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = tx.send(CloneUpdate::Error("The clone timed out after 30 minutes.".into()));
+        return;
+    }
 
     if canceller.is_cancelled() {
-        if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest);
-        }
+        let _ = std::fs::remove_dir_all(&staging);
         let _ = tx.send(CloneUpdate::Cancelled);
         return;
     }
 
     match status {
         Ok(s) if s.success() => {
+            if std::fs::symlink_metadata(&dest).is_ok() {
+                let _ = std::fs::remove_dir_all(&staging);
+                let _ = tx.send(CloneUpdate::Error(format!(
+                    "A folder already exists at {}",
+                    dest.display()
+                )));
+                return;
+            }
+            if let Err(e) = std::fs::rename(&staging, &dest) {
+                let _ = std::fs::remove_dir_all(&staging);
+                let _ = tx.send(CloneUpdate::Error(format!("Couldn't move the clone into place: {e}")));
+                return;
+            }
             let _ = tx.send(CloneUpdate::Done(dest));
         }
         Ok(s) => {
-            if dest.exists() {
-                let _ = std::fs::remove_dir_all(&dest);
-            }
+            let _ = std::fs::remove_dir_all(&staging);
             let code = s.code().unwrap_or(1);
             let msg = peel_git_error(&captured_stderr, &format!("git clone exited with code {code}"));
             let _ = tx.send(CloneUpdate::Error(msg));
         }
         Err(e) => {
-            if dest.exists() {
-                let _ = std::fs::remove_dir_all(&dest);
-            }
+            let _ = std::fs::remove_dir_all(&staging);
             let _ = tx.send(CloneUpdate::Error(format!("Failed to wait for git: {e}")));
         }
     }
@@ -684,5 +761,67 @@ mod tests {
         );
         let msg = rx.recv().expect("message received");
         assert_eq!(msg, CloneUpdate::Cancelled);
+    }
+
+    #[test]
+    fn test_run_clone_staging_cleanup_on_error() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let canceller = CloneCanceller::new();
+        let parent = std::env::temp_dir().join(format!("kone_staging_cleanup_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&parent);
+        let dest = parent.join("dest_repo");
+
+        run_clone(
+            "file:///nonexistent/repo".into(),
+            dest.clone(),
+            canceller,
+            tx,
+        );
+
+        let msg = rx
+            .iter()
+            .find(|m| !matches!(m, CloneUpdate::Progress(_)))
+            .expect("final message received");
+        assert!(matches!(msg, CloneUpdate::Error(_)));
+        assert!(!dest.exists());
+
+        let has_staging = std::fs::read_dir(&parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with(".kone-clone-"));
+        assert!(!has_staging);
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn test_run_clone_parent_is_file() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let canceller = CloneCanceller::new();
+        let test_file = std::env::temp_dir().join(format!("kone_file_parent_test_{}", std::process::id()));
+        let _ = std::fs::write(&test_file, b"test");
+        let dest = test_file.join("sub_repo");
+
+        run_clone(
+            "https://github.com/owner/repo.git".into(),
+            dest,
+            canceller,
+            tx,
+        );
+
+        let msg = rx.recv().expect("message received");
+        assert_eq!(
+            msg,
+            CloneUpdate::Error("The location is a file, not a folder.".to_string())
+        );
+
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn parse_repo_ref_survives_multibyte_input() {
+        assert_eq!(parse_repo_ref("éééééééé"), None);
+        assert_eq!(parse_repo_ref("ééééé/x"), None);
+        assert_eq!(parse_repo_ref("https://ééé"), None);
     }
 }
