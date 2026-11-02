@@ -84,6 +84,7 @@ impl Shell {
             m.release();
         }
         let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
+        picker.update(cx, |picker, cx| picker.start(window, cx));
         self._picker_sub = Some(cx.subscribe_in(
             &picker,
             window,
@@ -263,7 +264,7 @@ impl Render for Shell {
 
 /// A 15px ring with a lit quarter turning once a second, standing in for an
 /// action's icon while it is in session.
-fn spinner(t: f32, track: kone_theme::Rgba, lit: kone_theme::Rgba) -> impl IntoElement {
+pub(crate) fn spinner(t: f32, track: kone_theme::Rgba, lit: kone_theme::Rgba) -> impl IntoElement {
     canvas(|_, _, _| (), move |b, _, window, _| {
         let (cx, cy) = (f32::from(b.center().x), f32::from(b.center().y));
         let (r, w) = (6.625, 1.75);

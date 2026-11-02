@@ -135,10 +135,32 @@ struct Entry {
 }
 
 struct Listing {
-    name: String,
     repo: bool,
     branch: Option<String>,
     entries: Vec<Entry>,
+}
+
+/// What a background listing was asked for, and therefore what to do with it.
+enum Load {
+    /// The first read: the trail is already sitting on home, but a failure
+    /// leaves nothing to browse, so it surfaces the modal's fatal message.
+    Start,
+    /// A level the trail already names (descend / climb). An unreadable folder
+    /// is still adopted, so the rows can say why it is empty.
+    Level(Vec<Crumb>),
+    /// A typed or ascended path. Only move if it can be read; otherwise the
+    /// view and the address bar stay where they were.
+    Jump(PathBuf),
+}
+
+impl Load {
+    fn path(&self, home: &Path) -> PathBuf {
+        match self {
+            Load::Start => home.to_path_buf(),
+            Load::Level(trail) => trail.last().map(|crumb| crumb.path.clone()).unwrap_or_default(),
+            Load::Jump(path) => path.clone(),
+        }
+    }
 }
 
 enum PickerRow {
@@ -186,6 +208,9 @@ pub struct FolderPicker {
     read_error: bool,
     hovered: Option<usize>,
     focus_idx: Option<usize>,
+    loading: bool,
+    /// Bumped on every listing request so a slow read can't overwrite a newer one.
+    nav_seq: u64,
     open_hovered: bool,
     open_hover: MotionValue,
     open_hovering: bool,
@@ -218,25 +243,7 @@ impl FolderPicker {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let colors = Theme::get(cx).colors.clone();
         let home = home_dir();
-        let (trail, entries, error) = match list_dir(&home) {
-            Ok(listing) => (
-                vec![Crumb {
-                    name: listing.name,
-                    path: home.clone(),
-                    repo: listing.repo,
-                    branch: listing.branch,
-                }],
-                listing.entries,
-                None,
-            ),
-            Err(_) => (Vec::new(), Vec::new(), Some("Couldn't read this folder.")),
-        };
-
-        let display = trail
-            .last()
-            .map(|crumb| collapse(&home, &crumb.path))
-            .unwrap_or_default();
-        let path_input = cx.new(|cx| InputState::new(window, cx).default_value(display));
+        let path_input = cx.new(|cx| InputState::new(window, cx).default_value(""));
         path_input.update(cx, |state, _| {
             state.set_editor_style(input_style(&colors, false));
         });
@@ -263,12 +270,14 @@ impl FolderPicker {
             focus,
             path_input,
             home,
-            trail,
-            entries,
-            error,
+            trail: Vec::new(),
+            entries: Vec::new(),
+            error: None,
             read_error: false,
             hovered: None,
             focus_idx: None,
+            loading: false,
+            nav_seq: 0,
             open_hovered: false,
             open_hover: MotionValue::new(0.),
             open_hovering: false,
@@ -294,6 +303,102 @@ impl FolderPicker {
 
     fn clock(&self) -> Duration {
         self.started.elapsed()
+    }
+
+    /// Points the picker at home and kicks off its first listing. The read runs
+    /// off the UI thread, so the card paints with its loading state instead of
+    /// blocking the open action on a cold directory.
+    pub fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let home = self.home.clone();
+        self.trail = vec![Crumb {
+            name: dir_name(&home),
+            path: home,
+            repo: false,
+            branch: None,
+        }];
+        self.sync_path(window, cx);
+        self.request(Load::Start, window, cx);
+    }
+
+    /// Walks a directory on the background executor. Every call takes a new
+    /// sequence number, so if the path changes again before this read lands,
+    /// the older answer is simply dropped.
+    fn request(&mut self, load: Load, window: &mut Window, cx: &mut Context<Self>) {
+        let path = load.path(&self.home);
+        self.nav_seq = self.nav_seq.wrapping_add(1);
+        let seq = self.nav_seq;
+        self.loading = true;
+        cx.notify();
+        let task = cx.background_spawn(async move { list_dir(&path) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| this.finish(seq, load, result, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn finish(
+        &mut self,
+        seq: u64,
+        load: Load,
+        result: io::Result<Listing>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if seq != self.nav_seq {
+            return;
+        }
+        self.loading = false;
+        match load {
+            Load::Jump(path) => match result {
+                Ok(listing) => {
+                    self.set_path_with_listing(&path, listing, window, cx);
+                    self.focus.focus(window, cx);
+                }
+                Err(_) => self.reject_path(window, cx),
+            },
+            Load::Start => match result {
+                Ok(listing) => {
+                    let trail = std::mem::take(&mut self.trail);
+                    self.apply_listing(trail, listing, window, cx);
+                }
+                Err(_) => {
+                    self.trail.clear();
+                    self.entries.clear();
+                    self.read_error = false;
+                    self.error = Some("Couldn't read this folder.");
+                    self.sync_path(window, cx);
+                    cx.notify();
+                }
+            },
+            Load::Level(trail) => match result {
+                Ok(listing) => self.apply_listing(trail, listing, window, cx),
+                Err(_) => {
+                    self.trail = trail;
+                    self.entries.clear();
+                    self.read_error = true;
+                    self.after_nav(window, cx);
+                }
+            },
+        }
+    }
+
+    fn apply_listing(
+        &mut self,
+        mut trail: Vec<Crumb>,
+        listing: Listing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(last) = trail.last_mut() {
+            last.repo = listing.repo;
+            last.branch = listing.branch;
+        }
+        self.trail = trail;
+        self.entries = listing.entries;
+        self.read_error = false;
+        self.error = None;
+        self.after_nav(window, cx);
     }
 
     /// Starts entrances for rows that were not on screen and forgets the ones
@@ -372,25 +477,8 @@ impl FolderPicker {
         cx.notify();
     }
 
-    fn load_trail(&mut self, mut trail: Vec<Crumb>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current) = trail.last() else { return };
-        let path = current.path.clone();
-        match list_dir(&path) {
-            Ok(listing) => {
-                self.entries = listing.entries;
-                self.read_error = false;
-                if let Some(last) = trail.last_mut() {
-                    last.repo = listing.repo;
-                    last.branch = listing.branch;
-                }
-            }
-            Err(_) => {
-                self.entries = Vec::new();
-                self.read_error = true;
-            }
-        }
-        self.trail = trail;
-        self.after_nav(window, cx);
+    fn load_trail(&mut self, trail: Vec<Crumb>, window: &mut Window, cx: &mut Context<Self>) {
+        self.request(Load::Level(trail), window, cx);
     }
 
     fn descend(
@@ -435,11 +523,10 @@ impl FolderPicker {
             self.reject_path(window, cx);
             return;
         }
-        if self.go_to_path(&expanded, window, cx) {
-            self.focus.focus(window, cx);
-        } else {
-            self.reject_path(window, cx);
+        if self.current().is_some_and(|crumb| crumb.path == expanded) {
+            return;
         }
+        self.go_to_path(&expanded, window, cx);
     }
 
     fn reject_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -461,11 +548,12 @@ impl FolderPicker {
         .detach();
     }
 
-    fn go_to_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match list_dir(path) {
-            Ok(listing) => self.set_path_with_listing(path, listing, window, cx),
-            Err(_) => false,
+    fn go_to_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.to_path_buf();
+        if self.current().is_some_and(|crumb| crumb.path == path) {
+            return;
         }
+        self.request(Load::Jump(path), window, cx);
     }
 
     fn set_path_with_listing(
@@ -474,7 +562,7 @@ impl FolderPicker {
         listing: Listing,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) {
         let base = if path == self.home || path.starts_with(&self.home) {
             self.home.clone()
         } else {
@@ -515,7 +603,6 @@ impl FolderPicker {
         self.read_error = false;
         self.trail = trail;
         self.after_nav(window, cx);
-        true
     }
 
     fn parent_name(&self) -> Option<String> {
@@ -833,6 +920,9 @@ impl Render for FolderPicker {
         }
         let now = self.clock();
         let mut moving = false;
+        // A read in flight keeps the spinner turning, and the previous rows
+        // stay in place until its answer lands.
+        moving |= self.loading;
         // The actions fade rather than flip: a pointer crossing the card reads
         // as one motion, not a series of light switches.
         let (cancel_hover, cancel_moving) = sample_hover(
@@ -884,6 +974,27 @@ impl Render for FolderPicker {
                     .items_center()
                     .gap(px(12.))
                     .child(input)
+                    .child(
+                        // A fixed slot, so the Cancel action doesn't jump when a
+                        // listing starts or finishes.
+                        div()
+                            .w(px(15.))
+                            .h(px(15.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(if self.loading {
+                                crate::shell::spinner(
+                                    self.started.elapsed().as_secs_f32(),
+                                    colors.muted.alpha(0.3),
+                                    colors.ink_soft,
+                                )
+                                .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            }),
+                    )
                     .child(
                         div()
                             .id("folder-picker-cancel")
@@ -983,7 +1094,7 @@ impl Render for FolderPicker {
                 };
                 list = list.child(element);
             }
-            if self.entries.is_empty() {
+            if self.entries.is_empty() && !self.loading {
                 let text = if self.read_error {
                     "Can’t read this folder"
                 } else {
@@ -1464,6 +1575,12 @@ fn indent(level: usize) -> f32 {
     level.min(MAX_STEPS) as f32 * STEP
 }
 
+fn dir_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string())
+}
+
 fn home_dir() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -1523,11 +1640,7 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
 
     let repo = is_repo_root(dir);
     let branch = if repo { read_branch(dir) } else { None };
-    let name = dir
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| dir.display().to_string());
-    Ok(Listing { name, repo, branch, entries })
+    Ok(Listing { repo, branch, entries })
 }
 
 fn is_repo_root(dir: &Path) -> bool {
