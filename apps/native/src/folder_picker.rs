@@ -245,6 +245,9 @@ pub struct FolderPicker {
     loading: bool,
     /// Bumped on every listing request so a slow read can't overwrite a newer one.
     nav_seq: u64,
+    /// The address bar's text when the current read started. The result may
+    /// only reset or re-sync the field while it still says this.
+    pending_input: Option<String>,
     open_hovered: bool,
     open_hover: MotionValue,
     open_hovering: bool,
@@ -327,6 +330,7 @@ impl FolderPicker {
             focus_idx: None,
             loading: false,
             nav_seq: 0,
+            pending_input: None,
             open_hovered: false,
             open_hover: MotionValue::new(0.),
             open_hovering: false,
@@ -384,6 +388,7 @@ impl FolderPicker {
     /// the older answer is simply dropped.
     fn request(&mut self, load: Load, window: &mut Window, cx: &mut Context<Self>) {
         let path = load.path(&self.home);
+        self.pending_input = Some(self.path_input.read(cx).value().to_string());
         self.nav_seq = self.nav_seq.wrapping_add(1);
         let seq = self.nav_seq;
         self.loading = true;
@@ -408,36 +413,51 @@ impl FolderPicker {
             return;
         }
         self.loading = false;
+        // A read can outlive the text that started it. Only let the answer
+        // touch the address bar while it still holds that text; otherwise the
+        // user has typed past the request and their text wins.
+        let field_matches = self
+            .pending_input
+            .take()
+            .is_some_and(|text| self.path_input.read(cx).value().as_ref() == text.as_str());
         match load {
             Load::Jump(path) => match result {
                 Ok(listing) => {
-                    self.set_path_with_listing(&path, listing, window, cx);
-                    self.focus.focus(window, cx);
+                    self.set_path_with_listing(&path, listing, field_matches, window, cx);
+                    if field_matches {
+                        self.focus.focus(window, cx);
+                    }
                 }
-                Err(_) => self.reject_path(window, cx),
+                Err(_) => {
+                    if field_matches {
+                        self.reject_path(window, cx);
+                    }
+                }
             },
             Load::Start => match result {
                 Ok(listing) => {
                     let trail = std::mem::take(&mut self.trail);
-                    self.apply_listing(trail, listing, window, cx);
+                    self.apply_listing(trail, listing, field_matches, window, cx);
                 }
                 Err(_) => {
                     self.trail.clear();
                     self.entries.clear();
                     self.read_error = false;
                     self.error = Some("Couldn't read this folder.");
-                    self.sync_path(window, cx);
+                    if field_matches {
+                        self.sync_path(window, cx);
+                    }
                     cx.notify();
                 }
             },
             Load::Level(trail) => match result {
-                Ok(listing) => self.apply_listing(trail, listing, window, cx),
+                Ok(listing) => self.apply_listing(trail, listing, field_matches, window, cx),
                 Err(_) => {
                     let before = self.row_bounds();
                     self.trail = trail;
                     self.entries.clear();
                     self.read_error = true;
-                    self.after_nav(window, cx);
+                    self.after_nav(window, cx, field_matches);
                     self.arm_flip(before, window, cx);
                 }
             },
@@ -448,6 +468,7 @@ impl FolderPicker {
         &mut self,
         mut trail: Vec<Crumb>,
         listing: Listing,
+        sync_input: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -459,7 +480,7 @@ impl FolderPicker {
         self.entries = listing.entries;
         self.read_error = false;
         self.error = None;
-        self.after_nav(window, cx);
+        self.after_nav(window, cx, sync_input);
         self.arm_flip(before, window, cx);
     }
 
@@ -701,7 +722,7 @@ impl FolderPicker {
         self.set_input_ink(focused, cx);
     }
 
-    fn after_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn after_nav(&mut self, window: &mut Window, cx: &mut Context<Self>, sync_input: bool) {
         self.hovered = None;
         self.focus_idx = None;
         self.error = None;
@@ -710,7 +731,9 @@ impl FolderPicker {
         for magnet in self.magnets.values_mut() {
             magnet.release();
         }
-        self.sync_path(window, cx);
+        if sync_input {
+            self.sync_path(window, cx);
+        }
         self.scroll.scroll_to_item(0);
         cx.notify();
     }
@@ -795,6 +818,7 @@ impl FolderPicker {
         &mut self,
         path: &Path,
         listing: Listing,
+        sync_input: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -835,7 +859,7 @@ impl FolderPicker {
         self.entries = listing.entries;
         self.read_error = false;
         self.trail = trail;
-        self.after_nav(window, cx);
+        self.after_nav(window, cx, sync_input);
         self.arm_flip(before, window, cx);
     }
 
