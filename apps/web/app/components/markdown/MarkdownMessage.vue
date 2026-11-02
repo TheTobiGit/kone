@@ -378,6 +378,7 @@ const Rendered = defineComponent({
 <style scoped>
 .md {
   font-size: 14px;
+  overflow-wrap: anywhere;
   /* Typography's leading, a touch open for reading: 23px on 14 at the
      default 1.55. */
   line-height: calc(var(--line-height-body) + 0.09);
@@ -401,6 +402,7 @@ const Rendered = defineComponent({
    layer per word long after the word settled. */
 .md :deep(.stream-word) {
   display: inline-block;
+  max-width: 100%;
   transition:
     opacity 700ms cubic-bezier(0.16, 1, 0.3, 1),
     transform 700ms cubic-bezier(0.16, 1, 0.3, 1);

@@ -25,6 +25,7 @@ import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ComposerStatusTray from "~/components/agent/ComposerStatusTray.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
+import ComposerImageEditor from "~/components/composer/ComposerImageEditor.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type {
   ChatAttachment,
@@ -865,6 +866,7 @@ const {
   openFilePicker,
   onFilePicked,
   removeAttachment,
+  replaceImage,
   clearAttachments,
   onDragEnter,
   onDragOver,
@@ -874,6 +876,17 @@ const {
   isOpen: () => open.value,
   wake,
   syncSoon,
+});
+
+const previewImageId = ref<number | null>(null);
+const previewImage = computed(() => attachments.value.find((item) => item.id === previewImageId.value));
+function savePreviewImage(file: File): void {
+  if (previewImageId.value !== null && replaceImage(previewImageId.value, file)) {
+    previewImageId.value = null;
+  }
+}
+watch(() => props.inactive, (inactive) => {
+  if (inactive) previewImageId.value = null;
 });
 
 // ── references (text selections attached as context) ────────────────────────
@@ -1211,7 +1224,7 @@ onClickOutside(
     if (props.inactive) return;
     // The picker lives outside our dock, so its clicks read as "outside" — but it
     // is our own surface, one step removed. Don't collapse while it's up.
-    if (props.picking || agentPickerOpen.value) return;
+    if (props.picking || agentPickerOpen.value || previewImage.value) return;
     // Folding on a click away is a setting; off, the card stays until Escape.
     if (!composerPrefs.value.foldOnBlur) return;
     const target = event.target;
@@ -1592,16 +1605,21 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
               :class="{ 'chip--image': at.kind === 'image' }"
               :title="at.name"
             >
-              <img
+              <button
                 v-if="at.kind === 'image' && at.previewUrl"
-                class="chip__thumb"
-                :src="at.previewUrl"
-                :alt="at.name"
-              />
-              <span v-else class="chip__badge">{{ at.ext }}</span>
-              <span class="chip__name">{{ at.name }}</span>
-              <!-- The ✕ is the only remove target — the thumbnail and name are
-                   inert, so clicking a chip's body never drops the attachment. -->
+                type="button"
+                class="chip__preview"
+                :aria-label="`Preview and annotate ${at.name}`"
+                title="Preview and annotate image"
+                @click.stop="previewImageId = at.id"
+              >
+                <img class="chip__thumb" :src="at.previewUrl" :alt="at.name" />
+                <span class="chip__name">{{ at.name }}</span>
+              </button>
+              <template v-else>
+                <span class="chip__badge">{{ at.ext }}</span>
+                <span class="chip__name">{{ at.name }}</span>
+              </template>
               <button
                 type="button"
                 class="chip__remove"
@@ -2063,6 +2081,15 @@ defineExpose({ wake, setDraft, seedDraft, appendDraft, addReference, focus });
         <span class="tray__label">{{ threadLabel }}</span>
       </span>
     </div>
+
+    <ComposerImageEditor
+      v-if="previewImage?.previewUrl && !inactive"
+      :key="previewImage.id"
+      :src="previewImage.previewUrl"
+      :name="previewImage.name"
+      @close="previewImageId = null"
+      @save="savePreviewImage"
+    />
 
     <!-- Partner / Solo Mode Picker in the app's modal shell -->
     <AgentPickerModal

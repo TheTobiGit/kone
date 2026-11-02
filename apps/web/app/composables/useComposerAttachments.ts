@@ -112,6 +112,22 @@ export function useComposerAttachments(deps: {
     syncSoon();
   }
 
+  function replaceImage(id: number, file: File): boolean {
+    const attachment = attachments.value.find((item) => item.id === id);
+    if (!attachment || attachment.kind !== "image") return false;
+    if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_BYTES) {
+      flash("The annotated image must be an image under 10 MB.");
+      return false;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    Object.assign(attachment, {
+      file, name: file.name, sizeBytes: file.size, ext: extFor(file), previewUrl,
+    });
+    syncSoon();
+    return true;
+  }
+
   function clearAttachments() {
     for (const at of attachments.value) {
       if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
@@ -189,6 +205,7 @@ export function useComposerAttachments(deps: {
     openFilePicker,
     onFilePicked,
     removeAttachment,
+    replaceImage,
     clearAttachments,
     onDragEnter,
     onDragOver,
