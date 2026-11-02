@@ -41,8 +41,9 @@ const FRAME_TOP: f32 = 8.;
 /// Inside the window's own ~10px corner, so the two curves stay concentric.
 const PANEL_RADIUS: f32 = 8.;
 
-/// The threads drift ~5px a second, so 10 frames (half-pixel steps) read as smooth.
-const ART_FRAME: Duration = Duration::from_millis(100);
+/// The threads drift ~5px a second, so 8 frames (0.625px a step) still read as
+/// smooth and keep an idle focused window near 3% CPU.
+const ART_FRAME: Duration = Duration::from_millis(125);
 
 pub struct Shell {
     magnets: [Magnet; 3],
