@@ -145,7 +145,13 @@ impl Shell {
             &creator,
             window,
             |this, creator, event: &crate::create_project::CreateProjectEvent, window, cx| {
+                // Toggles carry over either way (as in Electron), but the
+                // location is only remembered once a project was created there.
+                let kept = this.create_session.location.clone();
                 this.create_session = creator.read(cx).session(cx);
+                if !matches!(event, crate::create_project::CreateProjectEvent::Created(_)) {
+                    this.create_session.location = kept;
+                }
                 if let crate::create_project::CreateProjectEvent::Created(path) = event {
                     this.open_project(path.clone(), window, cx);
                 }
