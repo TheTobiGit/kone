@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 gpui-kit.workspace = true
+# The engine only (springs, tweens, retargeting); its GPUI bindings target
+# gpui-ce, so the picker drives our own elements from its values.
+gpui-ce-motion = { version = "0.4", default-features = false }
 kone-theme.workspace = true
 kone-rpc.workspace = true
 

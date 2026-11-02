@@ -7,12 +7,16 @@
 //! `HEAD`, so rows can show their branch without shelling out to git.
 
 use std::{
+    cell::Cell,
+    collections::HashMap,
     env, fs,
+    rc::Rc,
     io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
+use gpui_ce_motion::{Bezier, Easing, MotionValue, Spring, Transition};
 use gpui_kit::base::input::{Input, InputEditorStyle, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -43,6 +47,32 @@ const MAX_STEPS: usize = 4;
 const DOUBLE_CLICK: Duration = Duration::from_millis(260);
 
 const CARD_WIDTH: f32 = 448.;
+
+/// How far an incoming row rises as it fades in.
+const ROW_RISE: f32 = 24.;
+/// Git metadata settles a beat after its row, drifting in from the glyph.
+const META_DELAY: Duration = Duration::from_millis(80);
+const META_SHIFT: f32 = -6.;
+/// The list's height follows its content on this curve.
+const HEIGHT_EASE: Duration = Duration::from_millis(420);
+
+fn row_spring() -> Transition {
+    Transition::Spring(Spring::new(320., 20., 0.8).expect("valid spring"))
+}
+
+fn meta_spring() -> Transition {
+    Transition::Spring(Spring::new(240., 26., 0.8).expect("valid spring"))
+}
+
+fn height_tween() -> Transition {
+    Transition::Tween(HEIGHT_EASE, Easing::Bezier(Bezier::new(0.22, 1., 0.36, 1.).expect("valid curve")))
+}
+
+/// One row's entrance: how far in it is, and its git metadata after it.
+struct RowMotion {
+    enter: MotionValue,
+    meta: MotionValue,
+}
 
 /// One message the picker sends back to whatever opened it.
 #[derive(Debug)]
@@ -110,6 +140,9 @@ struct RowVisual {
     text: Hsla,
     repo: bool,
     branch: Option<String>,
+    /// Entrance progress, 0 to 1 (a spring may overshoot a little).
+    enter: f32,
+    meta: f32,
 }
 
 pub struct FolderPicker {
@@ -135,6 +168,13 @@ pub struct FolderPicker {
     exit_at: Option<Instant>,
     closing: bool,
     outcome: Option<FolderPickerEvent>,
+    /// Keyed by row so a row that survives a navigation keeps its place
+    /// instead of entering again; only new rows rise in.
+    row_motion: HashMap<String, RowMotion>,
+    /// The list's drawn height and the content height it is chasing.
+    list_height: MotionValue,
+    list_measured: Rc<Cell<Option<f32>>>,
+    list_target: Option<f32>,
     _input_sub: Subscription,
 }
 
@@ -202,7 +242,31 @@ impl FolderPicker {
             exit_at: None,
             closing: false,
             outcome: None,
+            row_motion: HashMap::new(),
+            list_height: MotionValue::new(0.),
+            list_measured: Rc::new(Cell::new(None)),
+            list_target: None,
             _input_sub: input_sub,
+        }
+    }
+
+    fn clock(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Starts entrances for rows that were not on screen and forgets the ones
+    /// that left. Returns whether anything is still moving.
+    fn sync_row_motion(&mut self, keys: &[String]) {
+        let now = self.clock();
+        self.row_motion.retain(|k, _| keys.contains(k));
+        for key in keys {
+            self.row_motion.entry(key.clone()).or_insert_with(|| {
+                let mut enter = MotionValue::new(0.);
+                enter.animate(1., row_spring(), now);
+                let mut meta = MotionValue::new(0.);
+                meta.animate_delayed(1., meta_spring(), META_DELAY, now);
+                RowMotion { enter, meta }
+            });
         }
     }
 
@@ -768,6 +832,10 @@ impl Render for FolderPicker {
             );
 
         let rows = self.rows();
+        let keys: Vec<String> = rows.iter().map(PickerRow::key).collect();
+        self.sync_row_motion(&keys);
+        let now = self.clock();
+        let mut moving = false;
         let entry_depth = indent(self.trail.len().saturating_sub(1));
         let entry_indent = entry_depth + 20.;
         let mut list = div()
@@ -787,7 +855,17 @@ impl Render for FolderPicker {
             list = list.child(message(error, 0., &colors));
         } else {
             for (index, row) in rows.into_iter().enumerate() {
-                let visual = row.visual(index, entry_depth, &colors);
+                let (enter, meta) = match self.row_motion.get_mut(&keys[index]) {
+                    Some(m) => {
+                        let (e, g) = (m.enter.sample(now, false), m.meta.sample(now, false));
+                        moving |= e.is_animating() || g.is_animating();
+                        (e.value() as f32, g.value() as f32)
+                    }
+                    None => (1., 1.),
+                };
+                let mut visual = row.visual(index, entry_depth, &colors);
+                visual.enter = enter;
+                visual.meta = meta;
                 let hovered = self.hovered == Some(index);
                 let focused = self.focus_idx == Some(index);
                 let element = match row {
@@ -821,6 +899,46 @@ impl Render for FolderPicker {
                 list = list.child(message(text, entry_indent, &colors));
             }
         }
+
+        // The list is laid out at its natural height and measured; the box
+        // around it chases that height, taking the change up at the top since
+        // the card is anchored to its lower edge. The first frame is drawn
+        // unconstrained so there is something to measure.
+        if let Some(measured) = self.list_measured.get() {
+            match self.list_target {
+                None => self.list_height.jump(measured as f64, now),
+                Some(t) if (t - measured).abs() > 0.5 => self.list_height.animate(measured as f64, height_tween(), now),
+                _ => {}
+            }
+            self.list_target = Some(measured);
+        }
+        let height = self.list_height.sample(now, false);
+        moving |= height.is_animating();
+        if moving {
+            window.request_animation_frame();
+        }
+        let probe = self.list_measured.clone();
+        let natural = div()
+            .relative()
+            .w_full()
+            .child(list)
+            .child(canvas(
+                move |b, window, _| {
+                    let h = Some(f32::from(b.size.height));
+                    // A new natural height needs one more render to chase it.
+                    if probe.get() != h {
+                        probe.set(h);
+                        window.refresh();
+                    }
+                },
+                |_, _, _, _| {},
+            ).absolute().top_0().left_0().size_full());
+        let list_box = div()
+            .w_full()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .when(self.list_target.is_some(), |d| d.h(px(height.value() as f32)))
+            .child(natural);
 
         let current_name = self
             .current()
@@ -919,7 +1037,7 @@ impl Render for FolderPicker {
             .tab_group()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(header)
-            .child(list)
+            .child(list_box)
             .child(footer);
 
         div()
@@ -946,6 +1064,13 @@ impl Render for FolderPicker {
 }
 
 impl PickerRow {
+    fn key(&self) -> String {
+        match self {
+            PickerRow::Ascend { .. } => "\u{2191}".into(),
+            PickerRow::Crumb { path, .. } | PickerRow::Entry { path, .. } => path.display().to_string(),
+        }
+    }
+
     fn visual(&self, idx: usize, entry_depth: f32, colors: &Palette) -> RowVisual {
         match self {
             PickerRow::Ascend { name } => RowVisual {
@@ -958,6 +1083,8 @@ impl PickerRow {
                 text: hsla(colors.muted),
                 repo: false,
                 branch: None,
+                enter: 1.,
+                meta: 1.,
             },
             PickerRow::Crumb { name, index, current, repo, branch, .. } => RowVisual {
                 idx,
@@ -973,6 +1100,8 @@ impl PickerRow {
                 },
                 repo: *repo,
                 branch: branch.clone(),
+                enter: 1.,
+                meta: 1.,
             },
             PickerRow::Entry { name, repo, branch, .. } => RowVisual {
                 idx,
@@ -984,6 +1113,8 @@ impl PickerRow {
                 text: hsla(colors.ink),
                 repo: *repo,
                 branch: branch.clone(),
+                enter: 1.,
+                meta: 1.,
             },
         }
     }
@@ -1011,10 +1142,15 @@ where
         text,
         repo,
         branch,
+        enter,
+        meta,
         ..
     } = visual;
     let mut row = div()
         .id(("folder-picker-row", idx))
+        .relative()
+        .top(px(ROW_RISE * (1. - enter)))
+        .opacity(enter.clamp(0., 1.))
         .flex()
         .items_center()
         .gap(px(6.))
@@ -1055,7 +1191,14 @@ where
                 .child(name),
         );
     if repo {
-        row = row.child(git_group(branch, if active { 1. } else { 0.7 }, colors));
+        let rest = if active { 1. } else { 0.7 };
+        row = row.child(
+            div()
+                .relative()
+                .left(px(META_SHIFT * (1. - meta)))
+                .opacity(meta.clamp(0., 1.))
+                .child(git_group(branch, rest, colors)),
+        );
     }
     row
 }

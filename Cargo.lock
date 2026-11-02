@@ -2025,6 +2025,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-ce-motion"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02abe0a96698ecae757fb8fbb170b0eb2e9123355775a9bb1c4d8dd26b081ab7"
+
+[[package]]
 name = "gpui-component"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3268,6 +3274,7 @@ name = "kone-native"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpui-ce-motion",
  "gpui-kit",
  "kone-rpc",
  "kone-theme",
