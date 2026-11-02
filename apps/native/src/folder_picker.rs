@@ -9,10 +9,10 @@
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, fs,
-    rc::Rc,
-    io,
+    env, fs, io,
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -1981,16 +1981,20 @@ fn read_branch(dir: &Path) -> Option<String> {
     (!short.is_empty()).then_some(short)
 }
 
-/// Placeholder line counts until agent-core serves `git.summary`. Every repo
-/// row carries the same pair so the row's diffstat can be laid out and
-/// reviewed; replacing this with the RPC result needs no change in rendering.
-const STUB_DIFF: (u32, u32) = (4, 2);
+/// Placeholder line counts until agent-core serves `git.summary`. Off unless
+/// `KONE_STUB_DIFF=1`, so a real repository never shows invented numbers; the
+/// switch lets the row's diffstat layout be reviewed.
+fn stub_diff() -> (u32, u32) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| env::var("KONE_STUB_DIFF").is_ok_and(|value| value == "1"));
+    if enabled { (4, 2) } else { (0, 0) }
+}
 
 fn repo_summary(dir: &Path) -> Option<RepoSummary> {
     if !is_repo_root(dir) {
         return None;
     }
-    let (added, removed) = STUB_DIFF;
+    let (added, removed) = stub_diff();
     Some(RepoSummary {
         repo: true,
         branch: read_branch(dir),
