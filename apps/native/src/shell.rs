@@ -162,8 +162,6 @@ impl Render for Shell {
             .overflow_hidden()
             .bg(hsla(c.ground))
             .font_family(SANS)
-            .px(px(64.))
-            .pt(px(52.))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 for m in &mut this.magnets {
                     m.track(e.position);
@@ -197,7 +195,7 @@ impl Render for Shell {
                     }),
             )
             .child(
-                div().relative().flex().justify_end().child(
+                div().relative().flex().justify_end().pt(px(8.)).pr(px(8.)).child(
                     div()
                         .id("settings")
                         .size(px(36.))
