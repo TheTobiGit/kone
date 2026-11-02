@@ -120,9 +120,6 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
-  /** The thread's name, as its header shows it — what a request's trace says
-   *  it was sent to. */
-  threadTitle?: string;
   /** The session's stored-transcript read came back empty-handed — the only
    *  thing that puts the "didn't load" banner up. */
   loadFailed?: boolean;
@@ -388,11 +385,12 @@ function canActOn(block: AssistantBlock): boolean {
   return block.state === "completed" && !!assistantText(block);
 }
 // ── a reply's trace ──────────────────────────────────────────────────────────
-// Opens over the thread, grown from the reply it was asked for on. It reads the
-// whole turn: a steer splits one reply into pieces that share its turnId.
-const traced = ref<{ turnId: string; origin: DOMRect | null } | null>(null);
-function openResponseTrace(block: AssistantBlock, button: HTMLElement): void {
-  traced.value = { turnId: block.turnId, origin: button.closest(".stack")?.getBoundingClientRect() ?? null };
+// Unfolds in the thread under the reply it was asked for on, so nothing covers
+// the conversation while it is read. It reads the whole turn: a steer splits
+// one reply into pieces that share its turnId.
+const traced = ref<{ turnId: string; blockId: string } | null>(null);
+function toggleResponseTrace(block: AssistantBlock): void {
+  traced.value = traced.value?.blockId === block.id ? null : { turnId: block.turnId, blockId: block.id };
   cue("press");
 }
 const tracedPieces = computed(() => {
@@ -400,12 +398,6 @@ const tracedPieces = computed(() => {
   return turnId
     ? props.blocks.filter((b): b is AssistantBlock => b.role === "assistant" && b.turnId === turnId)
     : [];
-});
-/** The request the traced turn answers: the one that opened its first piece's exchange. */
-const tracedRequest = computed(() => {
-  const first = tracedPieces.value[0];
-  const opener = first && allExchanges.value.find((ex) => ex.blocks.includes(first))?.blocks[0];
-  return opener?.role === "user" ? opener : undefined;
 });
 /** A settled reply with a file restore to offer. */
 function hasTurnCheckpoint(block: AssistantBlock): boolean {
@@ -1430,7 +1422,6 @@ watch(
           :time="clock(block.at)"
           :reply="ex.traceReply"
           :trace-thread-id="agentSeed ?? threadId ?? null"
-          :thread-title="threadTitle"
           @save="(text, attachments) => saveUserEdit(block, text, attachments)"
           @copy="copyUserRequest(block)"
           @scratchpad="addUserRequestToScratchpad(block)"
@@ -1479,11 +1470,12 @@ watch(
                 :allow-scratchpad="allowScratchpad"
                 :allow-branch="allowBranch"
                 allow-trace
+                :trace-open="traced?.blockId === block.id"
                 :busy="busy"
                 :can-act="canActOn(block)"
                 @copy="copy(block)"
                 @scratchpad="addToScratchpad(block)"
-                @trace="openResponseTrace(block, $event)"
+                @trace="toggleResponseTrace(block)"
                 @fork="emit('branch-fork', block.id)"
               />
               <TurnCheckpointRestore
@@ -1552,11 +1544,12 @@ watch(
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
               allow-trace
+              :trace-open="traced?.blockId === block.id"
               :busy="busy"
               :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
-              @trace="openResponseTrace(block, $event)"
+              @trace="toggleResponseTrace(block)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1577,11 +1570,12 @@ watch(
               :allow-scratchpad="allowScratchpad"
               :allow-branch="allowBranch"
               allow-trace
+              :trace-open="traced?.blockId === block.id"
               :busy="busy"
               :can-act="canActOn(block)"
               @copy="copy(block)"
               @scratchpad="addToScratchpad(block)"
-              @trace="openResponseTrace(block, $event)"
+              @trace="toggleResponseTrace(block)"
               @fork="emit('branch-fork', block.id)"
             />
             <TurnCheckpointRestore
@@ -1592,6 +1586,13 @@ watch(
             />
           </span>
         </div>
+        <!-- The turn's trace, unfolded under the reply it was asked for on. -->
+        <ResponseTrace
+          v-if="traced?.blockId === block.id && tracedPieces.length"
+          :pieces="tracedPieces"
+          :thread-id="agentSeed ?? threadId ?? null"
+          :now="now"
+        />
       </template>
     </div>
     </div>
@@ -1702,16 +1703,6 @@ watch(
       </Transition>
     </Teleport>
 
-    <ResponseTrace
-      v-if="traced && tracedPieces.length"
-      :pieces="tracedPieces"
-      :request="tracedRequest"
-      :thread-id="agentSeed ?? threadId ?? null"
-      :thread-title="threadTitle ?? ''"
-      :origin="traced.origin"
-      :now="now"
-      @close="traced = null"
-    />
     <ThreadPullRequestModal
       v-if="prPreview"
       :key="`${prPreview.cwd}:${prPreview.link.repository}:${prPreview.link.number}`"

@@ -62,9 +62,8 @@ const props = defineProps<{
   time: string;
   /** The reply this request started, for its trace. */
   reply?: AssistantBlock;
-  /** The thread's durable id and name, for its trace. */
+  /** The thread's durable id, for its trace. */
   traceThreadId?: string | null;
-  threadTitle?: string;
 }>();
 
 const emit = defineEmits<{
@@ -134,13 +133,11 @@ function toggleExpand(): void {
 }
 
 // ── trace ───────────────────────────────────────────────────────────────────
-// The request's trace opens over the thread, grown from the bubble.
-const bubbleEl = ref<HTMLElement | null>(null);
-const traceOrigin = ref<DOMRect | null>(null);
+// The request's trace unfolds in the thread under this turn, so nothing covers
+// the conversation while it is read.
 const tracing = ref(false);
-function openTrace(): void {
-  traceOrigin.value = bubbleEl.value?.getBoundingClientRect() ?? null;
-  tracing.value = true;
+function toggleTrace(): void {
+  tracing.value = !tracing.value;
   cue("press");
 }
 
@@ -169,8 +166,9 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
           @edit="startEdit"
           @copy="emit('copy')"
           allow-trace
+          :trace-open="tracing"
           @scratchpad="emit('scratchpad')"
-          @trace="openTrace"
+          @trace="toggleTrace"
         />
       </template>
     </YouHead>
@@ -202,7 +200,6 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
     </div>
     <div
       v-else-if="block.text"
-      ref="bubbleEl"
       class="body body--you selectable"
       :class="{ 'body--you-expanded': expanded }"
     >
@@ -223,8 +220,9 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
         @edit="startEdit"
         @copy="emit('copy')"
         allow-trace
+        :trace-open="tracing"
         @scratchpad="emit('scratchpad')"
-        @trace="openTrace"
+        @trace="toggleTrace"
       />
       <button
         v-if="isLong"
@@ -351,8 +349,9 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
       @edit="startEdit"
       @copy="emit('copy')"
       allow-trace
+      :trace-open="tracing"
       @scratchpad="emit('scratchpad')"
-      @trace="openTrace"
+      @trace="toggleTrace"
     />
     <div v-if="showFoot" class="you-foot" :class="{ 'you-foot--editing': editing }">
       <!-- While editing this turn the footer is the edit's controls;
@@ -381,8 +380,9 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
         @edit="startEdit"
         @copy="emit('copy')"
         allow-trace
+        :trace-open="tracing"
         @scratchpad="emit('scratchpad')"
-        @trace="openTrace"
+        @trace="toggleTrace"
       />
     </div>
     <RequestTrace
@@ -390,9 +390,6 @@ const showFoot = computed(() => editing.value || props.acts === "foot");
       :block="block"
       :reply="reply"
       :thread-id="traceThreadId ?? null"
-      :thread-title="threadTitle ?? ''"
-      :origin="traceOrigin"
-      @close="tracing = false"
     />
   </div>
 </template>

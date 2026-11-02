@@ -24,6 +24,8 @@ defineProps<{
   allowScratchpad: boolean;
   /** Whether the Trace button is offered here. */
   allowTrace?: boolean;
+  /** This turn's trace is unfolded below it, so the button reads as on. */
+  traceOpen?: boolean;
   /** Whether the Fork button is offered here at all. Replies only. */
   allowBranch?: boolean;
   /** A turn is in flight — Fork is refused while one is. Replies only. */
@@ -85,7 +87,9 @@ function onTrace(event: MouseEvent): void {
       v-if="allowTrace"
       type="button"
       class="act"
+      :class="{ 'act--on': traceOpen }"
       data-tip="Trace"
+      :aria-expanded="traceOpen ? 'true' : 'false'"
       :aria-label="kind === 'you' ? 'Show this request\'s trace' : 'Show this reply\'s trace'"
       @click="onTrace"
     >
@@ -141,6 +145,10 @@ function onTrace(event: MouseEvent): void {
 }
 .act--done {
   color: var(--ink-soft);
+}
+.act--on {
+  background: var(--hover);
+  color: var(--ink);
 }
 .act:disabled {
   opacity: 0.45;
