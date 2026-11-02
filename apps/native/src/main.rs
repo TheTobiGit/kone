@@ -7,6 +7,7 @@ mod clone_modal;
 mod create_project;
 mod folder_picker;
 mod magnet;
+mod path_complete;
 mod projects;
 mod shell;
 mod strands;

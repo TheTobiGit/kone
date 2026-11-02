@@ -9,7 +9,7 @@
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -23,6 +23,10 @@ use kone_rpc::{Branch, RepoSummary};
 use kone_theme::{hsla, Palette, Theme};
 
 use crate::magnet::Magnet;
+use crate::path_complete::{
+    child_dir_names, find_completion, should_complete, split_path_fragment,
+};
+pub(crate) use crate::path_complete::{collapse, expand, home_dir};
 use crate::shell::SANS;
 
 pub(crate) const MONO: &str = "Menlo";
@@ -264,10 +268,7 @@ pub struct FolderPicker {
     cancel_hovering: bool,
     scroll: ScrollHandle,
     recent_descend: Option<(PathBuf, Instant)>,
-    /// The address bar's last text, so an edit can be told from a completion.
-    last_input: String,
-    /// Child folder names per parent, for the address bar's completion.
-    child_cache: HashMap<PathBuf, (Vec<String>, Instant)>,
+    completer: crate::path_complete::PathCompleter,
     /// Set when the address bar submits, so the same Enter is not read a
     /// second time by the bubble handler after focus moves to the card.
     enter_at: Option<Instant>,
@@ -329,7 +330,7 @@ impl FolderPicker {
         Self {
             focus,
             path_input,
-            home,
+            home: home.clone(),
             trail: Vec::new(),
             entries: Vec::new(),
             error: None,
@@ -347,8 +348,7 @@ impl FolderPicker {
             cancel_hovering: false,
             scroll: ScrollHandle::new(),
             recent_descend: None,
-            last_input: String::new(),
-            child_cache: HashMap::new(),
+            completer: crate::path_complete::PathCompleter::new(home.clone()),
             enter_at: None,
             phase: Phase::In,
             started: Instant::now(),
@@ -615,41 +615,20 @@ impl FolderPicker {
     /// a deletion leaves the field exactly as the user left it.
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.path_input.read(cx).value().to_string();
-        let previous = std::mem::replace(&mut self.last_input, value.clone());
-        // Only complete a forward extension. A cut, a paste-over or any other
-        // edit that shortens or rewrites the field must not be completed:
-        // that would put text back the user just removed.
-        if !value.starts_with(&previous) || value.len() <= previous.len() {
+        let previous = std::mem::replace(&mut self.completer.last_input, value.clone());
+        if !should_complete(&value, &previous, self.path_input.read(cx).cursor()) {
             return;
         }
-        if self.path_input.read(cx).cursor() != value.len() {
-            return;
-        }
-        let Some(frag) = value
-            .rsplit('/')
-            .next()
-            .filter(|frag| !frag.is_empty())
-            .map(str::to_string)
-        else {
+        let Some((parent, frag)) = split_path_fragment(&self.completer.home, &value) else {
             return;
         };
-        let expanded = expand(&self.home, &value);
-        let Some(parent) = expanded
-            .parent()
-            .filter(|parent| parent.is_absolute())
-            .map(Path::to_path_buf)
-        else {
-            return;
-        };
-        if let Some((names, at)) = self.child_cache.get(&parent)
+        if let Some((names, at)) = self.completer.child_cache.get(&parent)
             && at.elapsed() < CHILD_CACHE_TTL
         {
             let names = names.clone();
             self.apply_completion(value, frag, names, window, cx);
             return;
         }
-        // Reading a parent can be slow on a network mount; keep it off the
-        // frame and complete only if the field is still where it was.
         let task = cx.background_spawn(async move {
             let names = child_dir_names(&parent);
             (parent, names)
@@ -658,8 +637,8 @@ impl FolderPicker {
             let (parent, names) = task.await;
             let Some(names) = names else { return };
             this.update_in(cx, |this, window, cx| {
-                this.child_cache.retain(|_, (_, at)| at.elapsed() < CHILD_CACHE_TTL);
-                this.child_cache.insert(parent, (names.clone(), Instant::now()));
+                this.completer.prune_cache();
+                this.completer.child_cache.insert(parent, (names.clone(), Instant::now()));
                 this.apply_completion(value, frag, names, window, cx);
             })
             .ok();
@@ -682,35 +661,17 @@ impl FolderPicker {
         {
             return;
         }
-        let lower = frag.to_lowercase();
-        let typed_chars = frag.chars().count();
-        let Some(name) = names.into_iter().find(|name| {
-            name.chars().count() > typed_chars && name.to_lowercase().starts_with(&lower)
-        }) else {
+        let Some((completed, start, end)) = find_completion(&base, &frag, &names) else {
             return;
         };
-        let suffix: String = name.chars().skip(typed_chars).collect();
-        let completed = format!("{base}{suffix}");
-        let typed = base.len();
-        self.set_input_text(completed.clone(), window, cx);
+        self.set_input_text(completed, window, cx);
         self.path_input.update(cx, |state, cx| {
-            state.set_selected_range(typed..completed.len(), cx);
+            state.set_selected_range(start..end, cx);
         });
     }
 
-    /// Collapses a selected completion at the caret, accepting it. Returns
-    /// whether there was one to accept.
     fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.path_input.read(cx).focus_handle(cx).is_focused(window) {
-            return false;
-        }
-        let range = self.path_input.read(cx).selected_range();
-        if range.is_empty() {
-            return false;
-        }
-        let end = range.end;
-        self.path_input.update(cx, |state, cx| state.set_selected_range(end..end, cx));
-        true
+        self.completer.accept_completion(&self.path_input, window, cx)
     }
 
     fn current(&self) -> Option<&Crumb> {
@@ -718,7 +679,7 @@ impl FolderPicker {
     }
 
     fn set_input_text(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.last_input = value.clone();
+        self.completer.set_text(value.clone());
         self.path_input.update(cx, |state, cx| {
             state.set_value(value, window, cx);
         });
@@ -1912,40 +1873,6 @@ fn read_error_text(err: &io::Error) -> &'static str {
     }
 }
 
-pub(crate) fn home_dir() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
-}
-
-pub(crate) fn expand(home: &Path, raw: &str) -> PathBuf {
-    let raw = raw.trim();
-    if raw == "~" {
-        return home.to_path_buf();
-    }
-    let path = if let Some(rest) = raw.strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(raw)
-    };
-    // Typing `/a/b/` should land on the same folder as `/a/b`; the trailing
-    // separators carry no information and would otherwise echo back in the bar.
-    let text = path.to_string_lossy();
-    if text.len() <= 1 || !text.ends_with('/') {
-        return path;
-    }
-    let trimmed = text.trim_end_matches('/');
-    if trimmed.is_empty() { PathBuf::from("/") } else { PathBuf::from(trimmed) }
-}
-
-pub(crate) fn collapse(home: &Path, path: &Path) -> String {
-    if path == home {
-        return "~/".into();
-    }
-    if let Ok(rest) = path.strip_prefix(home) {
-        return format!("~/{}", rest.display());
-    }
-    path.display().to_string()
-}
-
 fn list_dir(dir: &Path) -> io::Result<Listing> {
     let metadata = fs::metadata(dir)?;
     if !metadata.is_dir() {
@@ -1970,23 +1897,6 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
     entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
 
     Ok(Listing { git: repo_summary(dir), entries })
-}
-
-/// The address bar only needs names, not the git enrichment a full listing
-/// pays for.
-fn child_dir_names(dir: &Path) -> Option<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        if entry_is_dir(&entry) {
-            names.push(name);
-        }
-    }
-    names.sort_by_cached_key(|name| name.to_lowercase());
-    Some(names)
 }
 
 fn entry_is_dir(entry: &fs::DirEntry) -> bool {
