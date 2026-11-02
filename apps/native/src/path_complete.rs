@@ -132,11 +132,19 @@ pub struct PathCompleter {
     offer: Option<(String, Range<usize>)>,
 }
 
-/// The typed part of an offered completion, if `value` types through it.
-pub fn type_through_base<'a>(offer: Option<&'a (String, Range<usize>)>, value: &str) -> Option<&'a str> {
+/// The typed part of an offered completion, if `value` types through it:
+/// the field showed exactly the offer and one character replaced its
+/// selection. A deletion (e.g. Backspace after clicking at the end) leaves
+/// more than one character past the base, so it is not typing through.
+pub fn type_through_base<'a>(
+    offer: Option<&'a (String, Range<usize>)>,
+    previous: &str,
+    value: &str,
+) -> Option<&'a str> {
     let (text, range) = offer?;
     let base = text.get(..range.start)?;
-    (value.len() > base.len() && text.starts_with(value)).then_some(base)
+    let typed = value.strip_prefix(base)?;
+    (previous == text && typed.chars().count() == 1 && text.starts_with(value)).then_some(base)
 }
 
 /// Whether the field still shows exactly the completion that was offered.
@@ -163,7 +171,9 @@ impl PathCompleter {
     /// than the completed text; measured from what was typed before the offer,
     /// that is still forward typing and should complete again.
     pub fn baseline(&self, previous: String, value: &str) -> String {
-        type_through_base(self.offer.as_ref(), value).map(str::to_string).unwrap_or(previous)
+        type_through_base(self.offer.as_ref(), &previous, value)
+            .map(str::to_string)
+            .unwrap_or(previous)
     }
 
     /// Records the completion just put in the field and selected.
@@ -306,13 +316,17 @@ mod tests {
     fn typing_through_a_completion_keeps_completing() {
         let offer = ("/tmp/kone-test".to_string(), 6..14);
         // "/tmp/k" was offered "one-test"; typing "o" leaves "/tmp/ko".
-        assert_eq!(type_through_base(Some(&offer), "/tmp/ko"), Some("/tmp/k"));
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kone-test", "/tmp/ko"), Some("/tmp/k"));
         assert!(should_complete("/tmp/ko", "/tmp/k", 7));
         // A diverging character isn't type-through.
-        assert_eq!(type_through_base(Some(&offer), "/tmp/kx"), None);
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kone-test", "/tmp/kx"), None);
         // Deleting the offered part (back to the typed text) isn't either.
-        assert_eq!(type_through_base(Some(&offer), "/tmp/k"), None);
-        assert_eq!(type_through_base(None, "/tmp/ko"), None);
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kone-test", "/tmp/k"), None);
+        assert_eq!(type_through_base(None, "/tmp/kone-test", "/tmp/ko"), None);
+        // Backspace after clicking off the offer isn't type-through.
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kone-test", "/tmp/kone-tes"), None);
+        // Nor is an edit when the field no longer showed the offer.
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kone", "/tmp/ko"), None);
     }
 
     #[test]
