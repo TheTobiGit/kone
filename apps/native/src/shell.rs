@@ -109,6 +109,8 @@ const ART_FRAME: Duration = Duration::from_millis(66);
 pub struct Shell {
     magnets: [Magnet; 3],
     started: Instant,
+    picker: Option<Entity<crate::folder_picker::FolderPicker>>,
+    _picker_sub: Option<Subscription>,
     _ticker: Task<()>,
 }
 
@@ -126,19 +128,35 @@ impl Shell {
                 return;
             }
         });
-        Shell { magnets: Default::default(), started: Instant::now(), _ticker: ticker }
+        Shell {
+            magnets: Default::default(),
+            started: Instant::now(),
+            picker: None,
+            _picker_sub: None,
+            _ticker: ticker,
+        }
     }
-}
 
-fn open_folder(cx: &mut App) {
-    let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Open".into()) });
-    cx.background_executor()
-        .spawn(async move {
-            if let Ok(Ok(Some(paths))) = picked.await {
-                eprintln!("open: {}", paths[0].display());
-            }
-        })
-        .detach();
+    /// Opens kone's own folder browser, not the system path panel.
+    fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            return;
+        }
+        let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
+        self._picker_sub = Some(cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &crate::folder_picker::FolderPickerEvent, _, cx| {
+                if let crate::folder_picker::FolderPickerEvent::Picked(path) = event {
+                    eprintln!("open: {}", path.display());
+                }
+                this.picker = None;
+                cx.notify();
+            },
+        ));
+        self.picker = Some(picker);
+        cx.notify();
+    }
 }
 
 impl Render for Shell {
@@ -172,7 +190,9 @@ impl Render for Shell {
                 .relative()
                 .left(px(x))
                 .top(px(y))
-                .when(id == "open", |r| r.on_click(|_, _, cx| open_folder(cx)))
+                .when(id == "open", |r| {
+                    r.on_click(cx.listener(|this, _, window, cx| this.open_folder(window, cx)))
+                })
                 .flex()
                 .items_center()
                 .gap(px(14.))
@@ -256,7 +276,7 @@ impl Render for Shell {
         // The frame: a thin band around the panel that moves the window like a
         // titlebar. AppKit claims the outermost pixels for resizing before the
         // view sees them, so the band never swallows a resize.
-        div()
+        let frame = div()
             .size_full()
             .bg(hsla(frame))
             .pt(px(FRAME_TOP))
@@ -269,6 +289,13 @@ impl Render for Shell {
                     window.start_window_move();
                 }
             })
-            .child(panel)
+            .child(panel);
+
+        // The folder browser is a layer of its own, over the frame and page.
+        let mut root = div().relative().size_full().child(frame);
+        if let Some(picker) = self.picker.clone() {
+            root = root.child(picker);
+        }
+        root
     }
 }

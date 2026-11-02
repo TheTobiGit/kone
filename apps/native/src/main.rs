@@ -2,6 +2,7 @@
 
 mod assets;
 mod chrome;
+mod folder_picker;
 mod shell;
 mod strands;
 
