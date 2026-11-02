@@ -1941,7 +1941,7 @@ pub(crate) fn repo_summary(dir: &Path) -> Option<RepoSummary> {
     if !is_repo_root(dir) {
         return None;
     }
-    let (added, removed) = diff_stat(dir);
+    let (added, removed) = cached_diff_stat(dir);
     Some(RepoSummary {
         repo: true,
         branch: read_branch(dir),
@@ -1951,31 +1951,112 @@ pub(crate) fn repo_summary(dir: &Path) -> Option<RepoSummary> {
     })
 }
 
-/// Lines added and removed in the working tree against `HEAD` (staged and
-/// unstaged together), as `git diff --numstat` reports them. Runs on the
-/// listing's background thread; a repo with no commits yet, a missing `git`, or
-/// a failed read all come back as no changes rather than invented numbers.
-pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
+/// How long a computed diffstat is trusted while `.git/index` and `.git/HEAD`
+/// are unchanged. Untracked edits don't touch either file, so the TTL bounds
+/// how stale a row can read; reopening the picker within it costs no git runs.
+const SUMMARY_TTL: Duration = Duration::from_secs(5);
+const SUMMARY_CACHE_MAX: usize = 256;
+
+type SummaryKey = (Option<std::time::SystemTime>, Option<std::time::SystemTime>);
+type SummaryCache = std::sync::Mutex<HashMap<PathBuf, (SummaryKey, Instant, (u32, u32))>>;
+
+fn summary_cache() -> &'static SummaryCache {
+    static CACHE: std::sync::OnceLock<SummaryCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn summary_key(dir: &Path) -> SummaryKey {
+    let mtime = |name: &str| {
+        git_dir(dir).and_then(|g| fs::metadata(g.join(name)).ok()).and_then(|m| m.modified().ok())
+    };
+    (mtime("index"), mtime("HEAD"))
+}
+
+/// `diff_stat` behind a small per-repo cache keyed by the index/HEAD mtimes.
+pub(crate) fn cached_diff_stat(dir: &Path) -> (u32, u32) {
+    let key = summary_key(dir);
+    if let Ok(cache) = summary_cache().lock()
+        && let Some((k, at, stat)) = cache.get(dir)
+        && *k == key
+        && at.elapsed() < SUMMARY_TTL
+    {
+        return *stat;
+    }
+    let stat = diff_stat(dir);
+    if let Ok(mut cache) = summary_cache().lock() {
+        if cache.len() >= SUMMARY_CACHE_MAX {
+            cache.retain(|_, (_, at, _)| at.elapsed() < SUMMARY_TTL);
+            if cache.len() >= SUMMARY_CACHE_MAX {
+                cache.clear();
+            }
+        }
+        cache.insert(dir.to_path_buf(), (key, Instant::now(), stat));
+    }
+    stat
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["--no-optional-locks", "diff", "--numstat", "--no-renames", "HEAD", "--"])
+        .arg("--no-optional-locks")
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .output();
-    let Ok(output) = output else { return (0, 0) };
-    if !output.status.success() {
-        return (0, 0);
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+/// Untracked files bigger than this count as 0 lines, as in git-core.
+const UNTRACKED_SIZE_CAP: u64 = 512 * 1024;
+/// Stop counting untracked files after this many, so a huge unignored tree
+/// (a fresh node_modules, say) can't stall the listing thread.
+const UNTRACKED_FILE_CAP: usize = 2000;
+
+/// Line count of an untracked file, git-core's `fileLineCount`: binary, empty,
+/// oversized or unreadable files are 0; a last line without `\n` still counts.
+fn untracked_lines(path: &Path) -> u32 {
+    let Ok(meta) = fs::metadata(path) else { return 0 };
+    if !meta.is_file() || meta.len() > UNTRACKED_SIZE_CAP {
+        return 0;
     }
+    let Ok(buf) = fs::read(path) else { return 0 };
+    if buf.is_empty() || buf.contains(&0) {
+        return 0;
+    }
+    let mut lines = buf.iter().filter(|b| **b == b'\n').count() as u32;
+    if buf.last() != Some(&b'\n') {
+        lines += 1;
+    }
+    lines
+}
+
+/// Lines added and removed in the working tree, as git-core counts them:
+/// tracked changes vs `HEAD` (staged and unstaged together; only the index on
+/// an unborn branch) plus the whole content of untracked, unignored files.
+/// Runs on the listing's background thread; a missing `git` or a failed read
+/// comes back as no changes rather than invented numbers.
+pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
+    let numstat = git_out(dir, &["diff", "--numstat", "--no-renames", "HEAD", "--"])
+        .or_else(|| git_out(dir, &["diff", "--numstat", "--no-renames", "--cached", "--"]));
     let mut added = 0u32;
     let mut removed = 0u32;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.split('\t');
-        // Binary files report "-" for both counts; they add no lines.
-        let a = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-        let r = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-        added = added.saturating_add(a);
-        removed = removed.saturating_add(r);
+    if let Some(out) = numstat {
+        for line in String::from_utf8_lossy(&out).lines() {
+            let mut parts = line.split('\t');
+            // Binary files report "-" for both counts; they add no lines.
+            let a = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let r = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            added = added.saturating_add(a);
+            removed = removed.saturating_add(r);
+        }
+    }
+    if let Some(out) = git_out(dir, &["ls-files", "--others", "--exclude-standard", "-z"]) {
+        for rel in out.split(|b| *b == 0).filter(|r| !r.is_empty()).take(UNTRACKED_FILE_CAP) {
+            let rel = String::from_utf8_lossy(rel);
+            added = added.saturating_add(untracked_lines(&dir.join(rel.as_ref())));
+        }
     }
     (added, removed)
 }
@@ -2025,4 +2106,76 @@ fn edge_fade(scroll: ScrollHandle, panel: kone_theme::Rgba) -> impl IntoElement 
     .top_0()
     .left_0()
     .size_full()
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::{cached_diff_stat, diff_stat, read_branch, Branch};
+    use std::{fs, path::{Path, PathBuf}, time::Duration};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C").arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn repo(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("kone-summary-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        git(&d, &["init", "-q", "-b", "main"]);
+        d
+    }
+
+    #[test]
+    fn counts_untracked_whole_file() {
+        let d = repo("untracked");
+        fs::write(d.join("a.txt"), "one\ntwo\nthree").unwrap();
+        fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
+        assert_eq!(diff_stat(&d), (3, 0));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn empty_repo_counts_staged_and_names_branch() {
+        let d = repo("empty");
+        assert_eq!(diff_stat(&d), (0, 0));
+        fs::write(d.join("s.txt"), "a\nb\n").unwrap();
+        git(&d, &["add", "s.txt"]);
+        assert_eq!(diff_stat(&d), (2, 0));
+        assert!(matches!(read_branch(&d), Branch::Named(ref n) if n == "main"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tracked_changes_and_detached_head() {
+        let d = repo("tracked");
+        fs::write(d.join("f.txt"), "a\nb\n").unwrap();
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-q", "-m", "init"]);
+        fs::write(d.join("f.txt"), "a\nc\nd\n").unwrap();
+        assert_eq!(diff_stat(&d), (2, 1));
+        git(&d, &["checkout", "-q", "--detach"]);
+        assert!(matches!(read_branch(&d), Branch::Detached(ref s) if s.len() == 7));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn cache_reuses_until_index_changes() {
+        let d = repo("cache");
+        fs::write(d.join("f.txt"), "a\n").unwrap();
+        git(&d, &["add", "."]);
+        assert_eq!(cached_diff_stat(&d), (1, 0));
+        // An untracked file within the TTL is served from cache…
+        fs::write(d.join("u.txt"), "x\n").unwrap();
+        assert_eq!(cached_diff_stat(&d), (1, 0));
+        // …but staging it moves the index and recomputes.
+        std::thread::sleep(Duration::from_millis(20));
+        git(&d, &["add", "u.txt"]);
+        assert_eq!(cached_diff_stat(&d), (2, 0));
+        let _ = fs::remove_dir_all(&d);
+    }
 }
