@@ -3,6 +3,7 @@
 mod assets;
 mod chrome;
 mod shell;
+mod strands;
 
 use gpui_kit::*;
 use kone_theme::{Scheme, Theme};
@@ -43,7 +44,7 @@ fn main() {
                     .detach();
             }
             chrome::hide_traffic_lights(window);
-            cx.new(shell::Shell::new)
+            cx.new(|cx| shell::Shell::new(window, cx))
         })
         .expect("main window opens");
         cx.activate(true);

@@ -1,4 +1,4 @@
-//! The empty launcher: three ways to begin, centred.
+//! The empty launcher: three ways to begin, centred over a drifting loom of threads.
 
 use std::{cell::Cell, rc::Rc, time::{Duration, Instant}};
 
@@ -72,13 +72,30 @@ impl Magnet {
     }
 }
 
+/// The threads move a few pixels a second, so 15 frames read as smooth.
+const ART_FRAME: Duration = Duration::from_millis(66);
+
 pub struct Shell {
     magnets: [Magnet; 3],
+    started: Instant,
+    _ticker: Task<()>,
 }
 
 impl Shell {
-    pub fn new(_: &mut Context<Self>) -> Self {
-        Shell { magnets: Default::default() }
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Only a focused window animates; a background one holds its last frame.
+        let ticker = cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(ART_FRAME).await;
+            let alive = this.update_in(cx, |_, window, cx| {
+                if window.is_window_active() {
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                return;
+            }
+        });
+        Shell { magnets: Default::default(), started: Instant::now(), _ticker: ticker }
     }
 }
 
@@ -95,7 +112,9 @@ fn open_folder(cx: &mut App) {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = Theme::get(cx).colors.clone();
+        let theme = Theme::get(cx);
+        let dark = theme.is_dark();
+        let c = theme.colors.clone();
 
         if self.magnets.iter().any(Magnet::settling) {
             window.request_animation_frame();
@@ -151,6 +170,16 @@ impl Render for Shell {
                 }
                 cx.notify();
             }))
+            .child({
+                let t = self.started.elapsed().as_secs_f32();
+                let look = crate::strands::Look { color: c.accent, alpha: if dark { 0.30 } else { 0.38 } };
+                canvas(|_, _, _| (), move |b, _, window, _| crate::strands::paint(b, t, &look, window))
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(relative(0.5))
+            })
             // The band above the content moves the window, as a titlebar would.
             .child(
                 div()
