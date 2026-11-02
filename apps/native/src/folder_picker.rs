@@ -95,6 +95,15 @@ fn scrim_enter_tween() -> Transition {
     )
 }
 
+/// How far a surviving row slides into its new slot: Electron's FLIP curve, an
+/// ease-out-back so a lifted folder overshoots its landing and settles back.
+fn flip_tween() -> Transition {
+    Transition::Tween(
+        Duration::from_millis(460),
+        Easing::Bezier(Bezier::new(0.34, 1.56, 0.64, 1.).expect("valid curve")),
+    )
+}
+
 /// CSS `ease` over 180ms: the picker's hover wash, glyphs, and actions.
 fn hover_tween() -> Transition {
     Transition::Tween(
@@ -120,13 +129,15 @@ fn sample_hover(
     (sample.value() as f32, sample.is_animating())
 }
 
-/// One row's entrance: how far in it is, its git metadata after it, and how
-/// strongly the pointer is over it.
+/// One row's entrance: how far in it is, its git metadata after it, how
+/// strongly the pointer is over it, and its slide in from a previous slot.
 struct RowMotion {
     enter: MotionValue,
     meta: MotionValue,
     hover: MotionValue,
     hovering: bool,
+    flip_x: MotionValue,
+    flip_y: MotionValue,
 }
 
 /// One message the picker sends back to whatever opened it.
@@ -269,6 +280,12 @@ pub struct FolderPicker {
     row_motion: HashMap<String, RowMotion>,
     /// Keyed the same way: a row's lean toward the cursor.
     magnets: HashMap<String, Magnet>,
+    /// Row bounds from just before a listing swapped. A row that survives
+    /// starts here and slides into its new slot once that slot is painted.
+    flip_from: HashMap<String, Bounds<Pixels>>,
+    /// A swap is waiting for its first painted frame; survivors are held back
+    /// for that frame so the destination never flashes.
+    flip_pending: bool,
     /// The list's drawn height and the content height it is chasing.
     list_height: MotionValue,
     list_measured: Rc<Cell<Option<f32>>>,
@@ -337,6 +354,8 @@ impl FolderPicker {
             outcome: None,
             row_motion: HashMap::new(),
             magnets: HashMap::new(),
+            flip_from: HashMap::new(),
+            flip_pending: false,
             list_height: MotionValue::new(0.),
             list_measured: Rc::new(Cell::new(None)),
             list_target: None,
@@ -421,10 +440,12 @@ impl FolderPicker {
             Load::Level(trail) => match result {
                 Ok(listing) => self.apply_listing(trail, listing, window, cx),
                 Err(_) => {
+                    let before = self.row_bounds();
                     self.trail = trail;
                     self.entries.clear();
                     self.read_error = true;
                     self.after_nav(window, cx);
+                    self.arm_flip(before, window, cx);
                 }
             },
         }
@@ -437,6 +458,7 @@ impl FolderPicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let before = self.row_bounds();
         if let Some(last) = trail.last_mut() {
             last.repo = listing.repo;
             last.branch = listing.branch;
@@ -446,6 +468,57 @@ impl FolderPicker {
         self.read_error = false;
         self.error = None;
         self.after_nav(window, cx);
+        self.arm_flip(before, window, cx);
+    }
+
+    /// Where every magnetised row currently sits, keyed the way rows are.
+    fn row_bounds(&self) -> HashMap<String, Bounds<Pixels>> {
+        self.magnets
+            .iter()
+            .filter_map(|(key, magnet)| magnet.bounds.get().map(|bounds| (key.clone(), bounds)))
+            .collect()
+    }
+
+    /// Remembers the pre-swap slots and waits one painted frame for the new
+    /// ones. GPUI hands out layout bounds only while painting, so the measure
+    /// and the slide have to straddle a frame.
+    fn arm_flip(
+        &mut self,
+        before: HashMap<String, Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if before.is_empty() {
+            return;
+        }
+        self.flip_from = before;
+        self.flip_pending = true;
+        cx.on_next_frame(window, |this, window, cx| this.begin_flip(window, cx));
+    }
+
+    /// Starts every surviving row's slide from its old screen position.
+    fn begin_flip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flip_pending {
+            return;
+        }
+        self.flip_pending = false;
+        let now = self.clock();
+        for (key, before) in std::mem::take(&mut self.flip_from) {
+            let Some(after) = self.magnets.get(&key).and_then(|magnet| magnet.bounds.get()) else {
+                continue;
+            };
+            let Some(motion) = self.row_motion.get_mut(&key) else { continue };
+            let dx = f32::from(before.origin.x - after.origin.x);
+            let dy = f32::from(before.origin.y - after.origin.y);
+            if dx.abs() < 1. && dy.abs() < 1. {
+                continue;
+            }
+            motion.flip_x = MotionValue::new(dx as f64);
+            motion.flip_y = MotionValue::new(dy as f64);
+            motion.flip_x.animate(0., flip_tween(), now);
+            motion.flip_y.animate(0., flip_tween(), now);
+        }
+        cx.notify();
     }
 
     /// Starts entrances for rows that were not on screen and forgets the ones
@@ -459,7 +532,14 @@ impl FolderPicker {
                 enter.animate(1., row_spring(), now);
                 let mut meta = MotionValue::new(0.);
                 meta.animate_delayed(1., meta_spring(), META_DELAY, now);
-                RowMotion { enter, meta, hover: MotionValue::new(0.), hovering: false }
+                RowMotion {
+                    enter,
+                    meta,
+                    hover: MotionValue::new(0.),
+                    hovering: false,
+                    flip_x: MotionValue::new(0.),
+                    flip_y: MotionValue::new(0.),
+                }
             });
         }
     }
@@ -713,6 +793,7 @@ impl FolderPicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let before = self.row_bounds();
         let base = if path == self.home || path.starts_with(&self.home) {
             self.home.clone()
         } else {
@@ -753,6 +834,7 @@ impl FolderPicker {
         self.read_error = false;
         self.trail = trail;
         self.after_nav(window, cx);
+        self.arm_flip(before, window, cx);
     }
 
     fn parent_name(&self) -> Option<String> {
@@ -1205,24 +1287,40 @@ impl Render for FolderPicker {
                     None => (if hovered || focused { 1. } else { 0. }, false),
                 };
                 moving |= hover_moving;
+                let (flip_x, flip_y, flip_moving) = match self.row_motion.get_mut(&keys[index]) {
+                    Some(motion) => {
+                        let fx = motion.flip_x.sample(now, false);
+                        let fy = motion.flip_y.sample(now, false);
+                        (
+                            fx.value() as f32,
+                            fy.value() as f32,
+                            fx.is_animating() || fy.is_animating(),
+                        )
+                    }
+                    None => (0., 0., false),
+                };
+                moving |= flip_moving;
                 // The go-up row is not wrapped, so it never leans.
                 let (offset, probe) = match self.magnets.get(&keys[index]) {
                     Some(magnet) if !matches!(&row, PickerRow::Ascend { .. }) => {
                         let (x, y) = magnet.offset();
-                        ((x, y), Some(magnet.probe()))
+                        ((x + flip_x, y + flip_y), Some(magnet.probe()))
                     }
-                    _ => ((0., 0.), None),
+                    _ => ((flip_x, flip_y), None),
                 };
+                // For the one frame it takes to measure the new slots, a
+                // survivor is held back rather than flashing where it landed.
+                let hidden = self.flip_pending && self.flip_from.contains_key(&keys[index]);
                 let element = match row {
                     PickerRow::Ascend { .. } => {
                         let on_click = cx.listener(|this, _, window, cx| this.ascend(window, cx));
-                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
                     }
                     PickerRow::Crumb { index, path, current, .. } => {
                         let on_click = cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.click_crumb(index, path.clone(), current, window, cx)
                         });
-                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
                     }
                     PickerRow::Entry { path, name, repo, branch } => {
                         let entry = Entry { name, path, repo, branch };
@@ -1230,7 +1328,7 @@ impl Render for FolderPicker {
                         let on_click = cx.listener(move |this, event: &ClickEvent, window, cx| {
                             this.click_entry(click.clone(), event, window, cx)
                         });
-                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
+                        row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
                     }
                 };
                 list = list.child(element);
@@ -1518,6 +1616,7 @@ impl PickerRow {
 fn row_element<F>(
     visual: RowVisual,
     hover: f32,
+    hidden: bool,
     colors: &Palette,
     offset: (f32, f32),
     probe: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
@@ -1548,7 +1647,7 @@ where
         .relative()
         .left(px(x))
         .top(px(ROW_RISE * (1. - enter) + y))
-        .opacity(enter.clamp(0., 1.))
+        .opacity(if hidden { 0. } else { enter.clamp(0., 1.) })
         .flex()
         .items_center()
         .gap(px(6.))
