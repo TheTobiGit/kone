@@ -50,6 +50,8 @@ pub struct Shell {
     started: Instant,
     picker: Option<Entity<crate::folder_picker::FolderPicker>>,
     _picker_sub: Option<Subscription>,
+    creator: Option<Entity<crate::create_project::CreateProject>>,
+    _creator_sub: Option<Subscription>,
     project: Option<crate::projects::OpenProject>,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
@@ -75,6 +77,8 @@ impl Shell {
             started: Instant::now(),
             picker: None,
             _picker_sub: None,
+            creator: None,
+            _creator_sub: None,
             project: None,
             open_error: None,
             _open_task: None,
@@ -84,7 +88,7 @@ impl Shell {
 
     /// Opens kone's own folder browser, not the system path panel.
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() {
+        if self.picker.is_some() || self.creator.is_some() {
             return;
         }
         for m in &mut self.magnets {
@@ -109,6 +113,32 @@ impl Shell {
 }
 
 impl Shell {
+    /// Opens the create card; a created project opens like a picked folder.
+    fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() || self.creator.is_some() {
+            return;
+        }
+        for m in &mut self.magnets {
+            m.release();
+        }
+        self.open_error = None;
+        let creator = cx.new(|cx| crate::create_project::CreateProject::new(window, cx));
+        creator.update(cx, |c, _| c.start());
+        self._creator_sub = Some(cx.subscribe_in(
+            &creator,
+            window,
+            |this, _, event: &crate::create_project::CreateProjectEvent, window, cx| {
+                if let crate::create_project::CreateProjectEvent::Created(path) = event {
+                    this.open_project(path.clone(), window, cx);
+                }
+                this.creator = None;
+                cx.notify();
+            },
+        ));
+        self.creator = Some(creator);
+        cx.notify();
+    }
+
     /// Validates and records the folder off the UI thread, then shows it.
     fn open_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.open_error = None;
@@ -207,13 +237,14 @@ impl Render for Shell {
         let slots: Vec<_> = self.magnets.iter().map(|m| m.bounds.clone()).collect();
         // While the picker is up the launcher is in session: the open row
         // spins, the others dim, and none of them answer the pointer.
-        let busy = self.picker.is_some();
+        let busy = self.picker.is_some() || self.creator.is_some();
+        let session = if self.creator.is_some() { "create" } else { "open" };
         if busy {
             window.request_animation_frame();
         }
         let spin = self.started.elapsed().as_secs_f32();
         let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
-            let loading = busy && id == "open";
+            let loading = busy && id == session;
             let slot = slots[i].clone();
             let (x, y) = offsets[i];
             // The pull is measured from where the row rests, so the probe sits
@@ -226,6 +257,9 @@ impl Render for Shell {
                 .top(px(y))
                 .when(id == "open" && !busy, |r| {
                     r.on_click(cx.listener(|this, _, window, cx| this.open_folder(window, cx)))
+                })
+                .when(id == "create" && !busy, |r| {
+                    r.on_click(cx.listener(|this, _, window, cx| this.create_project(window, cx)))
                 })
                 .when(busy && !loading, |r| r.opacity(0.35))
                 .flex()
@@ -293,7 +327,7 @@ impl Render for Shell {
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 // Most moves land outside every pull zone; only a changed
                 // target needs a frame (the glide itself runs on animation frames).
-                let busy = this.picker.is_some();
+                let busy = this.picker.is_some() || this.creator.is_some();
                 let mut moved = false;
                 for m in &mut this.magnets {
                     moved |= if busy { m.release() } else { m.track(e.position) };
@@ -351,6 +385,9 @@ impl Render for Shell {
         let mut root = div().relative().size_full().child(frame);
         if let Some(picker) = self.picker.clone() {
             root = root.child(picker);
+        }
+        if let Some(creator) = self.creator.clone() {
+            root = root.child(creator);
         }
         root
     }

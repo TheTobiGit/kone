@@ -25,20 +25,20 @@ use kone_theme::{hsla, Palette, Theme};
 use crate::magnet::Magnet;
 use crate::shell::SANS;
 
-const MONO: &str = "Menlo";
+pub(crate) const MONO: &str = "Menlo";
 
 /// The card's fixed frame pieces. The browser's body carries the rest.
-const HEADER_H: f32 = 37.;
-const FOOTER_H: f32 = 37.;
+pub(crate) const HEADER_H: f32 = 37.;
+pub(crate) const FOOTER_H: f32 = 37.;
 /// The concave corner radius where a band meets a side wall.
-const BAND_ARC: f32 = 14.;
+pub(crate) const BAND_ARC: f32 = 14.;
 /// The browser's breathing room between the bands and the list.
-const BAND_GAP: f32 = 16.;
+pub(crate) const BAND_GAP: f32 = 16.;
 
-const ENTER: Duration = Duration::from_millis(420);
-const EXIT: Duration = Duration::from_millis(240);
+pub(crate) const ENTER: Duration = Duration::from_millis(420);
+pub(crate) const EXIT: Duration = Duration::from_millis(240);
 /// How far below its resting place the card starts, then rises from.
-const CARD_RISE: f32 = 12.;
+pub(crate) const CARD_RISE: f32 = 12.;
 
 /// Indent per level, clamped so a deep trail stays on screen.
 const STEP: f32 = 26.;
@@ -47,7 +47,7 @@ const MAX_STEPS: usize = 4;
 /// A second click inside this window opens the folder instead of descending.
 const DOUBLE_CLICK: Duration = Duration::from_millis(260);
 
-const CARD_WIDTH: f32 = 448.;
+pub(crate) const CARD_WIDTH: f32 = 448.;
 
 /// How far an incoming row rises as it fades in.
 const ROW_RISE: f32 = 24.;
@@ -77,20 +77,20 @@ fn height_tween() -> Transition {
 
 /// The card rises on Electron's `modal-card-in` curve: a small overshoot, so
 /// it lands a touch past its slot before settling.
-fn card_enter_tween() -> Transition {
+pub(crate) fn card_enter_tween() -> Transition {
     Transition::Tween(ENTER, Easing::Bezier(Bezier::new(0.34, 1.3, 0.64, 1.).expect("valid curve")))
 }
 
 /// Opacity is opaque at 45% of the card's arrival, so it never reads as a
 /// ghost sliding into place.
-fn card_fade_tween() -> Transition {
+pub(crate) fn card_fade_tween() -> Transition {
     Transition::Tween(
         ENTER.mul_f32(0.45),
         Easing::Bezier(Bezier::new(0.34, 1.3, 0.64, 1.).expect("valid curve")),
     )
 }
 
-fn scrim_enter_tween() -> Transition {
+pub(crate) fn scrim_enter_tween() -> Transition {
     Transition::Tween(
         Duration::from_millis(240),
         Easing::Bezier(Bezier::new(0.22, 1., 0.36, 1.).expect("valid curve")),
@@ -107,7 +107,7 @@ fn flip_tween() -> Transition {
 }
 
 /// CSS `ease` over 180ms: the picker's hover wash, glyphs, and actions.
-fn hover_tween() -> Transition {
+pub(crate) fn hover_tween() -> Transition {
     Transition::Tween(
         Duration::from_millis(180),
         Easing::Bezier(Bezier::new(0.25, 0.1, 0.25, 1.).expect("valid curve")),
@@ -117,7 +117,7 @@ fn hover_tween() -> Transition {
 /// Eases a hover amount toward its target. A change restarts from wherever it
 /// is, the way a CSS transition does. Returns the amount and whether it is
 /// still moving.
-fn sample_hover(
+pub(crate) fn sample_hover(
     value: &mut MotionValue,
     hovering: &mut bool,
     active: bool,
@@ -1810,7 +1810,7 @@ fn message(text: &str, indent: f32, colors: &Palette) -> Div {
         .child(text.to_string())
 }
 
-fn input_style(colors: &Palette, focused: bool) -> InputEditorStyle {
+pub(crate) fn input_style(colors: &Palette, focused: bool) -> InputEditorStyle {
     let ink = if focused { colors.ink } else { colors.muted };
     InputEditorStyle {
         foreground: hsla(ink),
@@ -1828,7 +1828,7 @@ fn input_style(colors: &Palette, focused: bool) -> InputEditorStyle {
 /// Paints the header band and its two concave scoops. The path starts along the
 /// top edge, comes down the right wall into a quarter-circle bite, crosses the
 /// band's lower edge, and mirrors back up the left wall.
-fn paint_header_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+pub(crate) fn paint_header_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let width = f32::from(bounds.size.width);
     let arc = BAND_ARC;
@@ -1857,7 +1857,7 @@ fn paint_header_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
 
 /// Paints the footer band and its scoops, which bite upward into the list so
 /// the two bands read as facing each other.
-fn paint_footer_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+pub(crate) fn paint_footer_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let width = f32::from(bounds.size.width);
     let arc = BAND_ARC;
@@ -1912,11 +1912,11 @@ fn read_error_text(err: &io::Error) -> &'static str {
     }
 }
 
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn expand(home: &Path, raw: &str) -> PathBuf {
+pub(crate) fn expand(home: &Path, raw: &str) -> PathBuf {
     let raw = raw.trim();
     if raw == "~" {
         return home.to_path_buf();
@@ -1936,7 +1936,7 @@ fn expand(home: &Path, raw: &str) -> PathBuf {
     if trimmed.is_empty() { PathBuf::from("/") } else { PathBuf::from(trimmed) }
 }
 
-fn collapse(home: &Path, path: &Path) -> String {
+pub(crate) fn collapse(home: &Path, path: &Path) -> String {
     if path == home {
         return "~/".into();
     }
@@ -2071,7 +2071,7 @@ pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
 }
 
 /// Solves a CSS-style cubic bezier for one axis and returns the eased value.
-fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+pub(crate) fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
     let curve = |a: f32, b: f32, s: f32| {
         3. * a * s * (1. - s).powi(2) + 3. * b * s * s * (1. - s) + s.powi(3)
     };

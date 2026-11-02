@@ -109,3 +109,88 @@ pub fn open(path: &Path) -> Result<OpenProject, String> {
         path,
     })
 }
+
+/// What the create modal asks for. Mirrors Electron's `CreateProjectOptions`
+/// (`git-core/types.ts`) minus the GitHub remote and setup command.
+#[derive(Clone, Debug)]
+pub struct CreateOptions {
+    pub parent: PathBuf,
+    pub name: String,
+    pub git: bool,
+    pub readme: bool,
+    pub branch: String,
+}
+
+/// A single, safe path segment, the same rule as Electron's `isSafeSegment`.
+pub fn valid_name(name: &str) -> bool {
+    let name = name.trim();
+    !(name.is_empty() || name == "." || name == "..") && !name.contains(['/', '\\', '\0'])
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => "Git isn't installed, so the folder was created without a repository.".to_string(),
+            _ => format!("Couldn't run git: {e}"),
+        })?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("git failed");
+        Err(line.trim().to_string())
+    }
+}
+
+/// Lays a fresh project folder on disk the way Electron's `git/create.ts`
+/// does: refuse an unsafe name or an existing target, mkdir, seed README.md,
+/// `git init -b <branch>`, stage, and land an initial commit when a git
+/// identity is configured. Blocking: call it off the UI thread.
+pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
+    let name = opts.name.trim();
+    if !valid_name(name) {
+        return Err(format!("\u{201c}{name}\u{201d} isn't a valid folder name."));
+    }
+    match fs::metadata(&opts.parent) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return Err("The location is a file, not a folder.".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err("The location doesn't exist.".into()),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            return Err("You don't have permission to use that location.".into())
+        }
+        Err(e) => return Err(format!("Couldn't read the location: {e}")),
+    }
+    let target = opts.parent.join(name);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(format!("A folder already exists at {}", target.display()));
+    }
+    fs::create_dir(&target).map_err(|e| match e.kind() {
+        io::ErrorKind::PermissionDenied => "You don't have permission to create a folder there.".to_string(),
+        io::ErrorKind::AlreadyExists => format!("A folder already exists at {}", target.display()),
+        _ => format!("Couldn't create the folder: {e}"),
+    })?;
+    if opts.git && opts.readme {
+        fs::write(target.join("README.md"), format!("# {name}\n"))
+            .map_err(|e| format!("Couldn't write README.md: {e}"))?;
+    }
+    if opts.git {
+        let branch = match opts.branch.trim() {
+            "" => "main",
+            b => b,
+        };
+        // Older git lacks `-b`; init plain and point HEAD at the branch.
+        if git(&target, &["init", "-b", branch]).is_err() {
+            git(&target, &["init"])?;
+            git(&target, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])?;
+        }
+        // A failed stage or commit doesn't sink the create: the repo exists.
+        let identity = git(&target, &["config", "user.email"]).is_ok_and(|e| !e.trim().is_empty());
+        if git(&target, &["add", "-A"]).is_ok() && identity {
+            let _ = git(&target, &["commit", "-m", "Initial commit", "--allow-empty"]);
+        }
+    }
+    Ok(target)
+}

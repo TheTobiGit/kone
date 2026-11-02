@@ -2,6 +2,7 @@
 
 mod assets;
 mod chrome;
+mod create_project;
 mod folder_picker;
 mod magnet;
 mod projects;
