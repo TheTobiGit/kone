@@ -650,6 +650,7 @@ impl FolderPicker {
             let (parent, names) = task.await;
             let Some(names) = names else { return };
             this.update_in(cx, |this, window, cx| {
+                this.child_cache.retain(|_, (_, at)| at.elapsed() < CHILD_CACHE_TTL);
                 this.child_cache.insert(parent, (names.clone(), Instant::now()));
                 this.apply_completion(value, frag, names, window, cx);
             })
