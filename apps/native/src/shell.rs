@@ -52,8 +52,9 @@ impl Magnet {
         (self.from.0 + (self.to.0 - self.from.0) * e, self.from.1 + (self.to.1 - self.from.1) * e)
     }
 
-    fn track(&mut self, cursor: Point<Pixels>) {
-        let Some(b) = self.bounds.get() else { return };
+    /// Returns whether the pull target moved, i.e. whether a repaint is due.
+    fn track(&mut self, cursor: Point<Pixels>) -> bool {
+        let Some(b) = self.bounds.get() else { return false };
         let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
         let (cx, cy) = (f32::from(b.origin.x) + w / 2., f32::from(b.origin.y) + h / 2.);
         let (dx, dy) = (f32::from(cursor.x) - cx, f32::from(cursor.y) - cy);
@@ -64,17 +65,21 @@ impl Magnet {
             self.to = to;
             self.active = near;
             self.since = Some(Instant::now());
+            return true;
         }
+        false
     }
 
     /// Glide back to rest, as when the pointer leaves the pull zone.
-    fn release(&mut self) {
+    fn release(&mut self) -> bool {
         if self.to != (0., 0.) {
             self.from = self.offset();
             self.to = (0., 0.);
             self.active = false;
             self.since = Some(Instant::now());
+            return true;
         }
+        false
     }
 
     fn settling(&self) -> bool {
@@ -113,8 +118,8 @@ const FRAME_TOP: f32 = 8.;
 /// Inside the window's own ~10px corner, so the two curves stay concentric.
 const PANEL_RADIUS: f32 = 8.;
 
-/// The threads move a few pixels a second, so 15 frames read as smooth.
-const ART_FRAME: Duration = Duration::from_millis(66);
+/// The threads drift ~5px a second, so 10 frames (half-pixel steps) read as smooth.
+const ART_FRAME: Duration = Duration::from_millis(100);
 
 pub struct Shell {
     magnets: [Magnet; 3],
@@ -255,11 +260,16 @@ impl Render for Shell {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .font_family(SANS)
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                // Most moves land outside every pull zone; only a changed
+                // target needs a frame (the glide itself runs on animation frames).
                 let busy = this.picker.is_some();
+                let mut moved = false;
                 for m in &mut this.magnets {
-                    if busy { m.release() } else { m.track(e.position) }
+                    moved |= if busy { m.release() } else { m.track(e.position) };
                 }
-                cx.notify();
+                if moved {
+                    cx.notify();
+                }
             }))
             .child({
                 let t = self.started.elapsed().as_secs_f32();
