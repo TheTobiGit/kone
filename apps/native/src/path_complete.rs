@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    ops::Range,
     env, fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -126,6 +127,21 @@ pub struct PathCompleter {
     pub home: PathBuf,
     pub last_input: String,
     pub child_cache: HashMap<PathBuf, (Vec<String>, Instant)>,
+    /// The text and selection of the completion currently on offer. Only that
+    /// exact selection is a completion; a Ctrl+A or mouse selection is not.
+    offer: Option<(String, Range<usize>)>,
+}
+
+/// The typed part of an offered completion, if `value` types through it.
+pub fn type_through_base<'a>(offer: Option<&'a (String, Range<usize>)>, value: &str) -> Option<&'a str> {
+    let (text, range) = offer?;
+    let base = text.get(..range.start)?;
+    (value.len() > base.len() && text.starts_with(value)).then_some(base)
+}
+
+/// Whether the field still shows exactly the completion that was offered.
+pub fn offer_is_live(offer: Option<&(String, Range<usize>)>, value: &str, selected: &Range<usize>) -> bool {
+    !selected.is_empty() && offer.is_some_and(|(text, range)| text == value && range == selected)
 }
 
 impl PathCompleter {
@@ -134,6 +150,7 @@ impl PathCompleter {
             home,
             last_input: String::new(),
             child_cache: HashMap::new(),
+            offer: None,
         }
     }
 
@@ -141,10 +158,23 @@ impl PathCompleter {
         self.last_input = text;
     }
 
+    /// The text to compare an edit against. Typing a character that matches
+    /// the offered completion replaces its selection, so the field is shorter
+    /// than the completed text; measured from what was typed before the offer,
+    /// that is still forward typing and should complete again.
+    pub fn baseline(&self, previous: String, value: &str) -> String {
+        type_through_base(self.offer.as_ref(), value).map(str::to_string).unwrap_or(previous)
+    }
+
+    /// Records the completion just put in the field and selected.
+    pub fn offer(&mut self, text: String, range: Range<usize>) {
+        self.offer = Some((text, range));
+    }
+
     /// Collapses any active completion selection in the given input, accepting it.
     /// Returns true if a completion was active and accepted.
     pub fn accept_completion(
-        &self,
+        &mut self,
         input: &Entity<InputState>,
         window: &Window,
         cx: &mut App,
@@ -153,7 +183,9 @@ impl PathCompleter {
             return false;
         }
         let range = input.read(cx).selected_range();
-        if range.is_empty() {
+        let live = offer_is_live(self.offer.as_ref(), &input.read(cx).value(), &range);
+        self.offer = None;
+        if !live {
             return false;
         }
         let end = range.end;
@@ -184,6 +216,7 @@ pub fn complete_on_change<T: CompletesPath>(
     let cursor = input.read(cx).cursor();
     let completer = this.completer();
     let previous = std::mem::replace(&mut completer.last_input, value.clone());
+    let previous = completer.baseline(previous, &value);
     if !should_complete(&value, &previous, cursor) {
         return;
     }
@@ -234,6 +267,7 @@ fn apply_completion<T: CompletesPath>(
         return;
     };
     this.completer().set_text(completed.clone());
+    this.completer().offer(completed.clone(), start..end);
     input.update(cx, |state, cx| {
         state.set_value(completed, window, cx);
         state.set_selected_range(start..end, cx);
@@ -266,6 +300,31 @@ mod tests {
         assert_eq!(collapse(&home, &home), "~/");
         assert_eq!(collapse(&home, &home.join("projects")), "~/projects");
         assert_eq!(collapse(&home, Path::new("/var/log")), "/var/log");
+    }
+
+    #[test]
+    fn typing_through_a_completion_keeps_completing() {
+        let offer = ("/tmp/kone-test".to_string(), 6..14);
+        // "/tmp/k" was offered "one-test"; typing "o" leaves "/tmp/ko".
+        assert_eq!(type_through_base(Some(&offer), "/tmp/ko"), Some("/tmp/k"));
+        assert!(should_complete("/tmp/ko", "/tmp/k", 7));
+        // A diverging character isn't type-through.
+        assert_eq!(type_through_base(Some(&offer), "/tmp/kx"), None);
+        // Deleting the offered part (back to the typed text) isn't either.
+        assert_eq!(type_through_base(Some(&offer), "/tmp/k"), None);
+        assert_eq!(type_through_base(None, "/tmp/ko"), None);
+    }
+
+    #[test]
+    fn only_the_offered_selection_is_a_completion() {
+        let offer = ("~/Documents".to_string(), 5..11);
+        assert!(offer_is_live(Some(&offer), "~/Documents", &(5..11)));
+        // Ctrl+A over the field is the user's selection, not a completion.
+        assert!(!offer_is_live(Some(&offer), "~/Documents", &(0..11)));
+        assert!(!offer_is_live(None, "~/", &(0..2)));
+        // The text moved on since the offer.
+        assert!(!offer_is_live(Some(&offer), "~/Documentsx", &(5..11)));
+        assert!(!offer_is_live(Some(&offer), "~/Documents", &(11..11)));
     }
 
     #[test]

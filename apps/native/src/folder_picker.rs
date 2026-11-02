@@ -616,6 +616,7 @@ impl FolderPicker {
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.path_input.read(cx).value().to_string();
         let previous = std::mem::replace(&mut self.completer.last_input, value.clone());
+        let previous = self.completer.baseline(previous, &value);
         if !should_complete(&value, &previous, self.path_input.read(cx).cursor()) {
             return;
         }
@@ -664,6 +665,7 @@ impl FolderPicker {
         let Some((completed, start, end)) = find_completion(&base, &frag, &names) else {
             return;
         };
+        self.completer.offer(completed.clone(), start..end);
         self.set_input_text(completed, window, cx);
         self.path_input.update(cx, |state, cx| {
             state.set_selected_range(start..end, cx);
