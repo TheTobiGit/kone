@@ -345,9 +345,27 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
         _ => format!("Couldn't create the folder: {e}"),
     })?;
 
+    // From here on the folder is ours (create_dir just made it), so a failed
+    // step removes it again; a retry then doesn't hit "already exists".
+    match populate(opts, name, &target) {
+        Ok(()) => Ok(target),
+        Err(message) => {
+            discard_created(&target);
+            Err(message)
+        }
+    }
+}
+
+/// Removes a folder `create` made in this attempt. Never called for a folder
+/// that existed beforehand; `remove_dir_all` doesn't follow symlinks out.
+fn discard_created(target: &Path) {
+    let _ = fs::remove_dir_all(target);
+}
+
+fn populate(opts: &CreateOptions, name: &str, target: &Path) -> Result<(), String> {
     // A setup command runs first, on the still-empty folder — scaffolders expect that.
     if let Some(cmd) = opts.command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        run_setup_command(&target, cmd)?;
+        run_setup_command(target, cmd)?;
     }
 
     let init_git = opts.git || opts.remote;
@@ -363,29 +381,78 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
             b => b,
         };
         // Older git lacks `-b`; init plain and point HEAD at the branch.
-        if git(&target, &["init", "-b", branch]).is_err() {
-            git(&target, &["init"])?;
-            git(&target, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])?;
+        if git(target, &["init", "-b", branch]).is_err() {
+            git(target, &["init"])?;
+            git(target, &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])?;
         }
         // A failed stage or commit doesn't sink the create: the repo exists.
-        let identity = git(&target, &["config", "user.email"]).is_ok_and(|e| !e.trim().is_empty());
-        if git(&target, &["add", "-A"]).is_ok() && identity {
-            let _ = git(&target, &["commit", "-m", "Initial commit", "--allow-empty"]);
+        let identity = git(target, &["config", "user.email"]).is_ok_and(|e| !e.trim().is_empty());
+        if git(target, &["add", "-A"]).is_ok() && identity {
+            let _ = git(target, &["commit", "-m", "Initial commit", "--allow-empty"]);
         }
     }
 
     if opts.remote {
         let repo_name = resolve_repo_name(opts.repo_name.as_deref(), name);
-        create_remote(&target, repo_name, opts.visibility)?;
+        create_remote(target, repo_name, opts.visibility)?;
     }
 
-    Ok(target)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("kone-create-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn opts(parent: &Path, name: &str, command: Option<&str>) -> CreateOptions {
+        CreateOptions {
+            parent: parent.to_path_buf(),
+            name: name.into(),
+            git: false,
+            readme: false,
+            branch: "main".into(),
+            remote: false,
+            repo_name: None,
+            visibility: RepoVisibility::Private,
+            command: command.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn failed_create_removes_the_folder_it_made() {
+        let parent = scratch("fail");
+        let err = create(&opts(&parent, "app", Some("touch made && exit 3"))).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(!parent.join("app").exists(), "half-made folder left behind");
+        assert!(parent.exists(), "parent must survive");
+        fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn create_never_touches_an_existing_folder() {
+        let parent = scratch("exists");
+        fs::create_dir(parent.join("app")).unwrap();
+        fs::write(parent.join("app/keep.txt"), "mine").unwrap();
+        assert!(create(&opts(&parent, "app", None)).is_err());
+        assert_eq!(fs::read_to_string(parent.join("app/keep.txt")).unwrap(), "mine");
+        fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn successful_create_keeps_the_folder() {
+        let parent = scratch("ok");
+        let made = create(&opts(&parent, "app", Some("touch made"))).unwrap();
+        assert!(made.join("made").exists());
+        fs::remove_dir_all(&parent).unwrap();
+    }
 
     #[test]
     fn test_valid_name() {
