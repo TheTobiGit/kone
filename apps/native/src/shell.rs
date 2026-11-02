@@ -46,9 +46,13 @@ const PANEL_RADIUS: f32 = 8.;
 const ART_FRAME: Duration = Duration::from_millis(125);
 /// Spinner pace while a launcher modal is open (~30 fps).
 const SPIN_FRAME: Duration = Duration::from_millis(33);
+/// The crowd reacting to the cursor: smoother than idle, still well short
+/// of vsync since every frame repaints the whole strip.
+const STIR_FRAME: Duration = Duration::from_millis(66);
 
 pub struct Shell {
     magnets: [Magnet; 3],
+    folk: crate::stickfolk::Hover,
     started: Instant,
     picker: Option<Entity<crate::folder_picker::FolderPicker>>,
     _picker_sub: Option<Subscription>,
@@ -78,17 +82,23 @@ impl Shell {
                     if window.is_window_active() {
                         cx.notify();
                     }
-                    this.picker.is_some() || this.creator.is_some() || this.cloner.is_some()
+                    if this.picker.is_some() || this.creator.is_some() || this.cloner.is_some() {
+                        SPIN_FRAME
+                    } else if this.folk.active() {
+                        STIR_FRAME
+                    } else {
+                        ART_FRAME
+                    }
                 });
                 match alive {
-                    Ok(true) => pace = SPIN_FRAME,
-                    Ok(false) => pace = ART_FRAME,
+                    Ok(p) => pace = p,
                     Err(_) => return,
                 }
             }
         });
         Shell {
             magnets: Default::default(),
+            folk: Default::default(),
             started: Instant::now(),
             picker: None,
             _picker_sub: None,
@@ -400,6 +410,7 @@ impl Render for Shell {
                 for m in &mut this.magnets {
                     moved |= if busy { m.release() } else { m.track(e.position) };
                 }
+                moved |= this.folk.track(e.position, busy);
                 if moved {
                     cx.notify();
                 }
@@ -407,7 +418,12 @@ impl Render for Shell {
             .child({
                 let t = self.started.elapsed().as_secs_f32();
                 let look = crate::stickfolk::Look { color: c.accent, alpha: if dark { 0.45 } else { 0.55 } };
-                canvas(|_, _, _| (), move |b, _, window, _| crate::stickfolk::paint(b, t, &look, window))
+                let stir = self.folk.snapshot();
+                let strip = self.folk.strip.clone();
+                canvas(|_, _, _| (), move |b, _, window, _| {
+                    strip.set(Some(b));
+                    crate::stickfolk::paint(b, t, stir, &look, window)
+                })
                     .absolute()
                     .left_0()
                     .right_0()
