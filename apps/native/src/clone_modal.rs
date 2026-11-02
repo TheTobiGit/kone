@@ -21,6 +21,7 @@ use crate::folder_picker::{
     paint_footer_band, paint_header_band, sample_hover, scrim_enter_tween, BAND_ARC, BAND_GAP,
     CARD_RISE, CARD_WIDTH, ENTER, EXIT, FOOTER_H, HEADER_H, MONO,
 };
+use crate::path_complete::{complete_on_change, CompletesPath, PathCompleter};
 use crate::shell::SANS;
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ pub struct CloneModal {
     home: PathBuf,
     repo: Entity<InputState>,
     location: Entity<InputState>,
+    completer: PathCompleter,
     phase: Phase,
     clone_phase: ClonePhase,
     busy: bool,
@@ -79,8 +81,15 @@ pub struct CloneModal {
     _subs: Vec<Subscription>,
 }
 
+impl CompletesPath for CloneModal {
+    fn completer(&mut self) -> &mut PathCompleter {
+        &mut self.completer
+    }
+}
+
 impl CloneModal {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `location` is where the last successful clone this session landed.
+    pub fn new(location: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let colors = Theme::get(cx).colors.clone();
         let home = home_dir();
         let make = |value: String, placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
@@ -89,7 +98,10 @@ impl CloneModal {
             state
         };
         let repo = make(String::new(), "owner/repo or https://github.com/…", window, cx);
-        let location = make(collapse(&home, &home), "~/", window, cx);
+        let initial_location = location.unwrap_or_else(|| collapse(&home, &home));
+        let location = make(initial_location.clone(), "~/", window, cx);
+        let mut completer = PathCompleter::new(home.clone());
+        completer.set_text(initial_location);
 
         let mut subs = Vec::new();
         for (state, field) in [(&repo, Field::Repo), (&location, Field::Location)] {
@@ -98,6 +110,10 @@ impl CloneModal {
                 InputEvent::Focus => this.ink(field, true, cx),
                 InputEvent::Blur => this.ink(field, false, cx),
                 InputEvent::Change => {
+                    if field == Field::Location {
+                        let location = this.location.clone();
+                        complete_on_change(this, &location, window, cx);
+                    }
                     if this.error.take().is_some() {
                         cx.notify();
                     }
@@ -113,6 +129,7 @@ impl CloneModal {
             home,
             repo,
             location,
+            completer,
             phase: Phase::In,
             clone_phase: ClonePhase::Idle,
             busy: false,
@@ -142,6 +159,15 @@ impl CloneModal {
         self.enter_scrim.animate(1., scrim_enter_tween(), now);
         self.enter_y.animate(0., card_enter_tween(), now);
         self.enter_fade.animate(1., card_fade_tween(), now);
+    }
+
+    /// The location field as typed, for the shell to offer next time.
+    pub fn location_text(&self, cx: &App) -> String {
+        self.location.read(cx).value().to_string()
+    }
+
+    fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.completer.accept_completion(&self.location, window, cx)
     }
 
     fn input(&self, field: Field) -> &Entity<InputState> {
@@ -721,10 +747,19 @@ impl Render for CloneModal {
             .bg(hsla(c.ground.alpha(0.62 * scrim)))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                let location_focused = this.location.read(cx).focus_handle(cx).is_focused(window);
                 match e.keystroke.key.as_str() {
                     "tab" => {
-                        this.tab(e.keystroke.modifiers.shift, window, cx);
+                        if !location_focused || !this.accept_completion(window, cx) {
+                            this.tab(e.keystroke.modifiers.shift, window, cx);
+                        }
                         cx.stop_propagation();
+                    }
+                    "right" if location_focused && this.accept_completion(window, cx) => {
+                        cx.stop_propagation();
+                    }
+                    "/" if location_focused => {
+                        this.accept_completion(window, cx);
                     }
                     "escape" => {
                         this.cancel(window, cx);

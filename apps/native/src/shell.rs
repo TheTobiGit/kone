@@ -57,6 +57,8 @@ pub struct Shell {
     cloner: Option<Entity<crate::clone_modal::CloneModal>>,
     _cloner_sub: Option<Subscription>,
     create_session: crate::create_project::CreateProjectSession,
+    /// Where the last successful clone this session landed.
+    clone_location: Option<String>,
     project: Option<crate::projects::OpenProject>,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
@@ -95,6 +97,7 @@ impl Shell {
             cloner: None,
             _cloner_sub: None,
             create_session: Default::default(),
+            clone_location: None,
             project: None,
             open_error: None,
             _open_task: None,
@@ -172,13 +175,14 @@ impl Shell {
             m.release();
         }
         self.open_error = None;
-        let cloner = cx.new(|cx| crate::clone_modal::CloneModal::new(window, cx));
+        let cloner = cx.new(|cx| crate::clone_modal::CloneModal::new(self.clone_location.clone(), window, cx));
         cloner.update(cx, |c, _| c.start());
         self._cloner_sub = Some(cx.subscribe_in(
             &cloner,
             window,
-            |this, _, event: &crate::clone_modal::CloneModalEvent, window, cx| {
+            |this, cloner, event: &crate::clone_modal::CloneModalEvent, window, cx| {
                 if let crate::clone_modal::CloneModalEvent::Cloned(path) = event {
+                    this.clone_location = Some(cloner.read(cx).location_text(cx));
                     this.open_project(path.clone(), window, cx);
                 }
                 this.cloner = None;
