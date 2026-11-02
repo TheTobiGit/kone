@@ -347,19 +347,47 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
 
     // From here on the folder is ours (create_dir just made it), so a failed
     // step removes it again; a retry then doesn't hit "already exists".
+    let made = Identity::of(&target);
     match populate(opts, name, &target) {
         Ok(()) => Ok(target),
         Err(message) => {
-            discard_created(&target);
+            discard_created(&target, made.as_ref());
             Err(message)
         }
     }
 }
 
-/// Removes a folder `create` made in this attempt. Never called for a folder
-/// that existed beforehand; `remove_dir_all` doesn't follow symlinks out.
-fn discard_created(target: &Path) {
-    let _ = fs::remove_dir_all(target);
+/// Which directory a path resolved to: its real location and inode.
+#[derive(PartialEq, Debug)]
+struct Identity {
+    real: PathBuf,
+    #[cfg(unix)]
+    dev_ino: (u64, u64),
+}
+
+impl Identity {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = fs::symlink_metadata(path).ok()?;
+        if !meta.is_dir() {
+            return None;
+        }
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Some(Self {
+            real: fs::canonicalize(path).ok()?,
+            #[cfg(unix)]
+            dev_ino: (meta.dev(), meta.ino()),
+        })
+    }
+}
+
+/// Removes the folder `create` made in this attempt, but only if the path
+/// still names that same directory. A setup command can rename it away or
+/// retarget a symlinked location; then whatever sits there now is left alone.
+fn discard_created(target: &Path, made: Option<&Identity>) {
+    if made.is_some() && Identity::of(target).as_ref() == made {
+        let _ = fs::remove_dir_all(target);
+    }
 }
 
 fn populate(opts: &CreateOptions, name: &str, target: &Path) -> Result<(), String> {
@@ -444,6 +472,31 @@ mod tests {
         assert!(create(&opts(&parent, "app", None)).is_err());
         assert_eq!(fs::read_to_string(parent.join("app/keep.txt")).unwrap(), "mine");
         fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn cleanup_leaves_a_folder_swapped_in_by_the_setup_command() {
+        let parent = scratch("swap");
+        fs::create_dir(parent.join("existing")).unwrap();
+        fs::write(parent.join("existing/keep.txt"), "mine").unwrap();
+        let cmd = "cd .. && mv app app-created && mv existing app && exit 3";
+        assert!(create(&opts(&parent, "app", Some(cmd))).is_err());
+        assert_eq!(fs::read_to_string(parent.join("app/keep.txt")).unwrap(), "mine");
+        fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_leaves_a_folder_behind_a_retargeted_location_link() {
+        let root = scratch("relink");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b/app")).unwrap();
+        fs::write(root.join("b/app/keep.txt"), "mine").unwrap();
+        std::os::unix::fs::symlink(root.join("a"), root.join("link")).unwrap();
+        let cmd = format!("ln -sfn {} {} && exit 3", root.join("b").display(), root.join("link").display());
+        assert!(create(&opts(&root.join("link"), "app", Some(&cmd))).is_err());
+        assert_eq!(fs::read_to_string(root.join("b/app/keep.txt")).unwrap(), "mine");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
