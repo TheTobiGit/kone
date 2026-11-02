@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use kone_theme::{Theme, hsla};
+use kone_theme::{hsla, Theme};
 
 use crate::magnet::{glide, Magnet};
 
@@ -52,6 +52,8 @@ pub struct Shell {
     _picker_sub: Option<Subscription>,
     creator: Option<Entity<crate::create_project::CreateProject>>,
     _creator_sub: Option<Subscription>,
+    cloner: Option<Entity<crate::clone_modal::CloneModal>>,
+    _cloner_sub: Option<Subscription>,
     project: Option<crate::projects::OpenProject>,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
@@ -79,6 +81,8 @@ impl Shell {
             _picker_sub: None,
             creator: None,
             _creator_sub: None,
+            cloner: None,
+            _cloner_sub: None,
             project: None,
             open_error: None,
             _open_task: None,
@@ -88,7 +92,7 @@ impl Shell {
 
     /// Opens kone's own folder browser, not the system path panel.
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.creator.is_some() {
+        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
             return;
         }
         for m in &mut self.magnets {
@@ -115,7 +119,7 @@ impl Shell {
 impl Shell {
     /// Opens the create card; a created project opens like a picked folder.
     fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.creator.is_some() {
+        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
             return;
         }
         for m in &mut self.magnets {
@@ -136,6 +140,32 @@ impl Shell {
             },
         ));
         self.creator = Some(creator);
+        cx.notify();
+    }
+
+    /// Opens the clone card; a cloned project opens like a picked folder.
+    fn clone_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
+            return;
+        }
+        for m in &mut self.magnets {
+            m.release();
+        }
+        self.open_error = None;
+        let cloner = cx.new(|cx| crate::clone_modal::CloneModal::new(window, cx));
+        cloner.update(cx, |c, _| c.start());
+        self._cloner_sub = Some(cx.subscribe_in(
+            &cloner,
+            window,
+            |this, _, event: &crate::clone_modal::CloneModalEvent, window, cx| {
+                if let crate::clone_modal::CloneModalEvent::Cloned(path) = event {
+                    this.open_project(path.clone(), window, cx);
+                }
+                this.cloner = None;
+                cx.notify();
+            },
+        ));
+        self.cloner = Some(cloner);
         cx.notify();
     }
 
@@ -235,10 +265,16 @@ impl Render for Shell {
         }
         let offsets: Vec<(f32, f32)> = self.magnets.iter().map(Magnet::offset).collect();
         let slots: Vec<_> = self.magnets.iter().map(|m| m.bounds.clone()).collect();
-        // While the picker is up the launcher is in session: the open row
+        // While a launcher modal is up the launcher is in session: the active row
         // spins, the others dim, and none of them answer the pointer.
-        let busy = self.picker.is_some() || self.creator.is_some();
-        let session = if self.creator.is_some() { "create" } else { "open" };
+        let busy = self.picker.is_some() || self.creator.is_some() || self.cloner.is_some();
+        let session = if self.creator.is_some() {
+            "create"
+        } else if self.cloner.is_some() {
+            "clone"
+        } else {
+            "open"
+        };
         if busy {
             window.request_animation_frame();
         }
@@ -260,6 +296,9 @@ impl Render for Shell {
                 })
                 .when(id == "create" && !busy, |r| {
                     r.on_click(cx.listener(|this, _, window, cx| this.create_project(window, cx)))
+                })
+                .when(id == "clone" && !busy, |r| {
+                    r.on_click(cx.listener(|this, _, window, cx| this.clone_repo(window, cx)))
                 })
                 .when(busy && !loading, |r| r.opacity(0.35))
                 .flex()
@@ -327,7 +366,7 @@ impl Render for Shell {
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 // Most moves land outside every pull zone; only a changed
                 // target needs a frame (the glide itself runs on animation frames).
-                let busy = this.picker.is_some() || this.creator.is_some();
+                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
                 let mut moved = false;
                 for m in &mut this.magnets {
                     moved |= if busy { m.release() } else { m.track(e.position) };
@@ -381,13 +420,16 @@ impl Render for Shell {
             })
             .child(panel);
 
-        // The folder browser is a layer of its own, over the frame and page.
+        // The folder browser and modals are layers of their own, over the frame and page.
         let mut root = div().relative().size_full().child(frame);
         if let Some(picker) = self.picker.clone() {
             root = root.child(picker);
         }
         if let Some(creator) = self.creator.clone() {
             root = root.child(creator);
+        }
+        if let Some(cloner) = self.cloner.clone() {
+            root = root.child(cloner);
         }
         root
     }

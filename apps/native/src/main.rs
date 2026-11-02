@@ -2,6 +2,8 @@
 
 mod assets;
 mod chrome;
+mod clone;
+mod clone_modal;
 mod create_project;
 mod folder_picker;
 mod magnet;
