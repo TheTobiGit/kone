@@ -83,3 +83,6 @@ temp
 .sandbox/
 
 promo/
+
+# Rust
+target/
