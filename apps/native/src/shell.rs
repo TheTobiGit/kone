@@ -67,6 +67,16 @@ impl Magnet {
         }
     }
 
+    /// Glide back to rest, as when the pointer leaves the pull zone.
+    fn release(&mut self) {
+        if self.to != (0., 0.) {
+            self.from = self.offset();
+            self.to = (0., 0.);
+            self.active = false;
+            self.since = Some(Instant::now());
+        }
+    }
+
     fn settling(&self) -> bool {
         self.progress() < 1.
     }
@@ -142,6 +152,9 @@ impl Shell {
         if self.picker.is_some() {
             return;
         }
+        for m in &mut self.magnets {
+            m.release();
+        }
         let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
         self._picker_sub = Some(cx.subscribe_in(
             &picker,
@@ -179,7 +192,15 @@ impl Render for Shell {
         }
         let offsets: Vec<(f32, f32)> = self.magnets.iter().map(Magnet::offset).collect();
         let slots: Vec<_> = self.magnets.iter().map(|m| m.bounds.clone()).collect();
+        // While the picker is up the launcher is in session: the open row
+        // spins, the others dim, and none of them answer the pointer.
+        let busy = self.picker.is_some();
+        if busy {
+            window.request_animation_frame();
+        }
+        let spin = self.started.elapsed().as_secs_f32();
         let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
+            let loading = busy && id == "open";
             let slot = slots[i].clone();
             let (x, y) = offsets[i];
             // The pull is measured from where the row rests, so the probe sits
@@ -190,9 +211,10 @@ impl Render for Shell {
                 .relative()
                 .left(px(x))
                 .top(px(y))
-                .when(id == "open", |r| {
+                .when(id == "open" && !busy, |r| {
                     r.on_click(cx.listener(|this, _, window, cx| this.open_folder(window, cx)))
                 })
+                .when(busy && !loading, |r| r.opacity(0.35))
                 .flex()
                 .items_center()
                 .gap(px(14.))
@@ -200,9 +222,14 @@ impl Render for Shell {
                 .py(px(11.))
                 .pr(px(12.))
                 .pl(px(6.))
-                .cursor_pointer()
-                .hover(|s| s.bg(hsla(c.hover)))
-                .child(div().w(px(22.)).flex().flex_shrink_0().justify_center().child(svg().path(icon).size(px(18.)).text_color(hsla(c.ink))))
+                .when(!busy, |r| r.cursor_pointer().hover(|s| s.bg(hsla(c.hover))))
+                .child(
+                    div().w(px(22.)).h(px(18.)).flex().flex_shrink_0().items_center().justify_center().child(if loading {
+                        spinner(spin, c.muted.alpha(0.3), c.ink_soft).into_any_element()
+                    } else {
+                        svg().path(icon).size(px(18.)).text_color(hsla(c.ink)).into_any_element()
+                    }),
+                )
                 .child(
                     div()
                         .text_size(px(14.))
@@ -228,8 +255,9 @@ impl Render for Shell {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .font_family(SANS)
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                let busy = this.picker.is_some();
                 for m in &mut this.magnets {
-                    m.track(e.position);
+                    if busy { m.release() } else { m.track(e.position) }
                 }
                 cx.notify();
             }))
@@ -298,4 +326,32 @@ impl Render for Shell {
         }
         root
     }
+}
+
+/// A 15px ring with a lit quarter turning once a second, standing in for an
+/// action's icon while it is in session.
+fn spinner(t: f32, track: kone_theme::Rgba, lit: kone_theme::Rgba) -> impl IntoElement {
+    canvas(|_, _, _| (), move |b, _, window, _| {
+        let (cx, cy) = (f32::from(b.center().x), f32::from(b.center().y));
+        let (r, w) = (6.625, 1.75);
+        let ring = |from: f32, sweep: f32| {
+            let mut p = PathBuilder::stroke(px(w));
+            let steps = 32;
+            for k in 0..=steps {
+                let a = from + sweep * k as f32 / steps as f32;
+                let pt = point(px(cx + r * a.cos()), px(cy + r * a.sin()));
+                if k == 0 { p.move_to(pt) } else { p.line_to(pt) }
+            }
+            p.build().ok()
+        };
+        let tau = std::f32::consts::TAU;
+        if let Some(p) = ring(0., tau) {
+            window.paint_path(p, hsla(track));
+        }
+        let start = (t % 1.) * tau - tau / 4. - tau / 8.;
+        if let Some(p) = ring(start, tau / 4.) {
+            window.paint_path(p, hsla(lit));
+        }
+    })
+    .size(px(15.))
 }
