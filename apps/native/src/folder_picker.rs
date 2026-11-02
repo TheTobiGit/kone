@@ -2008,33 +2008,10 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     output.status.success().then_some(output.stdout)
 }
 
-/// Untracked files bigger than this count as 0 lines, as in git-core.
-const UNTRACKED_SIZE_CAP: u64 = 512 * 1024;
-/// Stop counting untracked files after this many, so a huge unignored tree
-/// (a fresh node_modules, say) can't stall the listing thread.
-const UNTRACKED_FILE_CAP: usize = 2000;
-
-/// Line count of an untracked file, git-core's `fileLineCount`: binary, empty,
-/// oversized or unreadable files are 0; a last line without `\n` still counts.
-fn untracked_lines(path: &Path) -> u32 {
-    let Ok(meta) = fs::metadata(path) else { return 0 };
-    if !meta.is_file() || meta.len() > UNTRACKED_SIZE_CAP {
-        return 0;
-    }
-    let Ok(buf) = fs::read(path) else { return 0 };
-    if buf.is_empty() || buf.contains(&0) {
-        return 0;
-    }
-    let mut lines = buf.iter().filter(|b| **b == b'\n').count() as u32;
-    if buf.last() != Some(&b'\n') {
-        lines += 1;
-    }
-    lines
-}
-
 /// Lines added and removed in the working tree, as git-core counts them:
 /// tracked changes vs `HEAD` (staged and unstaged together; only the index on
-/// an unborn branch) plus the whole content of untracked, unignored files.
+/// an unborn branch). Untracked files aren't counted: git-core's `detect()`
+/// takes its numbers from `git diff --shortstat HEAD`, which skips them.
 /// Runs on the listing's background thread; a missing `git` or a failed read
 /// comes back as no changes rather than invented numbers.
 pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
@@ -2050,12 +2027,6 @@ pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
             let r = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
             added = added.saturating_add(a);
             removed = removed.saturating_add(r);
-        }
-    }
-    if let Some(out) = git_out(dir, &["ls-files", "--others", "--exclude-standard", "-z"]) {
-        for rel in out.split(|b| *b == 0).filter(|r| !r.is_empty()).take(UNTRACKED_FILE_CAP) {
-            let rel = String::from_utf8_lossy(rel);
-            added = added.saturating_add(untracked_lines(&dir.join(rel.as_ref())));
         }
     }
     (added, removed)
@@ -2131,11 +2102,10 @@ mod summary_tests {
     }
 
     #[test]
-    fn counts_untracked_whole_file() {
+    fn skips_untracked_like_git_core() {
         let d = repo("untracked");
         fs::write(d.join("a.txt"), "one\ntwo\nthree").unwrap();
-        fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
-        assert_eq!(diff_stat(&d), (3, 0));
+        assert_eq!(diff_stat(&d), (0, 0));
         let _ = fs::remove_dir_all(&d);
     }
 
