@@ -474,9 +474,11 @@ impl FolderPicker {
             .collect()
     }
 
-    /// Remembers the pre-swap slots and waits one painted frame for the new
-    /// ones. GPUI hands out layout bounds only while painting, so the measure
-    /// and the slide have to straddle a frame.
+    /// Remembers the pre-swap slots and waits for the swapped rows to be laid
+    /// out. Layout bounds only exist once a frame has painted, and a
+    /// next-frame callback runs *before* its frame draws, so this chains one
+    /// more callback: the first waits out the frame that paints the swap, the
+    /// second measures it. Survivors stay hidden across that one frame.
     fn arm_flip(
         &mut self,
         before: HashMap<String, Bounds<Pixels>>,
@@ -488,10 +490,20 @@ impl FolderPicker {
         }
         self.flip_from = before;
         self.flip_pending = true;
+        cx.on_next_frame(window, |this, window, cx| this.await_flip_paint(window, cx));
+    }
+
+    /// Runs before the frame that first paints the swapped rows, so the probes
+    /// still report the old slots. Wait for that paint, then measure.
+    fn await_flip_paint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flip_pending {
+            return;
+        }
         cx.on_next_frame(window, |this, window, cx| this.begin_flip(window, cx));
     }
 
-    /// Starts every surviving row's slide from its old screen position.
+    /// Starts every surviving row's slide from its old screen position. Called
+    /// after the swap has painted, so the probes hold the new slots.
     fn begin_flip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.flip_pending {
             return;
