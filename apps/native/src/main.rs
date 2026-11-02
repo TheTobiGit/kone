@@ -1,19 +1,18 @@
 //! kone's native shell.
 
 mod assets;
+mod chrome;
 mod plasma;
 mod shell;
 
 use gpui_kit::*;
 use kone_theme::{Scheme, Theme};
 
-/// Where AppKit puts the traffic lights, matching the Electron window's inset.
-const TRAFFIC_LIGHTS: Point<Pixels> = Point { x: px(16.), y: px(6.) };
-
 fn main() {
     gpui_kit::application().with_assets(assets::Assets).run(|cx: &mut App| {
         gpui_kit::init(cx);
         assets::load_fonts(cx).expect("bundled fonts load");
+        chrome::init(cx);
         Theme::init(cx);
         // A fixed scheme stops the window from following the system.
         let pinned = std::env::var("KONE_SCHEME").ok().map(|s| if s == "dark" { Scheme::Dark } else { Scheme::Light });
@@ -29,7 +28,7 @@ fn main() {
             titlebar: Some(TitlebarOptions {
                 title: Some("kone".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(TRAFFIC_LIGHTS),
+                traffic_light_position: None,
             }),
             app_id: Some("dev.kone.native".into()),
             ..Default::default()
@@ -44,6 +43,7 @@ fn main() {
                     })
                     .detach();
             }
+            chrome::hide_traffic_lights(window);
             cx.new(shell::Shell::new)
         })
         .expect("main window opens");

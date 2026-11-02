@@ -1,6 +1,6 @@
 //! The empty launcher: three ways to begin, centred, over a warm floor glow.
 
-use std::time::Duration;
+use std::{cell::Cell, rc::Rc, time::{Duration, Instant}};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -22,13 +22,66 @@ fn glide(t: f32) -> f32 {
     bez(y1, y2, (lo + hi) / 2.)
 }
 
+/// How far outside a row the cursor starts to pull it, and how weakly: the
+/// row moves a ninth of the cursor's distance from its centre.
+const MAGNET_PADDING: f32 = 12.;
+const MAGNET_STRENGTH: f32 = 9.;
+const PULL_IN: Duration = Duration::from_millis(350);
+const LET_GO: Duration = Duration::from_millis(600);
+
+/// One row's lean toward the cursor, eased like a CSS transform transition:
+/// a new target restarts the glide from wherever the row is now.
+#[derive(Default)]
+struct Magnet {
+    bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    from: (f32, f32),
+    to: (f32, f32),
+    since: Option<Instant>,
+    active: bool,
+}
+
+impl Magnet {
+    fn duration(&self) -> Duration {
+        if self.active { PULL_IN } else { LET_GO }
+    }
+
+    fn progress(&self) -> f32 {
+        self.since.map_or(1., |t| (t.elapsed().as_secs_f32() / self.duration().as_secs_f32()).min(1.))
+    }
+
+    fn offset(&self) -> (f32, f32) {
+        let e = glide(self.progress());
+        (self.from.0 + (self.to.0 - self.from.0) * e, self.from.1 + (self.to.1 - self.from.1) * e)
+    }
+
+    fn track(&mut self, cursor: Point<Pixels>) {
+        let Some(b) = self.bounds.get() else { return };
+        let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+        let (cx, cy) = (f32::from(b.origin.x) + w / 2., f32::from(b.origin.y) + h / 2.);
+        let (dx, dy) = (f32::from(cursor.x) - cx, f32::from(cursor.y) - cy);
+        let near = dx.abs() < w / 2. + MAGNET_PADDING && dy.abs() < h / 2. + MAGNET_PADDING;
+        let to = if near { (dx / MAGNET_STRENGTH, dy / MAGNET_STRENGTH) } else { (0., 0.) };
+        if to != self.to {
+            self.from = self.offset();
+            self.to = to;
+            self.active = near;
+            self.since = Some(Instant::now());
+        }
+    }
+
+    fn settling(&self) -> bool {
+        self.progress() < 1.
+    }
+}
+
 pub struct Shell {
     plasma: Entity<Plasma>,
+    magnets: [Magnet; 3],
 }
 
 impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Shell { plasma: cx.new(Plasma::new) }
+        Shell { plasma: cx.new(Plasma::new), magnets: Default::default() }
     }
 }
 
@@ -49,9 +102,23 @@ impl Render for Shell {
         let vh = f32::from(window.viewport_size().height);
         let glow_h = (vh * 0.42).clamp(220., 380.);
 
-        let row = |id: &'static str, icon: &'static str, label: &'static str| {
+        if self.magnets.iter().any(Magnet::settling) {
+            window.request_animation_frame();
+        }
+        let offsets: Vec<(f32, f32)> = self.magnets.iter().map(Magnet::offset).collect();
+        let slots: Vec<_> = self.magnets.iter().map(|m| m.bounds.clone()).collect();
+        let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
+            let slot = slots[i].clone();
+            let (x, y) = offsets[i];
+            // The pull is measured from where the row rests, so the probe sits
+            // on the unmoved wrapper and only the inner row travels.
+            div().relative().child(canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {}).absolute().size_full()).child(
             div()
                 .id(id)
+                .relative()
+                .left(px(x))
+                .top(px(y))
+                .when(id == "open", |r| r.on_click(|_, _, cx| open_folder(cx)))
                 .flex()
                 .items_center()
                 .gap(px(14.))
@@ -66,11 +133,11 @@ impl Render for Shell {
                     div()
                         .text_size(px(14.))
                         .line_height(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::NORMAL)
                         .text_color(hsla(c.ink))
                         .whitespace_nowrap()
                         .child(label),
-                )
+                ))
         };
 
         div()
@@ -83,6 +150,28 @@ impl Render for Shell {
             .font_family(SANS)
             .px(px(64.))
             .pt(px(52.))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                for m in &mut this.magnets {
+                    m.track(e.position);
+                }
+                cx.notify();
+            }))
+            // The band above the content moves the window, as a titlebar would.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(52.))
+                    .on_mouse_down(MouseButton::Left, |e, window, _| {
+                        if e.click_count == 2 {
+                            window.zoom_window();
+                        } else {
+                            window.start_window_move();
+                        }
+                    }),
+            )
             .child(
                 div()
                     .absolute()
@@ -118,9 +207,9 @@ impl Render for Shell {
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(row("create", "icons/plus.svg", "Create a new project"))
-                        .child(row("open", "icons/folder-open.svg", "Open from local folder").on_click(|_, _, cx| open_folder(cx)))
-                        .child(row("clone", "icons/github.svg", "Clone from GitHub"))
+                        .child(row(0, "create", "icons/plus.svg", "Create a new project"))
+                        .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
+                        .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
                         .with_animation("actions-in", Animation::new(Duration::from_millis(500)).with_easing(glide), |el, d| {
                             el.opacity(d).mt(px(8. * (1. - d) * 2.))
                         }),
