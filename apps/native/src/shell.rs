@@ -46,9 +46,9 @@ const PANEL_RADIUS: f32 = 8.;
 const ART_FRAME: Duration = Duration::from_millis(125);
 /// Spinner pace while a launcher modal is open (~30 fps).
 const SPIN_FRAME: Duration = Duration::from_millis(33);
-/// The crowd reacting to the cursor: smoother than idle, still well short
+/// The crowd reacting to the cursor (~15 fps): smoother than idle, well short
 /// of vsync since every frame repaints the whole strip.
-const STIR_FRAME: Duration = Duration::from_millis(45);
+const STIR_FRAME: Duration = Duration::from_millis(66);
 
 pub struct Shell {
     magnets: [Magnet; 3],

@@ -135,11 +135,12 @@ impl Hover {
                 self.last_step.set(Some(now));
                 true
             }
-            // Moving within the strip updates the target; large sweeps wake a frame.
-            (true, Some(prev)) => {
+            // Moving within the strip only updates the target: the stir ticker
+            // already repaints at a steady pace, so extra frames here just cost CPU.
+            (true, Some(_)) => {
                 self.cursor = Some(x);
                 self.raw_x = x;
-                (x - prev).abs() > 18.
+                false
             }
             (false, Some(_)) => {
                 self.from_energy = self.energy_at(now);
