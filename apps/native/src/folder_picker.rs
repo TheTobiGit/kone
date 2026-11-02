@@ -253,10 +253,8 @@ pub struct FolderPicker {
     cancel_hovering: bool,
     scroll: ScrollHandle,
     recent_descend: Option<(PathBuf, Instant)>,
-    /// The address bar's last text, so an edit can be told from a deletion.
+    /// The address bar's last text, so an edit can be told from a completion.
     last_input: String,
-    /// A delete key started the edit in flight; never complete over it.
-    deleting: bool,
     /// Child folder names per parent, for the address bar's completion.
     child_cache: HashMap<PathBuf, (Vec<String>, Instant)>,
     /// Set when the address bar submits, so the same Enter is not read a
@@ -338,7 +336,6 @@ impl FolderPicker {
             scroll: ScrollHandle::new(),
             recent_descend: None,
             last_input: String::new(),
-            deleting: false,
             child_cache: HashMap::new(),
             enter_at: None,
             phase: Phase::In,
@@ -590,11 +587,13 @@ impl FolderPicker {
     fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.path_input.read(cx).value().to_string();
         let previous = std::mem::replace(&mut self.last_input, value.clone());
-        if self.deleting {
-            self.deleting = false;
+        // Only complete a forward extension. A cut, a paste-over or any other
+        // edit that shortens or rewrites the field must not be completed:
+        // that would put text back the user just removed.
+        if !value.starts_with(&previous) || value.len() <= previous.len() {
             return;
         }
-        if value == previous || self.path_input.read(cx).cursor() != value.len() {
+        if self.path_input.read(cx).cursor() != value.len() {
             return;
         }
         let Some(frag) = value
@@ -1507,11 +1506,6 @@ impl Render for FolderPicker {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 let input_focused = this.path_input.read(cx).focus_handle(cx).is_focused(window);
-                // Any key that isn't a delete ends the deletion it may follow,
-                // so a no-op backspace can't swallow the next completion.
-                if key != "backspace" && key != "delete" {
-                    this.deleting = false;
-                }
                 match key {
                     "tab" => {
                         // A selected completion is the thing Tab is for; only
@@ -1528,7 +1522,6 @@ impl Render for FolderPicker {
                         // Take the completion, then let the slash land after it.
                         this.accept_completion(window, cx);
                     }
-                    "backspace" | "delete" if input_focused => this.deleting = true,
                     "up" | "down" if input_focused => {
                         // The field is one line, so the arrows belong to the
                         // rows, the way they do in the web picker.
