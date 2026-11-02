@@ -82,9 +82,12 @@ pub fn find_completion(base: &str, frag: &str, names: &[String]) -> Option<(Stri
         name.chars().count() > typed_chars && name.to_lowercase().starts_with(&lower)
     })?;
 
-    let suffix: String = name.chars().skip(typed_chars).collect();
-    let completed = format!("{base}{suffix}");
-    let start = base.len();
+    // Matching ignores case, but the result takes the folder's real spelling:
+    // `~/doc` must become `~/Documents`, which exists, not `~/documents`.
+    let head = base.strip_suffix(frag).unwrap_or(base);
+    let typed: String = name.chars().take(typed_chars).collect();
+    let completed = format!("{head}{name}");
+    let start = head.len() + typed.len();
     let end = completed.len();
     Some((completed, start, end))
 }
@@ -236,7 +239,7 @@ mod tests {
         // Case-insensitive match
         let (completed, start, end) =
             find_completion("~/doc", "doc", &names).expect("case-insensitive complete");
-        assert_eq!(completed, "~/documents");
+        assert_eq!(completed, "~/Documents");
         assert_eq!(start, 5);
         assert_eq!(end, 11);
 
