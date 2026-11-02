@@ -66,6 +66,7 @@ enum Field {
     Name,
     Location,
     Branch,
+    RepoName,
     Command,
 }
 
@@ -79,7 +80,11 @@ pub struct CreateProject {
     completer: PathCompleter,
     git: bool,
     readme: bool,
+    pub remote: bool,
+    pub repo_name: Entity<InputState>,
     pub visibility: projects::RepoVisibility,
+    pub gh_authed: Option<bool>,
+    _auth_task: Option<Task<()>>,
     busy: bool,
     error: Option<String>,
     create_hovered: bool,
@@ -111,11 +116,18 @@ impl CreateProject {
         let initial_location = session.location.clone().unwrap_or_else(|| collapse(&home, &home));
         let location = make(initial_location.clone(), "~/", window, cx);
         let branch = make(if session.branch.is_empty() { "main".into() } else { session.branch.clone() }, "main", window, cx);
+        let repo_name = make(String::new(), "project-name", window, cx);
         let command = make(String::new(), "npm create vite@latest .", window, cx);
         let mut completer = PathCompleter::new(home.clone());
         completer.set_text(initial_location);
         let mut subs = Vec::new();
-        for (state, field) in [(&name, Field::Name), (&location, Field::Location), (&branch, Field::Branch), (&command, Field::Command)] {
+        for (state, field) in [
+            (&name, Field::Name),
+            (&location, Field::Location),
+            (&branch, Field::Branch),
+            (&repo_name, Field::RepoName),
+            (&command, Field::Command),
+        ] {
             subs.push(cx.subscribe_in(state, window, move |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { .. } => this.submit(window, cx),
                 InputEvent::Focus => this.ink(field, true, cx),
@@ -142,7 +154,11 @@ impl CreateProject {
             completer,
             git: session.git,
             readme: session.readme,
+            remote: false,
+            repo_name,
             visibility: session.visibility,
+            gh_authed: None,
+            _auth_task: None,
             busy: false,
             error: None,
             create_hovered: false,
@@ -171,11 +187,22 @@ impl CreateProject {
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = self.started.elapsed();
         self.enter_scrim.animate(1., scrim_enter_tween(), now);
         self.enter_y.animate(0., card_enter_tween(), now);
         self.enter_fade.animate(1., card_fade_tween(), now);
+
+        let auth_task = cx.background_spawn(async move {
+            projects::check_gh_auth_status()
+        });
+        self._auth_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let authed = auth_task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.gh_authed = Some(authed);
+                cx.notify();
+            });
+        }));
     }
 
     fn on_location_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -238,11 +265,26 @@ impl CreateProject {
         self.completer.accept_completion(&self.location, window, cx)
     }
 
+    fn set_git(&mut self, on: bool) {
+        self.git = on;
+        if !on {
+            self.remote = false;
+        }
+    }
+
+    fn set_remote(&mut self, on: bool) {
+        self.remote = on;
+        if on {
+            self.git = true;
+        }
+    }
+
     fn input(&self, field: Field) -> &Entity<InputState> {
         match field {
             Field::Name => &self.name,
             Field::Location => &self.location,
             Field::Branch => &self.branch,
+            Field::RepoName => &self.repo_name,
             Field::Command => &self.command,
         }
     }
@@ -279,12 +321,16 @@ impl CreateProject {
             return;
         }
         let cmd = self.command.read(cx).value().trim().to_string();
+        let repo_raw = self.repo_name.read(cx).value().trim().to_string();
         let opts = CreateOptions {
             parent: self.parent(cx),
             name,
-            git: self.git,
-            readme: self.git && self.readme,
+            git: self.git || self.remote,
+            readme: (self.git || self.remote) && self.readme,
             branch: self.branch.read(cx).value().to_string(),
+            remote: self.remote,
+            repo_name: if repo_raw.is_empty() { None } else { Some(repo_raw) },
+            visibility: self.visibility,
             command: if cmd.is_empty() { None } else { Some(cmd) },
         };
         self.busy = true;
@@ -337,6 +383,9 @@ impl CreateProject {
         if self.git {
             ring.push(Field::Branch);
         }
+        if self.remote {
+            ring.push(Field::RepoName);
+        }
         ring.push(Field::Command);
         let at = ring
             .iter()
@@ -366,6 +415,38 @@ impl CreateProject {
 
 fn label(text: &'static str, c: &Palette) -> Div {
     div().text_size(px(12.)).text_color(hsla(c.muted)).child(text)
+}
+
+fn visibility_selector(selected: projects::RepoVisibility, c: &Palette, cx: &mut Context<CreateProject>) -> Div {
+    let opt = |label: &'static str, active: bool, vis: projects::RepoVisibility| {
+        div()
+            .id(format!("vis-{label}"))
+            .px(px(10.))
+            .py(px(2.))
+            .rounded(px(999.))
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .cursor_pointer()
+            .text_color(hsla(if active { c.ink } else { c.muted }))
+            .bg(if active { hsla(c.panel) } else { hsla(c.panel.alpha(0.)) })
+            .when(active, |d| d.border_1().border_color(hsla(c.ink.alpha(0.12))))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.busy {
+                    this.visibility = vis;
+                    cx.notify();
+                }
+            }))
+            .child(label)
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .p(px(2.))
+        .rounded(px(999.))
+        .bg(hsla(c.ink.alpha(0.06)))
+        .child(opt("Private", selected == projects::RepoVisibility::Private, projects::RepoVisibility::Private))
+        .child(opt("Public", selected == projects::RepoVisibility::Public, projects::RepoVisibility::Public))
 }
 
 fn command_field(input: &Entity<InputState>, focused: bool, c: &Palette) -> Div {
@@ -443,10 +524,11 @@ impl Render for CreateProject {
             window.request_animation_frame();
         }
         let focused = |f: &Entity<InputState>, window: &Window, cx: &App| f.read(cx).focus_handle(cx).is_focused(window);
-        let (fn_, fl, fb, fc) = (
+        let (fn_, fl, fb, fr, fc) = (
             focused(&self.name, window, cx),
             focused(&self.location, window, cx),
             focused(&self.branch, window, cx),
+            focused(&self.repo_name, window, cx),
             focused(&self.command, window, cx),
         );
         let name = self.name_text(cx);
@@ -504,7 +586,8 @@ impl Render for CreateProject {
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 if !this.busy {
-                    this.git = !this.git;
+                    let next = !this.git;
+                    this.set_git(next);
                     cx.notify();
                 }
             }))
@@ -555,6 +638,52 @@ impl Render for CreateProject {
                 .child(div().h(px(4.)))
                 .child(label("Default branch", &c))
                 .child(field(&self.branch, true, fb, &c));
+        }
+
+        let github_row = div()
+            .id("create-project-remote")
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                if !this.busy {
+                    let next = !this.remote;
+                    this.set_remote(next);
+                    cx.notify();
+                }
+            }))
+            .child(switch(self.remote, &c))
+            .child(div().text_size(px(13.)).text_color(hsla(c.ink)).child("Create a GitHub repository"));
+
+        body = body.child(div().h(px(4.))).child(github_row);
+
+        if self.remote {
+            let vis_seg = visibility_selector(self.visibility, &c, cx);
+            let mut sub = div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(label("Repository name", &c))
+                .child(field(&self.repo_name, false, fr, &c))
+                .child(div().h(px(2.)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(label("Visibility", &c))
+                        .child(vis_seg),
+                );
+            if self.gh_authed == Some(false) {
+                sub = sub.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(hsla(c.muted))
+                        .child("Sign in with gh auth login to push to GitHub"),
+                );
+            }
+            body = body.child(sub);
         }
         let setup_section = div()
             .flex()

@@ -129,7 +129,7 @@ impl Shell {
         }
         self.open_error = None;
         let creator = cx.new(|cx| crate::create_project::CreateProject::new(&self.create_session, window, cx));
-        creator.update(cx, |c, _| c.start());
+        creator.update(cx, |c, cx| c.start(window, cx));
         self._creator_sub = Some(cx.subscribe_in(
             &creator,
             window,

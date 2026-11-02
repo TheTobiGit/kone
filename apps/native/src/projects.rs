@@ -127,6 +127,9 @@ pub struct CreateOptions {
     pub git: bool,
     pub readme: bool,
     pub branch: String,
+    pub remote: bool,
+    pub repo_name: Option<String>,
+    pub visibility: RepoVisibility,
     pub command: Option<String>,
 }
 
@@ -175,6 +178,69 @@ pub fn run_setup_command(cwd: &Path, command: &str) -> Result<(), String> {
         let fallback = format!("Command exited with code {code}");
         Err(last_stderr_line(&stderr, &fallback))
     }
+}
+
+/// Resolve the final GitHub repository name from an optional custom name and project name.
+pub fn resolve_repo_name<'a>(custom: Option<&'a str>, project_name: &'a str) -> &'a str {
+    match custom.map(str::trim) {
+        Some(s) if !s.is_empty() => s,
+        _ => project_name.trim(),
+    }
+}
+
+/// Builds arguments for `gh repo create`.
+pub fn build_gh_repo_create_args(repo_name: &str, visibility: RepoVisibility) -> Vec<String> {
+    vec![
+        "repo".into(),
+        "create".into(),
+        repo_name.into(),
+        match visibility {
+            RepoVisibility::Public => "--public".into(),
+            RepoVisibility::Private => "--private".into(),
+        },
+        "--source=.".into(),
+        "--remote=origin".into(),
+        "--push".into(),
+    ]
+}
+
+/// Creates a GitHub repository via `gh repo create` and pushes the initial branch.
+pub fn create_remote(target: &Path, repo_name: &str, visibility: RepoVisibility) -> Result<(), String> {
+    let args = build_gh_repo_create_args(repo_name, visibility);
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(&args);
+    cmd.current_dir(target);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("LC_ALL", "C");
+
+    let output = cmd.output().map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => "GitHub CLI (gh) not found — install it to create a remote repo".to_string(),
+        _ => format!("Couldn't run gh: {e}"),
+    })?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let fallback = "Couldn’t create the GitHub repository";
+        let line = last_stderr_line(&stderr, fallback);
+        let line = line.strip_prefix("error: ").unwrap_or(&line).trim();
+        Err(line.to_string())
+    }
+}
+
+/// Checks `gh auth status` exit code in the background.
+/// Note: Never prints or logs stdout/stderr tokens.
+pub fn check_gh_auth_status() -> bool {
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["auth", "status"]);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.status().is_ok_and(|s| s.success())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -228,13 +294,14 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
         run_setup_command(&target, cmd)?;
     }
 
+    let init_git = opts.git || opts.remote;
     // Seed README.md only if it does not already exist (a setup command might have created it)
-    if opts.git && opts.readme && !target.join("README.md").exists() {
+    if init_git && opts.readme && !target.join("README.md").exists() {
         fs::write(target.join("README.md"), format!("# {name}\n"))
             .map_err(|e| format!("Couldn't write README.md: {e}"))?;
     }
     // A setup command might have already initialized git; only init when it didn't.
-    if opts.git && !target.join(".git").exists() {
+    if init_git && !target.join(".git").exists() {
         let branch = match opts.branch.trim() {
             "" => "main",
             b => b,
@@ -250,6 +317,12 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
             let _ = git(&target, &["commit", "-m", "Initial commit", "--allow-empty"]);
         }
     }
+
+    if opts.remote {
+        let repo_name = resolve_repo_name(opts.repo_name.as_deref(), name);
+        create_remote(&target, repo_name, opts.visibility)?;
+    }
+
     Ok(target)
 }
 
@@ -305,5 +378,44 @@ mod tests {
         let res = run_setup_command(&tmp, "exit 7");
         let _ = fs::remove_dir_all(&tmp);
         assert_eq!(res.unwrap_err(), "Command exited with code 7");
+    }
+
+    #[test]
+    fn test_resolve_repo_name() {
+        assert_eq!(resolve_repo_name(Some("custom-repo"), "my-app"), "custom-repo");
+        assert_eq!(resolve_repo_name(Some("  "), "my-app"), "my-app");
+        assert_eq!(resolve_repo_name(None, "my-app"), "my-app");
+        assert_eq!(resolve_repo_name(Some("   trimmed-name   "), "my-app"), "trimmed-name");
+    }
+
+    #[test]
+    fn test_build_gh_repo_create_args() {
+        let args_priv = build_gh_repo_create_args("my-repo", RepoVisibility::Private);
+        assert_eq!(
+            args_priv,
+            vec![
+                "repo",
+                "create",
+                "my-repo",
+                "--private",
+                "--source=.",
+                "--remote=origin",
+                "--push"
+            ]
+        );
+
+        let args_pub = build_gh_repo_create_args("public-repo", RepoVisibility::Public);
+        assert_eq!(
+            args_pub,
+            vec![
+                "repo",
+                "create",
+                "public-repo",
+                "--public",
+                "--source=.",
+                "--remote=origin",
+                "--push"
+            ]
+        );
     }
 }
