@@ -3269,13 +3269,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
- "image",
  "kone-rpc",
  "kone-theme",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "raw-window-handle",
- "smallvec",
 ]
 
 [[package]]

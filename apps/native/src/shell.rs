@@ -1,12 +1,10 @@
-//! The empty launcher: three ways to begin, centred, over a warm floor glow.
+//! The empty launcher: three ways to begin, centred.
 
 use std::{cell::Cell, rc::Rc, time::{Duration, Instant}};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{Theme, hsla};
-
-use crate::plasma::Plasma;
 
 pub const SANS: &str = "Geist";
 
@@ -75,13 +73,12 @@ impl Magnet {
 }
 
 pub struct Shell {
-    plasma: Entity<Plasma>,
     magnets: [Magnet; 3],
 }
 
 impl Shell {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        Shell { plasma: cx.new(Plasma::new), magnets: Default::default() }
+    pub fn new(_: &mut Context<Self>) -> Self {
+        Shell { magnets: Default::default() }
     }
 }
 
@@ -99,8 +96,6 @@ fn open_folder(cx: &mut App) {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = Theme::get(cx).colors.clone();
-        let vh = f32::from(window.viewport_size().height);
-        let glow_h = (vh * 0.42).clamp(220., 380.);
 
         if self.magnets.iter().any(Magnet::settling) {
             window.request_animation_frame();
@@ -171,20 +166,6 @@ impl Render for Shell {
                             window.start_window_move();
                         }
                     }),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(glow_h))
-                    .child(self.plasma.clone())
-                    .with_animation("glow-in", Animation::new(Duration::from_millis(1600)).with_easing(|t| {
-                        // 0.2s of rest, then 1.4s ease-out.
-                        let t = ((t * 1.6 - 0.2) / 1.4).clamp(0., 1.);
-                        1. - (1. - t).powi(2)
-                    }), |el, d| el.opacity(d)),
             )
             .child(
                 div().relative().flex().justify_end().child(

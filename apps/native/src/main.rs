@@ -2,7 +2,6 @@
 
 mod assets;
 mod chrome;
-mod plasma;
 mod shell;
 
 use gpui_kit::*;
