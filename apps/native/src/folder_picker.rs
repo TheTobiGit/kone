@@ -759,7 +759,7 @@ impl Render for FolderPicker {
                             .flex_shrink_0()
                             .cursor_pointer()
                             .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(FontWeight::NORMAL)
                             .text_color(hsla(colors.muted))
                             .hover(|style| style.opacity(0.7))
                             .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
@@ -847,7 +847,7 @@ impl Render for FolderPicker {
                 div()
                     .flex_shrink_0()
                     .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::NORMAL)
                     .text_color(hsla(colors.ink))
                     .child("Open "),
             )
@@ -856,7 +856,7 @@ impl Render for FolderPicker {
                     .min_w(px(0.))
                     .truncate()
                     .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::NORMAL)
                     .text_color(hsla(colors.ink_soft))
                     .child(format!("“{current_name}”")),
             );
@@ -868,7 +868,7 @@ impl Render for FolderPicker {
                 .flex_shrink_0()
                 .ml(px(if self.open_hovered && can_open { 3. } else { 0. }))
                 .text_size(px(14.))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(FontWeight::NORMAL)
                 .text_color(hsla(colors.accent))
                 .child("→"),
         );
@@ -1050,7 +1050,7 @@ where
                 .flex_shrink(1.)
                 .truncate()
                 .text_size(px(15.))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::NORMAL)
                 .line_height(px(16.5))
                 .child(name),
         );
@@ -1101,7 +1101,7 @@ fn message(text: &str, indent: f32, colors: &Palette) -> Div {
         .px(px(12.))
         .py(px(10.))
         .text_size(px(15.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::NORMAL)
         .line_height(px(16.5))
         .text_color(hsla(colors.muted))
         .child(text.to_string())
@@ -1226,14 +1226,15 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
     }
 
     let mut entries = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+    // One unreadable child (a dangling mount, a permission-locked folder)
+    // must not blank the whole listing; it is simply left out.
+    for entry in fs::read_dir(dir)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;
         }
         let path = entry.path();
-        let file_type = entry.file_type()?;
+        let Ok(file_type) = entry.file_type() else { continue };
         let is_dir = if file_type.is_dir() {
             true
         } else if file_type.is_symlink() {
