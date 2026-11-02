@@ -9,6 +9,7 @@ mod folder_picker;
 mod magnet;
 mod path_complete;
 mod projects;
+mod recents;
 mod shell;
 mod stickfolk;
 

@@ -6,7 +6,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{hsla, Theme};
 
+use gpui_kit::base::input::{Input, InputEvent, InputState};
+
 use crate::magnet::{glide, Magnet};
+use crate::recents::{Sort, Tile};
 
 pub const SANS: &str = "Geist";
 
@@ -66,6 +69,15 @@ pub struct Shell {
     project: Option<crate::projects::OpenProject>,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
+    /// The recent projects, in launcher order; `None` until the first read lands.
+    recents: Option<Vec<crate::projects::RecentProject>>,
+    pub(crate) tiles: std::collections::HashMap<String, Tile>,
+    pub(crate) hovered: Option<String>,
+    query: Entity<InputState>,
+    sort: Sort,
+    focus: FocusHandle,
+    _query_sub: Subscription,
+    _recents_task: Option<Task<()>>,
     _ticker: Task<()>,
 }
 
@@ -97,7 +109,16 @@ impl Shell {
                 }
             }
         });
-        Shell {
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects"));
+        let query_sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.hovered = None;
+                cx.notify();
+            }
+        });
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let mut shell = Shell {
             magnets: Default::default(),
             folk: Default::default(),
             started: Instant::now(),
@@ -112,8 +133,67 @@ impl Shell {
             project: None,
             open_error: None,
             _open_task: None,
+            recents: None,
+            tiles: Default::default(),
+            hovered: None,
+            query,
+            sort: Sort::Recent,
+            focus,
+            _query_sub: query_sub,
+            _recents_task: None,
             _ticker: ticker,
-        }
+        };
+        shell.reload_recents(cx);
+        shell
+    }
+
+    /// Re-reads the recents list, then each row's folder state, off the UI thread.
+    fn reload_recents(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move {
+            let list = crate::projects::recents();
+            let paths: Vec<String> = list.iter().map(|p| p.path.clone()).collect();
+            (list, paths)
+        });
+        self._recents_task = Some(cx.spawn(async move |this, cx| {
+            let (list, paths) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.recents = Some(list);
+                cx.notify();
+            });
+            let tiles = cx.background_spawn(async move { crate::recents::read_tiles(&paths) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.tiles = tiles;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Runs a store edit off the UI thread, then re-reads the list.
+    fn edit_recents(&mut self, edit: impl FnOnce() -> std::io::Result<()> + Send + 'static, cx: &mut Context<Self>) {
+        self.open_error = None;
+        let task = cx.background_spawn(async move { edit() });
+        self._recents_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    this.open_error = Some(format!("Couldn't save the project list: {e}"));
+                }
+                this.reload_recents(cx);
+            });
+        }));
+    }
+
+    pub(crate) fn toggle_pin(&mut self, path: String, cx: &mut Context<Self>) {
+        self.edit_recents(move || crate::projects::toggle_pin(&path), cx);
+    }
+
+    pub(crate) fn forget(&mut self, path: String, cx: &mut Context<Self>) {
+        self.edit_recents(move || crate::projects::forget(&path), cx);
+    }
+
+    pub(crate) fn reveal(&mut self, path: String, cx: &mut Context<Self>) {
+        self.open_error = crate::projects::reveal(std::path::Path::new(&path)).err();
+        cx.notify();
     }
 
     /// Opens kone's own folder browser, not the system path panel.
@@ -216,14 +296,17 @@ impl Shell {
     }
 
     /// Validates and records the folder off the UI thread, then shows it.
-    fn open_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.open_error = None;
         let task = cx.background_spawn(async move { crate::projects::open(&path) });
         self._open_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(project) => this.project = Some(project),
+                    Ok(project) => {
+                        this.hovered = None;
+                        this.project = Some(project);
+                    }
                     Err(message) => this.open_error = Some(message),
                 }
                 cx.notify();
@@ -231,8 +314,10 @@ impl Shell {
         }));
     }
 
-    fn close_project(&mut self, cx: &mut Context<Self>) {
+    fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.project = None;
+        self.focus.focus(window, cx);
+        self.reload_recents(cx);
         cx.notify();
     }
 
@@ -285,7 +370,7 @@ impl Shell {
                     .border_1()
                     .border_color(hsla(c.line_soft))
                     .hover(|s| s.bg(hsla(c.hover)))
-                    .on_click(cx.listener(|this, _, _, cx| this.close_project(cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_project(window, cx)))
                     .child("Back to start"),
             )
     }
@@ -322,6 +407,15 @@ impl Render for Shell {
             "open"
         };
         let spin = self.started.elapsed().as_secs_f32();
+        // Electron's rule: the recents home once there is anything to list.
+        let recents = self.recents.clone().filter(|l| !l.is_empty());
+        let query = self.query.read(cx).value().to_string();
+        let shown = recents.as_ref().map(|l| crate::recents::shown(l, &query, self.sort)).unwrap_or_default();
+        let tile_els: Vec<AnyElement> = if self.project.is_none() {
+            shown.iter().map(|p| self.tile(p, busy, &c, cx)).collect()
+        } else {
+            Vec::new()
+        };
         let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
             let loading = busy && id == session;
             let slot = slots[i].clone();
@@ -370,17 +464,51 @@ impl Render for Shell {
                 ))
         };
 
+        let start_rows = || {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(row(0, "create", "icons/plus.svg", "Create a new project"))
+                .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
+                .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
+        };
         let body = if let Some(project) = self.project.clone() {
             self.project_view(&project, &c, cx).into_any_element()
+        } else if recents.is_some() {
+            let mut grid = div()
+                .flex()
+                .flex_wrap()
+                .gap_x(px(crate::recents::GAP_X))
+                .gap_y(px(crate::recents::GAP_Y))
+                .pt(px(8.));
+            grid = grid.children(tile_els);
+            grid = grid.child(div().w(px(crate::recents::CELL_W)).h(px(116.)).flex().items_center().ml(px(-6.)).child(start_rows()));
+            let mut section = div()
+                .id("recents")
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(72.))
+                .pb(px(crate::stickfolk::STRIP + 16.))
+                .child(div().w(px(crate::recents::GRID_W)).child(grid));
+            if shown.is_empty() {
+                section = section.child(
+                    div().w(px(crate::recents::GRID_W)).py(px(24.)).font_family(crate::folder_picker::MONO).text_size(px(12.)).text_color(hsla(c.muted))
+                        .child(format!("No projects match \u{201c}{}\u{201d}", query.trim())),
+                );
+            }
+            if let Some(err) = self.open_error.clone() {
+                section = section.child(div().absolute().bottom(px(crate::stickfolk::STRIP + 4.)).text_size(px(12.)).text_color(hsla(c.danger)).child(err));
+            }
+            section.into_any_element()
         } else {
             let actions = div().relative().flex().flex_1().flex_col().items_center().justify_center().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(row(0, "create", "icons/plus.svg", "Create a new project"))
-                        .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
-                        .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
+                    start_rows()
                         .with_animation("actions-in", Animation::new(Duration::from_millis(500)).with_easing(glide), |el, d| {
                             el.opacity(d).mt(px(8. * (1. - d) * 2.))
                         }),
@@ -393,6 +521,43 @@ impl Render for Shell {
             }
         };
 
+        let home = self.project.is_none() && self.recents.as_ref().is_some_and(|l| !l.is_empty());
+        let search = div()
+            .id("search")
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .h(px(36.))
+            .px(px(12.))
+            .rounded(px(11.))
+            .bg(hsla(c.hover))
+            .child(svg().path("icons/search.svg").size(px(15.)).flex_shrink_0().text_color(hsla(c.muted)))
+            .child(div().w(px(176.)).text_size(px(13.)).text_color(hsla(c.ink)).child(Input::new(&self.query)))
+            .child(
+                div().px(px(6.)).py(px(2.)).rounded(px(5.)).border_1().border_color(hsla(c.muted.alpha(0.25)))
+                    .font_family(crate::folder_picker::MONO).text_size(px(10.)).line_height(px(10.)).text_color(hsla(c.muted))
+                    .child(if cfg!(target_os = "macos") { "\u{2318}K" } else { "Ctrl K" }),
+            );
+        let sort = div()
+            .id("sort")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(36.))
+            .px(px(12.))
+            .rounded(px(11.))
+            .cursor_pointer()
+            .text_size(px(13.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(hsla(c.ink_soft))
+            .hover(|s| s.bg(hsla(c.hover)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.sort = if this.sort == Sort::Recent { Sort::Name } else { Sort::Recent };
+                this.hovered = None;
+                cx.notify();
+            }))
+            .child(if self.sort == Sort::Recent { "Recent" } else { "Name" })
+            .child(svg().path("icons/arrow-down.svg").size(px(12.)).text_color(hsla(c.muted)));
         let panel = div()
             .relative()
             .size_full()
@@ -442,7 +607,7 @@ impl Render for Shell {
                     .h(px(crate::stickfolk::STRIP))
             })
             .child(
-                div().relative().flex().justify_end().pt(px(8.)).pr(px(8.)).child(
+                div().relative().flex().justify_end().items_center().gap(px(12.)).pt(px(8.)).pr(px(8.)).when(home, |d| d.child(search).child(sort)).child(
                     div()
                         .id("settings")
                         .size(px(36.))
@@ -477,7 +642,19 @@ impl Render for Shell {
             .child(panel);
 
         // The folder browser and modals are layers of their own, over the frame and page.
-        let mut root = div().relative().size_full().child(frame);
+        let mut root = div()
+            .relative()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                let m = e.keystroke.modifiers;
+                let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
+                if home && (m.platform || m.control) && e.keystroke.key == "k" {
+                    this.query.update(cx, |q, cx| q.focus(window, cx));
+                    cx.stop_propagation();
+                }
+            }))
+            .child(frame);
         if let Some(picker) = self.picker.clone() {
             root = root.child(picker);
         }
