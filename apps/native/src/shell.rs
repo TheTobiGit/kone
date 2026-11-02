@@ -152,9 +152,14 @@ impl Shell {
                 // location is only remembered once a project was created there.
                 let kept = this.create_session.location.clone();
                 this.create_session = creator.read(cx).session(cx);
-                if !matches!(event, crate::create_project::CreateProjectEvent::Created(_)) {
-                    this.create_session.location = kept;
-                }
+                // Remember where the project was actually made, not whatever
+                // the Location field shows now (it stays editable while busy).
+                this.create_session.location = match event {
+                    crate::create_project::CreateProjectEvent::Created(path) => path.parent().map(|p| {
+                        crate::path_complete::collapse(&crate::path_complete::home_dir(), p)
+                    }),
+                    _ => kept,
+                };
                 if let crate::create_project::CreateProjectEvent::Created(path) = event {
                     this.open_project(path.clone(), window, cx);
                 }
@@ -180,9 +185,12 @@ impl Shell {
         self._cloner_sub = Some(cx.subscribe_in(
             &cloner,
             window,
-            |this, cloner, event: &crate::clone_modal::CloneModalEvent, window, cx| {
+            |this, _cloner, event: &crate::clone_modal::CloneModalEvent, window, cx| {
                 if let crate::clone_modal::CloneModalEvent::Cloned(path) = event {
-                    this.clone_location = Some(cloner.read(cx).location_text(cx));
+                    // Where the clone actually landed, not the field's current text.
+                    this.clone_location = path.parent().map(|p| {
+                        crate::path_complete::collapse(&crate::path_complete::home_dir(), p)
+                    });
                     this.open_project(path.clone(), window, cx);
                 }
                 this.cloner = None;

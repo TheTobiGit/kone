@@ -162,10 +162,6 @@ impl CloneModal {
     }
 
     /// The location field as typed, for the shell to offer next time.
-    pub fn location_text(&self, cx: &App) -> String {
-        self.location.read(cx).value().to_string()
-    }
-
     fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.completer.accept_completion(&self.location, window, cx)
     }
@@ -208,6 +204,11 @@ impl CloneModal {
         };
 
         let parent = self.parent(cx);
+        if !parent.is_absolute() {
+            self.error = Some("Choose a full location, like ~/projects or /home/you/projects.".into());
+            cx.notify();
+            return;
+        }
         let dest = parent.join(&repo.name);
 
         self.clone_phase = ClonePhase::Cloning;
