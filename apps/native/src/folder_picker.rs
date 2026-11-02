@@ -51,7 +51,9 @@ const CARD_WIDTH: f32 = 448.;
 
 /// How far an incoming row rises as it fades in.
 const ROW_RISE: f32 = 24.;
-/// Git metadata settles a beat after its row, drifting in from the glyph.
+/// Git metadata settles a beat after its row, drifting in from the glyph. Text
+/// can't be blurred per-glyph in this renderer, so the fade plus a 6px drift
+/// stand in for the coming-into-focus beat.
 const META_DELAY: Duration = Duration::from_millis(80);
 const META_SHIFT: f32 = -6.;
 /// The list's height follows its content on this curve.
