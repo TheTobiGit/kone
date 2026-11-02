@@ -22,6 +22,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{hsla, Palette, Theme};
 
+use crate::magnet::Magnet;
 use crate::shell::SANS;
 
 const MONO: &str = "Menlo";
@@ -68,10 +69,38 @@ fn height_tween() -> Transition {
     Transition::Tween(HEIGHT_EASE, Easing::Bezier(Bezier::new(0.22, 1., 0.36, 1.).expect("valid curve")))
 }
 
-/// One row's entrance: how far in it is, and its git metadata after it.
+/// CSS `ease` over 180ms: the picker's hover wash, glyphs, and actions.
+fn hover_tween() -> Transition {
+    Transition::Tween(
+        Duration::from_millis(180),
+        Easing::Bezier(Bezier::new(0.25, 0.1, 0.25, 1.).expect("valid curve")),
+    )
+}
+
+/// Eases a hover amount toward its target. A change restarts from wherever it
+/// is, the way a CSS transition does. Returns the amount and whether it is
+/// still moving.
+fn sample_hover(
+    value: &mut MotionValue,
+    hovering: &mut bool,
+    active: bool,
+    now: Duration,
+) -> (f32, bool) {
+    if *hovering != active {
+        *hovering = active;
+        value.animate(if active { 1. } else { 0. }, hover_tween(), now);
+    }
+    let sample = value.sample(now, false);
+    (sample.value() as f32, sample.is_animating())
+}
+
+/// One row's entrance: how far in it is, its git metadata after it, and how
+/// strongly the pointer is over it.
 struct RowMotion {
     enter: MotionValue,
     meta: MotionValue,
+    hover: MotionValue,
+    hovering: bool,
 }
 
 /// One message the picker sends back to whatever opened it.
@@ -158,6 +187,11 @@ pub struct FolderPicker {
     hovered: Option<usize>,
     focus_idx: Option<usize>,
     open_hovered: bool,
+    open_hover: MotionValue,
+    open_hovering: bool,
+    cancel_hovered: bool,
+    cancel_hover: MotionValue,
+    cancel_hovering: bool,
     scroll: ScrollHandle,
     recent_descend: Option<(PathBuf, Instant)>,
     /// Set when the address bar submits, so the same Enter is not read a
@@ -171,6 +205,8 @@ pub struct FolderPicker {
     /// Keyed by row so a row that survives a navigation keeps its place
     /// instead of entering again; only new rows rise in.
     row_motion: HashMap<String, RowMotion>,
+    /// Keyed the same way: a row's lean toward the cursor.
+    magnets: HashMap<String, Magnet>,
     /// The list's drawn height and the content height it is chasing.
     list_height: MotionValue,
     list_measured: Rc<Cell<Option<f32>>>,
@@ -234,6 +270,11 @@ impl FolderPicker {
             hovered: None,
             focus_idx: None,
             open_hovered: false,
+            open_hover: MotionValue::new(0.),
+            open_hovering: false,
+            cancel_hovered: false,
+            cancel_hover: MotionValue::new(0.),
+            cancel_hovering: false,
             scroll: ScrollHandle::new(),
             recent_descend: None,
             enter_at: None,
@@ -243,6 +284,7 @@ impl FolderPicker {
             closing: false,
             outcome: None,
             row_motion: HashMap::new(),
+            magnets: HashMap::new(),
             list_height: MotionValue::new(0.),
             list_measured: Rc::new(Cell::new(None)),
             list_target: None,
@@ -265,8 +307,17 @@ impl FolderPicker {
                 enter.animate(1., row_spring(), now);
                 let mut meta = MotionValue::new(0.);
                 meta.animate_delayed(1., meta_spring(), META_DELAY, now);
-                RowMotion { enter, meta }
+                RowMotion { enter, meta, hover: MotionValue::new(0.), hovering: false }
             });
+        }
+    }
+
+    /// Magnets ride the rows that can be pulled: crumbs and entries. The
+    /// go-up row is a plain button, so it never leans.
+    fn sync_magnets(&mut self, keys: &[String]) {
+        self.magnets.retain(|k, _| keys.contains(k));
+        for key in keys {
+            self.magnets.entry(key.clone()).or_default();
         }
     }
 
@@ -311,6 +362,11 @@ impl FolderPicker {
         self.hovered = None;
         self.focus_idx = None;
         self.error = None;
+        // Rows that survive a navigation sit under a new layout, so whatever
+        // lean they had is stale; let each glide home instead of popping.
+        for magnet in self.magnets.values_mut() {
+            magnet.release();
+        }
         self.sync_path(window, cx);
         self.scroll.scroll_to_item(0);
         cx.notify();
@@ -775,6 +831,17 @@ impl Render for FolderPicker {
         if self.animating() {
             window.request_animation_frame();
         }
+        let now = self.clock();
+        let mut moving = false;
+        // The actions fade rather than flip: a pointer crossing the card reads
+        // as one motion, not a series of light switches.
+        let (cancel_hover, cancel_moving) = sample_hover(
+            &mut self.cancel_hover,
+            &mut self.cancel_hovering,
+            self.cancel_hovered,
+            now,
+        );
+        moving |= cancel_moving;
 
         let max_list = f32::from(window.viewport_size().height) * 0.48;
 
@@ -825,7 +892,11 @@ impl Render for FolderPicker {
                             .text_size(px(14.))
                             .font_weight(FontWeight::NORMAL)
                             .text_color(hsla(colors.muted))
-                            .hover(|style| style.opacity(0.7))
+                            .opacity(1. - 0.3 * cancel_hover)
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.cancel_hovered = *hovered;
+                                cx.notify();
+                            }))
                             .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
                             .child("Cancel"),
                     ),
@@ -834,8 +905,15 @@ impl Render for FolderPicker {
         let rows = self.rows();
         let keys: Vec<String> = rows.iter().map(PickerRow::key).collect();
         self.sync_row_motion(&keys);
-        let now = self.clock();
-        let mut moving = false;
+        let magnet_keys: Vec<String> = rows
+            .iter()
+            .filter(|row| !matches!(row, PickerRow::Ascend { .. }))
+            .map(PickerRow::key)
+            .collect();
+        self.sync_magnets(&magnet_keys);
+        if self.magnets.values().any(Magnet::settling) {
+            window.request_animation_frame();
+        }
         let entry_depth = indent(self.trail.len().saturating_sub(1));
         let entry_indent = entry_depth + 20.;
         let mut list = div()
@@ -868,16 +946,31 @@ impl Render for FolderPicker {
                 visual.meta = meta;
                 let hovered = self.hovered == Some(index);
                 let focused = self.focus_idx == Some(index);
+                let (hover, hover_moving) = match self.row_motion.get_mut(&keys[index]) {
+                    Some(motion) => {
+                        sample_hover(&mut motion.hover, &mut motion.hovering, hovered || focused, now)
+                    }
+                    None => (if hovered || focused { 1. } else { 0. }, false),
+                };
+                moving |= hover_moving;
+                // The go-up row is not wrapped, so it never leans.
+                let (offset, probe) = match self.magnets.get(&keys[index]) {
+                    Some(magnet) if !matches!(&row, PickerRow::Ascend { .. }) => {
+                        let (x, y) = magnet.offset();
+                        ((x, y), Some(magnet.probe()))
+                    }
+                    _ => ((0., 0.), None),
+                };
                 let element = match row {
                     PickerRow::Ascend { .. } => {
                         let on_click = cx.listener(|this, _, window, cx| this.ascend(window, cx));
-                        row_element(visual, hovered, focused, &colors, on_click, cx)
+                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
                     }
                     PickerRow::Crumb { index, path, current, .. } => {
                         let on_click = cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.click_crumb(index, path.clone(), current, window, cx)
                         });
-                        row_element(visual, hovered, focused, &colors, on_click, cx)
+                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
                     }
                     PickerRow::Entry { path, name, repo, branch } => {
                         let entry = Entry { name, path, repo, branch };
@@ -885,7 +978,7 @@ impl Render for FolderPicker {
                         let on_click = cx.listener(move |this, event: &ClickEvent, window, cx| {
                             this.click_entry(click.clone(), event, window, cx)
                         });
-                        row_element(visual, hovered, focused, &colors, on_click, cx)
+                        row_element(visual, hover, &colors, offset, probe, on_click, cx)
                     }
                 };
                 list = list.child(element);
@@ -914,9 +1007,6 @@ impl Render for FolderPicker {
         }
         let height = self.list_height.sample(now, false);
         moving |= height.is_animating();
-        if moving {
-            window.request_animation_frame();
-        }
         let probe = self.list_measured.clone();
         let natural = div()
             .relative()
@@ -938,7 +1028,9 @@ impl Render for FolderPicker {
             .flex_shrink_0()
             .overflow_hidden()
             .when(self.list_target.is_some(), |d| d.h(px(height.value() as f32)))
-            .child(natural);
+            .relative()
+            .child(natural)
+            .child(edge_fade(self.scroll.clone(), colors.panel));
 
         let current_name = self
             .current()
@@ -946,6 +1038,17 @@ impl Render for FolderPicker {
             .unwrap_or_default();
         let current_branch = self.current().and_then(|crumb| crumb.branch.clone());
         let can_open = self.current().is_some();
+        let (open_hover, open_moving) = sample_hover(
+            &mut self.open_hover,
+            &mut self.open_hovering,
+            self.open_hovered && can_open,
+            now,
+        );
+        moving |= open_moving;
+        if moving {
+            window.request_animation_frame();
+        }
+        let open_opacity = if can_open { 1. - 0.3 * open_hover } else { 0.4 };
         let mut open = div()
             .id("folder-picker-open")
             .min_w(px(0.))
@@ -954,8 +1057,8 @@ impl Render for FolderPicker {
             .items_center()
             .gap(px(6.4))
             .cursor_pointer()
-            .when(self.open_hovered && can_open, |this| this.opacity(0.7))
-            .when(!can_open, |this| this.opacity(0.4).cursor_default())
+            .opacity(open_opacity)
+            .when(!can_open, |this| this.cursor_default())
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.open_hovered = *hovered;
                 cx.notify();
@@ -983,8 +1086,9 @@ impl Render for FolderPicker {
         }
         open = open.child(
             div()
+                .relative()
+                .left(px(3. * open_hover))
                 .flex_shrink_0()
-                .ml(px(if self.open_hovered && can_open { 3. } else { 0. }))
                 .text_size(px(14.))
                 .font_weight(FontWeight::NORMAL)
                 .text_color(hsla(colors.accent))
@@ -1058,6 +1162,17 @@ impl Render for FolderPicker {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_key(event, window, cx)
             }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                // A row only repaints when its pull target changes; the glide
+                // itself rides the animation frames requested in render.
+                let mut moved = false;
+                for magnet in this.magnets.values_mut() {
+                    moved |= magnet.track(event.position);
+                }
+                if moved {
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.cancel(window, cx)))
             .child(card)
     }
@@ -1122,16 +1237,17 @@ impl PickerRow {
 
 fn row_element<F>(
     visual: RowVisual,
-    hovered: bool,
-    focused: bool,
+    hover: f32,
     colors: &Palette,
+    offset: (f32, f32),
+    probe: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
     on_click: F,
     cx: &mut Context<FolderPicker>,
-) -> Stateful<Div>
+) -> Div
 where
     F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 {
-    let active = hovered || focused;
+    let hover = hover.clamp(0., 1.);
     let idx = visual.idx;
     let RowVisual {
         indent,
@@ -1146,10 +1262,12 @@ where
         meta,
         ..
     } = visual;
+    let (x, y) = offset;
     let mut row = div()
         .id(("folder-picker-row", idx))
         .relative()
-        .top(px(ROW_RISE * (1. - enter)))
+        .left(px(x))
+        .top(px(ROW_RISE * (1. - enter) + y))
         .opacity(enter.clamp(0., 1.))
         .flex()
         .items_center()
@@ -1157,11 +1275,10 @@ where
         .py(px(8.))
         .px(px(12.))
         .rounded(px(10.))
-        .ml(px(indent))
         .max_w(relative(1.))
         .cursor_pointer()
         .text_color(text)
-        .when(active, |this| this.bg(hsla(colors.hover)))
+        .bg(hsla(colors.hover.alpha(colors.hover.a * hover)))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
                 this.hovered = Some(idx);
@@ -1177,7 +1294,7 @@ where
                 .flex()
                 .flex_shrink_0()
                 .justify_center()
-                .opacity(if active { active_opacity } else { rest_opacity })
+                .opacity(rest_opacity + (active_opacity - rest_opacity) * hover)
                 .child(svg().path(icon).size(px(16.)).text_color(text)),
         )
         .child(
@@ -1191,7 +1308,7 @@ where
                 .child(name),
         );
     if repo {
-        let rest = if active { 1. } else { 0.7 };
+        let rest = 0.7 + 0.3 * hover;
         row = row.child(
             div()
                 .relative()
@@ -1200,7 +1317,17 @@ where
                 .child(git_group(branch, rest, colors)),
         );
     }
-    row
+    // The probe sits on the unmoved wrapper, so the pull is measured from
+    // where the row rests and only the row itself travels.
+    let mut wrapper = div().relative().max_w(relative(1.)).ml(px(indent));
+    if let Some(probe) = probe {
+        wrapper = wrapper.child(
+            canvas(move |b, _, _| probe.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .size_full(),
+        );
+    }
+    wrapper.child(row)
 }
 
 fn git_group(branch: Option<String>, opacity: f32, colors: &Palette) -> Div {
@@ -1445,4 +1572,34 @@ fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
         }
     }
     curve(y1, y2, (lo + hi) / 2.)
+}
+
+/// Electron's FADE: how far the rows dissolve into an edge with more beyond it.
+const EDGE_FADE: f32 = 22.;
+
+/// Stands in for the web picker's mask-image: strips of the card's own colour
+/// over whichever edge of the list has rows past it. Read at paint time from the
+/// scroll handle, so a scroll only repaints; nothing renders on its own.
+fn edge_fade(scroll: ScrollHandle, panel: kone_theme::Rgba) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |b, _, window, _| {
+            let (y, max) = (-f32::from(scroll.offset().y), f32::from(scroll.max_offset().y));
+            let solid = hsla(panel);
+            let clear = hsla(panel.alpha(0.));
+            let h = px(EDGE_FADE.min(f32::from(b.size.height) / 2.));
+            if y > 1. {
+                let top = Bounds::new(b.origin, size(b.size.width, h));
+                window.paint_quad(fill(top, linear_gradient(180., linear_color_stop(solid, 0.), linear_color_stop(clear, 1.))));
+            }
+            if y < max - 1. {
+                let bottom = Bounds::new(point(b.origin.x, b.bottom() - h), size(b.size.width, h));
+                window.paint_quad(fill(bottom, linear_gradient(180., linear_color_stop(clear, 0.), linear_color_stop(solid, 1.))));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }

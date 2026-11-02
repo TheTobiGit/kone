@@ -3,6 +3,7 @@
 mod assets;
 mod chrome;
 mod folder_picker;
+mod magnet;
 mod shell;
 mod strands;
 
