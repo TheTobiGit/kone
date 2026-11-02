@@ -72,6 +72,12 @@ impl Magnet {
     }
 }
 
+/// The frame band: a touch heavier on top, where a titlebar would be.
+const FRAME: f32 = 6.;
+const FRAME_TOP: f32 = 8.;
+/// Inside the window's own ~10px corner, so the two curves stay concentric.
+const PANEL_RADIUS: f32 = 8.;
+
 /// The threads move a few pixels a second, so 15 frames read as smooth.
 const ART_FRAME: Duration = Duration::from_millis(66);
 
@@ -115,6 +121,9 @@ impl Render for Shell {
         let theme = Theme::get(cx);
         let dark = theme.is_dark();
         let c = theme.colors.clone();
+        // Lifted off the ground in dark, pressed below it in light: either way
+        // the band reads as a frame around the page rather than part of it.
+        let frame = if dark { c.raised } else { c.sunken };
 
         if self.magnets.iter().any(Magnet::settling) {
             window.request_animation_frame();
@@ -154,13 +163,18 @@ impl Render for Shell {
                 ))
         };
 
-        div()
+        let panel = div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
             .overflow_hidden()
+            .rounded(px(PANEL_RADIUS))
+            .border_1()
+            .border_color(hsla(c.line_soft))
             .bg(hsla(c.ground))
+            // Presses inside the panel are the page's; only the frame drags.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .font_family(SANS)
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 for m in &mut this.magnets {
@@ -178,22 +192,6 @@ impl Render for Shell {
                     .bottom_0()
                     .h(relative(0.5))
             })
-            // The band above the content moves the window, as a titlebar would.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(52.))
-                    .on_mouse_down(MouseButton::Left, |e, window, _| {
-                        if e.click_count == 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
             .child(
                 div().relative().flex().justify_end().pt(px(8.)).pr(px(8.)).child(
                     div()
@@ -222,6 +220,24 @@ impl Render for Shell {
                             el.opacity(d).mt(px(8. * (1. - d) * 2.))
                         }),
                 ),
-            )
+            );
+
+        // The frame: a thin band around the panel that moves the window like a
+        // titlebar. AppKit claims the outermost pixels for resizing before the
+        // view sees them, so the band never swallows a resize.
+        div()
+            .size_full()
+            .bg(hsla(frame))
+            .pt(px(FRAME_TOP))
+            .px(px(FRAME))
+            .pb(px(FRAME))
+            .on_mouse_down(MouseButton::Left, |e, window, _| {
+                if e.click_count == 2 {
+                    window.zoom_window();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .child(panel)
     }
 }
