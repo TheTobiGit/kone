@@ -584,6 +584,20 @@ html.dark .dock {
   color: var(--faint);
 }
 .chip--image { padding-left: 4px; }
+.chip__preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  cursor: zoom-in;
+}
+.chip__preview:hover .chip__name { text-decoration: underline; }
+.chip__preview:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* Extension badge for non-image files — a soft neutral tile, no loud colour
    (kone stays calm and borderless). */
 .chip__badge {
