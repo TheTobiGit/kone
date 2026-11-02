@@ -10,7 +10,7 @@ mod magnet;
 mod path_complete;
 mod projects;
 mod shell;
-mod strands;
+mod stickfolk;
 
 use gpui_kit::*;
 use kone_theme::{Scheme, Theme};

@@ -41,8 +41,8 @@ const FRAME_TOP: f32 = 8.;
 /// Inside the window's own ~10px corner, so the two curves stay concentric.
 const PANEL_RADIUS: f32 = 8.;
 
-/// The threads drift ~5px a second, so 8 frames (0.625px a step) still read as
-/// smooth and keep an idle focused window near 3% CPU.
+/// The stick folk move in small hand-drawn steps; 8 frames a second reads as
+/// a flip book and keeps an idle focused window cheap.
 const ART_FRAME: Duration = Duration::from_millis(125);
 /// Spinner pace while a launcher modal is open (~30 fps).
 const SPIN_FRAME: Duration = Duration::from_millis(33);
@@ -406,13 +406,13 @@ impl Render for Shell {
             }))
             .child({
                 let t = self.started.elapsed().as_secs_f32();
-                let look = crate::strands::Look { color: c.accent, alpha: if dark { 0.30 } else { 0.38 } };
-                canvas(|_, _, _| (), move |b, _, window, _| crate::strands::paint(b, t, &look, window))
+                let look = crate::stickfolk::Look { color: c.accent, alpha: if dark { 0.45 } else { 0.55 } };
+                canvas(|_, _, _| (), move |b, _, window, _| crate::stickfolk::paint(b, t, &look, window))
                     .absolute()
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(relative(0.5))
+                    .h(px(crate::stickfolk::STRIP))
             })
             .child(
                 div().relative().flex().justify_end().pt(px(8.)).pr(px(8.)).child(
