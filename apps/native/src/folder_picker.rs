@@ -20,6 +20,7 @@ use gpui_ce_motion::{Bezier, Easing, MotionValue, Spring, Transition};
 use gpui_kit::base::input::{Input, InputEditorStyle, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use kone_rpc::RepoSummary;
 use kone_theme::{hsla, Palette, Theme};
 
 use crate::magnet::Magnet;
@@ -161,21 +162,18 @@ enum Phase {
 struct Crumb {
     name: String,
     path: PathBuf,
-    repo: bool,
-    branch: Option<String>,
+    git: Option<RepoSummary>,
 }
 
 #[derive(Clone)]
 struct Entry {
     name: String,
     path: PathBuf,
-    repo: bool,
-    branch: Option<String>,
+    git: Option<RepoSummary>,
 }
 
 struct Listing {
-    repo: bool,
-    branch: Option<String>,
+    git: Option<RepoSummary>,
     entries: Vec<Entry>,
 }
 
@@ -209,14 +207,12 @@ enum PickerRow {
         path: PathBuf,
         index: usize,
         current: bool,
-        repo: bool,
-        branch: Option<String>,
+        git: Option<RepoSummary>,
     },
     Entry {
         name: String,
         path: PathBuf,
-        repo: bool,
-        branch: Option<String>,
+        git: Option<RepoSummary>,
     },
 }
 
@@ -228,8 +224,7 @@ struct RowVisual {
     rest_opacity: f32,
     active_opacity: f32,
     text: Hsla,
-    repo: bool,
-    branch: Option<String>,
+    git: Option<RepoSummary>,
     /// Entrance progress, 0 to 1 (a spring may overshoot a little).
     enter: f32,
     meta: f32,
@@ -377,8 +372,7 @@ impl FolderPicker {
         self.trail = vec![Crumb {
             name: dir_name(&home),
             path: home,
-            repo: false,
-            branch: None,
+            git: None,
         }];
         self.sync_path(window, cx);
         let now = self.clock();
@@ -462,8 +456,7 @@ impl FolderPicker {
     ) {
         let before = self.row_bounds();
         if let Some(last) = trail.last_mut() {
-            last.repo = listing.repo;
-            last.branch = listing.branch;
+            last.git = listing.git;
         }
         self.trail = trail;
         self.entries = listing.entries;
@@ -719,13 +712,12 @@ impl FolderPicker {
         &mut self,
         path: PathBuf,
         name: String,
-        repo: bool,
-        branch: Option<String>,
+        git: Option<RepoSummary>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut trail = self.trail.clone();
-        trail.push(Crumb { name, path, repo, branch });
+        trail.push(Crumb { name, path, git });
         self.load_trail(trail, window, cx);
     }
 
@@ -811,8 +803,7 @@ impl FolderPicker {
         let mut trail = vec![Crumb {
             name: base_name,
             path: base.clone(),
-            repo: false,
-            branch: None,
+            git: None,
         }];
         if path != base {
             let mut acc = base.clone();
@@ -822,15 +813,13 @@ impl FolderPicker {
                     trail.push(Crumb {
                         name: segment.to_string_lossy().into_owned(),
                         path: acc.clone(),
-                        repo: false,
-                        branch: None,
+                        git: None,
                     });
                 }
             }
         }
         if let Some(last) = trail.last_mut() {
-            last.repo = listing.repo;
-            last.branch = listing.branch;
+            last.git = listing.git;
         }
         self.entries = listing.entries;
         self.read_error = false;
@@ -866,16 +855,14 @@ impl FolderPicker {
                 path: crumb.path.clone(),
                 index,
                 current: index + 1 == self.trail.len(),
-                repo: crumb.repo,
-                branch: crumb.branch.clone(),
+                git: crumb.git.clone(),
             });
         }
         for entry in &self.entries {
             rows.push(PickerRow::Entry {
                 name: entry.name.clone(),
                 path: entry.path.clone(),
-                repo: entry.repo,
-                branch: entry.branch.clone(),
+                git: entry.git.clone(),
             });
         }
         rows
@@ -901,7 +888,7 @@ impl FolderPicker {
             return;
         }
         self.recent_descend = Some((entry.path.clone(), now));
-        self.descend(entry.path, entry.name, entry.repo, entry.branch, window, cx);
+        self.descend(entry.path, entry.name, entry.git, window, cx);
     }
 
     fn click_crumb(
@@ -933,8 +920,8 @@ impl FolderPicker {
         match row {
             Some(PickerRow::Ascend { .. }) => self.ascend(window, cx),
             Some(PickerRow::Crumb { index, .. }) => self.climb_to(index, window, cx),
-            Some(PickerRow::Entry { path, name, repo, branch }) => {
-                self.descend(path, name, repo, branch, window, cx)
+            Some(PickerRow::Entry { path, name, git }) => {
+                self.descend(path, name, git, window, cx)
             }
             None => {}
         }
@@ -1324,8 +1311,8 @@ impl Render for FolderPicker {
                         });
                         row_element(visual, hover, hidden, &colors, offset, probe, on_click, cx)
                     }
-                    PickerRow::Entry { path, name, repo, branch } => {
-                        let entry = Entry { name, path, repo, branch };
+                    PickerRow::Entry { path, name, git } => {
+                        let entry = Entry { name, path, git };
                         let click = entry.clone();
                         let on_click = cx.listener(move |this, event: &ClickEvent, window, cx| {
                             this.click_entry(click.clone(), event, window, cx)
@@ -1388,7 +1375,7 @@ impl Render for FolderPicker {
             .current()
             .map(|crumb| crumb.name.clone())
             .unwrap_or_default();
-        let current_branch = self.current().and_then(|crumb| crumb.branch.clone());
+        let current_git = self.current().and_then(|crumb| crumb.git.clone());
         let can_open = self.current().is_some();
         let (open_hover, open_moving) = sample_hover(
             &mut self.open_hover,
@@ -1433,8 +1420,8 @@ impl Render for FolderPicker {
                     .text_color(hsla(colors.ink_soft))
                     .child(format!("“{current_name}”")),
             );
-        if let Some(branch) = current_branch {
-            open = open.child(git_group(Some(branch), 0.85, &colors));
+        if let Some(git) = current_git {
+            open = open.child(git_group(&git, 0.85, false, &colors));
         }
         open = open.child(
             div()
@@ -1576,12 +1563,11 @@ impl PickerRow {
                 rest_opacity: 0.55,
                 active_opacity: 1.,
                 text: hsla(colors.muted),
-                repo: false,
-                branch: None,
+                git: None,
                 enter: 1.,
                 meta: 1.,
             },
-            PickerRow::Crumb { name, index, current, repo, branch, .. } => RowVisual {
+            PickerRow::Crumb { name, index, current, git, .. } => RowVisual {
                 idx,
                 indent: indent(index.saturating_sub(1)),
                 name: name.clone(),
@@ -1593,12 +1579,11 @@ impl PickerRow {
                 } else {
                     hsla(colors.muted)
                 },
-                repo: *repo,
-                branch: branch.clone(),
+                git: git.clone(),
                 enter: 1.,
                 meta: 1.,
             },
-            PickerRow::Entry { name, repo, branch, .. } => RowVisual {
+            PickerRow::Entry { name, git, .. } => RowVisual {
                 idx,
                 indent: entry_depth,
                 name: name.clone(),
@@ -1606,8 +1591,7 @@ impl PickerRow {
                 rest_opacity: 0.45,
                 active_opacity: 0.8,
                 text: hsla(colors.ink),
-                repo: *repo,
-                branch: branch.clone(),
+                git: git.clone(),
                 enter: 1.,
                 meta: 1.,
             },
@@ -1637,8 +1621,7 @@ where
         rest_opacity,
         active_opacity,
         text,
-        repo,
-        branch,
+        git,
         enter,
         meta,
         ..
@@ -1688,14 +1671,14 @@ where
                 .line_height(px(16.5))
                 .child(name),
         );
-    if repo {
+    if let Some(git) = git {
         let rest = 0.7 + 0.3 * hover;
         row = row.child(
             div()
                 .relative()
                 .left(px(META_SHIFT * (1. - meta)))
                 .opacity(meta.clamp(0., 1.))
-                .child(git_group(branch, rest, colors)),
+                .child(git_group(&git, rest, true, colors)),
         );
     }
     // The probe sits on the unmoved wrapper, so the pull is measured from
@@ -1711,8 +1694,8 @@ where
     wrapper.child(row)
 }
 
-fn git_group(branch: Option<String>, opacity: f32, colors: &Palette) -> Div {
-    let group = div()
+fn git_group(git: &RepoSummary, opacity: f32, diffstat: bool, colors: &Palette) -> Div {
+    let mut group = div()
         .flex()
         .items_center()
         .gap(px(8.))
@@ -1729,9 +1712,8 @@ fn git_group(branch: Option<String>, opacity: f32, colors: &Palette) -> Div {
                         .size(px(13.))
                         .text_color(hsla(colors.accent)),
                 ),
-        );
-    match branch {
-        Some(branch) => group.child(
+        )
+        .child(
             div()
                 .min_w(px(0.))
                 .max_w(px(192.))
@@ -1740,10 +1722,31 @@ fn git_group(branch: Option<String>, opacity: f32, colors: &Palette) -> Div {
                 .text_size(px(11.5))
                 .line_height(px(13.))
                 .text_color(hsla(colors.muted))
-                .child(branch),
-        ),
-        None => group,
+                .child(git.branch.clone().unwrap_or_else(|| "detached".into())),
+        );
+    if diffstat && (git.added > 0 || git.removed > 0) {
+        group = group.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.8))
+                .flex_shrink_0()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .line_height(px(13.))
+                .child(
+                    div()
+                        .text_color(hsla(colors.diff_add_soft))
+                        .child(format!("+{}", git.added)),
+                )
+                .child(
+                    div()
+                        .text_color(hsla(colors.diff_del_soft))
+                        .child(format!("−{}", git.removed)),
+                ),
+        );
     }
+    group
 }
 
 fn message(text: &str, indent: f32, colors: &Palette) -> Div {
@@ -1903,15 +1906,12 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
         if !entry_is_dir(&entry) {
             continue;
         }
-        let repo = is_repo_root(&path);
-        let branch = if repo { read_branch(&path) } else { None };
-        entries.push(Entry { name, path, repo, branch });
+        let git = repo_summary(&path);
+        entries.push(Entry { name, path, git });
     }
     entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
 
-    let repo = is_repo_root(dir);
-    let branch = if repo { read_branch(dir) } else { None };
-    Ok(Listing { repo, branch, entries })
+    Ok(Listing { git: repo_summary(dir), entries })
 }
 
 /// The address bar only needs names, not the git enrichment a full listing
@@ -1967,6 +1967,25 @@ fn read_branch(dir: &Path) -> Option<String> {
     }
     let short: String = head.chars().take(7).collect();
     (!short.is_empty()).then_some(short)
+}
+
+/// Placeholder line counts until agent-core serves `git.summary`. Every repo
+/// row carries the same pair so the row's diffstat can be laid out and
+/// reviewed; replacing this with the RPC result needs no change in rendering.
+const STUB_DIFF: (u32, u32) = (4, 2);
+
+fn repo_summary(dir: &Path) -> Option<RepoSummary> {
+    if !is_repo_root(dir) {
+        return None;
+    }
+    let (added, removed) = STUB_DIFF;
+    Some(RepoSummary {
+        repo: true,
+        branch: read_branch(dir),
+        added,
+        removed,
+        files: Vec::new(),
+    })
 }
 
 /// Solves a CSS-style cubic bezier for one axis and returns the eased value.
