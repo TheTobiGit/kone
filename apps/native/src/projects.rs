@@ -66,7 +66,9 @@ fn save(list: &[RecentProject]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("json.tmp");
+    // A per-writer temp name, so two saves racing can't clobber one file.
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let tmp = path.with_extension(format!("json.{}.{nanos}.tmp", std::process::id()));
     fs::write(&tmp, serde_json::to_vec_pretty(list).map_err(io::Error::other)?)?;
     fs::rename(tmp, path)
 }
@@ -99,7 +101,9 @@ pub fn open(path: &Path) -> Result<OpenProject, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    let summary = crate::folder_picker::repo_summary(&path);
+    // A folder inside a repo still belongs to it, as git-core's status()
+    // resolves the top level: read the nearest ancestor that holds `.git`.
+    let summary = path.ancestors().find_map(crate::folder_picker::repo_summary);
     remember(&path, &name).map_err(|e| format!("Couldn't save the project list: {e}"))?;
     Ok(OpenProject {
         name,
@@ -168,6 +172,8 @@ pub fn run_setup_command(cwd: &Path, command: &str) -> Result<(), String> {
     cmd.env("GCM_INTERACTIVE", "never");
     cmd.env("GIT_ASKPASS", "");
     cmd.env("LC_ALL", "C");
+    // A scaffolder that prompts would otherwise wait forever on our stdin.
+    cmd.stdin(std::process::Stdio::null());
 
     let output = cmd.output().map_err(|e| format!("Failed to run setup command: {e}"))?;
     if output.status.success() {
@@ -204,6 +210,47 @@ pub fn build_gh_repo_create_args(repo_name: &str, visibility: RepoVisibility) ->
     ]
 }
 
+const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `Command::output` with a deadline: past it the child is killed and the
+/// second value is true. Stdin is closed so nothing waits on a prompt.
+fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> io::Result<(std::process::Output, bool)> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = cmd.spawn()?;
+    let pid = child.id();
+    let done = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicBool::new(false));
+    {
+        let (done, fired) = (done.clone(), fired.clone());
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < limit {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if !done.load(Ordering::SeqCst) {
+                fired.store(true, Ordering::SeqCst);
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).output();
+                #[cfg(not(unix))]
+                let _ = std::process::Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).output();
+            }
+        });
+    }
+    let out = child.wait_with_output();
+    done.store(true, Ordering::SeqCst);
+    out.map(|o| (o, fired.load(Ordering::SeqCst)))
+}
+
 /// Creates a GitHub repository via `gh repo create` and pushes the initial branch.
 pub fn create_remote(target: &Path, repo_name: &str, visibility: RepoVisibility) -> Result<(), String> {
     let args = build_gh_repo_create_args(repo_name, visibility);
@@ -215,10 +262,15 @@ pub fn create_remote(target: &Path, repo_name: &str, visibility: RepoVisibility)
     cmd.env("GIT_ASKPASS", "");
     cmd.env("LC_ALL", "C");
 
-    let output = cmd.output().map_err(|e| match e.kind() {
+    // Electron's createRemote gives gh 60 s; a hung network call must not
+    // wedge the modal in its busy state forever.
+    let (output, timed_out) = output_with_timeout(&mut cmd, GH_TIMEOUT).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => "GitHub CLI (gh) not found — install it to create a remote repo".to_string(),
         _ => format!("Couldn't run gh: {e}"),
     })?;
+    if timed_out {
+        return Err("Creating the GitHub repository timed out.".into());
+    }
 
     if output.status.success() {
         Ok(())
@@ -247,6 +299,10 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => "Git isn't installed, so the folder was created without a repository.".to_string(),
