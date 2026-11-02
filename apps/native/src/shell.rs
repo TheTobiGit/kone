@@ -48,7 +48,7 @@ const ART_FRAME: Duration = Duration::from_millis(125);
 const SPIN_FRAME: Duration = Duration::from_millis(33);
 /// The crowd reacting to the cursor: smoother than idle, still well short
 /// of vsync since every frame repaints the whole strip.
-const STIR_FRAME: Duration = Duration::from_millis(66);
+const STIR_FRAME: Duration = Duration::from_millis(45);
 
 pub struct Shell {
     magnets: [Magnet; 3],
@@ -79,9 +79,10 @@ impl Shell {
             loop {
                 cx.background_executor().timer(pace).await;
                 let alive = this.update_in(cx, |this: &mut Self, window, cx| {
-                    if window.is_window_active() {
-                        cx.notify();
+                    if !window.is_window_active() {
+                        return ART_FRAME;
                     }
+                    cx.notify();
                     if this.picker.is_some() || this.creator.is_some() || this.cloner.is_some() {
                         SPIN_FRAME
                     } else if this.folk.active() {
@@ -123,6 +124,7 @@ impl Shell {
         for m in &mut self.magnets {
             m.release();
         }
+        self.folk.release();
         self.open_error = None;
         let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
         picker.update(cx, |picker, cx| picker.start(window, cx));
@@ -151,6 +153,7 @@ impl Shell {
         for m in &mut self.magnets {
             m.release();
         }
+        self.folk.release();
         self.open_error = None;
         let creator = cx.new(|cx| crate::create_project::CreateProject::new(&self.create_session, window, cx));
         creator.update(cx, |c, cx| c.start(window, cx));
@@ -189,6 +192,7 @@ impl Shell {
         for m in &mut self.magnets {
             m.release();
         }
+        self.folk.release();
         self.open_error = None;
         let cloner = cx.new(|cx| crate::clone_modal::CloneModal::new(self.clone_location.clone(), window, cx));
         cloner.update(cx, |c, _| c.start());
@@ -400,7 +404,14 @@ impl Render for Shell {
             .border_color(hsla(c.line_soft))
             .bg(hsla(c.ground))
             // Presses inside the panel are the page's; only the frame drags.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // A click on the floor strip tips a letter or kicks a ball for the crowd.
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                if this.folk.press(e.position, busy) {
+                    cx.notify();
+                }
+            }))
             .font_family(SANS)
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 // Most moves land outside every pull zone; only a changed
