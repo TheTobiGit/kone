@@ -4,6 +4,7 @@ mod assets;
 mod chrome;
 mod folder_picker;
 mod magnet;
+mod projects;
 mod shell;
 mod strands;
 

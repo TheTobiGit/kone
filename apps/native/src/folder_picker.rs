@@ -12,7 +12,6 @@ use std::{
     env, fs, io,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -448,11 +447,11 @@ impl FolderPicker {
                     let trail = std::mem::take(&mut self.trail);
                     self.apply_listing(trail, listing, field_matches, window, cx);
                 }
-                Err(_) => {
+                Err(err) => {
                     self.trail.clear();
                     self.entries.clear();
                     self.read_error = false;
-                    self.error = Some("Couldn't read this folder.");
+                    self.error = Some(read_error_text(&err));
                     if field_matches {
                         self.sync_path(window, cx);
                     }
@@ -1904,6 +1903,15 @@ fn dir_name(dir: &Path) -> String {
         .unwrap_or_else(|| dir.display().to_string())
 }
 
+fn read_error_text(err: &io::Error) -> &'static str {
+    match err.kind() {
+        io::ErrorKind::NotFound => "This folder doesn't exist.",
+        io::ErrorKind::PermissionDenied => "You don't have permission to read this folder.",
+        io::ErrorKind::InvalidInput => "That's a file, not a folder.",
+        _ => "Couldn't read this folder.",
+    }
+}
+
 fn home_dir() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -2008,7 +2016,7 @@ fn git_dir(dir: &Path) -> Option<PathBuf> {
     Some(if path.is_absolute() { path.to_path_buf() } else { dir.join(path) })
 }
 
-fn read_branch(dir: &Path) -> Branch {
+pub(crate) fn read_branch(dir: &Path) -> Branch {
     let Some(git) = git_dir(dir) else { return Branch::Unknown };
     let Ok(head) = fs::read_to_string(git.join("HEAD")) else { return Branch::Unknown };
     let head = head.trim();
@@ -2019,20 +2027,11 @@ fn read_branch(dir: &Path) -> Branch {
     if short.is_empty() { Branch::Unknown } else { Branch::Detached(short) }
 }
 
-/// Placeholder line counts until agent-core serves `git.summary`. Off unless
-/// `KONE_STUB_DIFF=1`, so a real repository never shows invented numbers; the
-/// switch lets the row's diffstat layout be reviewed.
-fn stub_diff() -> (u32, u32) {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    let enabled = *ENABLED.get_or_init(|| env::var("KONE_STUB_DIFF").is_ok_and(|value| value == "1"));
-    if enabled { (4, 2) } else { (0, 0) }
-}
-
-fn repo_summary(dir: &Path) -> Option<RepoSummary> {
+pub(crate) fn repo_summary(dir: &Path) -> Option<RepoSummary> {
     if !is_repo_root(dir) {
         return None;
     }
-    let (added, removed) = stub_diff();
+    let (added, removed) = diff_stat(dir);
     Some(RepoSummary {
         repo: true,
         branch: read_branch(dir),
@@ -2040,6 +2039,35 @@ fn repo_summary(dir: &Path) -> Option<RepoSummary> {
         removed,
         files: Vec::new(),
     })
+}
+
+/// Lines added and removed in the working tree against `HEAD` (staged and
+/// unstaged together), as `git diff --numstat` reports them. Runs on the
+/// listing's background thread; a repo with no commits yet, a missing `git`, or
+/// a failed read all come back as no changes rather than invented numbers.
+pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["--no-optional-locks", "diff", "--numstat", "--no-renames", "HEAD", "--"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else { return (0, 0) };
+    if !output.status.success() {
+        return (0, 0);
+    }
+    let mut added = 0u32;
+    let mut removed = 0u32;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split('\t');
+        // Binary files report "-" for both counts; they add no lines.
+        let a = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        let r = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        added = added.saturating_add(a);
+        removed = removed.saturating_add(r);
+    }
+    (added, removed)
 }
 
 /// Solves a CSS-style cubic bezier for one axis and returns the eased value.

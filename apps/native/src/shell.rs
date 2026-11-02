@@ -50,6 +50,9 @@ pub struct Shell {
     started: Instant,
     picker: Option<Entity<crate::folder_picker::FolderPicker>>,
     _picker_sub: Option<Subscription>,
+    project: Option<crate::projects::OpenProject>,
+    open_error: Option<String>,
+    _open_task: Option<Task<()>>,
     _ticker: Task<()>,
 }
 
@@ -72,6 +75,9 @@ impl Shell {
             started: Instant::now(),
             picker: None,
             _picker_sub: None,
+            project: None,
+            open_error: None,
+            _open_task: None,
             _ticker: ticker,
         }
     }
@@ -89,9 +95,9 @@ impl Shell {
         self._picker_sub = Some(cx.subscribe_in(
             &picker,
             window,
-            |this, _, event: &crate::folder_picker::FolderPickerEvent, _, cx| {
+            |this, _, event: &crate::folder_picker::FolderPickerEvent, window, cx| {
                 if let crate::folder_picker::FolderPickerEvent::Picked(path) = event {
-                    eprintln!("open: {}", path.display());
+                    this.open_project(path.clone(), window, cx);
                 }
                 this.picker = None;
                 cx.notify();
@@ -99,6 +105,83 @@ impl Shell {
         ));
         self.picker = Some(picker);
         cx.notify();
+    }
+}
+
+impl Shell {
+    /// Validates and records the folder off the UI thread, then shows it.
+    fn open_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_error = None;
+        let task = cx.background_spawn(async move { crate::projects::open(&path) });
+        self._open_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(project) => this.project = Some(project),
+                    Err(message) => this.open_error = Some(message),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn close_project(&mut self, cx: &mut Context<Self>) {
+        self.project = None;
+        cx.notify();
+    }
+
+    fn project_view(&self, project: &crate::projects::OpenProject, c: &kone_theme::Palette, cx: &mut Context<Self>) -> Div {
+        use kone_rpc::Branch;
+        let branch = match &project.branch {
+            Some(Branch::Named(name)) => name.clone(),
+            Some(Branch::Detached(sha)) => format!("detached at {sha}"),
+            Some(Branch::Unknown) => "unknown branch".into(),
+            None => "not a git repository".into(),
+        };
+        let changes = if project.branch.is_none() {
+            None
+        } else if project.added == 0 && project.removed == 0 {
+            Some("No uncommitted changes".to_string())
+        } else {
+            Some(format!("+{} −{} uncommitted", project.added, project.removed))
+        };
+        div()
+            .relative()
+            .flex()
+            .flex_1()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(10.))
+            .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).text_color(hsla(c.ink)).child(project.name.clone()))
+            .child(div().text_size(px(13.)).text_color(hsla(c.muted)).child(project.path.to_string_lossy().into_owned()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .text_color(hsla(c.ink_soft))
+                    .child(svg().path("icons/folder-open.svg").size(px(14.)).text_color(hsla(c.ink_soft)))
+                    .child(branch),
+            )
+            .when_some(changes, |d, text| d.child(div().text_size(px(12.)).text_color(hsla(c.muted)).child(text)))
+            .child(
+                div()
+                    .id("back")
+                    .mt(px(18.))
+                    .px(px(14.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(hsla(c.ink))
+                    .border_1()
+                    .border_color(hsla(c.line_soft))
+                    .hover(|s| s.bg(hsla(c.hover)))
+                    .on_click(cx.listener(|this, _, _, cx| this.close_project(cx)))
+                    .child("Back to start"),
+            )
     }
 }
 
@@ -171,6 +254,29 @@ impl Render for Shell {
                 ))
         };
 
+        let body = if let Some(project) = self.project.clone() {
+            self.project_view(&project, &c, cx).into_any_element()
+        } else {
+            let actions = div().relative().flex().flex_1().flex_col().items_center().justify_center().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(row(0, "create", "icons/plus.svg", "Create a new project"))
+                        .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
+                        .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
+                        .with_animation("actions-in", Animation::new(Duration::from_millis(500)).with_easing(glide), |el, d| {
+                            el.opacity(d).mt(px(8. * (1. - d) * 2.))
+                        }),
+                );
+            match self.open_error.clone() {
+                Some(err) => actions
+                    .child(div().absolute().bottom(px(24.)).text_size(px(12.)).text_color(hsla(c.danger)).child(err))
+                    .into_any_element(),
+                None => actions.into_any_element(),
+            }
+        };
+
         let panel = div()
             .relative()
             .size_full()
@@ -221,20 +327,7 @@ impl Render for Shell {
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
                 ),
             )
-            .child(
-                div().relative().flex().flex_1().flex_col().items_center().justify_center().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(row(0, "create", "icons/plus.svg", "Create a new project"))
-                        .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
-                        .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
-                        .with_animation("actions-in", Animation::new(Duration::from_millis(500)).with_easing(glide), |el, d| {
-                            el.opacity(d).mt(px(8. * (1. - d) * 2.))
-                        }),
-                ),
-            );
+            .child(body);
 
         // The frame: a thin band around the panel that moves the window like a
         // titlebar. AppKit claims the outermost pixels for resizing before the
