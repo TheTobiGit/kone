@@ -1,0 +1,16 @@
+[package]
+name = "kone-native"
+description = "kone's native macOS shell."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kone"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui-kit.workspace = true
+kone-theme.workspace = true
+kone-rpc.workspace = true
