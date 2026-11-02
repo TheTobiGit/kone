@@ -73,6 +73,28 @@ fn height_tween() -> Transition {
     Transition::Tween(HEIGHT_EASE, Easing::Bezier(Bezier::new(0.22, 1., 0.36, 1.).expect("valid curve")))
 }
 
+/// The card rises on Electron's `modal-card-in` curve: a small overshoot, so
+/// it lands a touch past its slot before settling.
+fn card_enter_tween() -> Transition {
+    Transition::Tween(ENTER, Easing::Bezier(Bezier::new(0.34, 1.3, 0.64, 1.).expect("valid curve")))
+}
+
+/// Opacity is opaque at 45% of the card's arrival, so it never reads as a
+/// ghost sliding into place.
+fn card_fade_tween() -> Transition {
+    Transition::Tween(
+        ENTER.mul_f32(0.45),
+        Easing::Bezier(Bezier::new(0.34, 1.3, 0.64, 1.).expect("valid curve")),
+    )
+}
+
+fn scrim_enter_tween() -> Transition {
+    Transition::Tween(
+        Duration::from_millis(240),
+        Easing::Bezier(Bezier::new(0.22, 1., 0.36, 1.).expect("valid curve")),
+    )
+}
+
 /// CSS `ease` over 180ms: the picker's hover wash, glyphs, and actions.
 fn hover_tween() -> Transition {
     Transition::Tween(
@@ -234,6 +256,11 @@ pub struct FolderPicker {
     enter_at: Option<Instant>,
     phase: Phase,
     started: Instant,
+    /// The entrance: the scrim's wash, the card's rise, and its fade. Sampled
+    /// on animation frames until they come to rest.
+    enter_scrim: MotionValue,
+    enter_y: MotionValue,
+    enter_fade: MotionValue,
     exit_at: Option<Instant>,
     closing: bool,
     outcome: Option<FolderPickerEvent>,
@@ -302,6 +329,9 @@ impl FolderPicker {
             enter_at: None,
             phase: Phase::In,
             started: Instant::now(),
+            enter_scrim: MotionValue::new(0.),
+            enter_y: MotionValue::new(CARD_RISE as f64),
+            enter_fade: MotionValue::new(0.),
             exit_at: None,
             closing: false,
             outcome: None,
@@ -330,6 +360,10 @@ impl FolderPicker {
             branch: None,
         }];
         self.sync_path(window, cx);
+        let now = self.clock();
+        self.enter_scrim.animate(1., scrim_enter_tween(), now);
+        self.enter_y.animate(0., card_enter_tween(), now);
+        self.enter_fade.animate(1., card_fade_tween(), now);
         self.request(Load::Start, window, cx);
     }
 
@@ -1003,15 +1037,13 @@ impl FolderPicker {
     }
 
     /// Scrim opacity, card opacity, and the card's vertical offset.
-    fn motion(&self) -> (f32, f32, f32) {
+    fn motion(&mut self, now: Duration) -> (f32, f32, f32) {
         match self.phase {
             Phase::In => {
-                let scrim_t = (self.started.elapsed().as_secs_f32() / 0.240).min(1.);
-                let scrim = bezier(0.22, 1.0, 0.36, 1.0, scrim_t);
-                let card_t = (self.started.elapsed().as_secs_f32() / ENTER.as_secs_f32()).min(1.);
-                let card = bezier(0.34, 1.3, 0.64, 1.0, card_t);
-                let opacity = (card_t / 0.45).min(1.);
-                (scrim, opacity, CARD_RISE * (1. - card))
+                let scrim = self.enter_scrim.sample(now, false).value() as f32;
+                let fade = self.enter_fade.sample(now, false).value() as f32;
+                let y = self.enter_y.sample(now, false).value() as f32;
+                (scrim.clamp(0., 1.), fade.clamp(0., 1.), y)
             }
             Phase::Out => {
                 let at = self.exit_at.unwrap_or_else(Instant::now);
@@ -1026,15 +1058,12 @@ impl FolderPicker {
 impl Render for FolderPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = Theme::get(cx).colors.clone();
-        let (scrim, card_opacity, card_y) = self.motion();
+        let now = self.clock();
+        let (scrim, card_opacity, card_y) = self.motion(now);
         if self.animating() {
             window.request_animation_frame();
         }
-        let now = self.clock();
-        let mut moving = false;
-        // A read in flight keeps the spinner turning, and the previous rows
-        // stay in place until its answer lands.
-        moving |= self.loading;
+        let mut moving = self.loading;
         // The actions fade rather than flip: a pointer crossing the card reads
         // as one motion, not a series of light switches.
         let (cancel_hover, cancel_moving) = sample_hover(
