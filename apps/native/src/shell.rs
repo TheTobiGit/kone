@@ -72,6 +72,31 @@ impl Magnet {
     }
 }
 
+/// What shows through the frame band.
+#[derive(Clone, Copy, PartialEq)]
+pub enum FrameMode {
+    /// The desktop behind, blurred, under a light kone tint.
+    Vibrant,
+    /// The desktop behind, untouched. `KONE_FRAME=clear`.
+    Clear,
+}
+
+impl FrameMode {
+    pub fn background(self) -> WindowBackgroundAppearance {
+        match self {
+            FrameMode::Vibrant => WindowBackgroundAppearance::Blurred,
+            FrameMode::Clear => WindowBackgroundAppearance::Transparent,
+        }
+    }
+}
+
+pub fn frame_mode() -> FrameMode {
+    match std::env::var("KONE_FRAME").as_deref() {
+        Ok("clear") => FrameMode::Clear,
+        _ => FrameMode::Vibrant,
+    }
+}
+
 /// The frame band: a touch heavier on top, where a titlebar would be.
 const FRAME: f32 = 6.;
 const FRAME_TOP: f32 = 8.;
@@ -124,6 +149,12 @@ impl Render for Shell {
         // Lifted off the ground in dark, pressed below it in light: either way
         // the band reads as a frame around the page rather than part of it.
         let frame = if dark { c.raised } else { c.sunken };
+        // Over the blur a third of the tint keeps the band in kone's palette
+        // without hiding what is behind it.
+        let frame = match frame_mode() {
+            FrameMode::Vibrant => frame.alpha(0.35),
+            FrameMode::Clear => frame.alpha(0.),
+        };
 
         if self.magnets.iter().any(Magnet::settling) {
             window.request_animation_frame();

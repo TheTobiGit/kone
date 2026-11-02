@@ -31,6 +31,7 @@ fn main() {
                 traffic_light_position: None,
             }),
             app_id: Some("dev.kone.native".into()),
+            window_background: shell::frame_mode().background(),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
@@ -59,4 +60,7 @@ fn sync_kit_mode(cx: &mut App) {
         component::ThemeMode::Light
     };
     component::Theme::change(mode, None, cx);
+    // Kit's root paints its theme background under every window; ours draws
+    // its own surfaces, and the frame has to let the desktop through.
+    component::Theme::global_mut(cx).tokens.background = transparent_black().into();
 }
