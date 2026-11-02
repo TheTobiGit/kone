@@ -34,6 +34,10 @@ fn main() {
             }),
             app_id: Some("dev.kone.native".into()),
             window_background: shell::frame_mode().background(),
+            // No server title bar on Linux. Kit's window border then draws the
+            // shadow and resize edges; our frame band drags, as on macOS.
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(WindowDecorations::Client),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {

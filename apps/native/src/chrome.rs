@@ -22,6 +22,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-m", Minimize, None),
     ]);
+    #[cfg(target_os = "linux")]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("ctrl-w", CloseWindow, None),
+        KeyBinding::new("ctrl-m", Minimize, None),
+    ]);
     cx.set_menus([
         Menu { name: "kone".into(), items: vec![MenuItem::action("Quit kone", Quit)], disabled: false },
         Menu {
