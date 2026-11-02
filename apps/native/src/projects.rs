@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX: usize = 24;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentProject {
     pub path: String,
@@ -55,34 +55,109 @@ fn store_path() -> PathBuf {
 }
 
 pub fn load() -> Vec<RecentProject> {
-    fs::read_to_string(store_path())
+    load_from(&store_path())
+}
+
+fn load_from(file: &Path) -> Vec<RecentProject> {
+    fs::read_to_string(file)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-fn save(list: &[RecentProject]) -> io::Result<()> {
-    let path = store_path();
-    if let Some(dir) = path.parent() {
+fn save_to(file: &Path, list: &[RecentProject]) -> io::Result<()> {
+    if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
     // A per-writer temp name, so two saves racing can't clobber one file.
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-    let tmp = path.with_extension(format!("json.{}.{nanos}.tmp", std::process::id()));
+    let tmp = file.with_extension(format!("json.{}.{nanos}.tmp", std::process::id()));
     fs::write(&tmp, serde_json::to_vec_pretty(list).map_err(io::Error::other)?)?;
-    fs::rename(tmp, path)
+    fs::rename(tmp, file)
 }
 
 /// Records (or bumps) a project as just opened, keeping its pin.
 pub fn remember(path: &Path, name: &str) -> io::Result<()> {
+    remember_in(&store_path(), path, name)
+}
+
+fn remember_in(file: &Path, path: &Path, name: &str) -> io::Result<()> {
     let key = path.to_string_lossy().into_owned();
-    let mut list = load();
+    let mut list = load_from(file);
     let pinned = list.iter().find(|p| p.path == key).and_then(|p| p.pinned);
     list.retain(|p| p.path != key);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     list.insert(0, RecentProject { path: key, name: name.to_string(), last_opened_at: now, pinned });
     list.truncate(MAX);
-    save(&list)
+    save_to(file, &list)
+}
+
+/// Stable sort: pinned (pinned == Some(true)) first, then last_opened_at descending.
+pub fn sorted(mut list: Vec<RecentProject>) -> Vec<RecentProject> {
+    list.sort_by(|a, b| {
+        let a_pin = a.pinned == Some(true);
+        let b_pin = b.pinned == Some(true);
+        match (a_pin, b_pin) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.last_opened_at.cmp(&a.last_opened_at),
+        }
+    });
+    list
+}
+
+pub fn recents() -> Vec<RecentProject> {
+    sorted(load())
+}
+
+pub fn toggle_pin(path: &str) -> io::Result<()> {
+    toggle_pin_in(&store_path(), path)
+}
+
+fn toggle_pin_in(file: &Path, path: &str) -> io::Result<()> {
+    let mut list = load_from(file);
+    for p in &mut list {
+        if p.path == path {
+            p.pinned = if p.pinned == Some(true) {
+                None
+            } else {
+                Some(true)
+            };
+        }
+    }
+    save_to(file, &list)
+}
+
+pub fn forget(path: &str) -> io::Result<()> {
+    forget_in(&store_path(), path)
+}
+
+fn forget_in(file: &Path, path: &str) -> io::Result<()> {
+    let mut list = load_from(file);
+    list.retain(|p| p.path != path);
+    save_to(file, &list)
+}
+
+pub fn reveal(path: &Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err("That folder no longer exists.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = std::process::Command::new("xdg-open");
+
+    cmd.arg(path);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let mut child = cmd.spawn().map_err(|e| format!("Couldn't reveal folder: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Validates the folder, records it, and reads what the project view shows.
@@ -438,6 +513,127 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn temp_store(tag: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!("kone-recents-test-{tag}-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn test_sorted_ordering() {
+        let list = vec![
+            RecentProject {
+                path: "/a".into(),
+                name: "A".into(),
+                last_opened_at: 100,
+                pinned: None,
+            },
+            RecentProject {
+                path: "/b".into(),
+                name: "B".into(),
+                last_opened_at: 300,
+                pinned: Some(true),
+            },
+            RecentProject {
+                path: "/c".into(),
+                name: "C".into(),
+                last_opened_at: 200,
+                pinned: None,
+            },
+            RecentProject {
+                path: "/d".into(),
+                name: "D".into(),
+                last_opened_at: 150,
+                pinned: Some(true),
+            },
+            RecentProject {
+                path: "/e".into(),
+                name: "E".into(),
+                last_opened_at: 50,
+                pinned: Some(false),
+            },
+            RecentProject {
+                path: "/f".into(),
+                name: "F".into(),
+                last_opened_at: 200,
+                pinned: None,
+            },
+        ];
+        let res = sorted(list);
+        let paths: Vec<&str> = res.iter().map(|p| p.path.as_str()).collect();
+        // Pins first (300, 150), then unpinned descending (200, 200 preserved order, 100, 50)
+        assert_eq!(paths, vec!["/b", "/d", "/c", "/f", "/a", "/e"]);
+    }
+
+    #[test]
+    fn test_toggle_pin() {
+        let temp_file = temp_store("toggle-pin");
+        remember_in(&temp_file, Path::new("/repo"), "Repo").unwrap();
+
+        let loaded = load_from(&temp_file);
+        assert_eq!(loaded[0].pinned, None);
+
+        // First toggle sets pinned = Some(true)
+        toggle_pin_in(&temp_file, "/repo").unwrap();
+        let loaded = load_from(&temp_file);
+        assert_eq!(loaded[0].pinned, Some(true));
+
+        // Second toggle flips pinned = None
+        toggle_pin_in(&temp_file, "/repo").unwrap();
+        let loaded = load_from(&temp_file);
+        assert_eq!(loaded[0].pinned, None);
+
+        let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_forget() {
+        let temp_file = temp_store("forget");
+        let list = vec![
+            RecentProject { path: "/p1".into(), name: "P1".into(), last_opened_at: 100, pinned: None },
+            RecentProject { path: "/p2".into(), name: "P2".into(), last_opened_at: 200, pinned: None },
+            RecentProject { path: "/p3".into(), name: "P3".into(), last_opened_at: 300, pinned: None },
+        ];
+        save_to(&temp_file, &list).unwrap();
+
+        forget_in(&temp_file, "/p2").unwrap();
+        let loaded = load_from(&temp_file);
+        let paths: Vec<&str> = loaded.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["/p1", "/p3"]);
+
+        let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_remember_keeps_pin_and_moves_to_front() {
+        let temp_file = temp_store("remember");
+        remember_in(&temp_file, Path::new("/p1"), "P1").unwrap();
+        remember_in(&temp_file, Path::new("/p2"), "P2").unwrap();
+        toggle_pin_in(&temp_file, "/p1").unwrap();
+
+        let initial = load_from(&temp_file);
+        assert_eq!(initial[0].path, "/p2");
+        assert_eq!(initial[1].path, "/p1");
+        assert_eq!(initial[1].pinned, Some(true));
+
+        // Re-remembering /p1 moves it to the front while preserving its pin
+        remember_in(&temp_file, Path::new("/p1"), "P1").unwrap();
+        let updated = load_from(&temp_file);
+        assert_eq!(updated[0].path, "/p1");
+        assert_eq!(updated[0].pinned, Some(true));
+        assert_eq!(updated[1].path, "/p2");
+
+        let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_reveal_missing_path() {
+        let missing = env::temp_dir().join(format!("kone-reveal-missing-{}-dir", std::process::id()));
+        let _ = fs::remove_dir_all(&missing);
+        let res = reveal(&missing);
+        assert_eq!(res.unwrap_err(), "That folder no longer exists.");
     }
 
     fn opts(parent: &Path, name: &str, command: Option<&str>) -> CreateOptions {
