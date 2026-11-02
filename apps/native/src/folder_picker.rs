@@ -56,6 +56,10 @@ const META_DELAY: Duration = Duration::from_millis(80);
 const META_SHIFT: f32 = -6.;
 /// The list's height follows its content on this curve.
 const HEIGHT_EASE: Duration = Duration::from_millis(420);
+/// Autocomplete child names stay usable this long: long enough to skip
+/// re-listing while one completion is typed out, short enough that a folder
+/// created mid-session still turns up.
+const CHILD_CACHE_TTL: Duration = Duration::from_secs(10);
 
 fn row_spring() -> Transition {
     Transition::Spring(Spring::new(320., 20., 0.8).expect("valid spring"))
@@ -219,6 +223,12 @@ pub struct FolderPicker {
     cancel_hovering: bool,
     scroll: ScrollHandle,
     recent_descend: Option<(PathBuf, Instant)>,
+    /// The address bar's last text, so an edit can be told from a deletion.
+    last_input: String,
+    /// A delete key started the edit in flight; never complete over it.
+    deleting: bool,
+    /// Child folder names per parent, for the address bar's completion.
+    child_cache: HashMap<PathBuf, (Vec<String>, Instant)>,
     /// Set when the address bar submits, so the same Enter is not read a
     /// second time by the bubble handler after focus moves to the card.
     enter_at: Option<Instant>,
@@ -255,7 +265,7 @@ impl FolderPicker {
                 InputEvent::PressEnter { .. } => this.submit_path(window, cx),
                 InputEvent::Focus => this.set_input_ink(true, cx),
                 InputEvent::Blur => this.set_input_ink(false, cx),
-                InputEvent::Change => {}
+                InputEvent::Change => this.on_input_change(window, cx),
             },
         );
 
@@ -286,6 +296,9 @@ impl FolderPicker {
             cancel_hovering: false,
             scroll: ScrollHandle::new(),
             recent_descend: None,
+            last_input: String::new(),
+            deleting: false,
+            child_cache: HashMap::new(),
             enter_at: None,
             phase: Phase::In,
             started: Instant::now(),
@@ -450,16 +463,121 @@ impl FolderPicker {
         collapse(&self.home, path)
     }
 
+    /// Completes the trailing segment of the address bar against the parent's
+    /// children, the way a shell completes a path. Only runs on the way in:
+    /// a deletion leaves the field exactly as the user left it.
+    fn on_input_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.path_input.read(cx).value().to_string();
+        let previous = std::mem::replace(&mut self.last_input, value.clone());
+        if self.deleting {
+            self.deleting = false;
+            return;
+        }
+        if value == previous || self.path_input.read(cx).cursor() != value.len() {
+            return;
+        }
+        let Some(frag) = value
+            .rsplit('/')
+            .next()
+            .filter(|frag| !frag.is_empty())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let expanded = expand(&self.home, &value);
+        let Some(parent) = expanded
+            .parent()
+            .filter(|parent| parent.is_absolute())
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        if let Some((names, at)) = self.child_cache.get(&parent) {
+            if at.elapsed() < CHILD_CACHE_TTL {
+                let names = names.clone();
+                self.apply_completion(value, frag, names, window, cx);
+                return;
+            }
+        }
+        // Reading a parent can be slow on a network mount; keep it off the
+        // frame and complete only if the field is still where it was.
+        let task = cx.background_spawn(async move {
+            let names = child_dir_names(&parent);
+            (parent, names)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (parent, names) = task.await;
+            let Some(names) = names else { return };
+            this.update_in(cx, |this, window, cx| {
+                this.child_cache.insert(parent, (names.clone(), Instant::now()));
+                this.apply_completion(value, frag, names, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Appends the first child of the parent whose name starts with `frag` and
+    /// selects the appended part, so the next keystroke replaces it.
+    fn apply_completion(
+        &mut self,
+        base: String,
+        frag: String,
+        names: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.path_input.read(cx).value().to_string() != base
+            || self.path_input.read(cx).cursor() != base.len()
+        {
+            return;
+        }
+        let lower = frag.to_lowercase();
+        let typed_chars = frag.chars().count();
+        let Some(name) = names.into_iter().find(|name| {
+            name.chars().count() > typed_chars && name.to_lowercase().starts_with(&lower)
+        }) else {
+            return;
+        };
+        let suffix: String = name.chars().skip(typed_chars).collect();
+        let completed = format!("{base}{suffix}");
+        let typed = base.len();
+        self.set_input_text(completed.clone(), window, cx);
+        self.path_input.update(cx, |state, cx| {
+            state.set_selected_range(typed..completed.len(), cx);
+        });
+    }
+
+    /// Collapses a selected completion at the caret, accepting it. Returns
+    /// whether there was one to accept.
+    fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.path_input.read(cx).focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        let range = self.path_input.read(cx).selected_range();
+        if range.is_empty() {
+            return false;
+        }
+        let end = range.end;
+        self.path_input.update(cx, |state, cx| state.set_selected_range(end..end, cx));
+        true
+    }
+
     fn current(&self) -> Option<&Crumb> {
         self.trail.last()
+    }
+
+    fn set_input_text(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.last_input = value.clone();
+        self.path_input.update(cx, |state, cx| {
+            state.set_value(value, window, cx);
+        });
     }
 
     fn sync_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let display = self.current().map(|c| self.collapse(&c.path)).unwrap_or_default();
         let focused = self.path_input.read(cx).focus_handle(cx).is_focused(window);
-        self.path_input.update(cx, |state, cx| {
-            state.set_value(display, window, cx);
-        });
+        self.set_input_text(display, window, cx);
         self.set_input_ink(focused, cx);
     }
 
@@ -531,9 +649,7 @@ impl FolderPicker {
 
     fn reject_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let display = self.current().map(|c| self.collapse(&c.path)).unwrap_or_default();
-        self.path_input.update(cx, |state, cx| {
-            state.set_value(display, window, cx);
-        });
+        self.set_input_text(display, window, cx);
         self.set_input_error(cx);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -773,9 +889,7 @@ impl FolderPicker {
         self.hovered = None;
         let base = self.current().map(|c| self.collapse(&c.path)).unwrap_or_default();
         let seed = if base.ends_with('/') { base } else { format!("{base}/") };
-        self.path_input.update(cx, |state, cx| {
-            state.set_value(seed, window, cx);
-        });
+        self.set_input_text(seed, window, cx);
         self.path_input.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -783,9 +897,7 @@ impl FolderPicker {
     fn reset_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_idx = None;
         let display = self.current().map(|c| self.collapse(&c.path)).unwrap_or_default();
-        self.path_input.update(cx, |state, cx| {
-            state.set_value(display, window, cx);
-        });
+        self.set_input_text(display, window, cx);
         self.focus.focus(window, cx);
         self.set_input_ink(false, cx);
         cx.notify();
@@ -1265,9 +1377,37 @@ impl Render for FolderPicker {
             .bg(hsla(colors.ground.alpha(0.62 * scrim)))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "tab" {
-                    this.tab_focus(event.keystroke.modifiers.shift, window, cx);
-                    cx.stop_propagation();
+                let key = event.keystroke.key.as_str();
+                let input_focused = this.path_input.read(cx).focus_handle(cx).is_focused(window);
+                // Any key that isn't a delete ends the deletion it may follow,
+                // so a no-op backspace can't swallow the next completion.
+                if key != "backspace" && key != "delete" {
+                    this.deleting = false;
+                }
+                match key {
+                    "tab" => {
+                        // A selected completion is the thing Tab is for; only
+                        // once there is none does it walk the focus ring.
+                        if !this.accept_completion(window, cx) {
+                            this.tab_focus(event.keystroke.modifiers.shift, window, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                    "right" if this.accept_completion(window, cx) => {
+                        cx.stop_propagation();
+                    }
+                    "/" => {
+                        // Take the completion, then let the slash land after it.
+                        this.accept_completion(window, cx);
+                    }
+                    "backspace" | "delete" if input_focused => this.deleting = true,
+                    "up" | "down" if input_focused => {
+                        // The field is one line, so the arrows belong to the
+                        // rows, the way they do in the web picker.
+                        this.move_focus(key == "down", window, cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
                 }
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1590,10 +1730,19 @@ fn expand(home: &Path, raw: &str) -> PathBuf {
     if raw == "~" {
         return home.to_path_buf();
     }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return home.join(rest);
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    // Typing `/a/b/` should land on the same folder as `/a/b`; the trailing
+    // separators carry no information and would otherwise echo back in the bar.
+    let text = path.to_string_lossy();
+    if text.len() <= 1 || !text.ends_with('/') {
+        return path;
     }
-    PathBuf::from(raw)
+    let trimmed = text.trim_end_matches('/');
+    if trimmed.is_empty() { PathBuf::from("/") } else { PathBuf::from(trimmed) }
 }
 
 fn collapse(home: &Path, path: &Path) -> String {
@@ -1621,15 +1770,7 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
             continue;
         }
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else { continue };
-        let is_dir = if file_type.is_dir() {
-            true
-        } else if file_type.is_symlink() {
-            fs::metadata(&path).is_ok_and(|meta| meta.is_dir())
-        } else {
-            false
-        };
-        if !is_dir {
+        if !entry_is_dir(&entry) {
             continue;
         }
         let repo = is_repo_root(&path);
@@ -1641,6 +1782,34 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
     let repo = is_repo_root(dir);
     let branch = if repo { read_branch(dir) } else { None };
     Ok(Listing { repo, branch, entries })
+}
+
+/// The address bar only needs names, not the git enrichment a full listing
+/// pays for.
+fn child_dir_names(dir: &Path) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        if entry_is_dir(&entry) {
+            names.push(name);
+        }
+    }
+    names.sort_by_cached_key(|name| name.to_lowercase());
+    Some(names)
+}
+
+fn entry_is_dir(entry: &fs::DirEntry) -> bool {
+    let Ok(file_type) = entry.file_type() else { return false };
+    if file_type.is_dir() {
+        true
+    } else if file_type.is_symlink() {
+        fs::metadata(entry.path()).is_ok_and(|meta| meta.is_dir())
+    } else {
+        false
+    }
 }
 
 fn is_repo_root(dir: &Path) -> bool {
