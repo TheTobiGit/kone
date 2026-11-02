@@ -88,10 +88,19 @@ impl Shell {
         // pace than the art, but still a timer: not a frame on every vsync.
         let ticker = cx.spawn_in(window, async move |this, cx| {
             let mut pace = ART_FRAME;
+            let mut was_active = true;
             loop {
                 cx.background_executor().timer(pace).await;
                 let alive = this.update_in(cx, |this: &mut Self, window, cx| {
-                    if !window.is_window_active() {
+                    let active = window.is_window_active();
+                    // Coming back to the window: folders may have moved or
+                    // changed meanwhile, so re-read the recents and their git.
+                    let came_back = active && !was_active;
+                    was_active = active;
+                    if came_back && this.project.is_none() {
+                        this.reload_recents(cx);
+                    }
+                    if !active {
                         return ART_FRAME;
                     }
                     cx.notify();
@@ -172,7 +181,9 @@ impl Shell {
     fn edit_recents(&mut self, edit: impl FnOnce() -> std::io::Result<()> + Send + 'static, cx: &mut Context<Self>) {
         self.open_error = None;
         let task = cx.background_spawn(async move { edit() });
-        self._recents_task = Some(cx.spawn(async move |this, cx| {
+        // Detached, so a later reload can't cancel this edit's follow-up; the
+        // store lock orders the writes themselves.
+        cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
@@ -180,7 +191,8 @@ impl Shell {
                 }
                 this.reload_recents(cx);
             });
-        }));
+        })
+        .detach();
     }
 
     pub(crate) fn toggle_pin(&mut self, path: String, cx: &mut Context<Self>) {
@@ -192,8 +204,17 @@ impl Shell {
     }
 
     pub(crate) fn reveal(&mut self, path: String, cx: &mut Context<Self>) {
-        self.open_error = crate::projects::reveal(std::path::Path::new(&path)).err();
-        cx.notify();
+        self.open_error = None;
+        let task = cx.background_spawn(async move { crate::projects::reveal(std::path::Path::new(&path)) });
+        cx.spawn(async move |this, cx| {
+            if let Err(message) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.open_error = Some(message);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Opens kone's own folder browser, not the system path panel.
@@ -216,6 +237,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.picker = None;
+                this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
@@ -257,6 +279,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.creator = None;
+                this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
@@ -288,6 +311,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.cloner = None;
+                this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
@@ -301,10 +325,11 @@ impl Shell {
         let task = cx.background_spawn(async move { crate::projects::open(&path) });
         self._open_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(project) => {
                         this.hovered = None;
+                        this.query.update(cx, |q, cx| q.set_value("", window, cx));
                         this.project = Some(project);
                     }
                     Err(message) => this.open_error = Some(message),
@@ -475,6 +500,10 @@ impl Render for Shell {
         };
         let body = if let Some(project) = self.project.clone() {
             self.project_view(&project, &c, cx).into_any_element()
+        } else if self.recents.is_none() {
+            // The list is a small file read; show nothing rather than flash the
+            // empty launcher for a frame before it lands.
+            div().flex_1().into_any_element()
         } else if recents.is_some() {
             let mut grid = div()
                 .flex()
@@ -502,10 +531,16 @@ impl Render for Shell {
                         .child(format!("No projects match \u{201c}{}\u{201d}", query.trim())),
                 );
             }
-            if let Some(err) = self.open_error.clone() {
-                section = section.child(div().absolute().bottom(px(crate::stickfolk::STRIP + 4.)).text_size(px(12.)).text_color(hsla(c.danger)).child(err));
+            let wrap = div().relative().flex().flex_col().flex_1().min_h(px(0.)).child(section);
+            match self.open_error.clone() {
+                Some(err) => wrap
+                    .child(
+                        div().absolute().left_0().right_0().bottom(px(crate::stickfolk::STRIP + 4.)).flex().justify_center()
+                            .child(div().px(px(10.)).py(px(4.)).rounded(px(8.)).bg(hsla(c.ground)).text_size(px(12.)).text_color(hsla(c.danger)).child(err)),
+                    )
+                    .into_any_element(),
+                None => wrap.into_any_element(),
             }
-            section.into_any_element()
         } else {
             let actions = div().relative().flex().flex_1().flex_col().items_center().justify_center().child(
                     start_rows()
@@ -607,7 +642,7 @@ impl Render for Shell {
                     .h(px(crate::stickfolk::STRIP))
             })
             .child(
-                div().relative().flex().justify_end().items_center().gap(px(12.)).pt(px(8.)).pr(px(8.)).when(home, |d| d.child(search).child(sort)).child(
+                div().relative().flex().justify_end().items_center().gap(px(12.)).pt(px(8.)).pr(px(8.)).child(
                     div()
                         .id("settings")
                         .size(px(36.))
@@ -619,7 +654,7 @@ impl Render for Shell {
                         .text_color(hsla(c.muted))
                         .hover(|s| s.bg(hsla(c.hover)).text_color(hsla(c.ink)))
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
-                ),
+                ).when(home, |d| d.child(search).child(sort)),
             )
             .child(body);
 
@@ -648,8 +683,9 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let m = e.keystroke.modifiers;
+                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
                 let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
-                if home && (m.platform || m.control) && e.keystroke.key == "k" {
+                if home && !busy && (m.platform || m.control) && !m.alt && e.keystroke.key.eq_ignore_ascii_case("k") {
                     this.query.update(cx, |q, cx| q.focus(window, cx));
                     cx.stop_propagation();
                 }

@@ -17,6 +17,14 @@ use serde::{Deserialize, Serialize};
 
 const MAX: usize = 24;
 
+/// Serializes every read-modify-write of the store, so two edits racing on
+/// background threads can't drop one another's change.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentProject {
@@ -83,12 +91,20 @@ pub fn remember(path: &Path, name: &str) -> io::Result<()> {
 
 fn remember_in(file: &Path, path: &Path, name: &str) -> io::Result<()> {
     let key = path.to_string_lossy().into_owned();
+    let _guard = store_lock();
     let mut list = load_from(file);
     let pinned = list.iter().find(|p| p.path == key).and_then(|p| p.pinned);
     list.retain(|p| p.path != key);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     list.insert(0, RecentProject { path: key, name: name.to_string(), last_opened_at: now, pinned });
-    list.truncate(MAX);
+    // Over the cap, the oldest unpinned entry goes first, so a pin is never
+    // silently evicted while an unpinned project remains.
+    while list.len() > MAX {
+        match list.iter().rposition(|p| p.pinned != Some(true)) {
+            Some(i) => list.remove(i),
+            None => list.pop().expect("non-empty"),
+        };
+    }
     save_to(file, &list)
 }
 
@@ -115,6 +131,7 @@ pub fn toggle_pin(path: &str) -> io::Result<()> {
 }
 
 fn toggle_pin_in(file: &Path, path: &str) -> io::Result<()> {
+    let _guard = store_lock();
     let mut list = load_from(file);
     for p in &mut list {
         if p.path == path {
@@ -133,31 +150,34 @@ pub fn forget(path: &str) -> io::Result<()> {
 }
 
 fn forget_in(file: &Path, path: &str) -> io::Result<()> {
+    let _guard = store_lock();
     let mut list = load_from(file);
     list.retain(|p| p.path != path);
     save_to(file, &list)
 }
 
+/// Opens the folder in the file manager and waits for the opener to report
+/// back. Blocking: call it off the UI thread.
 pub fn reveal(path: &Path) -> Result<(), String> {
     if !path.is_dir() {
         return Err("That folder no longer exists.".to_string());
     }
-
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(not(target_os = "macos"))]
     let mut cmd = std::process::Command::new("xdg-open");
-
-    cmd.arg(path);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-
-    let mut child = cmd.spawn().map_err(|e| format!("Couldn't reveal folder: {e}"))?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    let status = cmd
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("Couldn't open the file manager: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Couldn't open the file manager.".to_string())
+    }
 }
 
 /// Validates the folder, records it, and reads what the project view shows.
@@ -565,6 +585,23 @@ mod tests {
         let paths: Vec<&str> = res.iter().map(|p| p.path.as_str()).collect();
         // Pins first (300, 150), then unpinned descending (200, 200 preserved order, 100, 50)
         assert_eq!(paths, vec!["/b", "/d", "/c", "/f", "/a", "/e"]);
+    }
+
+    #[test]
+    fn the_cap_evicts_the_oldest_unpinned_before_a_pin() {
+        let file = temp_store("cap");
+        let mut list: Vec<RecentProject> = (0..MAX)
+            .map(|i| RecentProject { path: format!("/p{i}"), name: format!("p{i}"), last_opened_at: 1000 - i as u64, pinned: None })
+            .collect();
+        list[MAX - 1].pinned = Some(true);
+        save_to(&file, &list).unwrap();
+        remember_in(&file, Path::new("/new"), "new").unwrap();
+        let loaded = load_from(&file);
+        assert_eq!(loaded.len(), MAX);
+        assert_eq!(loaded[0].path, "/new");
+        assert!(loaded.iter().any(|p| p.path == format!("/p{}", MAX - 1)), "pin evicted");
+        assert!(!loaded.iter().any(|p| p.path == format!("/p{}", MAX - 2)), "oldest unpinned kept");
+        let _ = fs::remove_file(&file);
     }
 
     #[test]

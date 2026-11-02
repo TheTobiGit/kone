@@ -165,7 +165,7 @@ impl Shell {
                             .items_end()
                             .gap(px(9.))
                             .min_w(px(0.))
-                            .when(matches!(tile, Some(Tile::Repo(_))), |d| {
+                            .when(tile.is_none() || matches!(tile, Some(Tile::Repo(_))), |d| {
                                 d.child(svg().path("icons/gh-mark.svg").size(px(15.)).flex_shrink_0().text_color(hsla(c.ink_soft)))
                             })
                             .child(
@@ -196,7 +196,6 @@ impl Shell {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.hovered = None;
                     act(this, path.clone(), window, cx)
                 }))
                 .child(svg().path(icon).size(px(14.)).text_color(hsla(if on { c.ink } else { c.muted })))
