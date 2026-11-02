@@ -681,6 +681,19 @@ impl Render for Shell {
             .relative()
             .size_full()
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
+                // Esc in the search field clears it first, then leaves the field.
+                if home && !busy && e.keystroke.key == "escape" && this.query.read(cx).focus_handle(cx).is_focused(window) {
+                    if this.query.read(cx).value().is_empty() {
+                        this.focus.focus(window, cx);
+                    } else {
+                        this.query.update(cx, |q, cx| q.set_value("", window, cx));
+                    }
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let m = e.keystroke.modifiers;
                 let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
