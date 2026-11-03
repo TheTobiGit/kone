@@ -4,7 +4,9 @@ use std::{
     fs::File,
     io::Read,
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
+    time::{Duration, Instant},
+    sync::atomic::AtomicBool,
 };
 
 use kone_rpc::{Branch, ChangedFile, FileChange, RepoSummary};
@@ -14,45 +16,26 @@ const FILE_CAP: u64 = 512 * 1024;
 const UNTRACKED_CAP: usize = 2000;
 const READ_CAP: u64 = 32 * 1024 * 1024;
 
-fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("--no-optional-locks")
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+const REPO_TIMEOUT: Duration = Duration::from_secs(3);
+const STATUS_CAP: u64 = 8 * 1024 * 1024;
+
+fn git_until(dir: &Path, args: &[&str], deadline: Instant, cap: usize) -> Option<Vec<u8>> {
+    let remaining = deadline.checked_duration_since(Instant::now())?;
+    let out = crate::process::output(
+        Command::new("git").arg("-C").arg(dir).arg("--no-optional-locks").args(args),
+        remaining, &AtomicBool::new(false), cap,
+    ).ok()?;
     out.status.success().then_some(out.stdout)
 }
 
-/// `git status` output kept per repo: an unignored generated tree can list
-/// millions of paths, so the reader stops (and kills git) past this.
-const STATUS_CAP: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    git_until(dir, args, Instant::now() + REPO_TIMEOUT, STATUS_CAP as usize + 1)
+}
 
-/// Keep at most `STATUS_CAP` bytes, probing one extra byte for truncation.
-/// A capped read drops its trailing partial record.
-fn git_capped(dir: &Path, args: &[&str]) -> Option<(Vec<u8>, bool)> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("--no-optional-locks")
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut out = Vec::new();
-    child.stdout.take()?.take(STATUS_CAP + 1).read_to_end(&mut out).ok()?;
-    let (out, partial) = cap_status(out, STATUS_CAP as usize);
-    if partial {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Some((out, true));
-    }
-    child.wait().ok()?.success().then_some((out, false))
+fn git_capped(dir: &Path, args: &[&str], deadline: Instant) -> Option<(Vec<u8>, bool)> {
+    let out = git_until(dir, args, deadline, STATUS_CAP as usize + 1)?;
+    Some(cap_status(out, STATUS_CAP as usize))
 }
 
 fn cap_status(mut out: Vec<u8>, cap: usize) -> (Vec<u8>, bool) {
@@ -134,6 +117,7 @@ pub(super) fn summary(root: &Path) -> Option<(RepoSummary, bool)> {
     if std::fs::symlink_metadata(root.join(".git")).is_err() {
         return None;
     }
+    let deadline = Instant::now() + REPO_TIMEOUT;
     let (status, partial) = git_capped(
         root,
         &[
@@ -143,15 +127,18 @@ pub(super) fn summary(root: &Path) -> Option<(RepoSummary, bool)> {
             "--untracked-files=all",
             "-z",
         ],
+        deadline,
     )?;
-    let diff = git(
+    let diff = git_until(
         root,
         &["diff", "--numstat", "-z", "--no-renames", "HEAD", "--"],
+        deadline, STATUS_CAP as usize,
     )
     .or_else(|| {
-        git(
+        git_until(
             root,
             &["diff", "--numstat", "-z", "--no-renames", "--cached", "--"],
+            deadline, STATUS_CAP as usize,
         )
     })
     .unwrap_or_default();

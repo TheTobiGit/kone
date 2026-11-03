@@ -30,9 +30,7 @@ pub enum Tile {
 
 /// Reads every row's folder state. Blocking: call it off the UI thread.
 pub fn read_tiles(paths: &[String]) -> HashMap<String, Tile> {
-    paths
-        .iter()
-        .map(|p| {
+    crate::process::parallel_map(paths, |p| {
             let path = Path::new(p);
             let tile = if !path.is_dir() {
                 Tile::Missing
@@ -44,8 +42,7 @@ pub fn read_tiles(paths: &[String]) -> HashMap<String, Tile> {
                 }
             };
             (p.clone(), tile)
-        })
-        .collect()
+        }).into_iter().collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

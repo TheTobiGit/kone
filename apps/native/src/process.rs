@@ -106,3 +106,15 @@ mod tests {
         assert_eq!(out.stderr, b"error\n");
     }
 }
+
+/// A shared, small worker bound for filesystem/git batches. Results retain
+/// input order; the caller stays off the UI thread.
+pub fn parallel_map<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    std::thread::scope(|scope| {
+        let work = &work;
+        let workers: Vec<_> = items.chunks(items.len().div_ceil(4).max(1))
+            .map(|chunk| scope.spawn(move || chunk.iter().map(work).collect::<Vec<_>>()))
+            .collect();
+        workers.into_iter().flat_map(|worker| worker.join().expect("batch worker panicked")).collect()
+    })
+}

@@ -401,10 +401,31 @@ impl FolderPicker {
         let seq = self.nav_seq;
         self.loading = true;
         cx.notify();
+        let git_path = path.clone();
         let task = cx.background_spawn(async move { list_dir(&path) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
+            let paths = result.as_ref().ok().map(|listing| {
+                std::iter::once(git_path).chain(listing.entries.iter().map(|entry| entry.path.clone())).collect::<Vec<_>>()
+            });
             this.update_in(cx, |this, window, cx| this.finish(seq, load, result, window, cx)).ok();
+            if let Some(paths) = paths {
+                let summaries = cx.background_spawn(async move {
+                    crate::process::parallel_map(&paths, |path| (path.clone(), repo_summary(path)))
+                }).await;
+                this.update_in(cx, |this, _, cx| {
+                    if seq != this.nav_seq { return; }
+                    for (path, git) in summaries {
+                        if let Some(entry) = this.entries.iter_mut().find(|entry| entry.path == path) {
+                            entry.git = git.clone();
+                        }
+                        if let Some(crumb) = this.trail.iter_mut().find(|crumb| crumb.path == path) {
+                            crumb.git = git;
+                        }
+                    }
+                    cx.notify();
+                }).ok();
+            }
         })
         .detach();
     }
@@ -1893,12 +1914,11 @@ fn list_dir(dir: &Path) -> io::Result<Listing> {
         if !entry_is_dir(&entry) {
             continue;
         }
-        let git = repo_summary(&path);
-        entries.push(Entry { name, path, git });
+        entries.push(Entry { name, path, git: None });
     }
     entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
 
-    Ok(Listing { git: repo_summary(dir), entries })
+    Ok(Listing { git: None, entries })
 }
 
 fn entry_is_dir(entry: &fs::DirEntry) -> bool {
@@ -1998,15 +2018,13 @@ pub(crate) fn cached_diff_stat(dir: &Path) -> (u32, u32) {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
+    let mut command = std::process::Command::new("git");
+    command.arg("-C")
         .arg(dir)
         .arg("--no-optional-locks")
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        ;
+    let output = crate::process::output(&mut command, Duration::from_secs(2), &std::sync::atomic::AtomicBool::new(false), 8 * 1024 * 1024).ok()?;
     output.status.success().then_some(output.stdout)
 }
 
