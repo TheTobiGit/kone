@@ -9,7 +9,7 @@ use kone_theme::{hsla, Theme};
 use gpui_kit::base::input::{Input, InputEvent, InputState};
 
 use crate::magnet::{glide, Magnet};
-use crate::recents::{Dir, Sort, Tile};
+use crate::recents::{Dir, Sort};
 
 pub const SANS: &str = "Geist";
 
@@ -68,48 +68,39 @@ const ART_FRAME: Duration = Duration::from_millis(42);
 const GRID_FOOT: f32 = 40.;
 const REST_FRAME: Duration = Duration::from_millis(250);
 
+#[derive(Clone)]
+enum Screen {
+    Home,
+    Project(crate::projects::OpenProject),
+}
+
+#[derive(Clone, Default)]
+enum Modal {
+    #[default]
+    None,
+    Picker(Entity<crate::folder_picker::FolderPicker>),
+    Create(Entity<crate::create_project::CreateProject>),
+    Clone(Entity<crate::clone_modal::CloneModal>),
+}
+
+impl Modal {
+    fn is_open(&self) -> bool { !matches!(self, Self::None) }
+}
+
 pub struct Shell {
     magnets: [Magnet; 3],
     folk: crate::stickfolk::Hover,
     started: Instant,
-    picker: Option<Entity<crate::folder_picker::FolderPicker>>,
-    _picker_sub: Option<Subscription>,
-    creator: Option<Entity<crate::create_project::CreateProject>>,
-    _creator_sub: Option<Subscription>,
-    cloner: Option<Entity<crate::clone_modal::CloneModal>>,
-    _cloner_sub: Option<Subscription>,
+    modal: Modal,
+    _modal_sub: Option<Subscription>,
     create_session: crate::create_project::CreateProjectSession,
     /// Where the last successful clone this session landed.
     clone_location: Option<String>,
-    project: Option<crate::projects::OpenProject>,
+    screen: Screen,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
-    /// The recent projects, in launcher order; `None` until the first read lands.
-    recents: Option<Vec<crate::projects::RecentProject>>,
-    pub(crate) tiles: std::collections::HashMap<String, Tile>,
-    pub(crate) hovered: Option<String>,
-    /// Addition and removal tweens, by path.
-    /// Set while rendering a tile that is outside the scroll view.
-    pub(crate) count_hold: bool,
-    pub(crate) tile_counts: std::collections::HashMap<String, [crate::recents::CountMotion; 2]>,
-    /// Each tile's hover springs, by path.
-    pub(crate) tile_motion: std::collections::HashMap<String, crate::recents::TileMotion>,
-    pub(crate) entry_motion: Option<std::collections::HashMap<String, crate::recents::EntryMotion>>,
-    start_entry: Option<crate::recents::EntryMotion>,
-    /// Keyboard focus in the grid: (cell, stop). Cells are the shown tiles
-    /// then the start actions; see `recents::slots` for the stops.
-    kb: Option<(usize, usize)>,
-    /// A tile the keyboard focus follows across a reorder (a pin from the keys).
-    kb_follow: Option<(String, usize)>,
-    /// The grid's scroller, so keyboard focus can bring its row into view.
-    grid_scroll: ScrollHandle,
-    /// The row last brought into view for the keyboard.
-    kb_row: Option<usize>,
-    query: Entity<InputState>,
-    sort: Sort,
+    pub(crate) home: crate::recents::home::Home,
     focus: FocusHandle,
-    _query_sub: Subscription,
-    _recents_task: Option<Task<()>>,
     _ticker: Task<()>,
 }
 
@@ -128,13 +119,13 @@ impl Shell {
                     // changed meanwhile, so re-read the recents and their git.
                     let came_back = active && !was_active;
                     was_active = active;
-                    if came_back && this.project.is_none() {
+                    if came_back && matches!(this.screen, Screen::Home) {
                         this.reload_recents(cx);
                     }
                     if !active {
                         return REST_FRAME;
                     }
-                    if this.picker.is_some() || this.creator.is_some() || this.cloner.is_some() {
+                    if this.modal.is_open() {
                         REST_FRAME
                     } else if this.folk_shown() {
                         cx.notify();
@@ -153,7 +144,7 @@ impl Shell {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search projects"));
         let query_sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
-                this.hovered = None;
+                this.home.hovered = None;
                 cx.notify();
             }
         });
@@ -163,34 +154,15 @@ impl Shell {
             magnets: Default::default(),
             folk: Default::default(),
             started: Instant::now(),
-            picker: None,
-            _picker_sub: None,
-            creator: None,
-            _creator_sub: None,
-            cloner: None,
-            _cloner_sub: None,
+            modal: Modal::None,
+            _modal_sub: None,
             create_session: Default::default(),
             clone_location: None,
-            project: None,
+            screen: Screen::Home,
             open_error: None,
             _open_task: None,
-            recents: None,
-            tiles: Default::default(),
-            hovered: None,
-            count_hold: false,
-            tile_counts: Default::default(),
-            tile_motion: Default::default(),
-            entry_motion: None,
-            start_entry: None,
-            kb: None,
-            kb_follow: None,
-            grid_scroll: ScrollHandle::new(),
-            kb_row: None,
-            query,
-            sort: Sort::Recent,
+            home: crate::recents::home::Home::new(query, query_sub),
             focus,
-            _query_sub: query_sub,
-            _recents_task: None,
             _ticker: ticker,
         };
         shell.reload_recents(cx);
@@ -204,15 +176,15 @@ impl Shell {
             let paths: Vec<String> = list.iter().map(|p| p.path.clone()).collect();
             (list, paths)
         });
-        self._recents_task = Some(cx.spawn(async move |this, cx| {
+        self.home._recents_task = Some(cx.spawn(async move |this, cx| {
             let (list, paths) = task.await;
             let _ = this.update(cx, |this, cx| {
-                this.recents = Some(list);
+                this.home.recents = Some(list);
                 cx.notify();
             });
             let tiles = cx.background_spawn(async move { crate::recents::read_tiles(&paths) }).await;
             let _ = this.update(cx, |this, cx| {
-                this.tiles = tiles;
+                this.home.tiles = tiles;
                 cx.notify();
             });
         }));
@@ -260,7 +232,7 @@ impl Shell {
 
     /// Opens kone's own folder browser, not the system path panel.
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
+        if self.modal.is_open() {
             return;
         }
         for m in &mut self.magnets {
@@ -270,19 +242,19 @@ impl Shell {
         self.open_error = None;
         let picker = cx.new(|cx| crate::folder_picker::FolderPicker::new(window, cx));
         picker.update(cx, |picker, cx| picker.start(window, cx));
-        self._picker_sub = Some(cx.subscribe_in(
+        self._modal_sub = Some(cx.subscribe_in(
             &picker,
             window,
             |this, _, event: &crate::folder_picker::FolderPickerEvent, window, cx| {
                 if let crate::folder_picker::FolderPickerEvent::Picked(path) = event {
                     this.open_project(path.clone(), window, cx);
                 }
-                this.picker = None;
+                this.modal = Modal::None;
                 this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
-        self.picker = Some(picker);
+        self.modal = Modal::Picker(picker);
         cx.notify();
     }
 }
@@ -290,7 +262,7 @@ impl Shell {
 impl Shell {
     /// Opens the create card; a created project opens like a picked folder.
     fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
+        if self.modal.is_open() {
             return;
         }
         for m in &mut self.magnets {
@@ -300,7 +272,7 @@ impl Shell {
         self.open_error = None;
         let creator = cx.new(|cx| crate::create_project::CreateProject::new(&self.create_session, window, cx));
         creator.update(cx, |c, cx| c.start(window, cx));
-        self._creator_sub = Some(cx.subscribe_in(
+        self._modal_sub = Some(cx.subscribe_in(
             &creator,
             window,
             |this, creator, event: &crate::create_project::CreateProjectEvent, window, cx| {
@@ -319,18 +291,18 @@ impl Shell {
                 if let crate::create_project::CreateProjectEvent::Created(path) = event {
                     this.open_project(path.clone(), window, cx);
                 }
-                this.creator = None;
+                this.modal = Modal::None;
                 this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
-        self.creator = Some(creator);
+        self.modal = Modal::Create(creator);
         cx.notify();
     }
 
     /// Opens the clone card; a cloned project opens like a picked folder.
     fn clone_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.creator.is_some() || self.cloner.is_some() {
+        if self.modal.is_open() {
             return;
         }
         for m in &mut self.magnets {
@@ -340,7 +312,7 @@ impl Shell {
         self.open_error = None;
         let cloner = cx.new(|cx| crate::clone_modal::CloneModal::new(self.clone_location.clone(), window, cx));
         cloner.update(cx, |c, _| c.start());
-        self._cloner_sub = Some(cx.subscribe_in(
+        self._modal_sub = Some(cx.subscribe_in(
             &cloner,
             window,
             |this, _cloner, event: &crate::clone_modal::CloneModalEvent, window, cx| {
@@ -351,12 +323,12 @@ impl Shell {
                     });
                     this.open_project(path.clone(), window, cx);
                 }
-                this.cloner = None;
+                this.modal = Modal::None;
                 this.focus.focus(window, cx);
                 cx.notify();
             },
         ));
-        self.cloner = Some(cloner);
+        self.modal = Modal::Clone(cloner);
         cx.notify();
     }
 
@@ -369,9 +341,9 @@ impl Shell {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(project) => {
-                        this.hovered = None;
-                        this.query.update(cx, |q, cx| q.set_value("", window, cx));
-                        this.project = Some(project);
+                        this.home.hovered = None;
+                        this.home.query.update(cx, |q, cx| q.set_value("", window, cx));
+                        this.screen = Screen::Project(project);
                     }
                     Err(message) => this.open_error = Some(message),
                 }
@@ -389,9 +361,9 @@ impl Shell {
         if m.control || m.platform || m.alt || m.function {
             return false;
         }
-        let Some(list) = self.recents.as_ref() else { return false };
-        let query = self.query.read(cx).value().to_string();
-        let shown = crate::recents::shown(list, &query, self.sort);
+        let Some(list) = self.home.recents.as_ref() else { return false };
+        let query = self.home.query.read(cx).value().to_string();
+        let shown = crate::recents::shown(list, &query, self.home.sort);
         let tiles = shown.len();
         let cells = tiles + 1;
         let key = e.keystroke.key.as_str();
@@ -406,25 +378,25 @@ impl Shell {
             if m.shift {
                 return false;
             }
-            let next = match self.kb {
+            let next = match self.home.kb {
                 None => 0,
                 Some((cell, _)) => crate::recents::grid_step(cell, cells, dir),
             };
-            self.kb = Some((next, 0));
-            self.kb_follow = None;
+            self.home.kb = Some((next, 0));
+            self.home.kb_follow = None;
             // Bring it into view even within the same row (after a wheel scroll).
-            self.kb_row = None;
-            self.hovered = None;
+            self.home.kb_row = None;
+            self.home.hovered = None;
             cx.notify();
             return true;
         }
         if m.shift {
             return false;
         }
-        let Some((cell, slot)) = self.kb else { return false };
+        let Some((cell, slot)) = self.home.kb else { return false };
         if key == "escape" {
-            self.kb = None;
-            self.kb_follow = None;
+            self.home.kb = None;
+            self.home.kb_follow = None;
             cx.notify();
             return true;
         }
@@ -439,14 +411,14 @@ impl Shell {
         match (tile, action) {
             (Some(path), 0) => self.open_project(std::path::PathBuf::from(path), window, cx),
             (Some(path), 1) => {
-                self.kb_follow = Some((path.clone(), slot));
+                self.home.kb_follow = Some((path.clone(), slot));
                 self.toggle_pin(path, cx)
             }
             (Some(path), 2) => self.reveal(path, cx),
             (Some(path), _) => {
                 // The next tile slides into this cell; focus stays on the folder.
-                self.kb = Some((cell, 0));
-                self.kb_follow = None;
+                self.home.kb = Some((cell, 0));
+                self.home.kb_follow = None;
                 self.forget(path, cx);
             }
             (None, 0) => self.create_project(window, cx),
@@ -460,27 +432,27 @@ impl Shell {
     /// Tab / Shift+Tab: every stop in the grid, then out to the search field
     /// and back in.
     fn grid_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(list) = self.recents.as_ref() else { return };
-        let query = self.query.read(cx).value().to_string();
-        let tiles = crate::recents::shown(list, &query, self.sort).len();
+        let Some(list) = self.home.recents.as_ref() else { return };
+        let query = self.home.query.read(cx).value().to_string();
+        let tiles = crate::recents::shown(list, &query, self.home.sort).len();
         let first = (0, 0);
         let last = (tiles, crate::recents::slots(tiles, tiles) - 1);
-        self.kb_follow = None;
-        self.hovered = None;
-        self.kb_row = None;
+        self.home.kb_follow = None;
+        self.home.hovered = None;
+        self.home.kb_row = None;
         if !self.focus.is_focused(window) {
             // From the search field (the page's only other stop) into the grid.
             self.focus.focus(window, cx);
-            self.kb = Some(if forward { first } else { last });
+            self.home.kb = Some(if forward { first } else { last });
         } else {
-            match self.kb {
+            match self.home.kb {
                 // Past either end of the grid, back to the search field.
                 Some(at) if (forward && at == last) || (!forward && at == first) => {
-                    self.kb = None;
-                    self.query.update(cx, |q, cx| q.focus(window, cx));
+                    self.home.kb = None;
+                    self.home.query.update(cx, |q, cx| q.focus(window, cx));
                 }
-                Some(at) => self.kb = Some(crate::recents::tab_step(at, tiles, forward)),
-                None => self.kb = Some(if forward { first } else { last }),
+                Some(at) => self.home.kb = Some(crate::recents::tab_step(at, tiles, forward)),
+                None => self.home.kb = Some(if forward { first } else { last }),
             }
         }
         cx.notify();
@@ -488,17 +460,17 @@ impl Shell {
 
     /// Leaves keyboard mode.
     pub(crate) fn clear_kb(&mut self) {
-        self.kb = None;
-        self.kb_follow = None;
+        self.home.kb = None;
+        self.home.kb_follow = None;
     }
 
     /// The stick folk live only on the empty start screen.
     fn folk_shown(&self) -> bool {
-        self.project.is_none() && self.recents.as_ref().is_some_and(|l| l.is_empty())
+        matches!(self.screen, Screen::Home) && self.home.recents.as_ref().is_some_and(|l| l.is_empty())
     }
 
     fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.project = None;
+        self.screen = Screen::Home;
         self.focus.focus(window, cx);
         self.reload_recents(cx);
         cx.notify();
@@ -581,63 +553,63 @@ impl Render for Shell {
         let slots: Vec<_> = self.magnets.iter().map(|m| m.bounds.clone()).collect();
         // While a launcher modal is up the launcher is in session: the active row
         // spins, the others dim, and none of them answer the pointer.
-        let busy = self.picker.is_some() || self.creator.is_some() || self.cloner.is_some();
-        let session = if self.creator.is_some() {
+        let busy = self.modal.is_open();
+        let session = if matches!(self.modal, Modal::Create(_)) {
             "create"
-        } else if self.cloner.is_some() {
+        } else if matches!(self.modal, Modal::Clone(_)) {
             "clone"
         } else {
             "open"
         };
         let spin = self.started.elapsed().as_secs_f32();
         // Electron's rule: the recents home once there is anything to list.
-        let recents = self.recents.clone().filter(|l| !l.is_empty());
-        let query = self.query.read(cx).value().to_string();
-        let shown = recents.as_ref().map(|l| crate::recents::shown(l, &query, self.sort)).unwrap_or_default();
+        let recents = self.home.recents.clone().filter(|l| !l.is_empty());
+        let query = self.home.query.read(cx).value().to_string();
+        let shown = recents.as_ref().map(|l| crate::recents::shown(l, &query, self.home.sort)).unwrap_or_default();
         let now = self.started.elapsed();
         // Search or sort can shrink the grid under the keyboard focus.
         let cells = shown.len() + 1;
-        if let Some((path, slot)) = &self.kb_follow
+        if let Some((path, slot)) = &self.home.kb_follow
             && let Some(i) = shown.iter().position(|p| &p.path == path)
         {
-            self.kb = self.kb.map(|_| (i, *slot));
+            self.home.kb = self.home.kb.map(|_| (i, *slot));
         }
-        if let Some((cell, slot)) = self.kb {
+        if let Some((cell, slot)) = self.home.kb {
             let cell = cell.min(cells - 1);
-            self.kb = Some((cell, slot.min(crate::recents::slots(cell, shown.len()) - 1)));
+            self.home.kb = Some((cell, slot.min(crate::recents::slots(cell, shown.len()) - 1)));
         }
-        let kb = if busy || recents.is_none() { None } else { self.kb };
+        let kb = if busy || recents.is_none() { None } else { self.home.kb };
         let row = kb.map(|(cell, _)| cell / crate::recents::COLS);
-        if row != self.kb_row {
-            self.kb_row = row;
+        if row != self.home.kb_row {
+            self.home.kb_row = row;
             if let Some(row) = row
-                && self.grid_scroll.bounds().size.height > px(0.)
+                && self.home.grid_scroll.bounds().size.height > px(0.)
             {
-                let view = self.grid_scroll.bounds().size.height.as_f32() - GRID_FOOT;
-                let cur = -self.grid_scroll.offset().y.as_f32();
+                let view = self.home.grid_scroll.bounds().size.height.as_f32() - GRID_FOOT;
+                let cur = -self.home.grid_scroll.offset().y.as_f32();
                 let next = crate::recents::reveal_scroll(cur, row, view.max(0.));
                 if next != cur {
-                    let x = self.grid_scroll.offset().x;
-                    self.grid_scroll.set_offset(point(x, px(-next)));
+                    let x = self.home.grid_scroll.offset().x;
+                    self.home.grid_scroll.set_offset(point(x, px(-next)));
                 }
             }
         }
-        let mounted = self.project.is_none() && recents.is_some();
-        if mounted && self.entry_motion.is_none() {
-            self.entry_motion = Some(shown.iter().enumerate().map(|(i, p)|
+        let mounted = matches!(self.screen, Screen::Home) && recents.is_some();
+        if mounted && self.home.entry_motion.is_none() {
+            self.home.entry_motion = Some(shown.iter().enumerate().map(|(i, p)|
                 (p.path.clone(), crate::recents::EntryMotion::new(i, now))).collect());
-            self.start_entry = Some(crate::recents::EntryMotion::new(shown.len(), now));
+            self.home.start_entry = Some(crate::recents::EntryMotion::new(shown.len(), now));
         } else if !mounted {
-            self.entry_motion = None;
-            self.start_entry = None;
+            self.home.entry_motion = None;
+            self.home.start_entry = None;
         }
         let mut springing = false;
-        let start_entry = self.start_entry.as_mut().map(|m| {
+        let start_entry = self.home.start_entry.as_mut().map(|m| {
             let (t, moving) = m.sample(now);
             springing |= moving;
             t
         }).unwrap_or(1.);
-        let tile_els: Vec<AnyElement> = if self.project.is_none() {
+        let tile_els: Vec<AnyElement> = if matches!(self.screen, Screen::Home) {
             let els = shown
                 .iter()
                 .enumerate()
@@ -645,12 +617,12 @@ impl Render for Shell {
                     let focus = kb.filter(|(cell, _)| *cell == i).map(|(_, slot)| slot);
                     let row = i / crate::recents::COLS;
                     let top = crate::recents::GRID_TOP + row as f32 * (crate::recents::TILE_H + crate::recents::GAP_Y);
-                    let cur = -self.grid_scroll.offset().y.as_f32();
-                    let view = self.grid_scroll.bounds().size.height.as_f32();
+                    let cur = -self.home.grid_scroll.offset().y.as_f32();
+                    let view = self.home.grid_scroll.bounds().size.height.as_f32();
                     // Before the first layout the view is 0: treat it as visible.
-                    self.count_hold = view > 0. && (top + crate::recents::TILE_H < cur || top > cur + view);
-                    let (el, moving) = self.tile(p, busy, focus, now, &c, cx);
-                    self.count_hold = false;
+                    self.home.count_hold = view > 0. && (top + crate::recents::TILE_H < cur || top > cur + view);
+                    let (el, moving) = self.home.tile(p, busy, focus, now, &c, cx);
+                    self.home.count_hold = false;
                     springing |= moving;
                     el
                 })
@@ -658,13 +630,13 @@ impl Render for Shell {
             // Counts belong to the mounted list, not the filter: a project
             // hidden by search keeps its settled total.
             if let Some(list) = recents.as_ref() {
-                self.tile_counts.retain(|k, _| list.iter().any(|p| &p.path == k));
+                self.home.tile_counts.retain(|k, _| list.iter().any(|p| &p.path == k));
             }
-            self.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
+            self.home.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
             els
         } else {
-            self.tile_counts.clear();
-            self.tile_motion.clear();
+            self.home.tile_counts.clear();
+            self.home.tile_motion.clear();
             Vec::new()
         };
         // Frames only while entry, hover or counts are still moving.
@@ -731,9 +703,9 @@ impl Render for Shell {
                 .child(row(1, "open", "icons/folder-open.svg", "Open from local folder"))
                 .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
         };
-        let body = if let Some(project) = self.project.clone() {
+        let body = if let Screen::Project(project) = self.screen.clone() {
             self.project_view(&project, &c, cx).into_any_element()
-        } else if self.recents.is_none() {
+        } else if self.home.recents.is_none() {
             // The list is a small file read; show nothing rather than flash the
             // empty launcher for a frame before it lands.
             div().flex_1().into_any_element()
@@ -753,7 +725,7 @@ impl Render for Shell {
                     .flex().items_center().child(start_rows())));
             let mut section = div()
                 .id("recents")
-                .track_scroll(&self.grid_scroll)
+                .track_scroll(&self.home.grid_scroll)
                 .relative()
                 .flex_1()
                 .min_h(px(0.))
@@ -795,7 +767,7 @@ impl Render for Shell {
             }
         };
 
-        let home = self.project.is_none() && self.recents.as_ref().is_some_and(|l| !l.is_empty());
+        let home = matches!(self.screen, Screen::Home) && self.home.recents.as_ref().is_some_and(|l| !l.is_empty());
         let search = div()
             .id("search")
             .flex()
@@ -806,7 +778,7 @@ impl Render for Shell {
             .rounded(px(11.))
             .bg(hsla(c.hover))
             .child(svg().path("icons/search.svg").size(px(15.)).flex_shrink_0().text_color(hsla(c.muted)))
-            .child(div().w(px(176.)).text_size(px(13.)).text_color(hsla(c.ink)).child(Input::new(&self.query)))
+            .child(div().w(px(176.)).text_size(px(13.)).text_color(hsla(c.ink)).child(Input::new(&self.home.query)))
             .child(
                 div().px(px(6.)).py(px(2.)).rounded(px(5.)).border_1().border_color(hsla(c.muted.alpha(0.25)))
                     .font_family(crate::folder_picker::MONO).text_size(px(10.)).line_height(px(10.)).text_color(hsla(c.muted))
@@ -826,11 +798,11 @@ impl Render for Shell {
             .text_color(hsla(c.ink_soft))
             .hover(|s| s.bg(hsla(c.hover)))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.sort = if this.sort == Sort::Recent { Sort::Name } else { Sort::Recent };
-                this.hovered = None;
+                this.home.sort = if this.home.sort == Sort::Recent { Sort::Name } else { Sort::Recent };
+                this.home.hovered = None;
                 cx.notify();
             }))
-            .child(if self.sort == Sort::Recent { "Recent" } else { "Name" })
+            .child(if self.home.sort == Sort::Recent { "Recent" } else { "Name" })
             .child(svg().path("icons/arrow-down.svg").size(px(12.)).text_color(hsla(c.muted)));
         let panel = div()
             .relative()
@@ -849,16 +821,16 @@ impl Render for Shell {
                 // A press outside any field gives focus back to the page (the
                 // root's own focus-on-press never sees it past this listener);
                 // a field claiming the press has already prevented default.
-                let modal = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                let modal = this.modal.is_open();
                 if !modal && !window.default_prevented() && !this.focus.is_focused(window) {
                     this.focus.focus(window, cx);
                 }
                 // A pointer press ends keyboard mode, as :focus-visible does.
-                this.kb_follow = None;
-                if this.kb.take().is_some() {
+                this.home.kb_follow = None;
+                if this.home.kb.take().is_some() {
                     cx.notify();
                 }
-                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                let busy = this.modal.is_open();
                 if this.folk_shown() && this.folk.press(e.position, busy) {
                     cx.notify();
                 }
@@ -867,7 +839,7 @@ impl Render for Shell {
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 // Most moves land outside every pull zone; only a changed
                 // target needs a frame (the glide itself runs on animation frames).
-                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                let busy = this.modal.is_open();
                 let mut moved = false;
                 for m in &mut this.magnets {
                     moved |= if busy { m.release() } else { m.track(e.position) };
@@ -949,14 +921,14 @@ impl Render for Shell {
                     .on_action(cx.listener(|this, _: &GridPrev, window, cx| this.grid_tab(false, window, cx)))
             })
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
-                let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
+                let busy = this.modal.is_open();
+                let home = matches!(this.screen, Screen::Home) && this.home.recents.as_ref().is_some_and(|l| !l.is_empty());
                 // Esc in the search field clears it first, then leaves the field.
-                if home && !busy && e.keystroke.key == "escape" && this.query.read(cx).focus_handle(cx).is_focused(window) {
-                    if this.query.read(cx).value().is_empty() {
+                if home && !busy && e.keystroke.key == "escape" && this.home.query.read(cx).focus_handle(cx).is_focused(window) {
+                    if this.home.query.read(cx).value().is_empty() {
                         this.focus.focus(window, cx);
                     } else {
-                        this.query.update(cx, |q, cx| q.set_value("", window, cx));
+                        this.home.query.update(cx, |q, cx| q.set_value("", window, cx));
                     }
                     cx.stop_propagation();
                     return;
@@ -970,35 +942,32 @@ impl Render for Shell {
                 }
                 // Down from the search field drops into the grid.
                 let m = e.keystroke.modifiers;
-                if home && !busy && e.keystroke.key == "down" && !m.modified() && this.query.read(cx).focus_handle(cx).is_focused(window) {
+                if home && !busy && e.keystroke.key == "down" && !m.modified() && this.home.query.read(cx).focus_handle(cx).is_focused(window) {
                     this.focus.focus(window, cx);
-                    this.kb = Some((0, 0));
-                    this.kb_follow = None;
+                    this.home.kb = Some((0, 0));
+                    this.home.kb_follow = None;
                     cx.notify();
                     cx.stop_propagation();
                 }
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let m = e.keystroke.modifiers;
-                let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
-                let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
+                let busy = this.modal.is_open();
+                let home = matches!(this.screen, Screen::Home) && this.home.recents.as_ref().is_some_and(|l| !l.is_empty());
                 if home && !busy && (m.platform || m.control) && !m.alt && e.keystroke.key.eq_ignore_ascii_case("k") {
-                    this.kb = None;
-                    this.kb_follow = None;
-                    this.query.update(cx, |q, cx| q.focus(window, cx));
+                    this.home.kb = None;
+                    this.home.kb_follow = None;
+                    this.home.query.update(cx, |q, cx| q.focus(window, cx));
                     cx.stop_propagation();
                 }
             }))
             .child(frame);
-        if let Some(picker) = self.picker.clone() {
-            root = root.child(picker);
-        }
-        if let Some(creator) = self.creator.clone() {
-            root = root.child(creator);
-        }
-        if let Some(cloner) = self.cloner.clone() {
-            root = root.child(cloner);
-        }
+        root = match self.modal.clone() {
+            Modal::None => root,
+            Modal::Picker(picker) => root.child(picker),
+            Modal::Create(creator) => root.child(creator),
+            Modal::Clone(cloner) => root.child(cloner),
+        };
         root
     }
 }
