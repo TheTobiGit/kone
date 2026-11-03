@@ -339,3 +339,45 @@ fn detail_paths_are_literal_including_pathspec_magic() {
     repo.write("[u].txt", "untracked\n");
     assert_eq!(repo.detail("[u].txt", false).diff.unwrap().added, 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn replaced_parent_directory_does_not_break_snapshot_or_staged_preview() {
+    let repo = Repo::new();
+    fs::create_dir(repo.0.join("dir")).unwrap();
+    repo.write("dir/file", "base\n");
+    repo.commit();
+    repo.write("dir/file", "staged\n");
+    repo.git(&["add", "."]);
+    fs::remove_dir_all(repo.0.join("dir")).unwrap();
+    std::os::unix::fs::symlink(std::env::temp_dir(), repo.0.join("dir")).unwrap();
+    let snapshot = repo.snapshot();
+    let file = snapshot
+        .changes
+        .iter()
+        .find(|c| c.path == "dir/file")
+        .unwrap();
+    assert!(file.staged && file.unstaged);
+    assert_eq!(
+        repo.detail("dir/file", true)
+            .content
+            .unwrap()
+            .text
+            .as_deref(),
+        Some("staged\n")
+    );
+    assert!(repo.detail_error("dir/file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn repository_root_retains_trailing_newlines() {
+    let repo = Repo::new();
+    let renamed = repo.0.with_file_name(format!(
+        "{}\n",
+        repo.0.file_name().unwrap().to_str().unwrap()
+    ));
+    fs::rename(&repo.0, &renamed).unwrap();
+    let repo = Repo(renamed);
+    assert_eq!(repo.snapshot().root, repo.0.to_str().unwrap());
+}

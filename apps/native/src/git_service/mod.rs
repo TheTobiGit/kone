@@ -61,18 +61,18 @@ fn root(
         FILE_CAP,
         false,
     ) {
-        Ok(bytes) => Ok(Some(std::path::PathBuf::from(
-            String::from_utf8(bytes)
-                .map_err(|_| "Repository path is not UTF-8")?
-                .trim_end_matches('\n'),
-        ))),
+        Ok(bytes) => {
+            let path = String::from_utf8(bytes).map_err(|_| "Repository path is not UTF-8")?;
+            Ok(Some(std::path::PathBuf::from(
+                path.strip_suffix('\n').unwrap_or(&path),
+            )))
+        }
         Err(error) if error.contains("not a git repository") => Ok(None),
         Err(error) => Err(error),
     }
 }
-/// Reject lexical escapes and symlinked parent directories. A final symlink
-/// stays a symlink: callers never follow it into content outside the project.
-fn safe_path(root: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
+/// Validate Git's repository-relative path without consulting the worktree.
+fn repo_path(root: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
     let path = Path::new(rel);
     if rel.is_empty()
         || path.is_absolute()
@@ -82,8 +82,13 @@ fn safe_path(root: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
     {
         return Err("Invalid repository path".into());
     }
+    Ok(root.join(path))
+}
+/// Reject lexical escapes and parent directories resolving outside the project.
+/// A final symlink stays a symlink; previews never follow it.
+fn safe_path(root: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let full = root.join(path);
+    let full = repo_path(&root, rel)?;
     let mut parent = full.parent();
     while let Some(dir) = parent {
         match std::fs::canonicalize(dir) {

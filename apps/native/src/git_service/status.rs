@@ -57,9 +57,15 @@ pub(super) fn snapshot(path: &Path, cancel: &AtomicBool) -> Result<Option<GitSna
     let mut bytes_read = 0usize;
     for change in &mut snapshot.changes {
         check(deadline, cancel)?;
-        let full = safe_path(&root, &change.path)?;
+        // A tracked parent may have been replaced with a symlink. Keep its
+        // Git change/counts, but never follow that parent for filesystem reads.
+        let full = safe_path(&root, &change.path).ok();
         if change.status == "untracked" {
-            let content = read_file(&full)?;
+            let content = full
+                .as_deref()
+                .map(read_file)
+                .transpose()?
+                .unwrap_or_default();
             if let Some(text) = content.text {
                 bytes_read = bytes_read.saturating_add(text.len());
                 if bytes_read > 32 * 1024 * 1024 {
@@ -71,8 +77,9 @@ pub(super) fn snapshot(path: &Path, cancel: &AtomicBool) -> Result<Option<GitSna
             change.added = *added;
             change.removed = *removed;
         }
-        change.modified_at = std::fs::symlink_metadata(&full)
-            .ok()
+        change.modified_at = full
+            .as_ref()
+            .and_then(|full| std::fs::symlink_metadata(full).ok())
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|t| t.as_secs_f64() * 1000.);

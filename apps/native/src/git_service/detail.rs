@@ -8,7 +8,11 @@ pub(super) fn detail(
 ) -> Result<FileDetail, String> {
     let deadline = Instant::now() + TIMEOUT;
     let root = root(path, deadline, cancel)?.ok_or("Not a git repository")?;
-    let full = safe_path(&root, file)?;
+    let full = if staged {
+        repo_path(&root, file)?
+    } else {
+        safe_path(&root, file)?
+    };
     // A staged row previews the index, even if the worktree has since become
     // binary, oversized, deleted, or a different file type.
     let content = if staged {
