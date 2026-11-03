@@ -91,6 +91,10 @@ pub struct Shell {
     kb: Option<(usize, usize)>,
     /// A tile the keyboard focus follows across a reorder (a pin from the keys).
     kb_follow: Option<(String, usize)>,
+    /// The grid's scroller, so keyboard focus can bring its row into view.
+    grid_scroll: ScrollHandle,
+    /// The row last brought into view for the keyboard.
+    kb_row: Option<usize>,
     query: Entity<InputState>,
     sort: Sort,
     focus: FocusHandle,
@@ -166,6 +170,8 @@ impl Shell {
             tile_motion: Default::default(),
             kb: None,
             kb_follow: None,
+            grid_scroll: ScrollHandle::new(),
+            kb_row: None,
             query,
             sort: Sort::Recent,
             focus,
@@ -402,6 +408,7 @@ impl Shell {
         let Some((cell, slot)) = self.kb else { return false };
         if key == "escape" {
             self.kb = None;
+            self.kb_follow = None;
             cx.notify();
             return true;
         }
@@ -423,6 +430,7 @@ impl Shell {
             (Some(path), _) => {
                 // The next tile slides into this cell; focus stays on the folder.
                 self.kb = Some((cell, 0));
+                self.kb_follow = None;
                 self.forget(path, cx);
             }
             (None, 0) => self.create_project(window, cx),
@@ -433,27 +441,31 @@ impl Shell {
         true
     }
 
-    /// Tab / Shift+Tab: every stop in the grid while the page has focus;
-    /// anywhere else (the search field) the usual focus cycling.
+    /// Tab / Shift+Tab: every stop in the grid, then out to the search field
+    /// and back in.
     fn grid_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus.is_focused(window) {
-            if forward {
-                window.focus_next(cx)
-            } else {
-                window.focus_prev(cx)
-            }
-            return;
-        }
         let Some(list) = self.recents.as_ref() else { return };
         let query = self.query.read(cx).value().to_string();
         let tiles = crate::recents::shown(list, &query, self.sort).len();
-        self.kb = Some(match self.kb {
-            None if forward => (0, 0),
-            None => (tiles, 2),
-            Some(at) => crate::recents::tab_step(at, tiles, forward),
-        });
+        let first = (0, 0);
+        let last = (tiles, crate::recents::slots(tiles, tiles) - 1);
         self.kb_follow = None;
         self.hovered = None;
+        if !self.focus.is_focused(window) {
+            // From the search field (the page's only other stop) into the grid.
+            self.focus.focus(window, cx);
+            self.kb = Some(if forward { first } else { last });
+        } else {
+            match self.kb {
+                // Past either end of the grid, back to the search field.
+                Some(at) if (forward && at == last) || (!forward && at == first) => {
+                    self.kb = None;
+                    self.query.update(cx, |q, cx| q.focus(window, cx));
+                }
+                Some(at) => self.kb = Some(crate::recents::tab_step(at, tiles, forward)),
+                None => self.kb = Some(if forward { first } else { last }),
+            }
+        }
         cx.notify();
     }
 
@@ -567,6 +579,19 @@ impl Render for Shell {
             self.kb = Some((cell, slot.min(crate::recents::slots(cell, shown.len()) - 1)));
         }
         let kb = if busy || recents.is_none() { None } else { self.kb };
+        let row = kb.map(|(cell, _)| cell / crate::recents::COLS);
+        if row != self.kb_row {
+            self.kb_row = row;
+            if let Some(row) = row {
+                let view = self.grid_scroll.bounds().size.height.as_f32() - crate::stickfolk::STRIP - 16.;
+                let cur = -self.grid_scroll.offset().y.as_f32();
+                let next = crate::recents::reveal_scroll(cur, row, view.max(0.));
+                if next != cur {
+                    let x = self.grid_scroll.offset().x;
+                    self.grid_scroll.set_offset(point(x, px(-next)));
+                }
+            }
+        }
         let mut springing = false;
         let tile_els: Vec<AnyElement> = if self.project.is_none() {
             let els = shown
@@ -666,6 +691,7 @@ impl Render for Shell {
             grid = grid.child(div().w(px(crate::recents::CELL_W)).h(px(116.)).flex().items_center().ml(px(-6.)).child(start_rows()));
             let mut section = div()
                 .id("recents")
+                .track_scroll(&self.grid_scroll)
                 .relative()
                 .flex_1()
                 .min_h(px(0.))
@@ -759,6 +785,7 @@ impl Render for Shell {
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 // A pointer press ends keyboard mode, as :focus-visible does.
+                this.kb_follow = None;
                 if this.kb.take().is_some() {
                     cx.notify();
                 }
@@ -869,6 +896,7 @@ impl Render for Shell {
                 if home && !busy && e.keystroke.key == "down" && !m.modified() && this.query.read(cx).focus_handle(cx).is_focused(window) {
                     this.focus.focus(window, cx);
                     this.kb = Some((0, 0));
+                    this.kb_follow = None;
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -879,6 +907,7 @@ impl Render for Shell {
                 let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
                 if home && !busy && (m.platform || m.control) && !m.alt && e.keystroke.key.eq_ignore_ascii_case("k") {
                     this.kb = None;
+                    this.kb_follow = None;
                     this.query.update(cx, |q, cx| q.focus(window, cx));
                     cx.stop_propagation();
                 }

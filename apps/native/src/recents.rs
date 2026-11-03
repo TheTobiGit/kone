@@ -126,6 +126,26 @@ pub fn tab_step((cell, slot): (usize, usize), tiles: usize, forward: bool) -> (u
     }
 }
 
+/// Where the grid's scroll should sit so `row` is fully in view, given the
+/// current scroll `cur` (px down from the top) and the visible height `view`.
+/// Rows start `GRID_TOP` down the scroller and are `TILE_H + GAP_Y` apart.
+pub fn reveal_scroll(cur: f32, row: usize, view: f32) -> f32 {
+    // Room for the hover lift above and the focus ring below.
+    const MARGIN: f32 = 12.;
+    let top = GRID_TOP + row as f32 * (TILE_H + GAP_Y) - MARGIN;
+    let bottom = top + TILE_H + 2. * MARGIN;
+    if top < cur {
+        top.max(0.)
+    } else if bottom > cur + view {
+        bottom - view
+    } else {
+        cur
+    }
+}
+
+/// The grid's top inside the scroller: the section's top padding plus the grid's.
+pub const GRID_TOP: f32 = 72. + 8.;
+
 /// Electron's folder lift: `{ type: 'spring', stiffness: 420, damping: 38, mass: 0.85 }`.
 fn lift_spring() -> Transition {
     Transition::Spring(Spring::new(420., 38., 0.85).expect("valid spring"))
@@ -218,7 +238,7 @@ pub fn ring(radius: f32, inset: f32, color: kone_theme::Rgba) -> Div {
 
 /// Tile geometry from `ProjectFolder.vue`.
 pub const TILE_W: f32 = 200.;
-const TILE_H: f32 = 116.;
+pub const TILE_H: f32 = 116.;
 const POCKET_H: f32 = 92.;
 /// Room on the right for the side actions.
 const ACTIONS_W: f32 = 36.;
@@ -488,5 +508,17 @@ mod tests {
         m.sample(false, Duration::from_secs(2));
         let (l, _, moving) = m.sample(false, Duration::from_secs(4));
         assert!(l.abs() < 1e-3 && !moving);
+    }
+
+    #[test]
+    fn reveal_scrolls_only_as_far_as_needed() {
+        // Row 0 in view at the top: no change.
+        assert_eq!(reveal_scroll(0., 0, 500.), 0.);
+        // Row 4 sits at 80 + 560 = 640..756; with margins 628..768.
+        assert_eq!(reveal_scroll(0., 4, 500.), 268.);
+        // Back up to row 1 (220 - 12 = 208) from further down.
+        assert_eq!(reveal_scroll(400., 1, 500.), 208.);
+        // Row 0 from below goes to its top (68), never past the start.
+        assert_eq!(reveal_scroll(300., 0, 500.), 68.);
     }
 }
