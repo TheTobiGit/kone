@@ -63,9 +63,7 @@ pub struct ProjectView {
     card_motion: std::collections::HashMap<String, (gpui_ce_motion::MotionValue, bool)>,
     card_lifts: std::collections::HashMap<String, f32>,
     folder_hover: bool,
-    folder_motion: gpui_ce_motion::MotionValue,
-    folder_active: bool,
-    folder_lift: f32,
+    folder_motion: folder::FolderMotion,
 }
 struct DetailState {
     entry: FileEntry,
@@ -168,9 +166,7 @@ impl ProjectView {
             card_motion: Default::default(),
             card_lifts: Default::default(),
             folder_hover: false,
-            folder_motion: gpui_ce_motion::MotionValue::new(0.),
-            folder_active: false,
-            folder_lift: 0.,
+            folder_motion: folder::FolderMotion::default(),
         };
         view.refresh(cx);
         view
@@ -402,21 +398,13 @@ impl Render for ProjectView {
                 window.request_animation_frame();
             }
         }
-        if self.folder_active != self.folder_hover {
-            self.folder_active = self.folder_hover;
-            self.folder_motion.animate(
-                if self.folder_hover { 1. } else { 0. },
-                gpui_ce_motion::Transition::Spring(
-                    gpui_ce_motion::Spring::new(420., 38., 0.85).expect("valid folder spring"),
-                ),
-                now,
-            );
-        }
-        let folder = self.folder_motion.sample(now, cx.reduce_motion());
-        self.folder_lift = folder.value() as f32;
-        if folder.is_animating() {
-            window.request_animation_frame();
-        }
+        let (added, removed) = self
+            .model
+            .as_ref()
+            .map_or((0, 0), |m| (m.added, m.removed));
+        let folder_hover = self.folder_hover && !self.peek && self.detail.is_none();
+        self.folder_motion
+            .sample(folder_hover, added, removed, now, window, cx);
         div()
             .relative()
             .size_full()

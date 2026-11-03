@@ -29,7 +29,7 @@ impl ProjectView {
                 .items_start()
                 .gap(px(20.))
                 .child(greeting)
-                .child(self.render_folder(&c, cx))
+                .child(self.render_folder(&c, window, cx))
         } else if vp_width <= 1440.0 {
             div()
                 .flex()
@@ -37,7 +37,7 @@ impl ProjectView {
                 .justify_between()
                 .gap(px(32.))
                 .child(div().min_w(px(0.)).flex_1().child(greeting))
-                .child(div().flex_shrink_0().child(self.render_folder(&c, cx)))
+                .child(div().flex_shrink_0().child(self.render_folder(&c, window, cx)))
         } else {
             div()
                 .flex()
@@ -65,9 +65,9 @@ impl ProjectView {
                     .w_full()
                     .max_w(px(896.))
                     .pt(px(if window.viewport_size().height.as_f32() < 850. {
-                        72.
+                        26.
                     } else {
-                        96.
+                        50.
                     }))
                     .pb(px(64.))
                     .flex()
@@ -85,7 +85,7 @@ impl ProjectView {
                         .absolute()
                         .bottom(px(40.))
                         .left(px(40.))
-                        .child(self.render_folder(&c, cx)),
+                        .child(self.render_folder(&c, window, cx)),
                 )
             })
             .into_any_element()

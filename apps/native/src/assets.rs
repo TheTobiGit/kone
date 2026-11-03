@@ -21,6 +21,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "finder.svg",
     "folder-open.svg",
     "folder.svg",
+    "folder-typescript.svg",
     "gh-mark.svg",
     "git-branch.svg",
     "github.svg",
