@@ -37,6 +37,10 @@ pub(super) fn detail(
     let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
     if staged {
         args.push("--cached");
+    } else {
+        // A conflicted index otherwise emits a combined (@@@) diff. Compare
+        // the worktree with stage 2 so the same numbered unified view works.
+        args.push("--ours");
     }
     args.extend(["--", file]);
     let mut output = crate::repo::read_git(&root, &args, deadline, cancel, FILE_CAP, false);

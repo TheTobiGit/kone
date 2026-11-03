@@ -262,3 +262,40 @@ fn output_limit_is_an_error_not_a_clean_snapshot() {
     .unwrap_err();
     assert!(error.contains("limit"));
 }
+#[test]
+fn conflicted_files_show_numbered_worktree_diff() {
+    let repo = Repo::new();
+    repo.write("conflict.txt", "base\n");
+    repo.commit();
+    repo.git(&["checkout", "-qb", "other"]);
+    repo.write("conflict.txt", "theirs\n");
+    repo.commit();
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("conflict.txt", "ours\n");
+    repo.commit();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&repo.0)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "merge",
+            "other",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let snapshot = repo.snapshot();
+    assert_eq!(snapshot.changes[0].status, "conflicted");
+    assert!(!snapshot.changes[0].staged && snapshot.changes[0].unstaged);
+    let diff = repo.detail("conflict.txt", false).diff.unwrap();
+    assert!(!diff.hunks.is_empty());
+    assert!(
+        diff.hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.text.starts_with("<<<<<<<"))
+    );
+}
