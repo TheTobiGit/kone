@@ -137,7 +137,8 @@ pub fn reveal_scroll(cur: f32, row: usize, view: f32) -> f32 {
     if top < cur {
         top.max(0.)
     } else if bottom > cur + view {
-        bottom - view
+        // A view shorter than a row shows the row's top.
+        (bottom - view).min(top).max(0.)
     } else {
         cur
     }
@@ -182,7 +183,10 @@ impl TileMotion {
         }
         let lift = self.lift.sample(now, false);
         let side = self.side.sample(now, false);
-        (lift.value() as f32, side.value() as f32, lift.is_animating() || side.is_animating())
+        // On the way out the column is invisible below 0.01; its undershoot
+        // ringing past zero isn't worth frames.
+        let side_moving = side.is_animating() && (active || side.value() >= 0.01);
+        (lift.value() as f32, side.value() as f32, lift.is_animating() || side_moving)
     }
 }
 
@@ -224,14 +228,16 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 pub const REVEAL_TIP: &str = if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Reveal in file manager" };
 
 /// A keyboard focus ring hugging an element, `inset` px outside it.
+/// Like CSS `outline-offset`, the 2px stroke starts `inset` px out.
 pub fn ring(radius: f32, inset: f32, color: kone_theme::Rgba) -> Div {
+    let out = inset + 2.;
     div()
         .absolute()
-        .top(px(-inset))
-        .left(px(-inset))
-        .right(px(-inset))
-        .bottom(px(-inset))
-        .rounded(px(radius + inset))
+        .top(px(-out))
+        .left(px(-out))
+        .right(px(-out))
+        .bottom(px(-out))
+        .rounded(px(radius + out))
         .border_2()
         .border_color(hsla(color))
 }
@@ -267,7 +273,9 @@ impl Shell {
         let tile = self.tiles.get(&key);
         let missing = matches!(tile, Some(Tile::Missing));
         let lift = -6. * lift_t;
-        let side_t = side_t.clamp(0., 1.);
+        // Position rides the spring's overshoot as Electron's x/y do; only
+        // the opacity is held to 0..1.
+        let fade = side_t.clamp(0., 1.);
 
         let mut meta = div().flex().items_center().gap(px(10.)).h(px(13.)).font_family(crate::folder_picker::MONO).text_size(px(11.5));
         match tile {
@@ -354,7 +362,7 @@ impl Shell {
                             .child(
                                 div()
                                     .id(SharedString::from(format!("name:{key}")))
-                                    .tooltip(tip(project.name.clone()))
+                                    .when(!busy, |d| d.tooltip(tip(project.name.clone())))
                                     .min_w(px(0.))
                                     .truncate()
                                     .text_size(px(17.))
@@ -368,7 +376,7 @@ impl Shell {
             )
             // Electron rings the pocket, not the whole button, on keyboard focus.
             .when(focus == Some(0), |d| {
-                d.child(ring(22., 3., c.ink.alpha(0.26)).left(px(-3.)).top(px(TILE_H - POCKET_H - 3.)))
+                d.child(ring(22., 3., c.ink.alpha(0.26)).left(px(-5.)).top(px(TILE_H - POCKET_H - 5.)))
             });
 
         let side = |id: &str, icon: &'static str, label: &'static str, on: bool, ringed: bool, cx: &mut Context<Self>, act: fn(&mut Shell, String, &mut Window, &mut Context<Shell>)| {
@@ -381,17 +389,22 @@ impl Shell {
                 .items_center()
                 .justify_center()
                 .rounded(px(7.))
-                .cursor_pointer()
-                .hover(|s| s.bg(hsla(c.hover)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 // Like Electron's pointer-events: none, a column on its way out
-                // takes no clicks and shows no tips.
+                // takes no pointer at all: no hand, no wash, no clicks, no tips.
                 .when(active, |d| {
-                    d.on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        act(this, path.clone(), window, cx)
-                    }))
-                    .tooltip(tip(label))
+                    d.cursor_pointer()
+                        .hover(|s| s.bg(hsla(c.hover)))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            // As Electron's onSideAction: drop hover and focus so the
+                            // tile doesn't stay lifted after a reorder, a file
+                            // manager window, or its own removal.
+                            this.hovered = None;
+                            this.clear_kb();
+                            act(this, path.clone(), window, cx)
+                        }))
+                        .tooltip(tip(label))
                 })
                 .when(ringed, |d| d.child(ring(7., 2., c.ink.alpha(0.34))))
                 .child(svg().path(icon).size(px(14.)).text_color(hsla(if on { c.ink } else { c.muted })))
@@ -406,8 +419,8 @@ impl Shell {
             .flex_col()
             .justify_center()
             .gap(px(6.))
-            .opacity(side_t)
-            .when(side_t < 0.01, |d| d.invisible())
+            .opacity(fade)
+            .when(fade < 0.01, |d| d.invisible())
             .child(side("pin", "icons/pin.svg", if pinned { "Unpin" } else { "Pin to top" }, pinned, focus == Some(1), cx, |this, p, _, cx| this.toggle_pin(p, cx)))
             .child(side("reveal", "icons/finder.svg", REVEAL_TIP, false, focus == Some(2), cx, |this, p, _, cx| this.reveal(p, cx)))
             .child(side("forget", "icons/cancel.svg", "Remove", false, focus == Some(3), cx, |this, p, _, cx| this.forget(p, cx)));
@@ -418,13 +431,13 @@ impl Shell {
             .relative()
             .w(px(CELL_W))
             .pr(px(ACTIONS_W))
-            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+            .when(!busy, |d| d.on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 let next = if *over { Some(hover_key.clone()) } else if this.hovered.as_deref() == Some(hover_key.as_str()) { None } else { return };
                 if this.hovered != next {
                     this.hovered = next;
                     cx.notify();
                 }
-            }))
+            })))
             .child(folder)
             .child(actions)
             .into_any_element();

@@ -398,6 +398,8 @@ impl Shell {
             };
             self.kb = Some((next, 0));
             self.kb_follow = None;
+            // Bring it into view even within the same row (after a wheel scroll).
+            self.kb_row = None;
             self.hovered = None;
             cx.notify();
             return true;
@@ -451,6 +453,7 @@ impl Shell {
         let last = (tiles, crate::recents::slots(tiles, tiles) - 1);
         self.kb_follow = None;
         self.hovered = None;
+        self.kb_row = None;
         if !self.focus.is_focused(window) {
             // From the search field (the page's only other stop) into the grid.
             self.focus.focus(window, cx);
@@ -467,6 +470,12 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// Leaves keyboard mode.
+    pub(crate) fn clear_kb(&mut self) {
+        self.kb = None;
+        self.kb_follow = None;
     }
 
     fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -582,7 +591,9 @@ impl Render for Shell {
         let row = kb.map(|(cell, _)| cell / crate::recents::COLS);
         if row != self.kb_row {
             self.kb_row = row;
-            if let Some(row) = row {
+            if let Some(row) = row
+                && self.grid_scroll.bounds().size.height > px(0.)
+            {
                 let view = self.grid_scroll.bounds().size.height.as_f32() - crate::stickfolk::STRIP - 16.;
                 let cur = -self.grid_scroll.offset().y.as_f32();
                 let next = crate::recents::reveal_scroll(cur, row, view.max(0.));
@@ -782,8 +793,15 @@ impl Render for Shell {
             .bg(hsla(c.ground))
             // Presses inside the panel are the page's; only the frame drags.
             // A click on the floor strip tips a letter or kicks a ball for the crowd.
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
+                // A press outside any field gives focus back to the page (the
+                // root's own focus-on-press never sees it past this listener);
+                // a field claiming the press has already prevented default.
+                let modal = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
+                if !modal && !window.default_prevented() && !this.focus.is_focused(window) {
+                    this.focus.focus(window, cx);
+                }
                 // A pointer press ends keyboard mode, as :focus-visible does.
                 this.kb_follow = None;
                 if this.kb.take().is_some() {
@@ -835,7 +853,7 @@ impl Render for Shell {
                         .cursor_pointer()
                         .text_color(hsla(c.muted))
                         .hover(|s| s.bg(hsla(c.hover)).text_color(hsla(c.ink)))
-                        .tooltip(crate::recents::tip("Settings"))
+                        .when(!busy, |d| d.tooltip(crate::recents::tip("Settings")))
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
                 ).when(home, |d| d.child(search).child(sort)),
             )
@@ -883,6 +901,7 @@ impl Render for Shell {
                         this.query.update(cx, |q, cx| q.set_value("", window, cx));
                     }
                     cx.stop_propagation();
+                    return;
                 }
                 // The grid's keys belong to the page itself, never to the
                 // search field or a modal that has focus. Caught on the way
