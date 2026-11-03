@@ -738,7 +738,7 @@ impl Render for Shell {
                 .child(div().w(px(crate::recents::GRID_W)).child(grid));
             if shown.is_empty() {
                 section = section.child(
-                    div().w(px(crate::recents::GRID_W)).py(px(24.)).font_family(crate::folder_picker::MONO).text_size(px(12.)).text_color(hsla(c.muted))
+                    div().w(px(crate::recents::GRID_W)).py(px(24.)).font_family(crate::style::MONO).text_size(px(12.)).text_color(hsla(c.muted))
                         .child(format!("No projects match \u{201c}{}\u{201d}", query.trim())),
                 );
             }
@@ -781,7 +781,7 @@ impl Render for Shell {
             .child(div().w(px(176.)).text_size(px(13.)).text_color(hsla(c.ink)).child(Input::new(&self.home.query)))
             .child(
                 div().px(px(6.)).py(px(2.)).rounded(px(5.)).border_1().border_color(hsla(c.muted.alpha(0.25)))
-                    .font_family(crate::folder_picker::MONO).text_size(px(10.)).line_height(px(10.)).text_color(hsla(c.muted))
+                    .font_family(crate::style::MONO).text_size(px(10.)).line_height(px(10.)).text_color(hsla(c.muted))
                     .child(if cfg!(target_os = "macos") { "\u{2318}K" } else { "Ctrl K" }),
             );
         let sort = div()

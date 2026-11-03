@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(s.files[0].name, "a tracked\tfile");
         assert_eq!((s.files[0].added, s.files[0].removed), (2, 1));
         assert_eq!(
-            crate::folder_picker::repo_summary(&root).map(|s| (s.added, s.removed)),
+            crate::repo::repo_summary(&root).map(|s| (s.added, s.removed)),
             Some((2, 1))
         );
         let mut budget = ReadBudget::default();

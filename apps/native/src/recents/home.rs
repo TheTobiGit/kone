@@ -87,7 +87,7 @@ impl Home {
         // the opacity is held to 0..1.
         let fade = side_t.clamp(0., 1.);
 
-        let mut meta = div().flex().items_center().gap(px(10.)).h(px(13.)).font_family(crate::folder_picker::MONO).text_size(px(11.5));
+        let mut meta = div().flex().items_center().gap(px(10.)).h(px(13.)).font_family(crate::style::MONO).text_size(px(11.5));
         match tile {
             Some(Tile::Missing) => {
                 meta = meta.child(div().text_color(hsla(c.muted)).child("Folder not found"));

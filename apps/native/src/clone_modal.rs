@@ -16,11 +16,11 @@ use gpui_kit::*;
 use kone_theme::{hsla, Palette, Theme};
 
 use crate::clone::{parse_repo_ref, CloneCanceller, CloneUpdate};
-use crate::folder_picker::{
-    bezier, card_enter_tween, card_fade_tween, collapse, expand, home_dir, input_style,
-    paint_footer_band, paint_header_band, sample_hover, scrim_enter_tween, BAND_ARC, BAND_GAP,
-    CARD_RISE, CARD_WIDTH, ENTER, EXIT, FOOTER_H, HEADER_H, MONO,
-};
+use crate::motion::{bezier, card_enter_tween, card_fade_tween, sample_hover,
+    scrim_enter_tween, CARD_RISE, ENTER, EXIT};
+use crate::style::{input_style, paint_footer_band, paint_header_band, BAND_ARC,
+    BAND_GAP, CARD_WIDTH, FOOTER_H, HEADER_H, MONO};
+use crate::path_complete::{collapse, expand, home_dir};
 use crate::path_complete::{complete_on_change, CompletesPath, PathCompleter};
 use crate::shell::SANS;
 

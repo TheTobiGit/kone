@@ -12,6 +12,9 @@ mod projects;
 mod process;
 mod recents;
 mod shell;
+mod style;
+mod motion;
+mod repo;
 mod stickfolk;
 
 use gpui_kit::*;

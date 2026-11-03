@@ -217,7 +217,7 @@ pub fn open(path: &Path) -> Result<OpenProject, String> {
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
     // A folder inside a repo still belongs to it, as git-core's status()
     // resolves the top level: read the nearest ancestor that holds `.git`.
-    let summary = path.ancestors().find_map(crate::folder_picker::repo_summary);
+    let summary = path.ancestors().find_map(crate::repo::repo_summary);
     remember(&path, &name).map_err(|e| format!("Couldn't save the project list: {e}"))?;
     Ok(OpenProject {
         name,

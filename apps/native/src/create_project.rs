@@ -15,11 +15,11 @@ use gpui_kit::*;
 use kone_theme::{hsla, Palette, Theme};
 
 use crate::path_complete::{complete_on_change, CompletesPath, PathCompleter};
-use crate::folder_picker::{
-    bezier, card_enter_tween, card_fade_tween, collapse, expand, home_dir, input_style,
-    paint_footer_band, paint_header_band, sample_hover, scrim_enter_tween, BAND_ARC, BAND_GAP,
-    CARD_RISE, CARD_WIDTH, ENTER, EXIT, FOOTER_H, HEADER_H, MONO,
-};
+use crate::motion::{bezier, card_enter_tween, card_fade_tween, sample_hover,
+    scrim_enter_tween, CARD_RISE, ENTER, EXIT};
+use crate::style::{input_style, paint_footer_band, paint_header_band, BAND_ARC,
+    BAND_GAP, CARD_WIDTH, FOOTER_H, HEADER_H, MONO};
+use crate::path_complete::{collapse, expand, home_dir};
 use crate::projects::{self, CreateOptions};
 use crate::shell::SANS;
 
@@ -770,6 +770,13 @@ impl Render for CreateProject {
     }
 }
 
+
+impl Drop for CreateProject {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,11 +790,5 @@ mod tests {
         assert!(!session.readme);
         assert_eq!(session.visibility, projects::RepoVisibility::Private);
         assert_eq!(session.branch, "main");
-    }
-}
-
-impl Drop for CreateProject {
-    fn drop(&mut self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::Release);
     }
 }
