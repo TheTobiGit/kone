@@ -63,14 +63,33 @@ fn store_path() -> PathBuf {
 }
 
 pub fn load() -> Vec<RecentProject> {
-    load_from(&store_path())
+    load_from(&store_path()).unwrap_or_else(|error| {
+        eprintln!("Couldn't read the project list: {error}");
+        Vec::new()
+    })
 }
 
-fn load_from(file: &Path) -> Vec<RecentProject> {
-    fs::read_to_string(file)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+fn load_from(file: &Path) -> io::Result<Vec<RecentProject>> {
+    let result = match fs::read(file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        // Copy, never move: retaining the bad original keeps every subsequent
+        // read-modify-write blocked, even after restarting the app. If it is
+        // unreadable, a backup may fail too; the original still stays intact.
+        if !file.parent().is_some_and(|dir| fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(&format!("{}.corrupt-", file.file_name().unwrap_or_default().to_string_lossy())))
+        })) {
+            let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+            let backup = file.with_extension(format!("json.corrupt-{stamp}"));
+            if let Err(error) = fs::copy(file, backup) {
+                eprintln!("Couldn't back up {}: {error}", file.display());
+            }
+        }
+    }
+    result
 }
 
 fn save_to(file: &Path, list: &[RecentProject]) -> io::Result<()> {
@@ -92,7 +111,7 @@ pub fn remember(path: &Path, name: &str) -> io::Result<()> {
 fn remember_in(file: &Path, path: &Path, name: &str) -> io::Result<()> {
     let key = path.to_string_lossy().into_owned();
     let _guard = store_lock();
-    let mut list = load_from(file);
+    let mut list = load_from(file)?;
     let pinned = list.iter().find(|p| p.path == key).and_then(|p| p.pinned);
     list.retain(|p| p.path != key);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -132,7 +151,7 @@ pub fn toggle_pin(path: &str) -> io::Result<()> {
 
 fn toggle_pin_in(file: &Path, path: &str) -> io::Result<()> {
     let _guard = store_lock();
-    let mut list = load_from(file);
+    let mut list = load_from(file)?;
     for p in &mut list {
         if p.path == path {
             p.pinned = if p.pinned == Some(true) {
@@ -151,7 +170,7 @@ pub fn forget(path: &str) -> io::Result<()> {
 
 fn forget_in(file: &Path, path: &str) -> io::Result<()> {
     let _guard = store_lock();
-    let mut list = load_from(file);
+    let mut list = load_from(file)?;
     list.retain(|p| p.path != path);
     save_to(file, &list)
 }
@@ -542,6 +561,37 @@ mod tests {
     }
 
     #[test]
+    fn broken_store_is_backed_up_and_all_edits_refuse_to_overwrite() {
+        let dir = scratch("broken-store");
+        let file = dir.join("recent-projects.json");
+        for bytes in [b"not json".as_slice(), b"{}", b"\xff"] {
+            fs::write(&file, bytes).unwrap();
+            assert!(load_from(&file).is_err());
+            assert!(remember_in(&file, Path::new("/new"), "new").is_err());
+            assert!(toggle_pin_in(&file, "/new").is_err());
+            assert!(forget_in(&file, "/new").is_err());
+            assert_eq!(fs::read(&file).unwrap(), bytes);
+            assert!(fs::read_dir(&dir).unwrap().flatten().any(|entry|
+                entry.file_name().to_string_lossy().contains(".corrupt-")
+                && fs::read(entry.path()).unwrap() == bytes));
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                if entry.path() != file { fs::remove_file(entry.path()).unwrap(); }
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_missing_store_is_empty() {
+        let dir = scratch("unreadable-store");
+        assert!(load_from(&dir.join("missing.json")).unwrap().is_empty());
+        assert!(load_from(&dir).is_err());
+        assert!(remember_in(&dir, Path::new("/new"), "new").is_err());
+        assert!(dir.is_dir());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn test_sorted_ordering() {
         let list = vec![
             RecentProject {
@@ -596,7 +646,7 @@ mod tests {
         list[MAX - 1].pinned = Some(true);
         save_to(&file, &list).unwrap();
         remember_in(&file, Path::new("/new"), "new").unwrap();
-        let loaded = load_from(&file);
+        let loaded = load_from(&file).unwrap();
         assert_eq!(loaded.len(), MAX);
         assert_eq!(loaded[0].path, "/new");
         assert!(loaded.iter().any(|p| p.path == format!("/p{}", MAX - 1)), "pin evicted");
@@ -609,17 +659,17 @@ mod tests {
         let temp_file = temp_store("toggle-pin");
         remember_in(&temp_file, Path::new("/repo"), "Repo").unwrap();
 
-        let loaded = load_from(&temp_file);
+        let loaded = load_from(&temp_file).unwrap();
         assert_eq!(loaded[0].pinned, None);
 
         // First toggle sets pinned = Some(true)
         toggle_pin_in(&temp_file, "/repo").unwrap();
-        let loaded = load_from(&temp_file);
+        let loaded = load_from(&temp_file).unwrap();
         assert_eq!(loaded[0].pinned, Some(true));
 
         // Second toggle flips pinned = None
         toggle_pin_in(&temp_file, "/repo").unwrap();
-        let loaded = load_from(&temp_file);
+        let loaded = load_from(&temp_file).unwrap();
         assert_eq!(loaded[0].pinned, None);
 
         let _ = fs::remove_file(&temp_file);
@@ -636,7 +686,7 @@ mod tests {
         save_to(&temp_file, &list).unwrap();
 
         forget_in(&temp_file, "/p2").unwrap();
-        let loaded = load_from(&temp_file);
+        let loaded = load_from(&temp_file).unwrap();
         let paths: Vec<&str> = loaded.iter().map(|p| p.path.as_str()).collect();
         assert_eq!(paths, vec!["/p1", "/p3"]);
 
@@ -650,14 +700,14 @@ mod tests {
         remember_in(&temp_file, Path::new("/p2"), "P2").unwrap();
         toggle_pin_in(&temp_file, "/p1").unwrap();
 
-        let initial = load_from(&temp_file);
+        let initial = load_from(&temp_file).unwrap();
         assert_eq!(initial[0].path, "/p2");
         assert_eq!(initial[1].path, "/p1");
         assert_eq!(initial[1].pinned, Some(true));
 
         // Re-remembering /p1 moves it to the front while preserving its pin
         remember_in(&temp_file, Path::new("/p1"), "P1").unwrap();
-        let updated = load_from(&temp_file);
+        let updated = load_from(&temp_file).unwrap();
         assert_eq!(updated[0].path, "/p1");
         assert_eq!(updated[0].pinned, Some(true));
         assert_eq!(updated[1].path, "/p2");
