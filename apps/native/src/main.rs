@@ -21,6 +21,7 @@ fn main() {
         gpui_kit::init(cx);
         assets::load_fonts(cx).expect("bundled fonts load");
         chrome::init(cx);
+        shell::bind_keys(cx);
         Theme::init(cx);
         // A fixed scheme stops the window from following the system.
         let pinned = std::env::var("KONE_SCHEME").ok().map(|s| if s == "dark" { Scheme::Dark } else { Scheme::Light });

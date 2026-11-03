@@ -9,9 +9,20 @@ use kone_theme::{hsla, Theme};
 use gpui_kit::base::input::{Input, InputEvent, InputState};
 
 use crate::magnet::{glide, Magnet};
-use crate::recents::{Sort, Tile};
+use crate::recents::{Dir, Sort, Tile};
 
 pub const SANS: &str = "Geist";
+
+actions!(kone_home, [GridNext, GridPrev]);
+
+/// The recents grid owns Tab while the page itself has focus; the kit's root
+/// binds Tab to focus cycling, so a deeper context has to claim it first.
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", GridNext, Some("KoneGrid")),
+        KeyBinding::new("shift-tab", GridPrev, Some("KoneGrid")),
+    ]);
+}
 
 /// What shows through the frame band.
 #[derive(Clone, Copy, PartialEq)]
@@ -73,6 +84,13 @@ pub struct Shell {
     recents: Option<Vec<crate::projects::RecentProject>>,
     pub(crate) tiles: std::collections::HashMap<String, Tile>,
     pub(crate) hovered: Option<String>,
+    /// Each tile's hover springs, by path.
+    pub(crate) tile_motion: std::collections::HashMap<String, crate::recents::TileMotion>,
+    /// Keyboard focus in the grid: (cell, stop). Cells are the shown tiles
+    /// then the start actions; see `recents::slots` for the stops.
+    kb: Option<(usize, usize)>,
+    /// A tile the keyboard focus follows across a reorder (a pin from the keys).
+    kb_follow: Option<(String, usize)>,
     query: Entity<InputState>,
     sort: Sort,
     focus: FocusHandle,
@@ -145,6 +163,9 @@ impl Shell {
             recents: None,
             tiles: Default::default(),
             hovered: None,
+            tile_motion: Default::default(),
+            kb: None,
+            kb_follow: None,
             query,
             sort: Sort::Recent,
             focus,
@@ -339,6 +360,103 @@ impl Shell {
         }));
     }
 
+    /// Arrow keys walk the grid, Tab walks every stop (folder, pin, reveal,
+    /// remove, then the start actions), Enter or Space presses the focused
+    /// stop, and P / R / Delete pin, reveal or remove the focused tile.
+    /// Returns whether the key was the grid's.
+    fn grid_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let m = e.keystroke.modifiers;
+        if m.control || m.platform || m.alt || m.function {
+            return false;
+        }
+        let Some(list) = self.recents.as_ref() else { return false };
+        let query = self.query.read(cx).value().to_string();
+        let shown = crate::recents::shown(list, &query, self.sort);
+        let tiles = shown.len();
+        let cells = tiles + 1;
+        let key = e.keystroke.key.as_str();
+        let dir = match key {
+            "left" => Some(Dir::Left),
+            "right" => Some(Dir::Right),
+            "up" => Some(Dir::Up),
+            "down" => Some(Dir::Down),
+            _ => None,
+        };
+        if let Some(dir) = dir {
+            if m.shift {
+                return false;
+            }
+            let next = match self.kb {
+                None => 0,
+                Some((cell, _)) => crate::recents::grid_step(cell, cells, dir),
+            };
+            self.kb = Some((next, 0));
+            self.kb_follow = None;
+            self.hovered = None;
+            cx.notify();
+            return true;
+        }
+        if m.shift {
+            return false;
+        }
+        let Some((cell, slot)) = self.kb else { return false };
+        if key == "escape" {
+            self.kb = None;
+            cx.notify();
+            return true;
+        }
+        let tile = shown.get(cell).map(|p| p.path.clone());
+        let action = match (key, slot) {
+            ("enter" | "space", s) => s,
+            ("p", _) if tile.is_some() => 1,
+            ("r", _) if tile.is_some() => 2,
+            ("delete" | "backspace", _) if tile.is_some() => 3,
+            _ => return false,
+        };
+        match (tile, action) {
+            (Some(path), 0) => self.open_project(std::path::PathBuf::from(path), window, cx),
+            (Some(path), 1) => {
+                self.kb_follow = Some((path.clone(), slot));
+                self.toggle_pin(path, cx)
+            }
+            (Some(path), 2) => self.reveal(path, cx),
+            (Some(path), _) => {
+                // The next tile slides into this cell; focus stays on the folder.
+                self.kb = Some((cell, 0));
+                self.forget(path, cx);
+            }
+            (None, 0) => self.create_project(window, cx),
+            (None, 1) => self.open_folder(window, cx),
+            (None, _) => self.clone_repo(window, cx),
+        }
+        cx.notify();
+        true
+    }
+
+    /// Tab / Shift+Tab: every stop in the grid while the page has focus;
+    /// anywhere else (the search field) the usual focus cycling.
+    fn grid_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            if forward {
+                window.focus_next(cx)
+            } else {
+                window.focus_prev(cx)
+            }
+            return;
+        }
+        let Some(list) = self.recents.as_ref() else { return };
+        let query = self.query.read(cx).value().to_string();
+        let tiles = crate::recents::shown(list, &query, self.sort).len();
+        self.kb = Some(match self.kb {
+            None if forward => (0, 0),
+            None => (tiles, 2),
+            Some(at) => crate::recents::tab_step(at, tiles, forward),
+        });
+        self.kb_follow = None;
+        self.hovered = None;
+        cx.notify();
+    }
+
     fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.project = None;
         self.focus.focus(window, cx);
@@ -436,13 +554,45 @@ impl Render for Shell {
         let recents = self.recents.clone().filter(|l| !l.is_empty());
         let query = self.query.read(cx).value().to_string();
         let shown = recents.as_ref().map(|l| crate::recents::shown(l, &query, self.sort)).unwrap_or_default();
+        let now = self.started.elapsed();
+        // Search or sort can shrink the grid under the keyboard focus.
+        let cells = shown.len() + 1;
+        if let Some((path, slot)) = &self.kb_follow
+            && let Some(i) = shown.iter().position(|p| &p.path == path)
+        {
+            self.kb = self.kb.map(|_| (i, *slot));
+        }
+        if let Some((cell, slot)) = self.kb {
+            let cell = cell.min(cells - 1);
+            self.kb = Some((cell, slot.min(crate::recents::slots(cell, shown.len()) - 1)));
+        }
+        let kb = if busy || recents.is_none() { None } else { self.kb };
+        let mut springing = false;
         let tile_els: Vec<AnyElement> = if self.project.is_none() {
-            shown.iter().map(|p| self.tile(p, busy, &c, cx)).collect()
+            let els = shown
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let focus = kb.filter(|(cell, _)| *cell == i).map(|(_, slot)| slot);
+                    let (el, moving) = self.tile(p, busy, focus, now, &c, cx);
+                    springing |= moving;
+                    el
+                })
+                .collect();
+            self.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
+            els
         } else {
+            self.tile_motion.clear();
             Vec::new()
         };
+        // Frames only while a hover spring is still settling.
+        if springing {
+            window.request_animation_frame();
+        }
+        let start_focus = kb.filter(|(cell, _)| *cell == shown.len()).map(|(_, slot)| slot);
         let row = |i: usize, id: &'static str, icon: &'static str, label: &'static str| {
             let loading = busy && id == session;
+            let ringed = start_focus == Some(i);
             let slot = slots[i].clone();
             let (x, y) = offsets[i];
             // The pull is measured from where the row rests, so the probe sits
@@ -471,6 +621,7 @@ impl Render for Shell {
                 .pr(px(12.))
                 .pl(px(6.))
                 .when(!busy, |r| r.cursor_pointer().hover(|s| s.bg(hsla(c.hover))))
+                .when(ringed, |r| r.child(crate::recents::ring(14., 2., c.ink.alpha(0.34))))
                 .child(
                     div().w(px(22.)).h(px(18.)).flex().flex_shrink_0().items_center().justify_center().child(if loading {
                         spinner(spin, c.muted.alpha(0.3), c.ink_soft).into_any_element()
@@ -607,6 +758,10 @@ impl Render for Shell {
             // A click on the floor strip tips a letter or kicks a ball for the crowd.
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
+                // A pointer press ends keyboard mode, as :focus-visible does.
+                if this.kb.take().is_some() {
+                    cx.notify();
+                }
                 let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
                 if this.folk.press(e.position, busy) {
                     cx.notify();
@@ -653,6 +808,7 @@ impl Render for Shell {
                         .cursor_pointer()
                         .text_color(hsla(c.muted))
                         .hover(|s| s.bg(hsla(c.hover)).text_color(hsla(c.ink)))
+                        .tooltip(crate::recents::tip("Settings"))
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
                 ).when(home, |d| d.child(search).child(sort)),
             )
@@ -676,11 +832,19 @@ impl Render for Shell {
             })
             .child(panel);
 
+        let home_grid = home && !busy;
         // The folder browser and modals are layers of their own, over the frame and page.
         let mut root = div()
             .relative()
             .size_full()
             .track_focus(&self.focus)
+            // Only on the recents home with no modal up: elsewhere Tab stays
+            // the kit's focus cycling.
+            .when(home_grid, |d| {
+                d.key_context("KoneGrid")
+                    .on_action(cx.listener(|this, _: &GridNext, window, cx| this.grid_tab(true, window, cx)))
+                    .on_action(cx.listener(|this, _: &GridPrev, window, cx| this.grid_tab(false, window, cx)))
+            })
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
                 let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
@@ -693,12 +857,28 @@ impl Render for Shell {
                     }
                     cx.stop_propagation();
                 }
+                // The grid's keys belong to the page itself, never to the
+                // search field or a modal that has focus. Caught on the way
+                // down so Tab is ours before any focus-cycling binding.
+                if home && !busy && this.focus.is_focused(window) && this.grid_key(e, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                // Down from the search field drops into the grid.
+                let m = e.keystroke.modifiers;
+                if home && !busy && e.keystroke.key == "down" && !m.modified() && this.query.read(cx).focus_handle(cx).is_focused(window) {
+                    this.focus.focus(window, cx);
+                    this.kb = Some((0, 0));
+                    cx.notify();
+                    cx.stop_propagation();
+                }
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let m = e.keystroke.modifiers;
                 let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
                 let home = this.project.is_none() && this.recents.as_ref().is_some_and(|l| !l.is_empty());
                 if home && !busy && (m.platform || m.control) && !m.alt && e.keystroke.key.eq_ignore_ascii_case("k") {
+                    this.kb = None;
                     this.query.update(cx, |q, cx| q.focus(window, cx));
                     cx.stop_propagation();
                 }

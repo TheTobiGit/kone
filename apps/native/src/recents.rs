@@ -3,7 +3,9 @@
 //! each with its branch and uncommitted ± read off the UI thread, plus the
 //! three start actions in the last cell.
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::Duration};
+
+use gpui_ce_motion::{MotionValue, Spring, Transition};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -66,6 +68,154 @@ pub fn shown(list: &[RecentProject], query: &str, sort: Sort) -> Vec<RecentProje
     rows
 }
 
+/// Columns in the grid; the start actions take the cell after the last tile.
+pub const COLS: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The cell an arrow key lands on in a `COLS`-wide grid of `cells` cells
+/// (the tiles plus the start actions). Edges hold; Down into a short last row
+/// lands on its last cell, as a grid does when a column has no cell below.
+pub fn grid_step(cur: usize, cells: usize, dir: Dir) -> usize {
+    if cells == 0 {
+        return 0;
+    }
+    let cur = cur.min(cells - 1);
+    match dir {
+        Dir::Left => cur.saturating_sub(1),
+        Dir::Right => (cur + 1).min(cells - 1),
+        Dir::Up => cur.checked_sub(COLS).unwrap_or(cur),
+        Dir::Down if cur + COLS < cells => cur + COLS,
+        Dir::Down if cur / COLS < (cells - 1) / COLS => cells - 1,
+        Dir::Down => cur,
+    }
+}
+
+/// Focus stops in a cell: a tile has its folder then pin, reveal and remove;
+/// the start-actions cell has its three rows.
+pub fn slots(cell: usize, tiles: usize) -> usize {
+    if cell < tiles {
+        4
+    } else {
+        3
+    }
+}
+
+/// Tab order through every stop in the grid, wrapping at both ends.
+pub fn tab_step((cell, slot): (usize, usize), tiles: usize, forward: bool) -> (usize, usize) {
+    let cells = tiles + 1;
+    let cell = cell.min(cells - 1);
+    let slot = slot.min(slots(cell, tiles) - 1);
+    if forward {
+        if slot + 1 < slots(cell, tiles) {
+            (cell, slot + 1)
+        } else {
+            ((cell + 1) % cells, 0)
+        }
+    } else if slot > 0 {
+        (cell, slot - 1)
+    } else {
+        let prev = (cell + cells - 1) % cells;
+        (prev, slots(prev, tiles) - 1)
+    }
+}
+
+/// Electron's folder lift: `{ type: 'spring', stiffness: 420, damping: 38, mass: 0.85 }`.
+fn lift_spring() -> Transition {
+    Transition::Spring(Spring::new(420., 38., 0.85).expect("valid spring"))
+}
+
+/// Electron's side actions: `{ type: 'spring', stiffness: 500, damping: 30 }` (mass 1).
+fn side_spring() -> Transition {
+    Transition::Spring(Spring::new(500., 30., 1.).expect("valid spring"))
+}
+
+/// One tile's hover springs. Values run 0 (rest) to 1 (active); they only
+/// ask for frames while they are still moving.
+pub struct TileMotion {
+    lift: MotionValue,
+    side: MotionValue,
+    active: bool,
+}
+
+impl Default for TileMotion {
+    fn default() -> Self {
+        TileMotion { lift: MotionValue::new(0.), side: MotionValue::new(0.), active: false }
+    }
+}
+
+impl TileMotion {
+    /// Retargets on a change of state, then reads both springs:
+    /// `(lift, side, still_moving)`.
+    pub fn sample(&mut self, active: bool, now: Duration) -> (f32, f32, bool) {
+        if self.active != active {
+            self.active = active;
+            let to = if active { 1. } else { 0. };
+            self.lift.animate(to, lift_spring(), now);
+            self.side.animate(to, side_spring(), now);
+        }
+        let lift = self.lift.sample(now, false);
+        let side = self.side.sample(now, false);
+        (lift.value() as f32, side.value() as f32, lift.is_animating() || side.is_animating())
+    }
+}
+
+/// A hover tip: the native app's stand-in for Electron's `title` attribute.
+pub struct Tip(pub SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = &kone_theme::Theme::get(cx).colors;
+        div()
+            .font_family(crate::shell::SANS)
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(7.))
+            .bg(hsla(c.raised_high))
+            .border_1()
+            .border_color(hsla(c.line_soft))
+            .shadow(vec![BoxShadow {
+                color: black().opacity(0.12),
+                offset: point(px(0.), px(2.)),
+                blur_radius: px(8.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .text_size(px(12.))
+            .text_color(hsla(c.ink))
+            .whitespace_nowrap()
+            .child(self.0.clone())
+    }
+}
+
+/// A builder for `.tooltip(..)` showing `text`.
+pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| Tip(text.clone())).into()
+}
+
+/// Electron's wording; the native app says what Linux calls it.
+pub const REVEAL_TIP: &str = if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Reveal in file manager" };
+
+/// A keyboard focus ring hugging an element, `inset` px outside it.
+pub fn ring(radius: f32, inset: f32, color: kone_theme::Rgba) -> Div {
+    div()
+        .absolute()
+        .top(px(-inset))
+        .left(px(-inset))
+        .right(px(-inset))
+        .bottom(px(-inset))
+        .rounded(px(radius + inset))
+        .border_2()
+        .border_color(hsla(color))
+}
+
 /// Tile geometry from `ProjectFolder.vue`.
 pub const TILE_W: f32 = 200.;
 const TILE_H: f32 = 116.;
@@ -78,13 +228,26 @@ pub const GAP_Y: f32 = 24.;
 pub const GRID_W: f32 = CELL_W * 3. + GAP_X * 2.;
 
 impl Shell {
-    pub(crate) fn tile(&self, project: &RecentProject, busy: bool, c: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// One tile, and whether its hover springs still need frames.
+    /// `focus` is the keyboard stop inside this tile, if it has one.
+    pub(crate) fn tile(
+        &mut self,
+        project: &RecentProject,
+        busy: bool,
+        focus: Option<usize>,
+        now: Duration,
+        c: &Palette,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, bool) {
         let key = project.path.clone();
-        let active = !busy && self.hovered.as_deref() == Some(key.as_str());
+        // Electron's isActive: pointer over it or keyboard focus inside it.
+        let active = !busy && (self.hovered.as_deref() == Some(key.as_str()) || focus.is_some());
+        let (lift_t, side_t, moving) = self.tile_motion.entry(key.clone()).or_default().sample(active, now);
         let pinned = project.pinned == Some(true);
         let tile = self.tiles.get(&key);
         let missing = matches!(tile, Some(Tile::Missing));
-        let lift = if active { -6. } else { 0. };
+        let lift = -6. * lift_t;
+        let side_t = side_t.clamp(0., 1.);
 
         let mut meta = div().flex().items_center().gap(px(10.)).h(px(13.)).font_family(crate::folder_picker::MONO).text_size(px(11.5));
         match tile {
@@ -147,7 +310,7 @@ impl Shell {
                     .border_1()
                     .border_color(hsla(if active { c.line } else { c.line_soft }))
                     .shadow(vec![BoxShadow {
-                        color: black().opacity(if active { 0.12 } else { 0.06 }),
+                        color: black().opacity(0.06 + 0.06 * lift_t.clamp(0., 1.)),
                         offset: point(px(0.), px(4.)),
                         blur_radius: px(10.),
                         spread_radius: px(0.),
@@ -170,6 +333,8 @@ impl Shell {
                             })
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("name:{key}")))
+                                    .tooltip(tip(project.name.clone()))
                                     .min_w(px(0.))
                                     .truncate()
                                     .text_size(px(17.))
@@ -180,12 +345,17 @@ impl Shell {
                             ),
                     )
                     .child(meta),
-            );
+            )
+            // Electron rings the pocket, not the whole button, on keyboard focus.
+            .when(focus == Some(0), |d| {
+                d.child(ring(22., 3., c.ink.alpha(0.26)).left(px(-3.)).top(px(TILE_H - POCKET_H - 3.)))
+            });
 
-        let side = |id: &str, icon: &'static str, _tip: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Shell, String, &mut Window, &mut Context<Shell>)| {
+        let side = |id: &str, icon: &'static str, label: &'static str, on: bool, ringed: bool, cx: &mut Context<Self>, act: fn(&mut Shell, String, &mut Window, &mut Context<Shell>)| {
             let path = key.clone();
             div()
                 .id(SharedString::from(format!("{id}:{key}")))
+                .relative()
                 .size(px(24.))
                 .flex()
                 .items_center()
@@ -194,28 +364,36 @@ impl Shell {
                 .cursor_pointer()
                 .hover(|s| s.bg(hsla(c.hover)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    act(this, path.clone(), window, cx)
-                }))
+                // Like Electron's pointer-events: none, a column on its way out
+                // takes no clicks and shows no tips.
+                .when(active, |d| {
+                    d.on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        act(this, path.clone(), window, cx)
+                    }))
+                    .tooltip(tip(label))
+                })
+                .when(ringed, |d| d.child(ring(7., 2., c.ink.alpha(0.34))))
                 .child(svg().path(icon).size(px(14.)).text_color(hsla(if on { c.ink } else { c.muted })))
         };
         let actions = div()
             .absolute()
-            .right_0()
-            .top(px(lift))
-            .bottom(px(-lift))
+            .top(px(-6. * side_t))
+            .bottom(px(6. * side_t))
+            // Slides in 4px from the right as it fades up.
+            .left(px(TILE_W + 12. + 4. * (1. - side_t)))
             .flex()
             .flex_col()
             .justify_center()
             .gap(px(6.))
-            .when(!active, |d| d.invisible())
-            .child(side("pin", "icons/pin.svg", if pinned { "Unpin" } else { "Pin to top" }, pinned, cx, |this, p, _, cx| this.toggle_pin(p, cx)))
-            .child(side("reveal", "icons/finder.svg", "Reveal in file manager", false, cx, |this, p, _, cx| this.reveal(p, cx)))
-            .child(side("forget", "icons/cancel.svg", "Remove from recents", false, cx, |this, p, _, cx| this.forget(p, cx)));
+            .opacity(side_t)
+            .when(side_t < 0.01, |d| d.invisible())
+            .child(side("pin", "icons/pin.svg", if pinned { "Unpin" } else { "Pin to top" }, pinned, focus == Some(1), cx, |this, p, _, cx| this.toggle_pin(p, cx)))
+            .child(side("reveal", "icons/finder.svg", REVEAL_TIP, false, focus == Some(2), cx, |this, p, _, cx| this.reveal(p, cx)))
+            .child(side("forget", "icons/cancel.svg", "Remove", false, focus == Some(3), cx, |this, p, _, cx| this.forget(p, cx)));
 
         let hover_key = key.clone();
-        div()
+        let el = div()
             .id(SharedString::from(format!("cell:{key}")))
             .relative()
             .w(px(CELL_W))
@@ -229,7 +407,8 @@ impl Shell {
             }))
             .child(folder)
             .child(actions)
-            .into_any_element()
+            .into_any_element();
+        (el, moving)
     }
 }
 
@@ -256,5 +435,58 @@ mod tests {
         let gone = std::env::temp_dir().join(format!("kone-recents-gone-{}", std::process::id()));
         let tiles = read_tiles(&[gone.to_string_lossy().into_owned()]);
         assert!(matches!(tiles.values().next(), Some(Tile::Missing)));
+    }
+
+    #[test]
+    fn arrows_walk_a_three_column_grid() {
+        // 5 tiles + start actions = 6 cells, two full rows.
+        assert_eq!(grid_step(0, 6, Dir::Left), 0);
+        assert_eq!(grid_step(0, 6, Dir::Right), 1);
+        assert_eq!(grid_step(2, 6, Dir::Right), 3);
+        assert_eq!(grid_step(5, 6, Dir::Right), 5);
+        assert_eq!(grid_step(1, 6, Dir::Down), 4);
+        assert_eq!(grid_step(4, 6, Dir::Down), 4);
+        assert_eq!(grid_step(4, 6, Dir::Up), 1);
+        assert_eq!(grid_step(1, 6, Dir::Up), 1);
+        // 4 cells: Down from the top right lands on the short last row's end.
+        assert_eq!(grid_step(2, 4, Dir::Down), 3);
+        assert_eq!(grid_step(0, 4, Dir::Down), 3);
+        // Only the start actions, and an out-of-range cursor clamps.
+        assert_eq!(grid_step(0, 1, Dir::Down), 0);
+        assert_eq!(grid_step(9, 4, Dir::Left), 2);
+        assert_eq!(grid_step(0, 0, Dir::Right), 0);
+    }
+
+    #[test]
+    fn tab_visits_every_stop_and_wraps() {
+        let mut at = (0, 0);
+        let mut seen = vec![at];
+        for _ in 0..(2 * 4 + 3) {
+            at = tab_step(at, 2, true);
+            seen.push(at);
+        }
+        assert_eq!(seen[..5], [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0)]);
+        assert_eq!(seen[8..], [(2, 0), (2, 1), (2, 2), (0, 0)]);
+        assert_eq!(tab_step((0, 0), 2, false), (2, 2));
+        assert_eq!(tab_step((1, 0), 2, false), (0, 3));
+        assert_eq!(tab_step((0, 0), 0, true), (0, 1));
+        assert_eq!(tab_step((0, 2), 0, true), (0, 0));
+    }
+
+    #[test]
+    fn hover_springs_settle_at_rest_and_lifted() {
+        let mut m = TileMotion::default();
+        let (l, s, moving) = m.sample(false, Duration::ZERO);
+        assert_eq!((l, s, moving), (0., 0., false));
+        let (_, _, moving) = m.sample(true, Duration::from_millis(1));
+        assert!(moving);
+        let (l, s, moving) = m.sample(true, Duration::from_millis(60));
+        assert!(l > 0. && l < 1.0 && s > 0., "{l} {s}");
+        assert!(moving);
+        let (l, s, moving) = m.sample(true, Duration::from_secs(2));
+        assert!((l - 1.).abs() < 1e-3 && (s - 1.).abs() < 1e-3 && !moving);
+        m.sample(false, Duration::from_secs(2));
+        let (l, _, moving) = m.sample(false, Duration::from_secs(4));
+        assert!(l.abs() < 1e-3 && !moving);
     }
 }
