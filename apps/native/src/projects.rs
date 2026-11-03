@@ -12,7 +12,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use kone_rpc::Branch;
 use serde::{Deserialize, Serialize};
 
 const MAX: usize = 24;
@@ -40,14 +39,11 @@ pub struct RecentProject {
 pub struct OpenProject {
     pub name: String,
     pub path: PathBuf,
-    pub branch: Option<Branch>,
-    pub added: u32,
-    pub removed: u32,
 }
 
 /// `~/Library/Application Support/kone` on macOS, `$XDG_DATA_HOME/kone`
 /// (default `~/.local/share/kone`) elsewhere.
-fn data_dir() -> PathBuf {
+pub(crate) fn preferences_dir() -> PathBuf {
     let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     if cfg!(target_os = "macos") {
         return home.join("Library/Application Support/kone");
@@ -59,7 +55,7 @@ fn data_dir() -> PathBuf {
 }
 
 fn store_path() -> PathBuf {
-    data_dir().join("recent-projects.json")
+    preferences_dir().join("recent-projects.json")
 }
 
 pub fn load() -> Vec<RecentProject> {
@@ -215,15 +211,9 @@ pub fn open(path: &Path) -> Result<OpenProject, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    // A folder inside a repo still belongs to it, as git-core's status()
-    // resolves the top level: read the nearest ancestor that holds `.git`.
-    let summary = path.ancestors().find_map(crate::repo::repo_summary);
     remember(&path, &name).map_err(|e| format!("Couldn't save the project list: {e}"))?;
     Ok(OpenProject {
         name,
-        branch: summary.as_ref().map(|s| s.branch.clone()),
-        added: summary.as_ref().map_or(0, |s| s.added),
-        removed: summary.as_ref().map_or(0, |s| s.removed),
         path,
     })
 }

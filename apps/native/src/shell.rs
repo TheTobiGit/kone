@@ -71,7 +71,7 @@ const REST_FRAME: Duration = Duration::from_millis(250);
 #[derive(Clone)]
 enum Screen {
     Home,
-    Project(crate::projects::OpenProject),
+    Project(Entity<crate::project::ProjectView>),
 }
 
 #[derive(Clone, Default)]
@@ -99,6 +99,9 @@ pub struct Shell {
     screen: Screen,
     open_error: Option<String>,
     _open_task: Option<Task<()>>,
+    open_generation: u64,
+    origin_tile: Option<(String, usize)>,
+    _project_sub: Option<Subscription>,
     pub(crate) home: crate::recents::home::Home,
     focus: FocusHandle,
     _ticker: Task<()>,
@@ -161,6 +164,9 @@ impl Shell {
             screen: Screen::Home,
             open_error: None,
             _open_task: None,
+            open_generation: 0,
+            origin_tile: None,
+            _project_sub: None,
             home: crate::recents::home::Home::new(query, query_sub),
             focus,
             _ticker: ticker,
@@ -335,15 +341,22 @@ impl Shell {
     /// Validates and records the folder off the UI thread, then shows it.
     pub(crate) fn open_project(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.open_error = None;
+        self.open_generation += 1;
+        let generation = self.open_generation;
+        let origin = path.to_string_lossy().into_owned();
+        let slot = self.home.kb.map_or(0, |(_, slot)| slot);
         let task = cx.background_spawn(async move { crate::projects::open(&path) });
         self._open_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if generation != this.open_generation { return; }
                 match result {
                     Ok(project) => {
                         this.home.hovered = None;
-                        this.home.query.update(cx, |q, cx| q.set_value("", window, cx));
-                        this.screen = Screen::Project(project);
+                        this.origin_tile = Some((origin, slot));
+                        let view = cx.new(|cx| crate::project::ProjectView::new(project, std::sync::Arc::new(crate::git_service::NativeGit), window, cx));
+                        this._project_sub = Some(cx.subscribe_in(&view, window, |this, _, _: &crate::project::Back, window, cx| this.close_project(window, cx)));
+                        this.screen = Screen::Project(view);
                     }
                     Err(message) => this.open_error = Some(message),
                 }
@@ -470,65 +483,21 @@ impl Shell {
     }
 
     fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_generation += 1;
+        self._open_task = None;
+        self._project_sub = None;
         self.screen = Screen::Home;
+        if let Some(origin) = self.origin_tile.take() {
+            self.home.kb = Some((0, origin.1));
+            self.home.kb_follow = Some(origin);
+            self.home.kb_row = None;
+        }
         self.focus.focus(window, cx);
         self.reload_recents(cx);
         cx.notify();
     }
 
-    fn project_view(&self, project: &crate::projects::OpenProject, c: &kone_theme::Palette, cx: &mut Context<Self>) -> Div {
-        use kone_rpc::Branch;
-        let branch = match &project.branch {
-            Some(Branch::Named(name)) => name.clone(),
-            Some(Branch::Detached(sha)) => format!("detached at {sha}"),
-            Some(Branch::Unknown) => "unknown branch".into(),
-            None => "not a git repository".into(),
-        };
-        let changes = if project.branch.is_none() {
-            None
-        } else if project.added == 0 && project.removed == 0 {
-            Some("No uncommitted changes".to_string())
-        } else {
-            Some(format!("+{} −{} uncommitted", project.added, project.removed))
-        };
-        div()
-            .relative()
-            .flex()
-            .flex_1()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(10.))
-            .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).text_color(hsla(c.ink)).child(project.name.clone()))
-            .child(div().text_size(px(13.)).text_color(hsla(c.muted)).child(project.path.to_string_lossy().into_owned()))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_size(px(13.))
-                    .text_color(hsla(c.ink_soft))
-                    .child(svg().path("icons/folder-open.svg").size(px(14.)).text_color(hsla(c.ink_soft)))
-                    .child(branch),
-            )
-            .when_some(changes, |d, text| d.child(div().text_size(px(12.)).text_color(hsla(c.muted)).child(text)))
-            .child(
-                div()
-                    .id("back")
-                    .mt(px(18.))
-                    .px(px(14.))
-                    .py(px(8.))
-                    .rounded(px(10.))
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .text_color(hsla(c.ink))
-                    .border_1()
-                    .border_color(hsla(c.line_soft))
-                    .hover(|s| s.bg(hsla(c.hover)))
-                    .on_click(cx.listener(|this, _, window, cx| this.close_project(window, cx)))
-                    .child("Back to start"),
-            )
-    }
+
 }
 
 impl Render for Shell {
@@ -704,7 +673,7 @@ impl Render for Shell {
                 .child(row(2, "clone", "icons/github.svg", "Clone from GitHub"))
         };
         let body = if let Screen::Project(project) = self.screen.clone() {
-            self.project_view(&project, &c, cx).into_any_element()
+            div().flex_1().min_h(px(0.)).child(project).into_any_element()
         } else if self.home.recents.is_none() {
             // The list is a small file read; show nothing rather than flash the
             // empty launcher for a frame before it lands.
@@ -822,7 +791,7 @@ impl Render for Shell {
                 // root's own focus-on-press never sees it past this listener);
                 // a field claiming the press has already prevented default.
                 let modal = this.modal.is_open();
-                if !modal && !window.default_prevented() && !this.focus.is_focused(window) {
+                if matches!(this.screen, Screen::Home) && !modal && !window.default_prevented() && !this.focus.is_focused(window) {
                     this.focus.focus(window, cx);
                 }
                 // A pointer press ends keyboard mode, as :focus-visible does.
@@ -871,7 +840,7 @@ impl Render for Shell {
                     .bottom_0()
                     .h(px(crate::stickfolk::STRIP))
             }))
-            .child(
+            .when(matches!(self.screen, Screen::Home), |d| d.child(
                 div().relative().flex().justify_end().items_center().gap(px(12.)).pt(px(8.)).pr(px(8.)).child(
                     div()
                         .id("settings")
@@ -886,7 +855,7 @@ impl Render for Shell {
                         .when(!busy, |d| d.tooltip(crate::recents::tip("Settings")).tooltip_show_delay(Duration::from_millis(500)))
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
                 ).when(home, |d| d.child(search).child(sort)),
-            )
+            ))
             .child(body);
 
         // The frame: a thin band around the panel that moves the window like a

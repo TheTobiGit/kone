@@ -1,0 +1,511 @@
+//! View-only project screen. Its lifetime owns cancellation of background git
+//! reads; weak async updates cannot land in a later project's screen.
+mod changes;
+mod detail;
+mod folder;
+mod keyboard;
+mod model;
+mod overview;
+mod peek;
+mod preferences;
+use preferences::{identity, load_folds, save_folds};
+
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+use kone_theme::{Theme, hsla};
+use model::{FileEntry, Lane, OverviewModel};
+use std::{collections::HashSet, sync::Arc, time::Duration};
+
+actions!(kone_project, [ProjectNext, ProjectPrev]);
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", ProjectNext, Some("KoneProject")),
+        KeyBinding::new("shift-tab", ProjectPrev, Some("KoneProject")),
+    ]);
+}
+
+pub struct Back;
+impl EventEmitter<Back> for ProjectView {}
+
+pub struct ProjectView {
+    pub(super) name: String,
+    pub(super) path: String,
+    pub(super) identity: String,
+    pub(super) model: Option<OverviewModel>,
+    pub(super) loading: bool,
+    pub(super) error: Option<String>,
+    pub(super) folded: [bool; 2],
+    pub(super) selected: Option<String>,
+    focus: FocusHandle,
+    git: Arc<dyn crate::git_service::GitService>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    _load: Option<Task<()>>,
+    _watch: Task<()>,
+    generation: u64,
+    peek: bool,
+    peek_active: bool,
+    peek_motion: gpui_ce_motion::MotionValue,
+    peek_progress: f32,
+    started: std::time::Instant,
+    peek_scroll: ScrollHandle,
+    peek_items: std::collections::HashMap<String, usize>,
+    content_width: f32,
+    overview_scroll: ScrollHandle,
+    card_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Bounds<Pixels>>>>,
+    collapsed: HashSet<String>,
+    detail: Option<DetailState>,
+    _detail_task: Option<Task<()>>,
+    detail_generation: u64,
+    opener: Option<String>,
+    detail_control: usize,
+    hovered: Option<String>,
+    card_motion: std::collections::HashMap<String, (gpui_ce_motion::MotionValue, bool)>,
+    card_lifts: std::collections::HashMap<String, f32>,
+    folder_hover: bool,
+    folder_motion: gpui_ce_motion::MotionValue,
+    folder_active: bool,
+    folder_lift: f32,
+}
+struct DetailState {
+    entry: FileEntry,
+    data: Option<crate::git_service::FileDetail>,
+    error: Option<String>,
+    source: bool,
+    wrap: bool,
+    scroll: ScrollHandle,
+}
+
+impl ProjectView {
+    pub fn new(
+        project: crate::projects::OpenProject,
+        git: Arc<dyn crate::git_service::GitService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _watch = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let request = this.update_in(cx, |this: &mut Self, window, _| {
+                    (!this.loading && window.is_window_active()).then(|| {
+                        (
+                            this.git.clone(),
+                            this.path.clone(),
+                            this.cancel.clone(),
+                            this.generation,
+                        )
+                    })
+                });
+                let Ok(request) = request else {
+                    break;
+                };
+                let Some((git, path, cancel, generation)) = request else {
+                    continue;
+                };
+                let result = cx
+                    .background_spawn(
+                        async move { git.snapshot(std::path::Path::new(&path), &cancel) },
+                    )
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.generation != generation || this.loading {
+                        return;
+                    }
+                    match result {
+                        Ok(snapshot) => {
+                            let recovered = this.error.take().is_some();
+                            this.apply_snapshot(snapshot, cx);
+                            if recovered {
+                                cx.notify();
+                            }
+                        }
+                        Err(error) => {
+                            if this.error.as_ref() != Some(&error) {
+                                this.error = Some(error);
+                                cx.notify();
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let mut view = Self {
+            name: project.name,
+            path: project.path.to_string_lossy().into_owned(),
+            identity: identity(),
+            model: None,
+            loading: true,
+            error: None,
+            folded: [false; 2],
+            selected: Some("back".into()),
+            focus,
+            git,
+            cancel,
+            _load: None,
+            _watch,
+            generation: 0,
+            peek: false,
+            peek_active: false,
+            peek_motion: gpui_ce_motion::MotionValue::new(0.),
+            peek_progress: 0.,
+            started: std::time::Instant::now(),
+            peek_scroll: ScrollHandle::new(),
+            peek_items: Default::default(),
+            content_width: 896.,
+            overview_scroll: ScrollHandle::new(),
+            card_bounds: Default::default(),
+            collapsed: HashSet::new(),
+            detail: None,
+            _detail_task: None,
+            detail_generation: 0,
+            opener: None,
+            detail_control: 0,
+            hovered: None,
+            card_motion: Default::default(),
+            card_lifts: Default::default(),
+            folder_hover: false,
+            folder_motion: gpui_ce_motion::MotionValue::new(0.),
+            folder_active: false,
+            folder_lift: 0.,
+        };
+        view.folded = load_folds(&view.path);
+        view.refresh(cx);
+        view
+    }
+    pub(super) fn track_bounds(&self, key: String) -> AnyElement {
+        let bounds = self.card_bounds.clone();
+        canvas(
+            move |rect, _, _| {
+                bounds.borrow_mut().insert(key.clone(), rect);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.generation += 1;
+        let generation = self.generation;
+        let git = self.git.clone();
+        let cancel = self.cancel.clone();
+        let path = self.path.clone();
+        self.loading = true;
+        self.error = None;
+        let task =
+            cx.background_spawn(async move { git.snapshot(std::path::Path::new(&path), &cancel) });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(snapshot) => this.apply_snapshot(snapshot, cx),
+                    Err(error) => this.error = Some(error),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+    fn apply_snapshot(
+        &mut self,
+        snapshot: Option<crate::git_service::GitSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model.as_ref().map(|m| &m.snapshot) == snapshot.as_ref() {
+            return;
+        }
+        self.model = snapshot.map(OverviewModel::from);
+        if let Some(detail) = &self.detail {
+            let survives = self.model.as_ref().is_some_and(|m| {
+                m.entries(detail.entry.lane)
+                    .iter()
+                    .any(|e| e.key() == detail.entry.key())
+            });
+            if !survives {
+                self.detail = None;
+                self.detail_generation += 1;
+            } else {
+                let entry = detail.entry.clone();
+                self.load_detail(entry, cx);
+            }
+        }
+        cx.notify();
+    }
+    pub(super) fn toggle_lane(&mut self, lane: Lane, cx: &mut Context<Self>) {
+        let i = usize::from(lane == Lane::Changed);
+        self.folded[i] = !self.folded[i];
+        let path = self.path.clone();
+        let folded = self.folded;
+        cx.background_spawn(async move { save_folds(&path, folded) })
+            .detach();
+        cx.notify();
+    }
+    pub(super) fn reveal(&self, cx: &mut Context<Self>) {
+        let path = self.path.clone();
+        cx.background_spawn(async move { crate::projects::reveal(std::path::Path::new(&path)) })
+            .detach();
+    }
+    pub(super) fn open_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.opener = Some("peek".into());
+        self.peek = true;
+        self.selected = self.entries().first().map(FileEntry::key);
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+    pub(super) fn open_file(
+        &mut self,
+        entry: FileEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.detail_control = 0;
+        self.opener = Some(entry.key());
+        self.selected = Some(entry.key());
+        self.peek = false;
+        self.focus.focus(window, cx);
+        self.load_detail(entry, cx);
+    }
+    fn load_detail(&mut self, entry: FileEntry, cx: &mut Context<Self>) {
+        self.detail_generation += 1;
+        let generation = self.detail_generation;
+        let git = self.git.clone();
+        let cancel = self.cancel.clone();
+        let path = self.path.clone();
+        let file = entry.change.path.clone();
+        let staged = entry.staged();
+        let previous = self.detail.take().filter(|d| d.entry.key() == entry.key());
+        let (source, wrap, scroll, data) = previous
+            .map(|d| (d.source, d.wrap, d.scroll, d.data))
+            .unwrap_or_else(|| (false, false, ScrollHandle::new(), None));
+        self.detail = Some(DetailState {
+            entry,
+            data,
+            error: None,
+            source,
+            wrap,
+            scroll,
+        });
+        let task = cx.background_spawn(async move {
+            git.detail(std::path::Path::new(&path), &file, staged, &cancel)
+        });
+        self._detail_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.detail_generation != generation {
+                    return;
+                }
+                if let Some(detail) = &mut this.detail {
+                    match result {
+                        Ok(data) => detail.data = Some(data),
+                        Err(e) => detail.error = Some(e),
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.detail.take().is_some() {
+            self.detail_generation += 1;
+            self._detail_task = None;
+        } else {
+            self.peek = false;
+        }
+        self.selected = self.opener.take();
+        if !self.peek
+            && self.selected.as_ref().is_some_and(|key| {
+                key != "back" && key != "peek" && !self.entries().iter().any(|e| e.key() == *key)
+            })
+        {
+            self.selected = Some("peek".into());
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+}
+impl Render for ProjectView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = Theme::get(cx).colors.clone();
+        let now = self.started.elapsed();
+        if self.peek_active != self.peek {
+            self.peek_active = self.peek;
+            self.peek_motion.animate(
+                if self.peek { 1. } else { 0. },
+                gpui_ce_motion::Transition::Spring(
+                    gpui_ce_motion::Spring::new(520., 26., 0.8).expect("valid drawer spring"),
+                ),
+                now,
+            );
+        }
+        let motion = self.peek_motion.sample(now, cx.reduce_motion());
+        self.peek_progress = (motion.value() as f32).clamp(0., 1.);
+        if motion.is_animating() {
+            window.request_animation_frame();
+        }
+        let peek_layer = self.peek || motion.is_animating();
+        self.card_lifts.clear();
+        for entry in self.entries() {
+            let key = entry.key();
+            let active = !self.peek
+                && self.detail.is_none()
+                && (self.hovered.as_ref() == Some(&key) || self.selected.as_ref() == Some(&key));
+            let (value, was_active) = self
+                .card_motion
+                .entry(key.clone())
+                .or_insert_with(|| (gpui_ce_motion::MotionValue::new(0.), false));
+            if active != *was_active {
+                *was_active = active;
+                value.animate(
+                    if active { 1. } else { 0. },
+                    gpui_ce_motion::Transition::Tween(
+                        Duration::from_millis(440),
+                        gpui_ce_motion::Easing::Bezier(
+                            gpui_ce_motion::Bezier::new(0.22, 1., 0.36, 1.)
+                                .expect("valid card curve"),
+                        ),
+                    ),
+                    now,
+                );
+            }
+            let sample = value.sample(now, cx.reduce_motion());
+            self.card_lifts.insert(key, sample.value() as f32);
+            if sample.is_animating() {
+                window.request_animation_frame();
+            }
+        }
+        if self.folder_active != self.folder_hover {
+            self.folder_active = self.folder_hover;
+            self.folder_motion.animate(
+                if self.folder_hover { 1. } else { 0. },
+                gpui_ce_motion::Transition::Spring(
+                    gpui_ce_motion::Spring::new(420., 38., 0.85).expect("valid folder spring"),
+                ),
+                now,
+            );
+        }
+        let folder = self.folder_motion.sample(now, cx.reduce_motion());
+        self.folder_lift = folder.value() as f32;
+        if folder.is_animating() {
+            window.request_animation_frame();
+        }
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus)
+            .key_context("KoneProject")
+            .on_action(
+                cx.listener(|this, _: &ProjectNext, window, cx| {
+                    this.cycle_focus(false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ProjectPrev, window, cx| this.cycle_focus(true, window, cx)),
+            )
+            .capture_key_down(cx.listener(Self::key))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.focus.focus(window, cx);
+                }),
+            )
+            .child(
+                div()
+                    .h(px(48.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(20.))
+                    .child(
+                        div()
+                            .id("project-back")
+                            .cursor_pointer()
+                            .px(px(10.))
+                            .py(px(6.))
+                            .rounded(px(8.))
+                            .text_color(hsla(c.ink_soft))
+                            .hover(|s| s.bg(hsla(c.hover)))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Back)))
+                            .when(
+                                self.selected.as_deref() == Some("back")
+                                    && !self.peek
+                                    && self.detail.is_none(),
+                                |d| d.bg(hsla(c.hover)),
+                            )
+                            .child("← Back"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(28.))
+                            .text_size(px(13.))
+                            .text_color(hsla(c.ink))
+                            .child("Overview")
+                            .children(
+                                ["Space", "Files", "Git"]
+                                    .into_iter()
+                                    .map(|s| div().opacity(0.35).child(s)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .size(px(28.))
+                            .rounded_full()
+                            .bg(hsla(c.chip))
+                            .text_color(hsla(c.ink_soft))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.identity.chars().next().unwrap_or('Y').to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .left(px(-402. * self.peek_progress))
+                    .child(self.render_overview(window, cx)),
+            )
+            .when(self.error.is_some(), |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom(px(18.))
+                        .left(px(64.))
+                        .flex()
+                        .gap(px(12.))
+                        .text_size(px(13.))
+                        .text_color(hsla(c.danger))
+                        .child(self.error.clone().unwrap_or_default())
+                        .child(
+                            div()
+                                .id("project-refresh")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))
+                                .child("Refresh"),
+                        ),
+                )
+            })
+            .when(peek_layer, |d| d.child(self.render_peek(&c, cx)))
+            .when(self.detail.is_some(), |d| {
+                d.child(self.render_detail(&c, cx))
+            })
+    }
+}
+
+impl Drop for ProjectView {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
