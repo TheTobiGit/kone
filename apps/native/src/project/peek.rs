@@ -66,6 +66,7 @@ impl ProjectView {
                         .text_size(px(12.))
                         .text_color(hsla(c.ink_soft))
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(format!("group:{group}"));
                             if !this.collapsed.remove(&group) {
                                 this.collapsed.insert(group.clone());
                             }

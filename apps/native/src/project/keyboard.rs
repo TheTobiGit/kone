@@ -108,7 +108,7 @@ impl ProjectView {
             return;
         }
 
-        let mut stops = vec!["back".to_string()];
+        let mut stops = vec!["back".to_string(), "reveal".to_string()];
         for lane in [Lane::Staged, Lane::Changed] {
             if self
                 .model
@@ -125,7 +125,7 @@ impl ProjectView {
                 }
             }
         }
-        if stops.len() > 1 {
+        if stops.len() > 2 {
             stops.push("peek".into());
         }
         let at = self
@@ -163,6 +163,7 @@ impl ProjectView {
                     0 => {
                         if let Some(d) = &mut self.detail {
                             d.source = !d.source;
+                            d.scroll.set_offset(point(px(0.), px(0.)));
                         }
                     }
                     1 => {
@@ -226,6 +227,11 @@ impl ProjectView {
             match self.selected.as_deref() {
                 Some("back") => {
                     cx.emit(Back);
+                    cx.stop_propagation();
+                    return;
+                }
+                Some("reveal") => {
+                    self.reveal(cx);
                     cx.stop_propagation();
                     return;
                 }

@@ -166,6 +166,7 @@ impl ProjectView {
                                             .cursor_pointer()
                                             .text_color(hsla(c.ink_soft))
                                             .on_click(cx.listener(|this, _, _, cx| {
+                                                this.detail_control = 0;
                                                 if let Some(d) = &mut this.detail {
                                                     d.source = !d.source;
                                                     d.scroll.set_offset(point(px(0.), px(0.)));
@@ -182,6 +183,7 @@ impl ProjectView {
                                             .cursor_pointer()
                                             .text_color(hsla(if wrap { c.ink } else { c.muted }))
                                             .on_click(cx.listener(|this, _, _, cx| {
+                                                this.detail_control = 1;
                                                 if let Some(d) = &mut this.detail {
                                                     d.wrap = !d.wrap;
                                                 }

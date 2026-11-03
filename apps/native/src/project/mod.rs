@@ -243,6 +243,7 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn toggle_lane(&mut self, lane: Lane, cx: &mut Context<Self>) {
+        self.selected = Some(format!("lane-{lane:?}"));
         let i = usize::from(lane == Lane::Changed);
         self.folded[i] = !self.folded[i];
         let path = self.path.clone();

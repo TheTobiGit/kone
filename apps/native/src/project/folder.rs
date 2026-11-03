@@ -174,6 +174,11 @@ impl ProjectView {
         let actions = div().flex().items_center().gap(px(12.)).child(
             div()
                 .id("reveal-finder")
+                .relative()
+                .child(self.track_bounds("reveal".into()))
+                .when(self.selected.as_deref() == Some("reveal"), |d| {
+                    d.bg(hsla(c.hover))
+                })
                 .cursor_pointer()
                 .px(px(8.))
                 .py(px(4.))
@@ -184,7 +189,11 @@ impl ProjectView {
                 .text_size(px(11.))
                 .text_color(hsla(c.muted))
                 .hover(|s| s.bg(hsla(c.hover)).text_color(hsla(c.ink)))
-                .on_click(cx.listener(|this, _, _, cx| this.reveal(cx)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.selected = Some("reveal".into());
+                    this.reveal(cx);
+                    cx.notify();
+                }))
                 .child(
                     svg()
                         .path("icons/finder.svg")
