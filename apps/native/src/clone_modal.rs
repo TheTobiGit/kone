@@ -233,7 +233,7 @@ impl CloneModal {
 
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(20)).await;
+                cx.background_executor().timer(Duration::from_millis(100)).await;
                 let mut done_msg = None;
                 let mut latest_progress = None;
 

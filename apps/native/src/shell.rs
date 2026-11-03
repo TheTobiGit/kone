@@ -67,8 +67,6 @@ const ART_FRAME: Duration = Duration::from_millis(42);
 /// Room under the recents grid now the floor strip is gone.
 const GRID_FOOT: f32 = 40.;
 const REST_FRAME: Duration = Duration::from_millis(250);
-/// Spinner pace while a launcher modal is open (~30 fps).
-const SPIN_FRAME: Duration = Duration::from_millis(33);
 
 pub struct Shell {
     magnets: [Magnet; 3],
@@ -118,8 +116,7 @@ pub struct Shell {
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Only a focused window animates; a background one holds its last frame.
-        // While a launcher modal is up the active row's spinner needs a smoother
-        // pace than the art, but still a timer: not a frame on every vsync.
+        // Modal components request frames for their own motion and busy states.
         let ticker = cx.spawn_in(window, async move |this, cx| {
             let mut pace = REST_FRAME;
             let mut was_active = true;
@@ -138,8 +135,7 @@ impl Shell {
                         return REST_FRAME;
                     }
                     if this.picker.is_some() || this.creator.is_some() || this.cloner.is_some() {
-                        cx.notify();
-                        SPIN_FRAME
+                        REST_FRAME
                     } else if this.folk_shown() {
                         cx.notify();
                         ART_FRAME
