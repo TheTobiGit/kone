@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+libc = "0.2"
 gpui-kit.workspace = true
 # The engine only (springs, tweens, retargeting); its GPUI bindings target
 # gpui-ce, so the picker drives our own elements from its values.

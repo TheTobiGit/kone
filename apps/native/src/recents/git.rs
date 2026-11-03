@@ -1,6 +1,5 @@
 //! Recents use git-core's status counts; the picker's detect/shortstat stays separate.
 use std::{
-    collections::HashMap,
     fs::File,
     io::Read,
     path::Path,
@@ -142,24 +141,7 @@ pub(super) fn summary(root: &Path) -> Option<(RepoSummary, bool)> {
         )
     })
     .unwrap_or_default();
-    let counts: HashMap<_, _> = diff
-        .split(|&b| b == 0)
-        .filter_map(|record| {
-            let mut parts = record.splitn(3, |&b| b == b'\t');
-            let number = |s| {
-                std::str::from_utf8(s)
-                    .ok()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0)
-            };
-            Some((
-                parts.next().map(number)?,
-                parts.next().map(number)?,
-                parts.next()?.to_vec(),
-            ))
-        })
-        .map(|(a, r, path)| (path, (a, r)))
-        .collect();
+    let counts = crate::repo::parse_numstat(&diff);
     // Tracked totals straight from numstat: with --no-renames a rename is a
     // deletion plus an addition, and both halves must count.
     let mut summary = RepoSummary {

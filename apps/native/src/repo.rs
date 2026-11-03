@@ -123,6 +123,68 @@ pub(crate) fn diff_stat(dir: &Path) -> (u32, u32) {
 }
 
 
+/// Shared bounded runner for richer native git reads. Call off the UI thread.
+/// Unlike tile summaries, failures and output truncation remain explicit.
+pub(crate) fn read_git(
+    dir: &Path,
+    args: &[&str],
+    deadline: Instant,
+    cancel: &std::sync::atomic::AtomicBool,
+    cap: usize,
+    diff_exit: bool,
+) -> Result<Vec<u8>, String> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or("Git read timed out")?;
+    let output = crate::process::output(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .arg("--no-optional-locks")
+            .env("LC_ALL", "C")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(args),
+        remaining,
+        cancel,
+        cap + 1,
+    )
+    .map_err(|e| format!("Couldn't read git: {e}"))?;
+    if output.stdout.len() > cap {
+        return Err("Git output exceeds the preview limit".into());
+    }
+    if !output.status.success() && !(diff_exit && output.status.code() == Some(1)) {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if message.is_empty() {
+            format!("Git exited with {}", output.status)
+        } else {
+            message
+        });
+    }
+    Ok(output.stdout)
+}
+
+/// NUL-delimited numstat paths preserve tabs/newlines and match status exactly.
+/// --no-renames is required: each record owns one path, including both halves
+/// of a rename. Recents and Overview decide their totals independently.
+pub(crate) fn parse_numstat(out: &[u8]) -> HashMap<Vec<u8>, (u32, u32)> {
+    let mut counts = HashMap::new();
+    for row in out.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let mut fields = row.splitn(3, |&b| b == b'\t');
+        let number = |v: &[u8]| {
+            std::str::from_utf8(v)
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
+        };
+        let (Some(a), Some(d), Some(path)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        counts.insert(path.to_vec(), (number(a), number(d)));
+    }
+    counts
+}
+
+
 #[cfg(test)]
 mod summary_tests {
     use super::{cached_diff_stat, diff_stat, read_branch, Branch};
