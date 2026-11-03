@@ -27,6 +27,35 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// `git status` output kept per repo: an unignored generated tree can list
+/// millions of paths, so the reader stops (and kills git) past this.
+const STATUS_CAP: u64 = 8 * 1024 * 1024;
+
+/// Like `git`, but reads at most `STATUS_CAP` bytes of stdout. A capped read
+/// drops its trailing partial record.
+fn git_capped(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("--no-optional-locks")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out = Vec::new();
+    child.stdout.take()?.take(STATUS_CAP).read_to_end(&mut out).ok()?;
+    if out.len() as u64 >= STATUS_CAP {
+        let _ = child.kill();
+        let _ = child.wait();
+        let end = out.iter().rposition(|&b| b == 0).map_or(0, |i| i + 1);
+        out.truncate(end);
+        return Some(out);
+    }
+    child.wait().ok()?.success().then_some(out)
+}
+
 fn lines(bytes: &[u8]) -> u32 {
     if bytes.is_empty() || bytes.contains(&0) {
         return 0;
@@ -81,7 +110,9 @@ impl ReadBudget {
         let mut bytes = Vec::new();
         let result = file.take(limit).read_to_end(&mut bytes);
         self.bytes += bytes.len() as u64;
-        if result.is_err() || bytes.len() as u64 > FILE_CAP || bytes.len() as u64 == limit {
+        // More than metadata promised means the file grew mid-read: drop it.
+        // A file exactly filling the remaining budget is still complete.
+        if result.is_err() || bytes.len() as u64 > FILE_CAP || bytes.len() as u64 > meta.len() {
             return 0;
         }
         lines(&bytes)
@@ -94,7 +125,7 @@ pub(super) fn summary(root: &Path) -> Option<RepoSummary> {
     if std::fs::symlink_metadata(root.join(".git")).is_err() {
         return None;
     }
-    let status = git(
+    let status = git_capped(
         root,
         &[
             "status",
@@ -133,8 +164,12 @@ pub(super) fn summary(root: &Path) -> Option<RepoSummary> {
         })
         .map(|(a, r, path)| (path, (a, r)))
         .collect();
+    // Tracked totals straight from numstat: with --no-renames a rename is a
+    // deletion plus an addition, and both halves must count.
     let mut summary = RepoSummary {
         repo: true,
+        added: counts.values().fold(0u32, |a, (n, _)| a.saturating_add(*n)),
+        removed: counts.values().fold(0u32, |a, (_, n)| a.saturating_add(*n)),
         ..Default::default()
     };
     let mut budget = ReadBudget::default();
@@ -190,8 +225,9 @@ pub(super) fn summary(root: &Path) -> Option<RepoSummary> {
         } else {
             counts.get(name).copied().unwrap_or_default()
         };
-        summary.added = summary.added.saturating_add(added);
-        summary.removed = summary.removed.saturating_add(removed);
+        if untracked {
+            summary.added = summary.added.saturating_add(added);
+        }
         if summary.files.len() < 3 {
             summary.files.push(ChangedFile {
                 name: String::from_utf8_lossy(name).into_owned(),
