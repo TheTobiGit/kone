@@ -141,6 +141,7 @@ pub(crate) fn read_git(
             .arg("-C")
             .arg(dir)
             .arg("--no-optional-locks")
+            .arg("--literal-pathspecs")
             .env("LC_ALL", "C")
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(args),

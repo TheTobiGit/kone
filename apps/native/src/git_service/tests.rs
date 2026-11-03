@@ -299,3 +299,43 @@ fn conflicted_files_show_numbered_worktree_diff() {
             .any(|line| line.text.starts_with("<<<<<<<"))
     );
 }
+
+#[test]
+fn staged_preview_uses_index_even_when_worktree_is_binary_or_large() {
+    let repo = Repo::new();
+    repo.write("file", "base\n");
+    repo.commit();
+    repo.write("file", "staged\n");
+    repo.git(&["add", "file"]);
+    for worktree in [vec![0, 1], vec![b'x'; FILE_CAP + 1]] {
+        repo.write("file", worktree);
+        let detail = repo.detail("file", true);
+        assert!(!detail.limited);
+        assert_eq!(detail.content.unwrap().text.as_deref(), Some("staged\n"));
+        assert_eq!(detail.diff.unwrap().hunks[0].lines[1].text, "staged");
+    }
+    fs::remove_file(repo.0.join("file")).unwrap();
+    assert_eq!(
+        repo.detail("file", true).content.unwrap().text.as_deref(),
+        Some("staged\n")
+    );
+}
+
+#[test]
+fn detail_paths_are_literal_including_pathspec_magic() {
+    let repo = Repo::new();
+    for name in ["[a].txt", "a.txt", ":(glob)*.txt"] {
+        repo.write(name, "base\n");
+    }
+    repo.commit();
+    repo.write("[a].txt", "brackets\n");
+    repo.write("a.txt", "other\n");
+    repo.write(":(glob)*.txt", "magic\n");
+    for (name, expected) in [("[a].txt", "brackets"), (":(glob)*.txt", "magic")] {
+        let diff = repo.detail(name, false).diff.unwrap();
+        assert_eq!(diff.added, 1);
+        assert_eq!(diff.hunks[0].lines[1].text, expected);
+    }
+    repo.write("[u].txt", "untracked\n");
+    assert_eq!(repo.detail("[u].txt", false).diff.unwrap().added, 1);
+}

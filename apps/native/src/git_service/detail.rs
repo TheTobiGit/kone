@@ -9,7 +9,13 @@ pub(super) fn detail(
     let deadline = Instant::now() + TIMEOUT;
     let root = root(path, deadline, cancel)?.ok_or("Not a git repository")?;
     let full = safe_path(&root, file)?;
-    let content = read_file(&full)?;
+    // A staged row previews the index, even if the worktree has since become
+    // binary, oversized, deleted, or a different file type.
+    let content = if staged {
+        index_content(&root, file, deadline, cancel)?
+    } else {
+        read_file(&full)?
+    };
     let too_many_lines = content
         .text
         .as_ref()
@@ -28,7 +34,7 @@ pub(super) fn detail(
             ..Default::default()
         });
     }
-    if std::fs::symlink_metadata(&full).is_ok_and(|m| !m.is_file()) {
+    if !staged && std::fs::symlink_metadata(&full).is_ok_and(|m| !m.is_file()) {
         return Ok(FileDetail {
             content: Some(content),
             ..Default::default()
@@ -100,6 +106,53 @@ pub(super) fn detail(
         limited,
     })
 }
+fn index_content(
+    root: &Path,
+    file: &str,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> Result<FileContent, String> {
+    let entries = crate::repo::read_git(
+        root,
+        &["ls-files", "--stage", "-z", "--", file],
+        deadline,
+        cancel,
+        FILE_CAP,
+        false,
+    )?;
+    let header = entries.split(|&b| b == b'\t').next().unwrap_or_default();
+    let fields: Vec<_> = header.split(|&b| b == b' ').collect();
+    // A staged deletion has no index entry. Gitlinks have no blob content.
+    if entries.is_empty() || fields.first() == Some(&b"160000".as_slice()) {
+        return Ok(FileContent::default());
+    }
+    let oid = fields.get(1).ok_or("Invalid index entry")?;
+    let oid = std::str::from_utf8(oid).map_err(|_| "Invalid index object")?;
+    let bytes = match crate::repo::read_git(
+        root,
+        &["cat-file", "blob", oid],
+        deadline,
+        cancel,
+        FILE_CAP,
+        false,
+    ) {
+        Ok(bytes) => bytes,
+        Err(e) if e == "Git output exceeds the preview limit" => {
+            return Ok(FileContent {
+                truncated: true,
+                ..Default::default()
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    let binary = bytes.contains(&0);
+    Ok(FileContent {
+        text: (!binary).then(|| String::from_utf8_lossy(&bytes).into_owned()),
+        binary,
+        truncated: false,
+    })
+}
+
 fn parse(file: &str, out: &str) -> FileDiff {
     let mut diff = FileDiff {
         path: file.into(),
