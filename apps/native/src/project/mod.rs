@@ -170,7 +170,6 @@ impl ProjectView {
             folder_active: false,
             folder_lift: 0.,
         };
-        view.folded = load_folds(&view.path);
         view.refresh(cx);
         view
     }
@@ -194,13 +193,19 @@ impl ProjectView {
         let path = self.path.clone();
         self.loading = true;
         self.error = None;
-        let task =
-            cx.background_spawn(async move { git.snapshot(std::path::Path::new(&path), &cancel) });
+        let initial = self.model.is_none();
+        let task = cx.background_spawn(async move {
+            let folded = initial.then(|| load_folds(&path));
+            (git.snapshot(std::path::Path::new(&path), &cancel), folded)
+        });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let (result, folded) = task.await;
             let _ = this.update(cx, |this, cx| {
                 if generation != this.generation {
                     return;
+                }
+                if let Some(folded) = folded {
+                    this.folded = folded;
                 }
                 this.loading = false;
                 match result {
