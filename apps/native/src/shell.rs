@@ -57,7 +57,12 @@ const PANEL_RADIUS: f32 = 8.;
 
 /// The stick folk at ~30 fps, idle or stirred: smooth on a GPU, and only
 /// while the start screen is up in a focused window.
+#[cfg(not(target_os = "linux"))]
 const ART_FRAME: Duration = Duration::from_millis(33);
+/// ~24 fps on Linux, where many machines render in software and every
+/// frame costs real CPU.
+#[cfg(target_os = "linux")]
+const ART_FRAME: Duration = Duration::from_millis(42);
 /// How often an unfocused window, or a page with nothing moving, checks back.
 /// Room under the recents grid now the floor strip is gone.
 const GRID_FOOT: f32 = 40.;
