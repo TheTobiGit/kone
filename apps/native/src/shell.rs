@@ -92,6 +92,8 @@ pub struct Shell {
     pub(crate) hovered: Option<String>,
     /// Each tile's hover springs, by path.
     pub(crate) tile_motion: std::collections::HashMap<String, crate::recents::TileMotion>,
+    entry_motion: Option<std::collections::HashMap<String, crate::recents::EntryMotion>>,
+    start_entry: Option<crate::recents::EntryMotion>,
     /// Keyboard focus in the grid: (cell, stop). Cells are the shown tiles
     /// then the start actions; see `recents::slots` for the stops.
     kb: Option<(usize, usize)>,
@@ -176,6 +178,8 @@ impl Shell {
             tiles: Default::default(),
             hovered: None,
             tile_motion: Default::default(),
+            entry_motion: None,
+            start_entry: None,
             kb: None,
             kb_follow: None,
             grid_scroll: ScrollHandle::new(),
@@ -616,7 +620,21 @@ impl Render for Shell {
                 }
             }
         }
+        let mounted = self.project.is_none() && recents.is_some();
+        if mounted && self.entry_motion.is_none() {
+            self.entry_motion = Some(shown.iter().enumerate().map(|(i, p)|
+                (p.path.clone(), crate::recents::EntryMotion::new(i, now))).collect());
+            self.start_entry = Some(crate::recents::EntryMotion::new(shown.len(), now));
+        } else if !mounted {
+            self.entry_motion = None;
+            self.start_entry = None;
+        }
         let mut springing = false;
+        let start_entry = self.start_entry.as_mut().map(|m| {
+            let (t, moving) = m.sample(now);
+            springing |= moving;
+            t
+        }).unwrap_or(1.);
         let tile_els: Vec<AnyElement> = if self.project.is_none() {
             let els = shown
                 .iter()
@@ -625,7 +643,13 @@ impl Render for Shell {
                     let focus = kb.filter(|(cell, _)| *cell == i).map(|(_, slot)| slot);
                     let (el, moving) = self.tile(p, busy, focus, now, &c, cx);
                     springing |= moving;
-                    el
+                    let entry = self.entry_motion.as_mut().and_then(|motions| motions.get_mut(&p.path));
+                    let t = entry.map(|m| {
+                        let (t, moving) = m.sample(now);
+                        springing |= moving;
+                        t
+                    }).unwrap_or(1.);
+                    div().relative().top(px(12. * (1. - t))).opacity(t.clamp(0., 1.)).child(el).into_any_element()
                 })
                 .collect();
             self.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
@@ -634,7 +658,7 @@ impl Render for Shell {
             self.tile_motion.clear();
             Vec::new()
         };
-        // Frames only while a hover spring is still settling.
+        // Frames only while entry or hover springs are still settling.
         if springing {
             window.request_animation_frame();
         }
@@ -712,7 +736,7 @@ impl Render for Shell {
                 .gap_y(px(crate::recents::GAP_Y))
                 .pt(px(8.));
             grid = grid.children(tile_els);
-            grid = grid.child(div().w(px(crate::recents::CELL_W)).h(px(116.)).flex().items_center().ml(px(-6.)).child(start_rows()));
+            grid = grid.child(div().relative().top(px(12. * (1. - start_entry))).opacity(start_entry.clamp(0., 1.)).w(px(crate::recents::CELL_W)).h(px(116.)).flex().items_center().ml(px(-6.)).child(start_rows()));
             let mut section = div()
                 .id("recents")
                 .track_scroll(&self.grid_scroll)
@@ -873,7 +897,7 @@ impl Render for Shell {
                         .cursor_pointer()
                         .text_color(hsla(c.muted))
                         .hover(|s| s.bg(hsla(c.hover)).text_color(hsla(c.ink)))
-                        .when(!busy, |d| d.tooltip(crate::recents::tip("Settings")))
+                        .when(!busy, |d| d.tooltip(crate::recents::tip("Settings")).tooltip_show_delay(Duration::from_millis(500)))
                         .child(svg().path("icons/settings.svg").size(px(16.)).text_color(hsla(c.muted))),
                 ).when(home, |d| d.child(search).child(sort)),
             )

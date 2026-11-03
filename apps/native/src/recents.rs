@@ -9,7 +9,9 @@ use gpui_ce_motion::{MotionValue, Spring, Transition};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use kone_rpc::{Branch, RepoSummary};
+use kone_rpc::{Branch, ChangedFile, FileChange, RepoSummary};
+
+mod git;
 use kone_theme::{hsla, Palette};
 
 use crate::projects::RecentProject;
@@ -35,7 +37,7 @@ pub fn read_tiles(paths: &[String]) -> HashMap<String, Tile> {
                 Tile::Missing
             } else {
                 // A folder inside a repo belongs to it, as in the project view.
-                match path.ancestors().find_map(crate::folder_picker::repo_summary) {
+                match path.ancestors().find_map(git::summary) {
                     Some(s) => Tile::Repo(s),
                     None => Tile::Plain,
                 }
@@ -163,15 +165,26 @@ pub struct TileMotion {
     lift: MotionValue,
     side: MotionValue,
     active: bool,
+    papers: [MotionValue; 3],
 }
 
 impl Default for TileMotion {
     fn default() -> Self {
-        TileMotion { lift: MotionValue::new(0.), side: MotionValue::new(0.), active: false }
+        TileMotion { lift: MotionValue::new(0.), side: MotionValue::new(0.), active: false, papers: std::array::from_fn(|_| MotionValue::new(0.)) }
     }
 }
 
 impl TileMotion {
+    fn papers(&mut self, now: Duration) -> ([f32; 3], bool) {
+        let mut moving = false;
+        let values = std::array::from_fn(|i| {
+            let sample = self.papers[i].sample(now, false);
+            moving |= sample.is_animating();
+            sample.value() as f32
+        });
+        (values, moving)
+    }
+
     /// Retargets on a change of state, then reads both springs:
     /// `(lift, side, still_moving)`.
     pub fn sample(&mut self, active: bool, now: Duration) -> (f32, f32, bool) {
@@ -180,6 +193,10 @@ impl TileMotion {
             let to = if active { 1. } else { 0. };
             self.lift.animate(to, lift_spring(), now);
             self.side.animate(to, side_spring(), now);
+            for (i, paper) in self.papers.iter_mut().enumerate() {
+                paper.animate_delayed(to, Transition::Spring(Spring::new(340., 15., 0.7).expect("valid spring")),
+                    if active { Duration::from_secs_f64(i as f64 * 0.04) } else { Duration::ZERO }, now);
+            }
         }
         let lift = self.lift.sample(now, false);
         let side = self.side.sample(now, false);
@@ -195,30 +212,30 @@ pub struct Tip(pub SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = &kone_theme::Theme::get(cx).colors;
+        let theme = kone_theme::Theme::get(cx);
+        let c = &theme.colors;
+        // Chromium's plain light title box, expressed in the active palette.
+        let (background, foreground, border) = if theme.is_dark() {
+            (c.ink, c.ground, c.muted)
+        } else {
+            (c.raised_high, c.ink, c.line)
+        };
         div()
-            .font_family(crate::shell::SANS)
-            .px(px(8.))
-            .py(px(4.))
-            .rounded(px(7.))
-            .bg(hsla(c.raised_high))
+            .font_family(".SystemUIFont")
+            .px(px(4.))
+            .py(px(2.))
+            .bg(hsla(background))
             .border_1()
-            .border_color(hsla(c.line_soft))
-            .shadow(vec![BoxShadow {
-                color: black().opacity(0.12),
-                offset: point(px(0.), px(2.)),
-                blur_radius: px(8.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            .border_color(hsla(border))
             .text_size(px(12.))
-            .text_color(hsla(c.ink))
+            .font_weight(FontWeight::NORMAL)
+            .text_color(hsla(foreground))
             .whitespace_nowrap()
             .child(self.0.clone())
     }
 }
 
-/// A builder for `.tooltip(..)` showing `text`.
+/// GPUI anchors these below-right of the pointer and flips at window edges.
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text = text.into();
     move |_, cx| cx.new(|_| Tip(text.clone())).into()
@@ -253,6 +270,235 @@ pub const GAP_X: f32 = 56.;
 pub const GAP_Y: f32 = 24.;
 pub const GRID_W: f32 = CELL_W * 3. + GAP_X * 2.;
 
+/// One entry clock belongs to the mounted grid, never to a search/sort result.
+/// GPUI layout has no scale transform: preserve cell geometry and approximate
+/// Electron's 0.97 -> 1 scale with the matching 12px rise and opacity instead.
+pub struct EntryMotion {
+    value: MotionValue,
+}
+
+impl EntryMotion {
+    pub fn new(index: usize, now: Duration) -> Self {
+        let mut value = MotionValue::new(0.);
+        value.animate_delayed(
+            1.,
+            Transition::Spring(Spring::new(340., 13., 0.85).expect("valid spring")),
+            Duration::from_secs_f64(index as f64 * 0.06),
+            now,
+        );
+        Self { value }
+    }
+
+    pub fn sample(&mut self, now: Duration) -> (f32, bool) {
+        let sample = self.value.sample(now, false);
+        (sample.value() as f32, sample.is_animating())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Tone {
+    Context,
+    Add,
+    Delete,
+}
+
+fn marks_for(file: &ChangedFile) -> Vec<(f32, Tone)> {
+    // JS spreads code points, then charCodeAt(0) reads their first UTF-16 unit.
+    let seed: u32 = file
+        .name
+        .chars()
+        .map(|ch| ch.encode_utf16(&mut [0; 2])[0] as u32)
+        .sum();
+    let jitter = |base: u32, i: u32| (base + (seed + i * 7) % 5 - 2).max(6) as f32;
+    use Tone::*;
+    let marks = if file.added > 0 && file.removed > 0 {
+        [(16, Context), (10, Delete), (13, Add)]
+    } else if file.added > 0 || file.change == FileChange::Added {
+        [(15, Add), (10, Add), (8, Context)]
+    } else if file.removed > 0 {
+        [(15, Delete), (9, Delete), (7, Context)]
+    } else {
+        return vec![(15., Context), (10., Context)];
+    };
+    marks
+        .into_iter()
+        .enumerate()
+        .map(|(i, (w, tone))| (jitter(w, i as u32), tone))
+        .collect()
+}
+
+struct PaperColors {
+    paper: kone_theme::Rgba,
+    context: kone_theme::Rgba,
+    add: kone_theme::Rgba,
+    delete: kone_theme::Rgba,
+    icon: kone_theme::Rgba,
+    shadow: kone_theme::Rgba,
+}
+
+impl PaperColors {
+    fn new(c: &Palette, dark: bool) -> Self {
+        Self {
+            paper: if dark {
+                c.ink.mix(0.057, c.raised_high)
+            } else {
+                c.raised_high
+            },
+            context: if dark {
+                c.ink.mix(0.446, c.ground)
+            } else {
+                c.faint.mix(0.5, c.raised_high)
+            },
+            // The CSS fixed dark green is mapped to the semantic diff role.
+            add: c.diff_add,
+            delete: c.diff_del,
+            icon: c.file,
+            shadow: if dark { c.sunken.alpha(0.16) } else { c.ink.alpha(0.07) },
+        }
+    }
+}
+
+/// Rounded contours are transformed point-by-point around the paper's top-left.
+/// This keeps the body, diff strokes and dashed deletion edge in one coordinate system.
+fn rounded_contour(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Vec<(f32, f32)> {
+    let mut points = Vec::with_capacity(28);
+    for (cx, cy, angle) in [
+        (x + w - radius, y + radius, -90.),
+        (x + w - radius, y + h - radius, 0.),
+        (x + radius, y + h - radius, 90.),
+        (x + radius, y + radius, 180.),
+    ] {
+        for step in 0..=6 {
+            let a = (angle + step as f32 * 15.).to_radians();
+            points.push((cx + radius * a.cos(), cy + radius * a.sin()));
+        }
+    }
+    points
+}
+
+fn paint_papers(
+    origin: Point<Pixels>,
+    files: &[ChangedFile],
+    hover: [f32; 3],
+    c: &PaperColors,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // left, bottom, rotation, hover dx/dy/dr: ProjectFolder.vue SLOTS.
+    const SLOTS: [(f32, f32, f32, f32, f32, f32); 3] = [
+        (44., 54., -10., -14., -4., -6.),
+        (78., 60., 1., 0., -5., 0.),
+        (112., 54., 11., 14., -4., 6.),
+    ];
+    for (i, file) in files.iter().take(3).enumerate() {
+        let (left, bottom, angle, dx, dy, dr) = SLOTS[i];
+        let t = hover[i];
+        let angle = (angle + dr * t).to_radians();
+        let (sin, cos) = angle.sin_cos();
+        let pivot = origin + point(px(left + dx * t), px(TILE_H - bottom - 62. + dy * t));
+        let transform =
+            |(x, y): (f32, f32)| pivot + point(px(x * cos - y * sin), px(x * sin + y * cos));
+        let torn = file.change == FileChange::Deleted;
+        // A small layered penumbra approximates CSS's rotated 0 4px 10px
+        // shadow; GPUI's quad shadow cannot rotate with a custom path.
+        for spread in (0..5).rev() {
+            let spread = spread as f32;
+            let contour = rounded_contour(-spread, -spread, 50. + 2.*spread, 62. + 2.*spread, 6. + spread);
+            let mut path = PathBuilder::fill();
+            let shadow_point = |p| transform(p) + point(px(0.), px(4.));
+            path.move_to(shadow_point(contour[0]));
+            for &p in &contour[1..] { path.line_to(shadow_point(p)); }
+            path.close();
+            if let Ok(path) = path.build() {
+                window.paint_path(path, hsla(c.shadow.alpha(c.shadow.a * 0.2 * if torn { 0.9 } else { 1. })));
+            }
+        }
+        let contour = rounded_contour(0., 0., 50., 62., 6.);
+        let mut path = PathBuilder::fill();
+        path.move_to(transform(contour[0]));
+        for &p in &contour[1..] {
+            path.line_to(transform(p));
+        }
+        path.close();
+        if let Ok(path) = path.build() {
+            window.paint_path(
+                path,
+                hsla(if torn {
+                    c.paper.alpha(0.35 * 0.9)
+                } else {
+                    c.paper
+                }),
+            );
+        }
+        if torn {
+            let mut path = PathBuilder::stroke(px(1.5));
+            let mut distance: f32 = 0.;
+            for edge in 0..contour.len() {
+                let (x, y) = contour[edge];
+                let (nx, ny) = contour[(edge + 1) % contour.len()];
+                let length = (nx - x).hypot(ny - y);
+                let mut along = 0.;
+                while along < length {
+                    let phase = distance % 7.;
+                    let step = (if phase < 4. { 4. - phase } else { 7. - phase })
+                        .min(length - along)
+                        .max(0.001);
+                    if phase < 4. {
+                        path.move_to(transform((
+                            x + (nx - x) * along / length,
+                            y + (ny - y) * along / length,
+                        )));
+                        path.line_to(transform((
+                            x + (nx - x) * (along + step) / length,
+                            y + (ny - y) * (along + step) / length,
+                        )));
+                    }
+                    along += step;
+                    distance += step;
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, hsla(c.delete.alpha(0.9)));
+            }
+        } else {
+            for (j, (width, tone)) in marks_for(file).into_iter().enumerate() {
+                let contour = rounded_contour(8., 20. + j as f32 * 6., width, 3., 1.5);
+                let mut path = PathBuilder::fill();
+                path.move_to(transform(contour[0]));
+                for &p in &contour[1..] {
+                    path.line_to(transform(p));
+                }
+                path.close();
+                let color = match tone {
+                    Tone::Context => c.context,
+                    Tone::Add => c.add,
+                    Tone::Delete => c.delete,
+                };
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, hsla(color));
+                }
+            }
+        }
+        // Kit's bundled file asset is available through Assets' fallback.
+        let scale = window.scale_factor();
+        let rotation = TransformationMatrix {
+            rotation_scale: [[cos, -sin], [sin, cos]],
+            translation: [
+                scale * (pivot.x.as_f32() * (1. - cos) + pivot.y.as_f32() * sin),
+                scale * (pivot.y.as_f32() * (1. - cos) - pivot.x.as_f32() * sin),
+            ],
+        };
+        let _ = window.paint_svg(
+            Bounds::new(pivot + point(px(8.), px(8.)), size(px(10.), px(10.))),
+            "icons/file.svg".into(),
+            None,
+            rotation,
+            hsla(c.icon.alpha(if torn { 0.9 } else { 1. })),
+            cx,
+        );
+    }
+}
+
 impl Shell {
     /// One tile, and whether its hover springs still need frames.
     /// `focus` is the keyboard stop inside this tile, if it has one.
@@ -268,7 +514,10 @@ impl Shell {
         let key = project.path.clone();
         // Electron's isActive: pointer over it or keyboard focus inside it.
         let active = !busy && (self.hovered.as_deref() == Some(key.as_str()) || focus.is_some());
-        let (lift_t, side_t, moving) = self.tile_motion.entry(key.clone()).or_default().sample(active, now);
+        let motion = self.tile_motion.entry(key.clone()).or_default();
+        let (lift_t, side_t, moving) = motion.sample(active, now);
+        let (paper_t, paper_moving) = motion.papers(now);
+        let moving = moving || paper_moving;
         let pinned = project.pinned == Some(true);
         let tile = self.tiles.get(&key);
         let missing = matches!(tile, Some(Tile::Missing));
@@ -309,6 +558,8 @@ impl Shell {
             _ => {}
         }
 
+        let papers = match tile { Some(Tile::Repo(s)) => s.files.iter().take(3).cloned().collect(), _ => Vec::new() };
+        let paper_colors = PaperColors::new(c, kone_theme::Theme::get(cx).is_dark());
         let pocket_bg = c.raised;
         let sheet_bg = c.raised_high;
         let folder = div()
@@ -326,6 +577,9 @@ impl Shell {
             })
             // The back sheet peeking above the pocket.
             .child(div().absolute().left(px(16.)).top(px(6.)).w(px(168.)).h(px(44.)).rounded(px(15.)).bg(hsla(sheet_bg)).border_1().border_color(hsla(c.line_soft)))
+            .child(canvas(move |_, _, _| (), move |bounds, _, window, cx| {
+                paint_papers(bounds.origin, &papers, paper_t, &paper_colors, window, cx);
+            }).absolute().size_full())
             .child(
                 div()
                     .absolute()
@@ -362,7 +616,7 @@ impl Shell {
                             .child(
                                 div()
                                     .id(SharedString::from(format!("name:{key}")))
-                                    .when(!busy, |d| d.tooltip(tip(project.name.clone())))
+                                    .when(!busy, |d| d.tooltip(tip(project.name.clone())).tooltip_show_delay(Duration::from_millis(500)))
                                     .min_w(px(0.))
                                     .truncate()
                                     .text_size(px(17.))
@@ -404,7 +658,7 @@ impl Shell {
                             this.clear_kb();
                             act(this, path.clone(), window, cx)
                         }))
-                        .tooltip(tip(label))
+                        .tooltip(tip(label)).tooltip_show_delay(Duration::from_millis(500))
                 })
                 .when(ringed, |d| d.child(ring(7., 2., c.ink.alpha(0.34))))
                 .child(svg().path(icon).size(px(14.)).text_color(hsla(if on { c.ink } else { c.muted })))
@@ -452,6 +706,44 @@ mod tests {
 
     fn p(name: &str, at: u64, pinned: bool) -> RecentProject {
         RecentProject { path: format!("/x/{name}"), name: name.into(), last_opened_at: at, pinned: pinned.then_some(true) }
+    }
+
+    #[test]
+    fn papers_stagger_only_on_hover_in_and_settle() {
+        let mut motion = TileMotion::default();
+        motion.sample(true, Duration::ZERO);
+        let (papers, moving) = motion.papers(Duration::from_millis(30));
+        assert!(moving && papers[0] > 0.);
+        assert_eq!(&papers[1..], &[0., 0.]);
+        let (papers, moving) = motion.papers(Duration::from_secs(2));
+        assert!(!moving && papers.iter().all(|t| (t-1.).abs() < 1e-3));
+        motion.sample(false, Duration::from_secs(2));
+        let (papers, moving) = motion.papers(Duration::from_millis(2020));
+        assert!(moving && papers.iter().all(|t| *t < 1.));
+        let (papers, moving) = motion.papers(Duration::from_secs(4));
+        assert!(!moving && papers.iter().all(|t| t.abs() < 1e-3));
+    }
+
+    #[test]
+    fn entry_staggers_then_stops_requesting_frames() {
+        let mut entry = EntryMotion::new(2, Duration::ZERO);
+        assert_eq!(entry.sample(Duration::from_millis(100)), (0., true));
+        let (t, moving) = entry.sample(Duration::from_millis(150));
+        assert!(t > 0. && moving);
+        let (t, moving) = entry.sample(Duration::from_secs(3));
+        assert!((t-1.).abs() < 1e-3 && !moving);
+    }
+
+    #[test]
+    fn paper_marks_match_electrons_path_jitter_and_tones() {
+        let mut file = ChangedFile { name: "a".into(), change: FileChange::Modified, added: 2, removed: 1 };
+        assert_eq!(marks_for(&file), vec![(16., Tone::Context), (12., Tone::Delete), (12., Tone::Add)]);
+        file.removed = 0;
+        assert_eq!(marks_for(&file), vec![(15., Tone::Add), (12., Tone::Add), (7., Tone::Context)]);
+        file.added = 0;
+        assert_eq!(marks_for(&file), vec![(15., Tone::Context), (10., Tone::Context)]);
+        file.change = FileChange::Added;
+        assert_eq!(marks_for(&file)[0].1, Tone::Add);
     }
 
     #[test]
