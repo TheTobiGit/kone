@@ -270,7 +270,7 @@ pub fn last_stderr_line(stderr: &str, fallback: &str) -> String {
 /// Runs a user-supplied setup command inside the new project folder.
 /// Runs through the shell (`sh -c` on Unix, `cmd /C` on Windows) with
 /// GIT_TERMINAL_PROMPT=0 so prompts never hang.
-pub fn run_setup_command(cwd: &Path, command: &str) -> Result<(), String> {
+pub fn run_setup_command(cwd: &Path, command: &str, cancel: &std::sync::atomic::AtomicBool) -> Result<(), String> {
     #[cfg(unix)]
     let mut cmd = std::process::Command::new("sh");
     #[cfg(unix)]
@@ -289,7 +289,8 @@ pub fn run_setup_command(cwd: &Path, command: &str) -> Result<(), String> {
     // A scaffolder that prompts would otherwise wait forever on our stdin.
     cmd.stdin(std::process::Stdio::null());
 
-    let output = cmd.output().map_err(|e| format!("Failed to run setup command: {e}"))?;
+    let output = crate::process::output(&mut cmd, std::time::Duration::from_secs(300), cancel, 1024 * 1024)
+        .map_err(|e| format!("Failed to run setup command: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -435,7 +436,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// does: refuse an unsafe name or an existing target, mkdir, seed README.md,
 /// `git init -b <branch>`, stage, and land an initial commit when a git
 /// identity is configured. Blocking: call it off the UI thread.
-pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
+#[cfg(test)]
+fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
+    create_cancellable(opts, &std::sync::atomic::AtomicBool::new(false))
+}
+
+pub fn create_cancellable(opts: &CreateOptions, cancel: &std::sync::atomic::AtomicBool) -> Result<PathBuf, String> {
     let name = opts.name.trim();
     if !valid_name(name) {
         return Err(format!("\u{201c}{name}\u{201d} isn't a valid folder name."));
@@ -462,7 +468,7 @@ pub fn create(opts: &CreateOptions) -> Result<PathBuf, String> {
     // From here on the folder is ours (create_dir just made it), so a failed
     // step removes it again; a retry then doesn't hit "already exists".
     let made = Identity::of(&target);
-    match populate(opts, name, &target) {
+    match populate(opts, name, &target, cancel) {
         Ok(()) => Ok(target),
         Err(message) => {
             discard_created(&target, made.as_ref());
@@ -504,10 +510,13 @@ fn discard_created(target: &Path, made: Option<&Identity>) {
     }
 }
 
-fn populate(opts: &CreateOptions, name: &str, target: &Path) -> Result<(), String> {
+fn populate(opts: &CreateOptions, name: &str, target: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<(), String> {
     // A setup command runs first, on the still-empty folder — scaffolders expect that.
     if let Some(cmd) = opts.command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        run_setup_command(target, cmd)?;
+        run_setup_command(target, cmd, cancel)?;
+    }
+    if cancel.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("Project creation cancelled".into());
     }
 
     let init_git = opts.git || opts.remote;
@@ -816,7 +825,7 @@ mod tests {
     fn test_run_setup_command_success() {
         let tmp = std::env::temp_dir().join(format!("kone_setup_test_succ_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
-        let res = run_setup_command(&tmp, "echo hello");
+        let res = run_setup_command(&tmp, "echo hello", &std::sync::atomic::AtomicBool::new(false));
         let _ = fs::remove_dir_all(&tmp);
         assert!(res.is_ok());
     }
@@ -825,7 +834,7 @@ mod tests {
     fn test_run_setup_command_failure_reports_stderr() {
         let tmp = std::env::temp_dir().join(format!("kone_setup_test_fail_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
-        let res = run_setup_command(&tmp, "echo \"something went wrong\" >&2; exit 42");
+        let res = run_setup_command(&tmp, "echo \"something went wrong\" >&2; exit 42", &std::sync::atomic::AtomicBool::new(false));
         let _ = fs::remove_dir_all(&tmp);
         assert_eq!(res.unwrap_err(), "something went wrong");
     }
@@ -834,7 +843,7 @@ mod tests {
     fn test_run_setup_command_failure_without_stderr_reports_code() {
         let tmp = std::env::temp_dir().join(format!("kone_setup_test_nocode_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
-        let res = run_setup_command(&tmp, "exit 7");
+        let res = run_setup_command(&tmp, "exit 7", &std::sync::atomic::AtomicBool::new(false));
         let _ = fs::remove_dir_all(&tmp);
         assert_eq!(res.unwrap_err(), "Command exited with code 7");
     }

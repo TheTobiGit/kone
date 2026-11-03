@@ -83,6 +83,7 @@ pub struct CreateProject {
     pub gh_authed: Option<bool>,
     _auth_task: Option<Task<()>>,
     busy: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     error: Option<String>,
     create_hovered: bool,
     create_hover: MotionValue,
@@ -163,6 +164,7 @@ impl CreateProject {
             gh_authed: None,
             _auth_task: None,
             busy: false,
+            cancel: Default::default(),
             error: None,
             create_hovered: false,
             create_hover: MotionValue::new(0.),
@@ -293,11 +295,14 @@ impl CreateProject {
         self.busy = true;
         self.error = None;
         cx.notify();
-        let task = cx.background_spawn(async move { projects::create(&opts) });
+        self.cancel = Default::default();
+        let cancel = self.cancel.clone();
+        let task = cx.background_spawn(async move { projects::create_cancellable(&opts, &cancel) });
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                if this.closing { return; }
                 match result {
                     Ok(path) => this.close_to(CreateProjectEvent::Created(path), window, cx),
                     Err(message) => this.error = Some(message),
@@ -308,9 +313,8 @@ impl CreateProject {
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.busy {
-            self.close_to(CreateProjectEvent::Cancel, window, cx);
-        }
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
+        self.close_to(CreateProjectEvent::Cancel, window, cx);
     }
 
     fn close_to(&mut self, event: CreateProjectEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -779,5 +783,11 @@ mod tests {
         assert!(!session.readme);
         assert_eq!(session.visibility, projects::RepoVisibility::Private);
         assert_eq!(session.branch, "main");
+    }
+}
+
+impl Drop for CreateProject {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
     }
 }
