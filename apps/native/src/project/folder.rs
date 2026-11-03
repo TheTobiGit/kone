@@ -4,6 +4,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kone_theme::{Palette, Theme, hsla};
 
+/// Electron renders the branch in the platform monospace face.
+#[cfg(target_os = "macos")]
+const BRANCH_MONO: &str = crate::style::MONO;
+#[cfg(not(target_os = "macos"))]
+const BRANCH_MONO: &str = "DejaVu Sans Mono";
+
 fn ease_out_expo(t: f64) -> f64 {
     if t >= 1. {
         1.
@@ -363,7 +369,7 @@ impl ProjectView {
                                     .id("folder-name")
                                     .min_w(px(0.))
                                     .truncate()
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .font_weight(FontWeight::NORMAL)
                                     .text_size(px(17. * scale))
                                     .line_height(px(17. * scale))
                                     .text_color(hsla(c.ink))
@@ -395,7 +401,7 @@ impl ProjectView {
                                         )
                                         .child(
                                             div()
-                                                .font_family(crate::style::MONO)
+                                                .font_family(BRANCH_MONO)
                                                 .text_size(px(11. * scale))
                                                 .line_height(px(11. * scale))
                                                 .text_color(hsla(c.muted))
@@ -443,21 +449,15 @@ impl ProjectView {
                     }),
             );
 
-        let branch_tone = hsla(c.ink.mix(self.folder_motion.action_values[0], c.muted));
+        // Electron's folder actions stay muted on hover (no darkening).
+        let branch_tone = hsla(c.muted);
+        let reveal_tone = hsla(c.muted);
         let is_selected_reveal = self.selected.as_deref() == Some("reveal");
-        let reveal_tone = hsla(c.ink.mix(
-            if is_selected_reveal {
-                1.
-            } else {
-                self.folder_motion.action_values[1]
-            },
-            c.muted,
-        ));
 
         // Switch branch: styled exactly like Electron's folder action, inert (view-only).
         let switch = div()
             .id("folder-switch-branch")
-            .cursor_pointer()
+            .cursor_default()
             .flex()
             .items_center()
             .gap(px(7.))
@@ -475,8 +475,6 @@ impl ProjectView {
                     cx.notify();
                 }
             }))
-            .tooltip(folder_tip("Switch branch"))
-            .tooltip_show_delay(Duration::from_millis(500))
             .child(
                 svg()
                     .path("icons/git-branch.svg")
@@ -490,7 +488,7 @@ impl ProjectView {
             .id("reveal-finder")
             .relative()
             .child(self.track_bounds("reveal".into()))
-            .cursor_pointer()
+            .cursor_default()
             .flex()
             .items_center()
             .gap(px(7.))
@@ -508,8 +506,6 @@ impl ProjectView {
                     cx.notify();
                 }
             }))
-            .tooltip(folder_tip("Reveal in Finder"))
-            .tooltip_show_delay(Duration::from_millis(500))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.selected = Some("reveal".into());
                 if this.folder_hover || this.selected.as_deref() == Some("reveal") {
