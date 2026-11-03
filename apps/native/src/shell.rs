@@ -91,6 +91,8 @@ pub struct Shell {
     pub(crate) tiles: std::collections::HashMap<String, Tile>,
     pub(crate) hovered: Option<String>,
     /// Addition and removal tweens, by path.
+    /// Set while rendering a tile that is outside the scroll view.
+    pub(crate) count_hold: bool,
     pub(crate) tile_counts: std::collections::HashMap<String, [crate::recents::CountMotion; 2]>,
     /// Each tile's hover springs, by path.
     pub(crate) tile_motion: std::collections::HashMap<String, crate::recents::TileMotion>,
@@ -179,6 +181,7 @@ impl Shell {
             recents: None,
             tiles: Default::default(),
             hovered: None,
+            count_hold: false,
             tile_counts: Default::default(),
             tile_motion: Default::default(),
             entry_motion: None,
@@ -644,12 +647,23 @@ impl Render for Shell {
                 .enumerate()
                 .map(|(i, p)| {
                     let focus = kb.filter(|(cell, _)| *cell == i).map(|(_, slot)| slot);
+                    let row = i / crate::recents::COLS;
+                    let top = crate::recents::GRID_TOP + row as f32 * (crate::recents::TILE_H + crate::recents::GAP_Y);
+                    let cur = -self.grid_scroll.offset().y.as_f32();
+                    let view = self.grid_scroll.bounds().size.height.as_f32();
+                    // Before the first layout the view is 0: treat it as visible.
+                    self.count_hold = view > 0. && (top + crate::recents::TILE_H < cur || top > cur + view);
                     let (el, moving) = self.tile(p, busy, focus, now, &c, cx);
+                    self.count_hold = false;
                     springing |= moving;
                     el
                 })
                 .collect();
-            self.tile_counts.retain(|k, _| shown.iter().any(|p| &p.path == k));
+            // Counts belong to the mounted list, not the filter: a project
+            // hidden by search keeps its settled total.
+            if let Some(list) = recents.as_ref() {
+                self.tile_counts.retain(|k, _| list.iter().any(|p| &p.path == k));
+            }
             self.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
             els
         } else {

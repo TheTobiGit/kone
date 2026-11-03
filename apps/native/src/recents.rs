@@ -303,6 +303,19 @@ fn ease_out_expo(t: f64) -> f64 {
     if t >= 1. { 1. } else { 1. - 2_f64.powf(-10. * t.max(0.)) }
 }
 
+/// CountUp's default `separator: ','` grouping.
+pub fn group(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[derive(Default)]
 pub struct CountMotion {
     from: f64,
@@ -573,10 +586,17 @@ impl Shell {
                 meta = meta.child(div().text_color(hsla(c.muted)).child("Folder not found"));
             }
             Some(Tile::Repo(s, partial)) => {
-                let counts = self.tile_counts.entry(key.clone()).or_default();
-                let (added, adding) = counts[0].sample(s.added, now);
-                let (removed, removing) = counts[1].sample(s.removed, now);
-                moving |= adding || removing;
+                // As Electron's CountUp: nothing counts until the tile is first
+                // in view, so an offscreen row still counts up when scrolled to.
+                let (added, removed) = if self.count_hold && !self.tile_counts.contains_key(&key) {
+                    (0, 0)
+                } else {
+                    let counts = self.tile_counts.entry(key.clone()).or_default();
+                    let (added, adding) = counts[0].sample(s.added, now);
+                    let (removed, removing) = counts[1].sample(s.removed, now);
+                    moving |= adding || removing;
+                    (added, removed)
+                };
                 let branch = match &s.branch {
                     Branch::Named(n) => Some(n.clone()),
                     Branch::Detached(sha) => Some(sha.clone()),
@@ -593,12 +613,12 @@ impl Shell {
                     let mut diff = div().flex().gap(px(5.)).flex_shrink_0();
                     if s.added > 0 || added > 0 || *partial {
                         diff = diff.child(div().flex().text_color(hsla(if kone_theme::Theme::get(cx).is_dark() { kone_theme::Rgba::hex(0x10b981) } else { c.diff_add }))
-                            .child(format!("+{added}"))
+                            .child(format!("+{}", group(added)))
                             .when(*partial, |d| d.child(div().id(SharedString::from(format!("partial:{key}")))
                                 .text_color(hsla(c.muted)).child("+").tooltip(tip("Partial: very large change set")))));
                     }
                     if s.removed > 0 || removed > 0 {
-                        diff = diff.child(div().text_color(hsla(c.diff_del)).child(format!("−{removed}")));
+                        diff = diff.child(div().text_color(hsla(c.diff_del)).child(format!("−{}", group(removed))));
                     }
                     meta = meta.child(diff);
                 }
@@ -657,10 +677,10 @@ impl Shell {
                         div()
                             .flex()
                             .items_end()
-                            .gap(px(9.))
+                            .gap(px(9. * scale))
                             .min_w(px(0.))
                             .when(tile.is_none() || matches!(tile, Some(Tile::Repo(_, _))), |d| {
-                                d.child(svg().path("icons/gh-mark.svg").size(px(15.)).flex_shrink_0().text_color(hsla(c.ink_soft)))
+                                d.child(svg().path("icons/gh-mark.svg").size(px(15. * scale)).flex_shrink_0().text_color(hsla(c.ink_soft)))
                             })
                             .child(
                                 div()
@@ -912,5 +932,13 @@ mod tests {
         assert_eq!(reveal_scroll(400., 1, 500.), 208.);
         // Row 0 from below goes to its top (68), never past the start.
         assert_eq!(reveal_scroll(300., 0, 500.), 68.);
+    }
+
+    #[test]
+    fn counts_group_thousands_like_countup() {
+        assert_eq!(group(0), "0");
+        assert_eq!(group(999), "999");
+        assert_eq!(group(1000), "1,000");
+        assert_eq!(group(1234567), "1,234,567");
     }
 }
