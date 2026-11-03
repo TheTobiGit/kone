@@ -356,8 +356,15 @@ impl Render for ProjectView {
             window.request_animation_frame();
         }
         let peek_layer = self.peek || motion.is_animating();
+        // Layout bounds only describe the current frame; motion state only
+        // belongs to visible cards. Removed/renamed paths must not accumulate
+        // for the entire lifetime of a project.
+        self.card_bounds.borrow_mut().clear();
         self.card_lifts.clear();
-        for entry in self.entries() {
+        let entries = self.entries();
+        let keys: HashSet<_> = entries.iter().map(FileEntry::key).collect();
+        self.card_motion.retain(|key, _| keys.contains(key));
+        for entry in entries {
             let key = entry.key();
             let active = !self.peek
                 && self.detail.is_none()
