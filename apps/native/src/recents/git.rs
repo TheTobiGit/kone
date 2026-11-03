@@ -31,9 +31,9 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// millions of paths, so the reader stops (and kills git) past this.
 const STATUS_CAP: u64 = 8 * 1024 * 1024;
 
-/// Like `git`, but reads at most `STATUS_CAP` bytes of stdout. A capped read
-/// drops its trailing partial record.
-fn git_capped(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+/// Keep at most `STATUS_CAP` bytes, probing one extra byte for truncation.
+/// A capped read drops its trailing partial record.
+fn git_capped(dir: &Path, args: &[&str]) -> Option<(Vec<u8>, bool)> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -45,15 +45,24 @@ fn git_capped(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
         .spawn()
         .ok()?;
     let mut out = Vec::new();
-    child.stdout.take()?.take(STATUS_CAP).read_to_end(&mut out).ok()?;
-    if out.len() as u64 >= STATUS_CAP {
+    child.stdout.take()?.take(STATUS_CAP + 1).read_to_end(&mut out).ok()?;
+    let (out, partial) = cap_status(out, STATUS_CAP as usize);
+    if partial {
         let _ = child.kill();
         let _ = child.wait();
+        return Some((out, true));
+    }
+    child.wait().ok()?.success().then_some((out, false))
+}
+
+fn cap_status(mut out: Vec<u8>, cap: usize) -> (Vec<u8>, bool) {
+    let partial = out.len() > cap;
+    if partial {
+        out.truncate(cap);
         let end = out.iter().rposition(|&b| b == 0).map_or(0, |i| i + 1);
         out.truncate(end);
-        return Some(out);
     }
-    child.wait().ok()?.success().then_some(out)
+    (out, partial)
 }
 
 fn lines(bytes: &[u8]) -> u32 {
@@ -121,11 +130,11 @@ impl ReadBudget {
 
 /// Blocking, called only by read_tiles on the background executor. NUL records
 /// preserve spaces, tabs and newlines in paths on both status and numstat sides.
-pub(super) fn summary(root: &Path) -> Option<RepoSummary> {
+pub(super) fn summary(root: &Path) -> Option<(RepoSummary, bool)> {
     if std::fs::symlink_metadata(root.join(".git")).is_err() {
         return None;
     }
-    let status = git_capped(
+    let (status, partial) = git_capped(
         root,
         &[
             "status",
@@ -240,13 +249,20 @@ pub(super) fn summary(root: &Path) -> Option<RepoSummary> {
     if detached {
         summary.branch = oid.map(Branch::Detached).unwrap_or_default();
     }
-    Some(summary)
+    Some((summary, partial))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[test]
+    fn capped_status_marks_only_truncated_output() {
+        assert_eq!(cap_status(b"a\0b\0".to_vec(), 4), (b"a\0b\0".to_vec(), false));
+        assert_eq!(cap_status(b"a\0bc\0".to_vec(), 4), (b"a\0".to_vec(), true));
+        assert_eq!(cap_status(b"abcde".to_vec(), 4), (vec![], true));
+    }
 
     #[test]
     fn whole_file_lines_match_git_core() {
@@ -298,7 +314,8 @@ mod tests {
         std::fs::write(root.join("ignored"), "ignored\n").unwrap();
         std::fs::write(root.join("binary"), b"a\0b").unwrap();
         std::fs::write(root.join("large"), vec![b'x'; FILE_CAP as usize + 1]).unwrap();
-        let s = summary(&root).unwrap();
+        let (s, partial) = summary(&root).unwrap();
+        assert!(!partial);
         assert_eq!((s.added, s.removed), (4, 1));
         assert_eq!(s.files[0].name, "a tracked\tfile");
         assert_eq!((s.files[0].added, s.files[0].removed), (2, 1));
@@ -321,7 +338,7 @@ mod tests {
         // records without consuming the following change as the source path.
         assert!(git(&root, &["mv", "a tracked\tfile", "renamed"]).is_some());
         std::fs::remove_file(root.join(".gitignore")).unwrap();
-        let renamed = summary(&root).unwrap();
+        let (renamed, _) = summary(&root).unwrap();
         assert_eq!(renamed.files[0].change, FileChange::Deleted);
         assert_eq!(renamed.files[0].removed, 1);
         assert_eq!(renamed.files[1].name, "renamed");
@@ -333,7 +350,7 @@ mod tests {
         std::fs::write(unborn.join("staged"), "one\ntwo\n").unwrap();
         assert!(git(&unborn, &["add", "."]).is_some());
         std::fs::write(unborn.join("untracked"), "three").unwrap();
-        let s = summary(&unborn).unwrap();
+        let (s, _) = summary(&unborn).unwrap();
         assert_eq!((s.added, s.removed), (3, 0));
         assert_eq!(s.files[0].change, FileChange::Added);
         assert_eq!(s.files[1].name, "untracked");

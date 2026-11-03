@@ -24,7 +24,8 @@ pub enum Tile {
     Missing,
     /// A folder that isn't inside a git repo.
     Plain,
-    Repo(RepoSummary),
+    /// The flag marks totals from a truncated status read.
+    Repo(RepoSummary, bool),
 }
 
 /// Reads every row's folder state. Blocking: call it off the UI thread.
@@ -38,7 +39,7 @@ pub fn read_tiles(paths: &[String]) -> HashMap<String, Tile> {
             } else {
                 // A folder inside a repo belongs to it, as in the project view.
                 match path.ancestors().find_map(git::summary) {
-                    Some(s) => Tile::Repo(s),
+                    Some((s, partial)) => Tile::Repo(s, partial),
                     None => Tile::Plain,
                 }
             };
@@ -271,8 +272,7 @@ pub const GAP_Y: f32 = 24.;
 pub const GRID_W: f32 = CELL_W * 3. + GAP_X * 2.;
 
 /// One entry clock belongs to the mounted grid, never to a search/sort result.
-/// GPUI layout has no scale transform: preserve cell geometry and approximate
-/// Electron's 0.97 -> 1 scale with the matching 12px rise and opacity instead.
+/// Keep grid cells fixed while the folder dimensions follow the entry scale.
 pub struct EntryMotion {
     value: MotionValue,
 }
@@ -292,6 +292,39 @@ impl EntryMotion {
     pub fn sample(&mut self, now: Duration) -> (f32, bool) {
         let sample = self.value.sample(now, false);
         (sample.value() as f32, sample.is_animating())
+    }
+}
+
+pub(crate) fn entry_scale(progress: f32) -> f32 {
+    0.97 + 0.03 * progress
+}
+
+fn ease_out_expo(t: f64) -> f64 {
+    if t >= 1. { 1. } else { 1. - 2_f64.powf(-10. * t.max(0.)) }
+}
+
+#[derive(Default)]
+pub struct CountMotion {
+    from: f64,
+    target: u32,
+    started: Duration,
+}
+
+impl CountMotion {
+    fn value(&self, now: Duration) -> (f64, bool) {
+        let t = (now.saturating_sub(self.started).as_secs_f64() / 1.1).min(1.);
+        let value = self.from + (f64::from(self.target) - self.from) * ease_out_expo(t);
+        (value, t < 1. && self.from != f64::from(self.target))
+    }
+
+    fn sample(&mut self, target: u32, now: Duration) -> (u32, bool) {
+        if self.target != target {
+            self.from = self.value(now).0;
+            self.target = target;
+            self.started = now;
+        }
+        let (value, moving) = self.value(now);
+        (value.round() as u32, moving)
     }
 }
 
@@ -349,11 +382,11 @@ impl PaperColors {
             } else {
                 c.faint.mix(0.5, c.raised_high)
             },
-            // The CSS fixed dark green is mapped to the semantic diff role.
-            add: c.diff_add,
+            // New-file marks keep Electron's fixed dark green.
+            add: if dark { kone_theme::Rgba::hex(0x12b981) } else { c.diff_add },
             delete: c.diff_del,
             icon: c.file,
-            shadow: if dark { c.sunken.alpha(0.16) } else { c.ink.alpha(0.07) },
+            shadow: kone_theme::Rgba::hex(0).alpha(0.07),
         }
     }
 }
@@ -377,7 +410,7 @@ fn rounded_contour(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Vec<(f32, f32
 }
 
 fn paint_papers(
-    origin: Point<Pixels>,
+    bounds: Bounds<Pixels>,
     files: &[ChangedFile],
     hover: [f32; 3],
     c: &PaperColors,
@@ -390,14 +423,16 @@ fn paint_papers(
         (78., 60., 1., 0., -5., 0.),
         (112., 54., 11., 14., -4., 6.),
     ];
+    let origin = bounds.origin;
+    let scale = bounds.size.width.as_f32() / TILE_W;
     for (i, file) in files.iter().take(3).enumerate() {
         let (left, bottom, angle, dx, dy, dr) = SLOTS[i];
         let t = hover[i];
         let angle = (angle + dr * t).to_radians();
         let (sin, cos) = angle.sin_cos();
-        let pivot = origin + point(px(left + dx * t), px(TILE_H - bottom - 62. + dy * t));
+        let pivot = origin + point(px((left + dx * t) * scale), px((TILE_H - bottom - 62. + dy * t) * scale));
         let transform =
-            |(x, y): (f32, f32)| pivot + point(px(x * cos - y * sin), px(x * sin + y * cos));
+            |(x, y): (f32, f32)| pivot + point(px((x * cos - y * sin) * scale), px((x * sin + y * cos) * scale));
         let torn = file.change == FileChange::Deleted;
         // A small layered penumbra approximates CSS's rotated 0 4px 10px
         // shadow; GPUI's quad shadow cannot rotate with a custom path.
@@ -480,6 +515,7 @@ fn paint_papers(
             }
         }
         // Kit's bundled file asset is available through Assets' fallback.
+        let entry_scale = scale;
         let scale = window.scale_factor();
         let rotation = TransformationMatrix {
             rotation_scale: [[cos, -sin], [sin, cos]],
@@ -489,7 +525,7 @@ fn paint_papers(
             ],
         };
         let _ = window.paint_svg(
-            Bounds::new(pivot + point(px(8.), px(8.)), size(px(10.), px(10.))),
+            Bounds::new(pivot + point(px(8. * entry_scale), px(8. * entry_scale)), size(px(10. * entry_scale), px(10. * entry_scale))),
             "icons/file.svg".into(),
             None,
             rotation,
@@ -517,7 +553,12 @@ impl Shell {
         let motion = self.tile_motion.entry(key.clone()).or_default();
         let (lift_t, side_t, moving) = motion.sample(active, now);
         let (paper_t, paper_moving) = motion.papers(now);
-        let moving = moving || paper_moving;
+        let (entry, entering) = self.entry_motion.as_mut()
+            .and_then(|motions| motions.get_mut(&key)).map(|m| m.sample(now)).unwrap_or((1., false));
+        let scale = entry_scale(entry);
+        let inset_x = TILE_W * (1. - scale) / 2.;
+        let inset_y = TILE_H * (1. - scale) / 2.;
+        let mut moving = moving || paper_moving || entering;
         let pinned = project.pinned == Some(true);
         let tile = self.tiles.get(&key);
         let missing = matches!(tile, Some(Tile::Missing));
@@ -531,7 +572,11 @@ impl Shell {
             Some(Tile::Missing) => {
                 meta = meta.child(div().text_color(hsla(c.muted)).child("Folder not found"));
             }
-            Some(Tile::Repo(s)) => {
+            Some(Tile::Repo(s, partial)) => {
+                let counts = self.tile_counts.entry(key.clone()).or_default();
+                let (added, adding) = counts[0].sample(s.added, now);
+                let (removed, removing) = counts[1].sample(s.removed, now);
+                moving |= adding || removing;
                 let branch = match &s.branch {
                     Branch::Named(n) => Some(n.clone()),
                     Branch::Detached(sha) => Some(sha.clone()),
@@ -544,13 +589,16 @@ impl Shell {
                             .child(div().min_w(px(0.)).max_w(px(100.)).truncate().child(b)),
                     );
                 }
-                if s.added > 0 || s.removed > 0 {
+                if s.added > 0 || s.removed > 0 || added > 0 || removed > 0 || *partial {
                     let mut diff = div().flex().gap(px(5.)).flex_shrink_0();
-                    if s.added > 0 {
-                        diff = diff.child(div().text_color(hsla(c.diff_add)).child(format!("+{}", s.added)));
+                    if s.added > 0 || added > 0 || *partial {
+                        diff = diff.child(div().flex().text_color(hsla(if kone_theme::Theme::get(cx).is_dark() { kone_theme::Rgba::hex(0x10b981) } else { c.diff_add }))
+                            .child(format!("+{added}"))
+                            .when(*partial, |d| d.child(div().id(SharedString::from(format!("partial:{key}")))
+                                .text_color(hsla(c.muted)).child("+").tooltip(tip("Partial: very large change set")))));
                     }
-                    if s.removed > 0 {
-                        diff = diff.child(div().text_color(hsla(c.diff_del)).child(format!("−{}", s.removed)));
+                    if s.removed > 0 || removed > 0 {
+                        diff = diff.child(div().text_color(hsla(c.diff_del)).child(format!("−{removed}")));
                     }
                     meta = meta.child(diff);
                 }
@@ -558,16 +606,17 @@ impl Shell {
             _ => {}
         }
 
-        let papers = match tile { Some(Tile::Repo(s)) => s.files.iter().take(3).cloned().collect(), _ => Vec::new() };
+        let papers = match tile { Some(Tile::Repo(s, _)) => s.files.iter().take(3).cloned().collect(), _ => Vec::new() };
         let paper_colors = PaperColors::new(c, kone_theme::Theme::get(cx).is_dark());
         let pocket_bg = c.raised;
         let sheet_bg = c.raised_high;
         let folder = div()
             .id(SharedString::from(format!("tile:{key}")))
             .relative()
-            .w(px(TILE_W))
-            .h(px(TILE_H))
-            .top(px(lift))
+            .w(px(TILE_W * scale))
+            .h(px(TILE_H * scale))
+            .left(px(inset_x))
+            .top(px(lift + inset_y))
             .when(missing, |d| d.opacity(0.55))
             .when(!busy, |d| {
                 let path = key.clone();
@@ -576,17 +625,17 @@ impl Shell {
                 }))
             })
             // The back sheet peeking above the pocket.
-            .child(div().absolute().left(px(16.)).top(px(6.)).w(px(168.)).h(px(44.)).rounded(px(15.)).bg(hsla(sheet_bg)).border_1().border_color(hsla(c.line_soft)))
+            .child(div().absolute().left(px(16. * scale)).top(px(6. * scale)).w(px(168. * scale)).h(px(44. * scale)).rounded(px(15.)).bg(hsla(sheet_bg)).border_1().border_color(hsla(c.line_soft)))
             .child(canvas(move |_, _, _| (), move |bounds, _, window, cx| {
-                paint_papers(bounds.origin, &papers, paper_t, &paper_colors, window, cx);
+                paint_papers(bounds, &papers, paper_t, &paper_colors, window, cx);
             }).absolute().size_full())
             .child(
                 div()
                     .absolute()
                     .left_0()
                     .bottom_0()
-                    .w(px(TILE_W))
-                    .h(px(POCKET_H))
+                    .w(px(TILE_W * scale))
+                    .h(px(POCKET_H * scale))
                     .rounded(px(22.))
                     .bg(hsla(pocket_bg))
                     .border_1()
@@ -601,16 +650,16 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .justify_end()
-                    .gap(px(7.))
-                    .px(px(18.))
-                    .pb(px(15.))
+                    .gap(px(7. * scale))
+                    .px(px(18. * scale))
+                    .pb(px(15. * scale))
                     .child(
                         div()
                             .flex()
                             .items_end()
                             .gap(px(9.))
                             .min_w(px(0.))
-                            .when(tile.is_none() || matches!(tile, Some(Tile::Repo(_))), |d| {
+                            .when(tile.is_none() || matches!(tile, Some(Tile::Repo(_, _))), |d| {
                                 d.child(svg().path("icons/gh-mark.svg").size(px(15.)).flex_shrink_0().text_color(hsla(c.ink_soft)))
                             })
                             .child(
@@ -619,8 +668,8 @@ impl Shell {
                                     .when(!busy, |d| d.tooltip(tip(project.name.clone())).tooltip_show_delay(Duration::from_millis(500)))
                                     .min_w(px(0.))
                                     .truncate()
-                                    .text_size(px(17.))
-                                    .line_height(px(17.))
+                                    .text_size(px(17. * scale))
+                                    .line_height(px(17. * scale))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(hsla(c.ink))
                                     .child(project.name.clone()),
@@ -684,6 +733,9 @@ impl Shell {
             .id(SharedString::from(format!("cell:{key}")))
             .relative()
             .w(px(CELL_W))
+            .h(px(TILE_H))
+            .top(px(12. * (1. - entry)))
+            .opacity(entry.clamp(0., 1.))
             .pr(px(ACTIONS_W))
             .when(!busy, |d| d.on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 let next = if *over { Some(hover_key.clone()) } else if this.hovered.as_deref() == Some(hover_key.as_str()) { None } else { return };
@@ -706,6 +758,41 @@ mod tests {
 
     fn p(name: &str, at: u64, pinned: bool) -> RecentProject {
         RecentProject { path: format!("/x/{name}"), name: name.into(), last_opened_at: at, pinned: pinned.then_some(true) }
+    }
+
+    #[test]
+    fn entry_scale_matches_electron_endpoints() {
+        assert_eq!(entry_scale(0.), 0.97);
+        assert_eq!(entry_scale(1.), 1.);
+        assert!((entry_scale(0.5) - 0.985).abs() < 1e-6);
+    }
+
+    #[test]
+    fn count_easing_matches_expo_and_finishes_exactly() {
+        assert_eq!(ease_out_expo(0.), 0.);
+        assert_eq!(ease_out_expo(0.5), 0.96875);
+        assert_eq!(ease_out_expo(1.), 1.);
+        let mut count = CountMotion::default();
+        assert_eq!(count.sample(100, Duration::ZERO), (0, true));
+        assert_eq!(count.sample(100, Duration::from_millis(550)), (97, true));
+        assert_eq!(count.sample(100, Duration::from_millis(1100)), (100, false));
+        assert_eq!(count.sample(100, Duration::from_secs(4)), (100, false));
+    }
+
+    #[test]
+    fn count_retargets_from_current_fractional_value_and_can_decrease() {
+        let mut count = CountMotion::default();
+        count.sample(100, Duration::ZERO);
+        let now = Duration::from_millis(550);
+        let current = count.value(now).0;
+        assert_eq!(count.sample(200, now), (97, true));
+        assert_eq!(count.value(now).0, current);
+        assert_eq!(count.sample(200, Duration::from_millis(1650)), (200, false));
+        assert_eq!(count.sample(0, Duration::from_secs(2)), (200, true));
+        assert_eq!(count.sample(0, Duration::from_millis(2550)), (6, true));
+        assert_eq!(count.sample(0, Duration::from_millis(3100)), (0, false));
+        assert_eq!(count.sample(0, Duration::from_secs(5)), (0, false));
+        assert_eq!(CountMotion::default().sample(0, Duration::ZERO), (0, false));
     }
 
     #[test]

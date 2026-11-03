@@ -90,9 +90,11 @@ pub struct Shell {
     recents: Option<Vec<crate::projects::RecentProject>>,
     pub(crate) tiles: std::collections::HashMap<String, Tile>,
     pub(crate) hovered: Option<String>,
+    /// Addition and removal tweens, by path.
+    pub(crate) tile_counts: std::collections::HashMap<String, [crate::recents::CountMotion; 2]>,
     /// Each tile's hover springs, by path.
     pub(crate) tile_motion: std::collections::HashMap<String, crate::recents::TileMotion>,
-    entry_motion: Option<std::collections::HashMap<String, crate::recents::EntryMotion>>,
+    pub(crate) entry_motion: Option<std::collections::HashMap<String, crate::recents::EntryMotion>>,
     start_entry: Option<crate::recents::EntryMotion>,
     /// Keyboard focus in the grid: (cell, stop). Cells are the shown tiles
     /// then the start actions; see `recents::slots` for the stops.
@@ -177,6 +179,7 @@ impl Shell {
             recents: None,
             tiles: Default::default(),
             hovered: None,
+            tile_counts: Default::default(),
             tile_motion: Default::default(),
             entry_motion: None,
             start_entry: None,
@@ -643,22 +646,18 @@ impl Render for Shell {
                     let focus = kb.filter(|(cell, _)| *cell == i).map(|(_, slot)| slot);
                     let (el, moving) = self.tile(p, busy, focus, now, &c, cx);
                     springing |= moving;
-                    let entry = self.entry_motion.as_mut().and_then(|motions| motions.get_mut(&p.path));
-                    let t = entry.map(|m| {
-                        let (t, moving) = m.sample(now);
-                        springing |= moving;
-                        t
-                    }).unwrap_or(1.);
-                    div().relative().top(px(12. * (1. - t))).opacity(t.clamp(0., 1.)).child(el).into_any_element()
+                    el
                 })
                 .collect();
+            self.tile_counts.retain(|k, _| shown.iter().any(|p| &p.path == k));
             self.tile_motion.retain(|k, _| shown.iter().any(|p| &p.path == k));
             els
         } else {
+            self.tile_counts.clear();
             self.tile_motion.clear();
             Vec::new()
         };
-        // Frames only while entry or hover springs are still settling.
+        // Frames only while entry, hover or counts are still moving.
         if springing {
             window.request_animation_frame();
         }
@@ -736,7 +735,12 @@ impl Render for Shell {
                 .gap_y(px(crate::recents::GAP_Y))
                 .pt(px(8.));
             grid = grid.children(tile_els);
-            grid = grid.child(div().relative().top(px(12. * (1. - start_entry))).opacity(start_entry.clamp(0., 1.)).w(px(crate::recents::CELL_W)).h(px(116.)).flex().items_center().ml(px(-6.)).child(start_rows()));
+            let start_scale = crate::recents::entry_scale(start_entry);
+            grid = grid.child(div().relative().w(px(crate::recents::CELL_W)).h(px(crate::recents::TILE_H))
+                .top(px(12. * (1. - start_entry))).opacity(start_entry.clamp(0., 1.))
+                .flex().items_center().justify_center().ml(px(-6.))
+                .child(div().w(px(crate::recents::CELL_W * start_scale)).h(px(crate::recents::TILE_H * start_scale))
+                    .flex().items_center().child(start_rows())));
             let mut section = div()
                 .id("recents")
                 .track_scroll(&self.grid_scroll)
