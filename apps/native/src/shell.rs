@@ -55,14 +55,15 @@ const FRAME_TOP: f32 = 8.;
 /// Inside the window's own ~10px corner, so the two curves stay concentric.
 const PANEL_RADIUS: f32 = 8.;
 
-/// The stick folk move in small hand-drawn steps; 8 frames a second reads as
-/// a flip book and keeps an idle focused window cheap.
-const ART_FRAME: Duration = Duration::from_millis(125);
+/// The stick folk at ~30 fps, idle or stirred: smooth on a GPU, and only
+/// while the start screen is up in a focused window.
+const ART_FRAME: Duration = Duration::from_millis(33);
+/// How often an unfocused window, or a page with nothing moving, checks back.
+/// Room under the recents grid now the floor strip is gone.
+const GRID_FOOT: f32 = 40.;
+const REST_FRAME: Duration = Duration::from_millis(250);
 /// Spinner pace while a launcher modal is open (~30 fps).
 const SPIN_FRAME: Duration = Duration::from_millis(33);
-/// The crowd reacting to the cursor (~15 fps): smoother than idle, well short
-/// of vsync since every frame repaints the whole strip.
-const STIR_FRAME: Duration = Duration::from_millis(66);
 
 pub struct Shell {
     magnets: [Magnet; 3],
@@ -109,7 +110,7 @@ impl Shell {
         // While a launcher modal is up the active row's spinner needs a smoother
         // pace than the art, but still a timer: not a frame on every vsync.
         let ticker = cx.spawn_in(window, async move |this, cx| {
-            let mut pace = ART_FRAME;
+            let mut pace = REST_FRAME;
             let mut was_active = true;
             loop {
                 cx.background_executor().timer(pace).await;
@@ -123,15 +124,17 @@ impl Shell {
                         this.reload_recents(cx);
                     }
                     if !active {
-                        return ART_FRAME;
+                        return REST_FRAME;
                     }
-                    cx.notify();
                     if this.picker.is_some() || this.creator.is_some() || this.cloner.is_some() {
+                        cx.notify();
                         SPIN_FRAME
-                    } else if this.folk.active() {
-                        STIR_FRAME
-                    } else {
+                    } else if this.folk_shown() {
+                        cx.notify();
                         ART_FRAME
+                    } else {
+                        // The recents home and a project have no art to move.
+                        REST_FRAME
                     }
                 });
                 match alive {
@@ -478,6 +481,11 @@ impl Shell {
         self.kb_follow = None;
     }
 
+    /// The stick folk live only on the empty start screen.
+    fn folk_shown(&self) -> bool {
+        self.project.is_none() && self.recents.as_ref().is_some_and(|l| l.is_empty())
+    }
+
     fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.project = None;
         self.focus.focus(window, cx);
@@ -594,7 +602,7 @@ impl Render for Shell {
             if let Some(row) = row
                 && self.grid_scroll.bounds().size.height > px(0.)
             {
-                let view = self.grid_scroll.bounds().size.height.as_f32() - crate::stickfolk::STRIP - 16.;
+                let view = self.grid_scroll.bounds().size.height.as_f32() - GRID_FOOT;
                 let cur = -self.grid_scroll.offset().y.as_f32();
                 let next = crate::recents::reveal_scroll(cur, row, view.max(0.));
                 if next != cur {
@@ -711,7 +719,7 @@ impl Render for Shell {
                 .flex_col()
                 .items_center()
                 .pt(px(72.))
-                .pb(px(crate::stickfolk::STRIP + 16.))
+                .pb(px(GRID_FOOT))
                 .child(div().w(px(crate::recents::GRID_W)).child(grid));
             if shown.is_empty() {
                 section = section.child(
@@ -723,7 +731,7 @@ impl Render for Shell {
             match self.open_error.clone() {
                 Some(err) => wrap
                     .child(
-                        div().absolute().left_0().right_0().bottom(px(crate::stickfolk::STRIP + 4.)).flex().justify_center()
+                        div().absolute().left_0().right_0().bottom(px(16.)).flex().justify_center()
                             .child(div().px(px(10.)).py(px(4.)).rounded(px(8.)).bg(hsla(c.ground)).text_size(px(12.)).text_color(hsla(c.danger)).child(err)),
                     )
                     .into_any_element(),
@@ -808,7 +816,7 @@ impl Render for Shell {
                     cx.notify();
                 }
                 let busy = this.picker.is_some() || this.creator.is_some() || this.cloner.is_some();
-                if this.folk.press(e.position, busy) {
+                if this.folk_shown() && this.folk.press(e.position, busy) {
                     cx.notify();
                 }
             }))
@@ -821,12 +829,19 @@ impl Render for Shell {
                 for m in &mut this.magnets {
                     moved |= if busy { m.release() } else { m.track(e.position) };
                 }
-                moved |= this.folk.track(e.position, busy);
+                if this.folk_shown() {
+                    moved |= this.folk.track(e.position, busy);
+                } else {
+                    // Off the start screen the crowd forgets the pointer, so
+                    // it doesn't come back reacting to a stale cursor.
+                    this.folk.release();
+                    this.folk.strip.set(None);
+                }
                 if moved {
                     cx.notify();
                 }
             }))
-            .child({
+            .when(self.folk_shown(), |d| d.child({
                 let t = self.started.elapsed().as_secs_f32();
                 let look = crate::stickfolk::Look { color: c.accent, alpha: if dark { 0.45 } else { 0.55 } };
                 let stir = self.folk.snapshot();
@@ -840,7 +855,7 @@ impl Render for Shell {
                     .right_0()
                     .bottom_0()
                     .h(px(crate::stickfolk::STRIP))
-            })
+            }))
             .child(
                 div().relative().flex().justify_end().items_center().gap(px(12.)).pt(px(8.)).pr(px(8.)).child(
                     div()

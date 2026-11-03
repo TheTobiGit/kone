@@ -218,16 +218,6 @@ impl Hover {
         }
     }
 
-    /// Whether the crowd is mid-reaction and wants smooth frames.
-    pub fn active(&self) -> bool {
-        let now = Instant::now();
-        self.cursor.is_some()
-            || self.energy_at(now) > 0.001
-            || self.pulse.is_some_and(|(_, t)| now.saturating_duration_since(t).as_secs_f32() < PULSE_DUR)
-            || self.ball.is_some_and(|(_, _, t)| now.saturating_duration_since(t).as_secs_f32() < BALL_DUR)
-            || self.tipped.iter().flatten().any(|t| now.saturating_duration_since(*t).as_secs_f32() < TIP_DUR)
-    }
-
     pub fn snapshot(&self) -> Stir {
         let now = Instant::now();
         let dt = self
@@ -1036,7 +1026,7 @@ mod tests {
 
         // Entering the strip wakes the crowd.
         assert!(h.track(point(px(300.), px(720.)), false));
-        assert!(h.active());
+        assert!(h.cursor.is_some());
         let s1 = h.snapshot();
         assert!((s1.x - 300.).abs() < 1.);
 
