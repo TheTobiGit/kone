@@ -40,6 +40,7 @@ pub struct ProjectView {
     git: Arc<dyn crate::git_service::GitService>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     _load: Option<Task<()>>,
+    fold_save: Option<Task<()>>,
     _watch: Task<()>,
     generation: u64,
     peek: bool,
@@ -144,6 +145,7 @@ impl ProjectView {
             git,
             cancel,
             _load: None,
+            fold_save: None,
             _watch,
             generation: 0,
             peek: false,
@@ -248,8 +250,15 @@ impl ProjectView {
         self.folded[i] = !self.folded[i];
         let path = self.path.clone();
         let folded = self.folded;
-        cx.background_spawn(async move { save_folds(&path, folded) })
-            .detach();
+        // Preserve toggle order even when background workers start out of
+        // order. A mutex inside save_folds protects the file, not event order.
+        let previous = self.fold_save.take();
+        self.fold_save = Some(cx.background_spawn(async move {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            save_folds(&path, folded);
+        }));
         cx.notify();
     }
     pub(super) fn reveal(&self, cx: &mut Context<Self>) {
@@ -518,6 +527,9 @@ impl Render for ProjectView {
 
 impl Drop for ProjectView {
     fn drop(&mut self) {
+        if let Some(save) = self.fold_save.take() {
+            save.detach();
+        }
         self.cancel
             .store(true, std::sync::atomic::Ordering::Release);
     }
