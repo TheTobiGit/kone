@@ -171,18 +171,24 @@ fn forget_in(file: &Path, path: &str) -> io::Result<()> {
     save_to(file, &list)
 }
 
+/// The system opener for a folder: opens the folder itself (like Electron's
+/// `shell.openPath`), not its parent with the folder selected.
+fn opener_command(path: &Path) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(path);
+    cmd
+}
+
 /// Opens the folder in the file manager and waits for the opener to report
 /// back. Blocking: call it off the UI thread.
 pub fn reveal(path: &Path) -> Result<(), String> {
     if !path.is_dir() {
         return Err("That folder no longer exists.".to_string());
     }
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
-    #[cfg(not(target_os = "macos"))]
-    let mut cmd = std::process::Command::new("xdg-open");
-    let status = cmd
-        .arg(path)
+    let status = opener_command(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -712,6 +718,16 @@ mod tests {
         assert_eq!(updated[1].path, "/p2");
 
         let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_opener_command_opens_folder_itself() {
+        let dir = Path::new("/tmp/some project");
+        let cmd = opener_command(dir);
+        let expected = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        assert_eq!(cmd.get_program(), expected);
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, vec![dir.as_os_str()]);
     }
 
     #[test]
