@@ -150,10 +150,10 @@ impl ProjectView {
         let key = e.keystroke.key.as_str();
         let m = e.keystroke.modifiers;
         if self.branch_picker.is_some() {
-            if key == "escape" {
-                self.close_branch_picker(cx);
+            if matches!(key, "escape" | "up" | "down" | "enter" | "tab") {
+                self.branch_picker_key(key, window, cx);
+                cx.stop_propagation();
             }
-            cx.stop_propagation();
             return;
         }
         if key == "escape" && (self.peek || self.detail.is_some()) {

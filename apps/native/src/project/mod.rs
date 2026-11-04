@@ -417,11 +417,21 @@ impl Render for ProjectView {
             .key_context("KoneProject")
             .on_action(
                 cx.listener(|this, _: &ProjectNext, window, cx| {
-                    this.cycle_focus(false, window, cx)
+                    if this.branch_picker.is_some() {
+                        cx.stop_propagation();
+                    } else {
+                        this.cycle_focus(false, window, cx)
+                    }
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &ProjectPrev, window, cx| this.cycle_focus(true, window, cx)),
+                cx.listener(|this, _: &ProjectPrev, window, cx| {
+                    if this.branch_picker.is_some() {
+                        cx.stop_propagation();
+                    } else {
+                        this.cycle_focus(true, window, cx)
+                    }
+                }),
             )
             .capture_key_down(cx.listener(Self::key))
             .on_mouse_down(
