@@ -381,3 +381,77 @@ fn repository_root_retains_trailing_newlines() {
     let repo = Repo(renamed);
     assert_eq!(repo.snapshot().root, repo.0.to_str().unwrap());
 }
+
+#[test]
+fn create_branch_switches_head_preserves_changes_and_rejects_duplicates() {
+    let repo = Repo::new();
+    repo.git(&["config", "user.name", "Test"]);
+    repo.git(&["config", "user.email", "test@example.invalid"]);
+    repo.write("file", "committed\n");
+    repo.commit();
+    repo.write("file", "uncommitted\n");
+    let cancel = AtomicBool::new(false);
+    NativeGit
+        .create_branch(&repo.0, "feature/search", &cancel)
+        .unwrap();
+    assert_eq!(repo.snapshot().branch.as_deref(), Some("feature/search"));
+    assert_eq!(
+        fs::read_to_string(repo.0.join("file")).unwrap(),
+        "uncommitted\n"
+    );
+    let error = NativeGit
+        .create_branch(&repo.0, "feature/search", &cancel)
+        .unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+    assert_eq!(error.lines().count(), 1);
+    assert_eq!(repo.snapshot().branch.as_deref(), Some("feature/search"));
+}
+
+#[test]
+fn create_branch_rejects_invalid_names_and_cancel_before_writing() {
+    let repo = Repo::new();
+    repo.write("file", "committed\n");
+    repo.commit();
+    assert!(
+        NativeGit
+            .create_branch(&repo.0, "bad..name", &AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(
+        NativeGit
+            .create_branch(&repo.0, "cancelled", &AtomicBool::new(true))
+            .is_err()
+    );
+    assert_eq!(repo.snapshot().branch.as_deref(), Some("main"));
+    assert_eq!(
+        NativeGit
+            .branches(&repo.0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn concurrent_branch_creates_in_nested_paths_serialize() {
+    let repo = Repo::new();
+    repo.write("file", "committed\n");
+    repo.commit();
+    let nested = repo.0.join("nested");
+    fs::create_dir(&nested).unwrap();
+    std::thread::scope(|scope| {
+        let first =
+            scope.spawn(|| NativeGit.create_branch(&repo.0, "first", &AtomicBool::new(false)));
+        let second =
+            scope.spawn(|| NativeGit.create_branch(&nested, "second", &AtomicBool::new(false)));
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+    });
+    assert_eq!(
+        NativeGit
+            .branches(&repo.0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        3
+    );
+}

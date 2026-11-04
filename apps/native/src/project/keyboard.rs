@@ -150,6 +150,10 @@ impl ProjectView {
         let key = e.keystroke.key.as_str();
         let m = e.keystroke.modifiers;
         if self.branch_picker.is_some() {
+            if self.branch_picker.as_ref().is_some_and(|p| p.creating) {
+                cx.stop_propagation();
+                return;
+            }
             if matches!(key, "escape" | "up" | "down" | "enter" | "tab") {
                 self.branch_picker_key(key, window, cx);
                 cx.stop_propagation();

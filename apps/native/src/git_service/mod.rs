@@ -1,4 +1,4 @@
-//! The single replaceable boundary for view-only project git reads.
+//! The single replaceable boundary for project git operations.
 //! Implementations block only on GPUI's background executor. One cancellation
 //! flag belongs to a project entity; leaving it terminates in-flight git groups.
 mod branches;
@@ -7,9 +7,11 @@ mod status;
 #[cfg(test)]
 mod tests;
 mod types;
-use std::{path::Path, sync::atomic::AtomicBool};
+mod write;
 pub use branches::{GitBranch, picker_options};
+use std::{path::Path, sync::atomic::AtomicBool};
 pub use types::*;
+pub use write::valid_branch_name;
 
 pub trait GitService: Send + Sync {
     fn snapshot(&self, path: &Path, cancel: &AtomicBool) -> Result<Option<GitSnapshot>, String>;
@@ -21,6 +23,7 @@ pub trait GitService: Send + Sync {
         cancel: &AtomicBool,
     ) -> Result<FileDetail, String>;
     fn branches(&self, path: &Path, cancel: &AtomicBool) -> Result<Vec<GitBranch>, String>;
+    fn create_branch(&self, path: &Path, name: &str, cancel: &AtomicBool) -> Result<(), String>;
 }
 #[derive(Default)]
 pub struct NativeGit;
@@ -39,6 +42,9 @@ impl GitService for NativeGit {
     }
     fn branches(&self, path: &Path, cancel: &AtomicBool) -> Result<Vec<GitBranch>, String> {
         branches::branches(path, cancel)
+    }
+    fn create_branch(&self, path: &Path, name: &str, cancel: &AtomicBool) -> Result<(), String> {
+        write::create_branch(path, name, cancel)
     }
 }
 

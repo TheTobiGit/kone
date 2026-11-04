@@ -1,5 +1,5 @@
-//! View-only project screen. Its lifetime owns cancellation of background git
-//! reads; weak async updates cannot land in a later project's screen.
+//! Project screen. Its lifetime owns cancellation of background git
+//! operations; weak async updates cannot land in a later project's screen.
 mod branch_picker;
 mod changes;
 mod detail;
@@ -90,7 +90,10 @@ impl ProjectView {
             loop {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
                 let request = this.update_in(cx, |this: &mut Self, window, _| {
-                    (!this.loading && window.is_window_active()).then(|| {
+                    (!this.loading
+                        && !this.branch_picker.as_ref().is_some_and(|p| p.creating)
+                        && window.is_window_active())
+                    .then(|| {
                         (
                             this.git.clone(),
                             this.path.clone(),
