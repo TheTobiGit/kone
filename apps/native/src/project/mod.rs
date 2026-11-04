@@ -514,7 +514,7 @@ impl Render for ProjectView {
                 d.child(self.render_detail(&c, cx))
             })
             .when(self.branch_picker.is_some(), |d| {
-                d.child(self.render_branch_picker(&c, cx))
+                d.child(self.render_branch_picker(&c, window, cx))
             })
     }
 }

@@ -4,17 +4,35 @@
 //! lighter because GPUI renders Inter heavier than Chromium. Cancel, the scrim and Escape close it.
 use super::ProjectView;
 use crate::git_service::{picker_options, GitBranch};
+use crate::magnet::Magnet;
+use crate::motion::sample_hover;
 use crate::shell::SANS;
 use crate::style::{paint_header_band, BAND_ARC, HEADER_H};
+use gpui_ce_motion::MotionValue;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use kone_theme::{hsla, Palette};
+use kone_theme::{hsla, Palette, Theme};
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::time::Duration;
 
 #[derive(Default)]
 pub(super) struct BranchPicker {
     /// None while loading.
     pub(super) branches: Option<Result<Vec<GitBranch>, String>>,
+    pub(super) hovered: Option<usize>,
+    pub(super) row_motion: HashMap<String, MotionValue>,
+    pub(super) row_hovering: HashMap<String, bool>,
+    pub(super) magnets: HashMap<String, Magnet>,
+}
+
+struct RowVisual {
+    hover: f32,
+    offset: (f32, f32),
+    probe: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
+    hoverable: bool,
 }
 
 impl ProjectView {
@@ -48,10 +66,17 @@ impl ProjectView {
         }
     }
 
-    pub(super) fn render_branch_picker(&self, c: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(picker) = &self.branch_picker else {
+    pub(super) fn render_branch_picker(
+        &mut self,
+        c: &Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let now = self.started.elapsed();
+        let Some(picker) = &mut self.branch_picker else {
             return div().into_any_element();
         };
+        let mut animating = false;
         let band = c.band;
         let header = div()
             .relative()
@@ -112,12 +137,59 @@ impl ProjectView {
             None => vec![note("Loading…".into())],
             Some(Err(e)) => vec![note(e.clone())],
             Some(Ok(list)) if list.is_empty() => vec![note("No other branches".into())],
-            Some(Ok(list)) => list
-                .iter()
-                .enumerate()
-                .map(|(i, b)| branch_row(i, b, c))
-                .collect(),
+            Some(Ok(list)) => {
+                let branches = list.clone();
+                let hovered_idx = picker.hovered;
+                branches
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| {
+                        if b.current {
+                            let visual = RowVisual {
+                                hover: 0.,
+                                offset: (0., 0.),
+                                probe: None,
+                                hoverable: false,
+                            };
+                            branch_row(i, b, c, visual, cx)
+                        } else {
+                            let is_hovered = hovered_idx == Some(i);
+                            let motion = picker
+                                .row_motion
+                                .entry(b.name.clone())
+                                .or_insert_with(|| MotionValue::new(0.));
+                            let hovering = picker
+                                .row_hovering
+                                .entry(b.name.clone())
+                                .or_insert(false);
+                            let (hover, hover_anim) =
+                                sample_hover(motion, hovering, is_hovered, now);
+                            animating |= hover_anim;
+
+                            let magnet = picker.magnets.entry(b.name.clone()).or_default();
+                            let offset = magnet.offset();
+                            let probe = magnet.probe();
+
+                            let visual = RowVisual {
+                                hover,
+                                offset,
+                                probe: Some(probe),
+                                hoverable: true,
+                            };
+                            branch_row(i, b, c, visual, cx)
+                        }
+                    })
+                    .collect()
+            }
         };
+
+        if picker.magnets.values().any(Magnet::settling) {
+            animating = true;
+        }
+
+        if animating {
+            window.request_animation_frame();
+        }
 
         let card = div()
             .id("branch-picker-card")
@@ -152,12 +224,28 @@ impl ProjectView {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.close_branch_picker(cx)),
             )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let Some(picker) = &mut this.branch_picker else { return };
+                let mut moved = false;
+                for magnet in picker.magnets.values_mut() {
+                    moved |= magnet.track(event.position);
+                }
+                if moved {
+                    cx.notify();
+                }
+            }))
             .child(card)
             .into_any_element()
     }
 }
 
-fn branch_row(index: usize, b: &GitBranch, c: &Palette) -> AnyElement {
+fn branch_row(
+    index: usize,
+    b: &GitBranch,
+    c: &Palette,
+    visual: RowVisual,
+    cx: &mut Context<ProjectView>,
+) -> AnyElement {
     let tag = if b.current {
         Some("current")
     } else if b.remote {
@@ -165,8 +253,12 @@ fn branch_row(index: usize, b: &GitBranch, c: &Palette) -> AnyElement {
     } else {
         None
     };
-    div()
+    let (x, y) = visual.offset;
+    let mut row = div()
         .id(("branch-row", index))
+        .relative()
+        .left(px(x))
+        .top(px(y))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -174,7 +266,8 @@ fn branch_row(index: usize, b: &GitBranch, c: &Palette) -> AnyElement {
         .rounded(px(10.))
         .px(px(12.))
         .py(px(10.))
-        .cursor_default()
+        .tooltip(branch_tip(b.name.clone()))
+        .tooltip_show_delay(Duration::from_millis(500))
         .child(
             div()
                 .min_w(px(0.))
@@ -194,6 +287,70 @@ fn branch_row(index: usize, b: &GitBranch, c: &Palette) -> AnyElement {
                     .text_color(hsla(c.muted))
                     .child(tag),
             )
-        })
-        .into_any_element()
+        });
+
+    if visual.hoverable {
+        row = row
+            .cursor_pointer()
+            .when(visual.hover > 0.001, |d| {
+                d.bg(hsla(c.hover.alpha(c.hover.a * visual.hover)))
+            })
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                let Some(picker) = &mut this.branch_picker else { return };
+                if *over {
+                    picker.hovered = Some(index);
+                } else if picker.hovered == Some(index) {
+                    picker.hovered = None;
+                }
+                cx.notify();
+            }));
+    } else {
+        row = row.cursor_default();
+    }
+
+    let mut wrapper = div().relative().max_w_full();
+    if let Some(probe) = visual.probe {
+        wrapper = wrapper.child(
+            canvas(move |b, _, _| probe.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .size_full(),
+        );
+    }
+    wrapper.child(row).into_any_element()
+}
+
+struct BranchTip(SharedString);
+
+impl Render for BranchTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::get(cx);
+        let c = &theme.colors;
+        let (background, foreground, border) = if theme.is_dark() {
+            (c.sunken, c.ink, c.muted)
+        } else {
+            (c.ink, c.raised_high, c.line)
+        };
+        div().pl(px(11.)).pt(px(14.)).child(
+            div()
+                .font_family(SANS)
+                .px(px(4.))
+                .py(px(3.))
+                .bg(hsla(background))
+                .border_1()
+                .border_color(hsla(border))
+                .text_size(px(13.5))
+                .line_height(px(16.))
+                .font_weight(FontWeight::NORMAL)
+                .text_color(hsla(foreground))
+                .whitespace_nowrap()
+                .child(self.0.clone()),
+        )
+    }
+}
+
+fn branch_tip(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| BranchTip(text.clone())).into()
 }
