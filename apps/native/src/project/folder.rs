@@ -454,7 +454,7 @@ impl ProjectView {
         let reveal_tone = hsla(c.muted);
         let is_selected_reveal = self.selected.as_deref() == Some("reveal");
 
-        // Switch branch: styled exactly like Electron's folder action, inert (view-only).
+        // Switch branch: styled exactly like Electron's folder action; opens the branch picker.
         let switch = div()
             .id("folder-switch-branch")
             .cursor_default()
@@ -482,6 +482,7 @@ impl ProjectView {
                     .flex_shrink_0()
                     .text_color(branch_tone),
             )
+            .on_click(cx.listener(|this, _, _, cx| this.open_branch_picker(cx)))
             .child("Switch branch");
 
         let reveal = div()

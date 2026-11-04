@@ -149,6 +149,13 @@ impl ProjectView {
     pub(super) fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = e.keystroke.key.as_str();
         let m = e.keystroke.modifiers;
+        if self.branch_picker.is_some() {
+            if key == "escape" {
+                self.close_branch_picker(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if key == "escape" && (self.peek || self.detail.is_some()) {
             self.dismiss(window, cx);
             cx.stop_propagation();

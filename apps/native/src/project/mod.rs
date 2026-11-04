@@ -1,5 +1,6 @@
 //! View-only project screen. Its lifetime owns cancellation of background git
 //! reads; weak async updates cannot land in a later project's screen.
+mod branch_picker;
 mod changes;
 mod detail;
 mod folder;
@@ -32,6 +33,7 @@ pub struct ProjectView {
     pub(super) path: String,
     pub(super) identity: String,
     pub(super) model: Option<OverviewModel>,
+    branch_picker: Option<branch_picker::BranchPicker>,
     pub(super) loading: bool,
     pub(super) error: Option<String>,
     pub(super) folded: [bool; 2],
@@ -135,6 +137,7 @@ impl ProjectView {
             path: project.path.to_string_lossy().into_owned(),
             identity: identity(),
             model: None,
+            branch_picker: None,
             loading: true,
             error: None,
             folded: [false; 2],
@@ -509,6 +512,9 @@ impl Render for ProjectView {
             .when(peek_layer, |d| d.child(self.render_peek(&c, cx)))
             .when(self.detail.is_some(), |d| {
                 d.child(self.render_detail(&c, cx))
+            })
+            .when(self.branch_picker.is_some(), |d| {
+                d.child(self.render_branch_picker(&c, cx))
             })
     }
 }

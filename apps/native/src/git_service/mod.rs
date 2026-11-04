@@ -1,12 +1,14 @@
 //! The single replaceable boundary for view-only project git reads.
 //! Implementations block only on GPUI's background executor. One cancellation
 //! flag belongs to a project entity; leaving it terminates in-flight git groups.
+mod branches;
 mod detail;
 mod status;
 #[cfg(test)]
 mod tests;
 mod types;
 use std::{path::Path, sync::atomic::AtomicBool};
+pub use branches::{GitBranch, picker_options};
 pub use types::*;
 
 pub trait GitService: Send + Sync {
@@ -18,6 +20,7 @@ pub trait GitService: Send + Sync {
         staged: bool,
         cancel: &AtomicBool,
     ) -> Result<FileDetail, String>;
+    fn branches(&self, path: &Path, cancel: &AtomicBool) -> Result<Vec<GitBranch>, String>;
 }
 #[derive(Default)]
 pub struct NativeGit;
@@ -33,6 +36,9 @@ impl GitService for NativeGit {
         cancel: &AtomicBool,
     ) -> Result<FileDetail, String> {
         detail::detail(path, file, staged, cancel)
+    }
+    fn branches(&self, path: &Path, cancel: &AtomicBool) -> Result<Vec<GitBranch>, String> {
+        branches::branches(path, cancel)
     }
 }
 
