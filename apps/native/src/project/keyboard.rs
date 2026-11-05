@@ -74,6 +74,14 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) {
         self.focus.focus(window, cx);
+        if self.switcher.suspended {
+            cx.stop_propagation();
+            return;
+        }
+        if self.switcher.open {
+            self.switcher_key("tab", backward, window, cx);
+            return;
+        }
         if self.detail.is_some() {
             self.detail_control = if backward {
                 (self.detail_control + 2) % 3
@@ -108,7 +116,16 @@ impl ProjectView {
             return;
         }
 
-        let mut stops = vec!["back".to_string(), "reveal".to_string()];
+        let mut stops = vec![
+            "back".to_string(),
+            "greeting-profile".to_string(),
+            "switch-project".to_string(),
+            "reveal".to_string(),
+        ];
+        if self.identity.trim().is_empty() || self.identity == "there" {
+            stops.retain(|s| s != "greeting-profile");
+        }
+        let primary_stops = stops.len();
         for lane in [Lane::Staged, Lane::Changed] {
             if self
                 .model
@@ -125,7 +142,7 @@ impl ProjectView {
                 }
             }
         }
-        if stops.len() > 2 {
+        if stops.len() > primary_stops {
             stops.push("peek".into());
         }
         let at = self
@@ -149,6 +166,43 @@ impl ProjectView {
     pub(super) fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = e.keystroke.key.as_str();
         let m = e.keystroke.modifiers;
+        if self.switcher.suspended {
+            return;
+        }
+        if self.switcher.closing {
+            cx.stop_propagation();
+            return;
+        }
+        if (self.switcher.cycle.is_some() || !self.switcher.pending_cycle.is_empty())
+            && key == "escape"
+        {
+            self.switcher.pending_cycle.clear();
+            self.switcher.cycle = None;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if m.control
+            && !m.alt
+            && !m.platform
+            && key == "tab"
+            && self.detail.is_none()
+            && !self.peek
+            && self.branch_picker.is_none()
+        {
+            self.step_cycle(m.shift, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.switcher.cycle.is_some() || !self.switcher.pending_cycle.is_empty() {
+            cx.stop_propagation();
+            return;
+        }
+        if self.switcher.open {
+            self.focus_visible = true;
+            self.switcher_key(key, m.shift, window, cx);
+            return;
+        }
         if self.branch_picker.is_some() {
             if self.branch_picker.as_ref().is_some_and(|p| p.creating) {
                 cx.stop_propagation();
@@ -241,6 +295,16 @@ impl ProjectView {
                     cx.stop_propagation();
                     return;
                 }
+                Some("greeting-profile") => {
+                    cx.emit(ProjectAction::Profile);
+                    cx.stop_propagation();
+                    return;
+                }
+                Some("switch-project") => {
+                    self.toggle_switcher(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 Some("reveal") => {
                     self.reveal(cx);
                     cx.stop_propagation();
@@ -263,6 +327,15 @@ impl ProjectView {
                 }
                 _ => {}
             }
+        }
+        if matches!(
+            self.selected.as_deref(),
+            Some("back" | "greeting-profile" | "switch-project" | "reveal")
+        ) && matches!(key, "up" | "down" | "left" | "right")
+        {
+            self.focus_visible = true;
+            self.cycle_focus(matches!(key, "up" | "left"), window, cx);
+            return;
         }
         let entries = self.entries();
         if entries.is_empty() {

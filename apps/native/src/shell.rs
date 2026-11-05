@@ -102,6 +102,7 @@ pub struct Shell {
     open_generation: u64,
     origin_tile: Option<(String, usize)>,
     _project_sub: Option<Subscription>,
+    _project_action_sub: Option<Subscription>,
     pub(crate) home: crate::recents::home::Home,
     focus: FocusHandle,
     _ticker: Task<()>,
@@ -167,6 +168,7 @@ impl Shell {
             open_generation: 0,
             origin_tile: None,
             _project_sub: None,
+            _project_action_sub: None,
             home: crate::recents::home::Home::new(query, query_sub),
             focus,
             _ticker: ticker,
@@ -236,6 +238,12 @@ impl Shell {
         .detach();
     }
 
+    fn restore_project_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Screen::Project(view) = &self.screen {
+            view.update(cx, |view, cx| view.resume_switcher(window, cx));
+        } else { self.focus.focus(window, cx); }
+    }
+
     /// Opens kone's own folder browser, not the system path panel.
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal.is_open() {
@@ -256,7 +264,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.modal = Modal::None;
-                this.focus.focus(window, cx);
+                if !matches!(event, crate::folder_picker::FolderPickerEvent::Picked(_)) { this.restore_project_focus(window, cx); }
                 cx.notify();
             },
         ));
@@ -298,7 +306,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.modal = Modal::None;
-                this.focus.focus(window, cx);
+                if !matches!(event, crate::create_project::CreateProjectEvent::Created(_)) { this.restore_project_focus(window, cx); }
                 cx.notify();
             },
         ));
@@ -330,7 +338,7 @@ impl Shell {
                     this.open_project(path.clone(), window, cx);
                 }
                 this.modal = Modal::None;
-                this.focus.focus(window, cx);
+                if !matches!(event, crate::clone_modal::CloneModalEvent::Cloned(_)) { this.restore_project_focus(window, cx); }
                 cx.notify();
             },
         ));
@@ -356,9 +364,21 @@ impl Shell {
                         this.origin_tile = Some((origin, slot));
                         let view = cx.new(|cx| crate::project::ProjectView::new(project, std::sync::Arc::new(crate::git_service::NativeGit), window, cx));
                         this._project_sub = Some(cx.subscribe_in(&view, window, |this, _, _: &crate::project::Back, window, cx| this.close_project(window, cx)));
+                        this._project_action_sub = Some(cx.subscribe_in(&view, window, |this, _, action: &crate::project::ProjectAction, window, cx| {
+                            match action {
+                                crate::project::ProjectAction::Open(path) => this.open_project(path.clone(), window, cx),
+                                crate::project::ProjectAction::Create => this.create_project(window, cx),
+                                crate::project::ProjectAction::OpenFolder => this.open_folder(window, cx),
+                                crate::project::ProjectAction::Clone => this.clone_repo(window, cx),
+                                crate::project::ProjectAction::Profile => {}, // Profile screen is an integration boundary.
+                            }
+                        }));
                         this.screen = Screen::Project(view);
                     }
-                    Err(message) => this.open_error = Some(message),
+                    Err(message) => {
+                        if let Screen::Project(view) = &this.screen { view.update(cx, |view, cx| view.switch_failed(message.clone(), window, cx)); }
+                        this.open_error = Some(message);
+                    },
                 }
                 cx.notify();
             });
@@ -486,6 +506,7 @@ impl Shell {
         self.open_generation += 1;
         self._open_task = None;
         self._project_sub = None;
+        self._project_action_sub = None;
         self.screen = Screen::Home;
         if let Some(origin) = self.origin_tile.take() {
             self.home.kb = Some((0, origin.1));

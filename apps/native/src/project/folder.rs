@@ -628,7 +628,7 @@ fn marks_for_paper(change: &crate::git_service::GitChange) -> Vec<(f32, bool, bo
     }
 }
 
-fn paint_folder_papers(
+pub(super) fn paint_folder_papers(
     bounds: Bounds<Pixels>,
     files: &[FileEntry],
     c: &Palette,
@@ -804,7 +804,7 @@ fn paint_folder_papers(
 
 /// GPUI gradients have two stops. Split the rounded face at the middle stop,
 /// retaining the same gradient axis in each polygon (including its clipped bounds).
-fn paint_pocket(bounds: Bounds<Pixels>, colors: [Hsla; 3], window: &mut Window) {
+pub(super) fn paint_pocket(bounds: Bounds<Pixels>, colors: [Hsla; 3], window: &mut Window) {
     let w = bounds.size.width.as_f32();
     let h = bounds.size.height.as_f32();
     let contour = rounded_contour(0., 0., w, h, 22. * w / 200.);
@@ -872,7 +872,7 @@ fn paint_pocket(bounds: Bounds<Pixels>, colors: [Hsla; 3], window: &mut Window) 
 
 /// GPUI scales its gradient direction by aspect ratio. Compensate so the
 /// visual axis and stop positions use CSS's projection through the corners.
-fn css_gradient(
+pub(super) fn css_gradient(
     full: Size<Pixels>,
     region: Bounds<Pixels>,
     angle: f32,

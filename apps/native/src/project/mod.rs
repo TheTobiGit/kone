@@ -3,6 +3,7 @@
 mod branch_picker;
 mod changes;
 mod chrome;
+mod cycle;
 mod detail;
 mod folder;
 mod keyboard;
@@ -10,6 +11,7 @@ mod model;
 mod overview;
 mod peek;
 mod preferences;
+mod switcher;
 use preferences::{identity, load_folds, save_folds};
 
 use gpui_kit::prelude::*;
@@ -25,6 +27,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-tab", ProjectPrev, Some("KoneProject")),
     ]);
 }
+
+#[derive(Clone)]
+pub enum ProjectAction {
+    Open(std::path::PathBuf),
+    Create,
+    OpenFolder,
+    Clone,
+    Profile,
+}
+impl EventEmitter<ProjectAction> for ProjectView {}
 
 pub struct Back;
 impl EventEmitter<Back> for ProjectView {}
@@ -72,6 +84,9 @@ pub struct ProjectView {
     chrome_back_target: bool,
     focus_visible: bool,
     folder_motion: folder::FolderMotion,
+    switcher: switcher::Switcher,
+    _switcher_load: Option<Task<()>>,
+    _activation: Subscription,
 }
 struct DetailState {
     entry: FileEntry,
@@ -95,7 +110,10 @@ impl ProjectView {
         let _watch = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
-                let request = this.update_in(cx, |this: &mut Self, window, _| {
+                let request = this.update_in(cx, |this: &mut Self, window, cx| {
+                    if this.switcher.open && !this.switcher.suspended && window.is_window_active() {
+                        this.load_switch_projects(cx);
+                    }
                     (!this.loading
                         && !this.branch_picker.as_ref().is_some_and(|p| p.creating)
                         && window.is_window_active())
@@ -141,7 +159,18 @@ impl ProjectView {
                 });
             }
         });
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.switcher.pending_cycle.clear();
+                if this.switcher.cycle.take().is_some() {
+                    cx.notify();
+                }
+            }
+        });
         let mut view = Self {
+            switcher: Default::default(),
+            _switcher_load: None,
+            _activation: activation,
             name: project.name,
             path: project.path.to_string_lossy().into_owned(),
             identity: identity(),
@@ -186,6 +215,7 @@ impl ProjectView {
             folder_motion: folder::FolderMotion::default(),
         };
         view.refresh(cx);
+        view.load_switch_projects(cx);
         view
     }
     pub(super) fn track_bounds(&self, key: String) -> AnyElement {
@@ -454,6 +484,17 @@ impl Render for ProjectView {
                 }
             }))
             .capture_key_down(cx.listener(Self::key))
+            .on_modifiers_changed(cx.listener(|this, e: &ModifiersChangedEvent, window, cx| {
+                if !e.modifiers.control {
+                    this.commit_cycle(window, cx);
+                }
+            }))
+            .child({
+                let bounds = self.switcher.root_bounds.clone();
+                canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full()
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -493,6 +534,12 @@ impl Render for ProjectView {
             .when(peek_layer, |d| d.child(self.render_peek(&c, cx)))
             .when(self.detail.is_some(), |d| {
                 d.child(self.render_detail(&c, cx))
+            })
+            .when(self.switcher.open, |d| {
+                d.child(self.render_switcher(&c, window, cx))
+            })
+            .when(self.switcher.cycle.is_some(), |d| {
+                d.child(self.render_cycle(&c, window, cx))
             })
             .when(self.branch_picker.is_some(), |d| {
                 d.child(self.render_branch_picker(&c, window, cx))

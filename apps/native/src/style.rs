@@ -1,8 +1,11 @@
 //! Shared modal surfaces, dimensions and input styling.
 use gpui_kit::base::input::InputEditorStyle;
 use gpui_kit::*;
-use kone_theme::{hsla, Palette};
+use kone_theme::{Palette, hsla};
 
+#[cfg(target_os = "linux")]
+pub(crate) const MONO: &str = "DejaVu Sans Mono";
+#[cfg(not(target_os = "linux"))]
 pub(crate) const MONO: &str = "Menlo";
 /// The card's fixed frame pieces. The browser's body carries the rest.
 pub(crate) const HEADER_H: f32 = 37.;
@@ -31,10 +34,19 @@ pub(crate) fn input_style(colors: &Palette, focused: bool) -> InputEditorStyle {
 /// top edge, comes down the right wall into a quarter-circle bite, crosses the
 /// band's lower edge, and mirrors back up the left wall.
 pub(crate) fn paint_header_band(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+    paint_header_band_height(bounds, color, HEADER_H, window);
+}
+
+pub(crate) fn paint_header_band_height(
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+    band: f32,
+    window: &mut Window,
+) {
     let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let width = f32::from(bounds.size.width);
     let arc = BAND_ARC;
-    let band = HEADER_H;
+
     let k = 0.552_284_8 * arc;
     let mut path = PathBuilder::fill();
     path.move_to(point(px(x), px(y)));
@@ -86,4 +98,3 @@ pub(crate) fn paint_footer_band(bounds: Bounds<Pixels>, color: Hsla, window: &mu
         window.paint_path(path, color);
     }
 }
-
