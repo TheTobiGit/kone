@@ -2,6 +2,7 @@
 //! operations; weak async updates cannot land in a later project's screen.
 mod branch_picker;
 mod changes;
+mod chrome;
 mod detail;
 mod folder;
 mod keyboard;
@@ -65,6 +66,11 @@ pub struct ProjectView {
     card_motion: std::collections::HashMap<String, (gpui_ce_motion::MotionValue, bool)>,
     card_lifts: std::collections::HashMap<String, f32>,
     folder_hover: bool,
+    chrome_back: crate::magnet::Magnet,
+    chrome_back_hover: bool,
+    chrome_back_value: gpui_ce_motion::MotionValue,
+    chrome_back_target: bool,
+    focus_visible: bool,
     folder_motion: folder::FolderMotion,
 }
 struct DetailState {
@@ -172,6 +178,11 @@ impl ProjectView {
             card_motion: Default::default(),
             card_lifts: Default::default(),
             folder_hover: false,
+            chrome_back: Default::default(),
+            chrome_back_hover: false,
+            chrome_back_value: gpui_ce_motion::MotionValue::new(0.),
+            chrome_back_target: false,
+            focus_visible: false,
             folder_motion: folder::FolderMotion::default(),
         };
         view.refresh(cx);
@@ -404,10 +415,7 @@ impl Render for ProjectView {
                 window.request_animation_frame();
             }
         }
-        let (added, removed) = self
-            .model
-            .as_ref()
-            .map_or((0, 0), |m| (m.added, m.removed));
+        let (added, removed) = self.model.as_ref().map_or((0, 0), |m| (m.added, m.removed));
         let folder_hover = self.folder_hover && !self.peek && self.detail.is_none();
         self.folder_motion
             .sample(folder_hover, added, removed, now, window, cx);
@@ -416,84 +424,44 @@ impl Render for ProjectView {
             .size_full()
             .flex()
             .flex_col()
+            .id("project-view")
             .track_focus(&self.focus)
             .key_context("KoneProject")
-            .on_action(
-                cx.listener(|this, _: &ProjectNext, window, cx| {
-                    if this.branch_picker.is_some() {
-                        cx.stop_propagation();
-                    } else {
-                        this.cycle_focus(false, window, cx)
-                    }
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &ProjectPrev, window, cx| {
-                    if this.branch_picker.is_some() {
-                        cx.stop_propagation();
-                    } else {
-                        this.cycle_focus(true, window, cx)
-                    }
-                }),
-            )
+            .on_action(cx.listener(|this, _: &ProjectNext, window, cx| {
+                this.focus_visible = true;
+                if this.branch_picker.is_some() {
+                    cx.stop_propagation();
+                } else {
+                    this.cycle_focus(false, window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ProjectPrev, window, cx| {
+                this.focus_visible = true;
+                if this.branch_picker.is_some() {
+                    cx.stop_propagation();
+                } else {
+                    this.cycle_focus(true, window, cx)
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if this.detail.is_none() && this.chrome_back.track(e.position) {
+                    cx.notify();
+                }
+            }))
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                if !*over && this.chrome_back.release() {
+                    cx.notify();
+                }
+            }))
             .capture_key_down(cx.listener(Self::key))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    this.focus_visible = false;
                     this.focus.focus(window, cx);
                 }),
             )
-            .child(
-                div()
-                    .h(px(48.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(20.))
-                    .child(
-                        div()
-                            .id("project-back")
-                            .cursor_pointer()
-                            .px(px(10.))
-                            .py(px(6.))
-                            .rounded(px(8.))
-                            .text_color(hsla(c.ink_soft))
-                            .hover(|s| s.bg(hsla(c.hover)))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Back)))
-                            .when(
-                                self.selected.as_deref() == Some("back")
-                                    && !self.peek
-                                    && self.detail.is_none(),
-                                |d| d.bg(hsla(c.hover)),
-                            )
-                            .child("← Back"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(28.))
-                            .text_size(px(13.))
-                            .text_color(hsla(c.ink))
-                            .child("Overview")
-                            .children(
-                                ["Space", "Files", "Git"]
-                                    .into_iter()
-                                    .map(|s| div().opacity(0.35).child(s)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .size(px(28.))
-                            .rounded_full()
-                            .bg(hsla(c.chip))
-                            .text_color(hsla(c.ink_soft))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(self.identity.chars().next().unwrap_or('Y').to_string()),
-                    ),
-            )
+            .child(self.render_chrome(&c, window, cx))
             .child(
                 div()
                     .relative()

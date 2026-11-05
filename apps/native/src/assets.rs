@@ -14,6 +14,7 @@ macro_rules! icons {
 
 const ICONS: &[(&str, &[u8])] = icons![
     "arrow-down.svg",
+    "project-back.svg",
     "arrow-turn-backward.svg",
     "arrow-up.svg",
     "branch.svg",
