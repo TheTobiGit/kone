@@ -66,6 +66,11 @@ pub struct SchemeSpec {
     pub warn: Rgba,
     pub danger: Rgba,
     pub diff_add: Rgba,
+    /// Optional physical-folder pigments fall back to the shared addition role.
+    #[serde(default)]
+    pub folder_diff_add: Option<Rgba>,
+    #[serde(default)]
+    pub folder_mark_add: Option<Rgba>,
     pub diff_del: Rgba,
     pub diff_add_soft: Rgba,
     pub diff_del_soft: Rgba,
@@ -128,6 +133,8 @@ pub struct Palette {
     pub warn: Rgba,
     pub danger: Rgba,
     pub diff_add: Rgba,
+    pub folder_diff_add: Rgba,
+    pub folder_mark_add: Rgba,
     pub diff_del: Rgba,
     pub diff_add_soft: Rgba,
     pub diff_del_soft: Rgba,
@@ -176,6 +183,8 @@ impl Palette {
             warn: s.warn,
             danger: s.danger,
             diff_add: s.diff_add,
+            folder_diff_add: s.folder_diff_add.unwrap_or(s.diff_add),
+            folder_mark_add: s.folder_mark_add.unwrap_or(s.diff_add),
             diff_del: s.diff_del,
             diff_add_soft: s.diff_add_soft,
             diff_del_soft: s.diff_del_soft,

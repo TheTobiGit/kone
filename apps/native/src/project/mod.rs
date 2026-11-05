@@ -447,8 +447,13 @@ impl Render for ProjectView {
         }
         let (added, removed) = self.model.as_ref().map_or((0, 0), |m| (m.added, m.removed));
         let folder_hover = self.folder_hover && !self.peek && self.detail.is_none();
+        let action_focus = [
+            self.branch_picker.is_some()
+                || (self.focus_visible && self.selected.as_deref() == Some("switch-branch")),
+            self.focus_visible && self.selected.as_deref() == Some("reveal"),
+        ];
         self.folder_motion
-            .sample(folder_hover, added, removed, now, window, cx);
+            .sample((folder_hover, action_focus), added, removed, now, window, cx);
         div()
             .relative()
             .size_full()

@@ -63,6 +63,8 @@
     "warn": "#c99b45",
     "danger": "#f43f5e",
     "diff_add": "#059669",
+    "folder_diff_add": "#10b981",
+    "folder_mark_add": "#12b981",
     "diff_del": "#e11d48",
     "diff_add_soft": "#7fb98a",
     "diff_del_soft": "#dc8a6f",

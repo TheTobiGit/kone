@@ -125,6 +125,10 @@ impl ProjectView {
         if self.identity.trim().is_empty() || self.identity == "there" {
             stops.retain(|s| s != "greeting-profile");
         }
+        if self.model.is_some() {
+            let reveal = stops.iter().position(|s| s == "reveal").unwrap();
+            stops.insert(reveal, "switch-branch".into());
+        }
         let primary_stops = stops.len();
         for lane in [Lane::Staged, Lane::Changed] {
             if self
@@ -305,6 +309,11 @@ impl ProjectView {
                     cx.stop_propagation();
                     return;
                 }
+                Some("switch-branch") => {
+                    self.open_branch_picker(cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 Some("reveal") => {
                     self.reveal(cx);
                     cx.stop_propagation();
@@ -330,7 +339,7 @@ impl ProjectView {
         }
         if matches!(
             self.selected.as_deref(),
-            Some("back" | "greeting-profile" | "switch-project" | "reveal")
+            Some("back" | "greeting-profile" | "switch-project" | "switch-branch" | "reveal")
         ) && matches!(key, "up" | "down" | "left" | "right")
         {
             self.focus_visible = true;

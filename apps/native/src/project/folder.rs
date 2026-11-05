@@ -46,6 +46,9 @@ impl CountMotion {
 /// Each paper has its own delayed spring; the folder lift and action fade are tweens.
 pub(super) struct FolderMotion {
     active: bool,
+    entrance_docked: Option<bool>,
+    entrance: gpui_ce_motion::MotionValue,
+    entrance_value: f32,
     lift_active: bool,
     tile_hover: bool,
     action_hover: [bool; 2],
@@ -66,6 +69,9 @@ impl Default for FolderMotion {
     fn default() -> Self {
         Self {
             active: false,
+            entrance_docked: None,
+            entrance: gpui_ce_motion::MotionValue::new(0.),
+            entrance_value: 0.,
             lift_active: false,
             tile_hover: false,
             action_hover: [false; 2],
@@ -87,7 +93,7 @@ impl Default for FolderMotion {
 impl FolderMotion {
     pub fn sample(
         &mut self,
-        hovered: bool,
+        activity: (bool, [bool; 2]),
         added: u32,
         removed: u32,
         now: Duration,
@@ -95,6 +101,29 @@ impl FolderMotion {
         cx: &App,
     ) {
         use gpui_ce_motion::{Bezier, Easing, Spring, Transition};
+        let (hovered, action_focus) = activity;
+        let docked = window.viewport_size().width.as_f32() > 1440.;
+        if self.entrance_docked != Some(docked) {
+            self.entrance_docked = Some(docked);
+            self.entrance = gpui_ce_motion::MotionValue::new(0.);
+            self.entrance.animate_delayed(
+                1.,
+                if docked {
+                    Transition::Spring(Spring::new(260., 24., 0.9).expect("folder entrance spring"))
+                } else {
+                    Transition::Tween(
+                        Duration::from_millis(400),
+                        Easing::Bezier(
+                            Bezier::new(0.22, 1., 0.36, 1.).expect("folder entrance curve"),
+                        ),
+                    )
+                },
+                Duration::from_millis(if docked { 330 } else { 120 }),
+                now,
+            );
+        }
+        let entrance = self.entrance.sample(now, cx.reduce_motion());
+        self.entrance_value = entrance.value() as f32;
         if self.active != hovered {
             self.active = hovered;
             let target = if hovered { 1. } else { 0. };
@@ -131,14 +160,14 @@ impl FolderMotion {
         let fade = self.fade.sample(now, cx.reduce_motion());
         self.lift_value = lift.value() as f32;
         self.fade_value = fade.value() as f32;
-        let mut animating = lift.is_animating() || fade.is_animating();
+        let mut animating = entrance.is_animating() || lift.is_animating() || fade.is_animating();
         for (i, paper) in self.papers.iter_mut().enumerate() {
             let sample = paper.sample(now, cx.reduce_motion());
             self.paper_values[i] = sample.value() as f32;
             animating |= sample.is_animating();
         }
         for i in 0..2 {
-            let active = self.action_hover[i];
+            let active = self.action_hover[i] || action_focus[i];
             if self.action_active[i] != active {
                 self.action_active[i] = active;
                 self.action_motion[i].animate(
@@ -176,10 +205,11 @@ impl ProjectView {
         let docked = vp_width > 1440.;
         let scale = if docked { 1.15 } else { 0.95 };
         let repo = self.model.is_some();
-        let branch = self
-            .model
-            .as_ref()
-            .and_then(|m| m.snapshot.branch.as_deref());
+        let branch = self.model.as_ref().and_then(|m| {
+            (!m.snapshot.detached)
+                .then_some(m.snapshot.branch.as_deref())
+                .flatten()
+        });
         let target_added = self.model.as_ref().map_or(0, |m| m.added);
         let target_removed = self.model.as_ref().map_or(0, |m| m.removed);
         let added = self.folder_motion.count_values[0];
@@ -416,17 +446,13 @@ impl ProjectView {
                                             .items_center()
                                             .flex_shrink_0()
                                             .gap(px(12. * scale))
-                                            .font_family(crate::style::MONO)
+                                            .font_family(BRANCH_MONO)
                                             .text_size(px(12.5 * scale))
                                             .line_height(px(12.5 * scale))
                                             .when(target_added > 0, |d| {
                                                 d.child(
                                                     div()
-                                                        .text_color(hsla(if dark {
-                                                            kone_theme::Rgba::hex(0x10b981)
-                                                        } else {
-                                                            c.diff_add
-                                                        }))
+                                                        .text_color(hsla(c.folder_diff_add))
                                                         .child(format!(
                                                             "+{}",
                                                             crate::recents::group(added)
@@ -434,14 +460,9 @@ impl ProjectView {
                                                 )
                                             })
                                             .when(target_removed > 0, |d| {
-                                                d.child(
-                                                    div()
-                                                        .text_color(hsla(c.diff_del))
-                                                        .child(format!(
-                                                            "−{}",
-                                                            crate::recents::group(removed)
-                                                        )),
-                                                )
+                                                d.child(div().text_color(hsla(c.diff_del)).child(
+                                                    format!("−{}", crate::recents::group(removed)),
+                                                ))
                                             }),
                                     )
                                 }),
@@ -449,15 +470,17 @@ impl ProjectView {
                     }),
             );
 
-        // Electron's folder actions stay muted on hover (no darkening).
-        let branch_tone = hsla(c.muted);
-        let reveal_tone = hsla(c.muted);
-        let is_selected_reveal = self.selected.as_deref() == Some("reveal");
+        let branch_tone = hsla(c.ink.mix(self.folder_motion.action_values[0], c.muted));
+        let reveal_tone = hsla(c.ink.mix(self.folder_motion.action_values[1], c.muted));
+        let actions_focused = matches!(self.selected.as_deref(), Some("switch-branch" | "reveal"));
+        let actions_retained = actions_focused || self.branch_picker.is_some();
 
         // Switch branch: styled exactly like Electron's folder action; opens the branch picker.
         let switch = div()
             .id("folder-switch-branch")
-            .cursor_default()
+            .relative()
+            .child(self.track_bounds("switch-branch".into()))
+            .cursor_pointer()
             .flex()
             .items_center()
             .gap(px(7.))
@@ -482,14 +505,17 @@ impl ProjectView {
                     .flex_shrink_0()
                     .text_color(branch_tone),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.open_branch_picker(cx)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.selected = Some("switch-branch".into());
+                this.open_branch_picker(cx);
+            }))
             .child("Switch branch");
 
         let reveal = div()
             .id("reveal-finder")
             .relative()
             .child(self.track_bounds("reveal".into()))
-            .cursor_default()
+            .cursor_pointer()
             .flex()
             .items_center()
             .gap(px(7.))
@@ -523,7 +549,7 @@ impl ProjectView {
             )
             .child("Open in Finder");
 
-        let actions_visible = is_selected_reveal || self.folder_motion.fade_value >= 0.01;
+        let actions_visible = actions_retained || self.folder_motion.fade_value >= 0.01;
         let actions = div()
             .flex()
             .when(docked, |d| d.flex_col().items_start().gap(px(9.)))
@@ -531,9 +557,10 @@ impl ProjectView {
                 d.flex_row()
                     .items_center()
                     .gap(px(14.))
+                    // Vue's inline wrapper contributes a 10px baseline gap in addition to its 2px margin.
                     .mt(px(12.))
             })
-            .opacity(if is_selected_reveal {
+            .opacity(if actions_retained {
                 1.
             } else {
                 self.folder_motion.fade_value
@@ -559,13 +586,14 @@ impl ProjectView {
                 .child(tile)
                 .child(actions)
         } else {
-            container
-                .flex_col()
-                .items_end()
-                .child(tile)
-                .child(actions)
+            container.flex_col().items_end().child(tile).child(actions)
         };
         container
+            .relative()
+            .top(px(
+                (if docked { 44. } else { 10. }) * (1. - self.folder_motion.entrance_value)
+            ))
+            .opacity(self.folder_motion.entrance_value.clamp(0., 1.))
             .on_hover(cx.listener(|this, over: &bool, _, cx| {
                 if this.peek || this.detail.is_some() {
                     return;
@@ -782,11 +810,7 @@ pub(super) fn paint_folder_papers(
                 }
                 path.close();
                 let color = if is_add {
-                    if is_dark {
-                        kone_theme::Rgba::hex(0x12b981)
-                    } else {
-                        c.diff_add
-                    }
+                    c.folder_mark_add
                 } else if is_del {
                     c.diff_del
                 } else if is_dark {
