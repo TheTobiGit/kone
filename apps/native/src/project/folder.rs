@@ -166,8 +166,8 @@ impl FolderMotion {
             self.paper_values[i] = sample.value() as f32;
             animating |= sample.is_animating();
         }
-        for i in 0..2 {
-            let active = self.action_hover[i] || action_focus[i];
+        for (i, &focused) in action_focus.iter().enumerate() {
+            let active = self.action_hover[i] || focused;
             if self.action_active[i] != active {
                 self.action_active[i] = active;
                 self.action_motion[i].animate(

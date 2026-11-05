@@ -2,7 +2,7 @@
 use super::ProjectView;
 use crate::git_service::{GitBranch, picker_options, valid_branch_name};
 use crate::magnet::Magnet;
-use crate::motion::sample_hover;
+use crate::motion::{card_enter_tween, card_fade_tween, sample_hover, scrim_enter_tween, CARD_RISE};
 use crate::shell::SANS;
 use crate::style::{BAND_ARC, HEADER_H, input_style, paint_header_band};
 use gpui_ce_motion::MotionValue;
@@ -15,7 +15,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-#[derive(Default)]
 pub(super) struct BranchPicker {
     /// None while loading.
     pub(super) branches: Option<Result<Vec<GitBranch>, String>>,
@@ -30,6 +29,33 @@ pub(super) struct BranchPicker {
     pub(super) row_motion: HashMap<String, MotionValue>,
     pub(super) row_hovering: HashMap<String, bool>,
     pub(super) magnets: HashMap<String, Magnet>,
+    scroll: ScrollHandle,
+    enter_scrim: MotionValue,
+    enter_y: MotionValue,
+    enter_fade: MotionValue,
+}
+
+impl Default for BranchPicker {
+    fn default() -> Self {
+        Self {
+            branches: None,
+            hovered: None,
+            all_names: HashSet::new(),
+            input: None,
+            _input_sub: None,
+            query: String::new(),
+            creating: false,
+            error: None,
+            keyboard_highlight: false,
+            row_motion: HashMap::new(),
+            row_hovering: HashMap::new(),
+            magnets: HashMap::new(),
+            scroll: ScrollHandle::default(),
+            enter_scrim: MotionValue::new(0.),
+            enter_y: MotionValue::new(CARD_RISE as f64),
+            enter_fade: MotionValue::new(0.),
+        }
+    }
 }
 
 impl BranchPicker {
@@ -58,6 +84,20 @@ impl ProjectView {
             return;
         }
         self.branch_picker = Some(BranchPicker::default());
+        // Electron's modal-card-in: the scrim fades, the card rises into
+        // place with a small overshoot and is opaque well before it lands.
+        if let Some(picker) = &mut self.branch_picker {
+            let now = self.started.elapsed();
+            if cx.reduce_motion() {
+                picker.enter_scrim = MotionValue::new(1.);
+                picker.enter_y = MotionValue::new(0.);
+                picker.enter_fade = MotionValue::new(1.);
+            } else {
+                picker.enter_scrim.animate(1., scrim_enter_tween(), now);
+                picker.enter_y.animate(0., card_enter_tween(), now);
+                picker.enter_fade.animate(1., card_fade_tween(), now);
+            }
+        }
         let git = self.git.clone();
         let path = self.path.clone();
         let cancel = self.cancel.clone();
@@ -263,6 +303,15 @@ impl ProjectView {
         let busy = picker.creating;
         let mut animating = busy;
         let band = c.band;
+        let scrim = picker.enter_scrim.sample(now, false).value() as f32;
+        let fade = picker.enter_fade.sample(now, false).value() as f32;
+        let y = picker.enter_y.sample(now, false).value() as f32;
+        let entering = picker.enter_scrim.sample(now, false).is_animating()
+            || picker.enter_fade.sample(now, false).is_animating()
+            || picker.enter_y.sample(now, false).is_animating();
+        if entering {
+            window.request_animation_frame();
+        }
         let header = div()
             .relative()
             .h(px(HEADER_H))
@@ -458,6 +507,8 @@ impl ProjectView {
 
         let card = div()
             .id("branch-picker-card")
+            .relative()
+            .top(px(y))
             .max_w(px(448.))
             .flex()
             .flex_col()
@@ -466,6 +517,7 @@ impl ProjectView {
             .bg(hsla(c.panel))
             .border_1()
             .border_color(hsla(c.ink.alpha(0.08)))
+            .opacity(fade.clamp(0., 1.))
             .font_family(SANS)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(header)
@@ -483,6 +535,11 @@ impl ProjectView {
             .child(
                 div().px(px(12.)).pb(px(12.)).child(
                     div()
+                        .id("branch-picker-list")
+                        // Parity with Electron's BranchPickerModal (max-h-[48vh]).
+                        .max_h(px(window.viewport_size().height.as_f32() * 0.48))
+                        .track_scroll(&picker.scroll)
+                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .items_start()
@@ -498,7 +555,7 @@ impl ProjectView {
             .items_end()
             .justify_start()
             .p(px(40.))
-            .bg(hsla(c.ground.alpha(0.62)))
+            .bg(hsla(c.ground.alpha(0.62 * scrim.clamp(0., 1.))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.close_branch_picker(window, cx)),
