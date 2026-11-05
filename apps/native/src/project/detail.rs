@@ -110,9 +110,7 @@ impl ProjectView {
                     .child("Loading…"),
             );
         }
-        div()
-            .absolute()
-            .inset_0()
+        crate::style::modal_backdrop()
             .flex()
             .items_center()
             .justify_center()

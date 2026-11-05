@@ -383,7 +383,16 @@ impl ProjectView {
             .text_color(hsla(c.ink))
             .bg(hsla(c.ink.alpha(0.04 * hover)))
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                this.switcher.hover = if *over { Some(index) } else { None };
+                // Moving straight onto a sibling fires this row's exit after the
+                // sibling's enter; only clear hover if it still points at us.
+                match over {
+                    true => this.switcher.hover = Some(index),
+                    false => {
+                        if this.switcher.hover == Some(index) {
+                            this.switcher.hover = None;
+                        }
+                    }
+                }
                 cx.notify();
             }))
             .when(self.focus_visible && self.switcher.selected == index, |d| {
@@ -498,16 +507,9 @@ impl ProjectView {
         let card = || {
             div()
                 .rounded(px(18.))
-                .shadow(vec![
-                    BoxShadow {
-                        color: hsla(c.ink.alpha(0.06)),
-                        offset: point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(1.),
-                        inset: false,
-                    },
-                    shadow(c, 1., 2., 0., 0.05),
-                ])
+                .border_1()
+                .border_color(hsla(c.line_soft))
+                .shadow(vec![shadow(c, 1., 2., 0., 0.05)])
                 .bg(hsla(c.raised))
                 .p(px(4.))
                 .flex()
@@ -566,17 +568,10 @@ impl ProjectView {
             .top(px(y))
             .w(px(300.))
             .rounded(px(20.))
-            .bg(hsla(c.raised))
-            .shadow(vec![
-                BoxShadow {
-                    color: hsla(c.ink.alpha(0.08)),
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(1.),
-                    inset: false,
-                },
-                shadow(c, 10., 28., -12., 0.16),
-            ])
+            .bg(hsla(c.band))
+            .border_1()
+            .border_color(hsla(c.line_soft))
+            .shadow(vec![shadow(c, 10., 28., -12., 0.16)])
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child({
@@ -618,7 +613,14 @@ impl ProjectView {
                             .text_color(hsla(c.muted))
                             .text_color(hsla(c.muted.alpha(1. - 0.3 * hovers[0])))
                             .on_hover(cx.listener(|this, over: &bool, _, cx| {
-                                this.switcher.hover = if *over { Some(0) } else { None };
+                                match over {
+                                    true => this.switcher.hover = Some(0),
+                                    false => {
+                                        if this.switcher.hover == Some(0) {
+                                            this.switcher.hover = None;
+                                        }
+                                    }
+                                }
                                 cx.notify();
                             }))
                             .when(self.focus_visible && self.switcher.selected == 0, |d| {
@@ -680,9 +682,7 @@ impl ProjectView {
                 )
                 .into_any_element()
         };
-        div()
-            .absolute()
-            .inset_0()
+        crate::style::modal_backdrop()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

@@ -738,9 +738,7 @@ impl Render for CloneModal {
             .child(body)
             .child(footer);
 
-        div()
-            .absolute()
-            .inset_0()
+        crate::style::modal_backdrop()
             .flex()
             .justify_end()
             .items_end()

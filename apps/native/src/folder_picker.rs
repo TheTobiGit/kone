@@ -1454,9 +1454,7 @@ impl Render for FolderPicker {
             .child(list_box)
             .child(footer);
 
-        div()
-            .absolute()
-            .inset_0()
+        crate::style::modal_backdrop()
             .flex()
             .justify_end()
             .items_end()

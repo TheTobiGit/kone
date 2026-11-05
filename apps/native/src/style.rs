@@ -15,6 +15,13 @@ pub(crate) const BAND_ARC: f32 = 14.;
 /// The browser's breathing room between the bands and the list.
 pub(crate) const BAND_GAP: f32 = 16.;
 pub(crate) const CARD_WIDTH: f32 = 448.;
+/// The root surface of every modal: a full-window backdrop that blocks mouse
+/// interaction (hover, click, …) with the view behind it. Chain the modal's
+/// layout, scrim and handlers onto this.
+pub(crate) fn modal_backdrop() -> Div {
+    div().absolute().inset_0().occlude()
+}
+
 pub(crate) fn input_style(colors: &Palette, focused: bool) -> InputEditorStyle {
     let ink = if focused { colors.ink } else { colors.muted };
     InputEditorStyle {

@@ -492,10 +492,8 @@ impl ProjectView {
                 ),
             );
 
-        div()
+        crate::style::modal_backdrop()
             .id("branch-picker-scrim")
-            .absolute()
-            .inset_0()
             .flex()
             .items_end()
             .justify_start()

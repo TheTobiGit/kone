@@ -158,9 +158,7 @@ impl ProjectView {
                 }
             }
         }
-        div()
-            .absolute()
-            .inset_0()
+        crate::style::modal_backdrop()
             .flex()
             .justify_end()
             .child(
