@@ -55,9 +55,12 @@ fn main() {
             full_size_content: true,
             traffic_lights: None,
             drag_regions: true,
+            hide_traffic_lights: true,
+            resize_border: 3.0,
         })
         .window_options(rune::WindowOptions {
             transparent: true,
+            borderless: cfg!(target_os = "linux"),
             ..Default::default()
         })
         .standard_menus()

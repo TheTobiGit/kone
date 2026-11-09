@@ -1,3 +1,6 @@
 [workspace]
 members = ["apps/rune"]
 resolver = "2"
+
+[patch."https://github.com/anomalyco/rune"]
+rune = { path = "apps/rune/vendor/rune" }

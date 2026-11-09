@@ -1,6 +1,6 @@
 # Current Rune port checkpoint
 
-- Frame work in progress: inset panel and backdrop added; macOS traffic-light hiding and Linux client-side resize remain unresolved.
+- Frame: vendored Rune at `50feb4f` adds explicit macOS traffic-light hiding and Linux undecorated edge resize through winit; Linux X11 edge resizing was verified; band double-click did not maximize in the attempted X11 check. Mac blur, button hiding, dragging, double-click and resizing need a native run.
 
 Worktree `/Users/gideonsarfo/Developer/kone-rune`, branch `feat/rune-port`. User authorizes frequent local commits; no push/PR. User requires exact current Electron UI. Settings is deferred; git/files/space/other portals omitted.
 
