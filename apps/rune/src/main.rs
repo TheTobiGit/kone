@@ -1,5 +1,6 @@
 mod bridge;
 mod launcher;
+mod plasma;
 mod state;
 mod theme;
 mod ui;
@@ -8,6 +9,7 @@ use rune::{App, AppSpec, FontSmoothing};
 use state::{AppState, Page};
 
 const FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/Fraunces-Variable.ttf"),
     include_bytes!("../assets/fonts/Geist-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Medium.ttf"),
     include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
@@ -38,5 +40,5 @@ fn main() {
         ],
         ..AppSpec::new("kone", (1280.0, 840.0), AppState::default, ui::view)
     };
-    App::new(spec).font_smoothing(FontSmoothing::Off).run();
+    App::new(spec).font_smoothing(FontSmoothing::Off).compositor(plasma::Plasma::default()).run();
 }

@@ -10,6 +10,11 @@ import { provisionWorktree } from "../../../desktop/src/modules/git/worktreeProv
 import { freshestBase } from "../../../desktop/src/modules/git/worktreeBase.js";
 import { renameGeneratedBranch } from "../../../desktop/src/modules/git/worktreeBranchName.js";
 import { removeWorktree } from "../../../desktop/src/modules/git/worktree.js";
+import { createGateway } from "@kone/agent-core/gateway/index.js";
+import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
+import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
+import { initSpawnEngine } from "@kone/agent-core/threadSpawn.js";
+import { acceptProviderThreadTitle } from "@kone/agent-core/threadTitle.js";
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
@@ -43,10 +48,39 @@ function broadcast(event: RuntimeEvent, journal = true): void {
   if (journal) store.applyEvent(stamped);
   notify("agent.event", projectRuntimeEventForIpc(stamped));
 }
-service.onEvent((event) => {
-  broadcast(event, !transient.has(event.type));
+function gateTitle(event: RuntimeEvent): { event: RuntimeEvent; journal: boolean } | null {
+  if (event.type !== "thread.title.updated" || event.source === "kone.store") return { event, journal: true };
+  const title = acceptProviderThreadTitle({ hasSettledTurn: store.hasSettledAssistantTurn(event.threadId), proposedTitle: event.title });
+  if (!title) return null;
+  store.renameThread(event.threadId, title);
+  return { event: { ...event, title }, journal: false };
+}
+initSpawnEngine({ store, providers: service, dispatcher, emit: (event) => {
+  const gated = gateTitle(event);
+  if (gated) broadcast(gated.event, false);
+}, onEvents: (listener) => service.onEvent(listener) });
+service.onEvent((incoming) => {
+  const gated = gateTitle(incoming);
+  if (!gated) return;
+  const { event } = gated;
+  broadcast(event, gated.journal && !transient.has(event.type));
   if (event.type === "turn.completed") dispatcher.onTurnCompleted(event.threadId);
 });
+const gateway = createGateway({
+  store,
+  emit: (event) => broadcast(event),
+  onEvents: (listener) => service.onEvent(listener),
+  isThreadLive: (threadId) => service.hasLiveSession(threadId),
+  pendingGates: () => indexThreadGates(service.pendingInteractions()),
+  pendingThreadGate: (threadId) => threadGateFor(indexThreadGates(service.pendingInteractions()), threadId),
+  threads: { startThread: (input) => dispatcher.startThread(input), sendThreadTurn: (input, options) => dispatcher.sendThreadTurn(input, options) },
+  threadAvailability: async () => {
+    const surface = service.cachedSurface();
+    return surface.statuses.map((status) => ({ provider: status.provider, available: status.available, models: (surface.models[status.provider] ?? []).map((model) => model.id) }));
+  },
+});
+service.attachGateway(gateway);
+void gateway.ready.then(() => dispatcher.resumeQuitInterruptedChatsAtBoot()).catch((error: Error) => console.error("[sidecar] resume failed:", error.message));
 service.onProvidersChanged((statuses) => notify("agent.providersChanged", statuses));
 
 const object = z.record(z.string(), z.unknown());
@@ -114,6 +148,7 @@ async function call(method: string, params: z.infer<typeof object>) {
     case "agent.models": { const input = z.object({ provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]) }).parse(params); return service.listModels(input.provider); }
     case "agent.start": {
       const input = z.object({ threadId: z.string().min(1), provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]), cwd: z.string().min(1) }).passthrough().parse(params);
+      await gateway.ready;
       // SAFETY: Required session identity fields and provider are validated; optional provider parameters retain their shared wire types.
       return dispatcher.startThread(input as SessionStartInput);
     }
@@ -134,6 +169,13 @@ async function call(method: string, params: z.infer<typeof object>) {
       return service.respondToUserInput(input.threadId, input.requestId, input.answers);
     }
     case "agent.pending": return service.pendingInteractions();
+    case "agent.queue": return service.listQueuedTurns(thread.parse(params).threadId);
+    case "agent.queueCancel": { const input = z.object({ threadId: z.string(), queueId: z.string() }).parse(params); return service.cancelQueuedTurn(input.threadId, input.queueId); }
+    case "agent.queueReorder": { const input = z.object({ threadId: z.string(), queueIds: z.array(z.string()) }).parse(params); return service.reorderQueuedTurns(input.threadId, input.queueIds); }
+    case "agent.uploadAttachment": {
+      const input = z.object({ threadId: z.string(), name: z.string(), mimeType: z.string(), data: z.string() }).parse(params);
+      return getAttachmentStore().save(input);
+    }
     case "history.list": return store.listThreads(z.object({ projectPath: z.string() }).parse(params).projectPath);
     case "history.latest": return store.latestThreadMeta(z.object({ projectPath: z.string() }).parse(params).projectPath);
     case "history.thread": { const value = store.loadThread(thread.parse(params).threadId); return value ? projectStoredThreadForIpc(value) : null; }
@@ -163,4 +205,4 @@ lines.on("line", (line) => {
   pending.add(task);
   void task.finally(() => pending.delete(task));
 });
-lines.on("close", () => { void Promise.allSettled(pending).then(() => service.stopAll()).finally(() => process.exit(0)); });
+lines.on("close", () => { void Promise.allSettled(pending).then(() => service.stopAll()).then(() => gateway.shutdown()).finally(() => process.exit(0)); });

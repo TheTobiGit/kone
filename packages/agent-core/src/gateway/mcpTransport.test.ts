@@ -307,7 +307,6 @@ describe("gateway transport methods", () => {
 describe("in-flight MCP cancellation (cross-POST)", () => {
   test(
     "a later POST of notifications/cancelled aborts an in-flight tools/call",
-    { timeout: 2000 },
     async () => {
     const credentials = new GatewayCredentials();
     const store: GatewayTransportStore = {
@@ -375,7 +374,7 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
     expect(callRes.status).toBe(202);
     expect(callRes.body).toBeUndefined();
     expect(sawAbort).toBe(true);
-  });
+  }, 2000);
 
   test("cancelling one thread's request id leaves another thread's same-id call alone", async () => {
     const credentials = new GatewayCredentials();

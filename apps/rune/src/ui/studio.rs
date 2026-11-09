@@ -36,10 +36,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .child(label("New thread", 13.5, 500.0, t.ink_soft).grow(1.0))
             .child(label("⌘", 11.0, 500.0, t.muted))
             .child(label("N", 11.0, 500.0, t.muted))
-            .on_press(|s: &mut AppState| {
-                s.studio.thread_open = true;
-                s.studio.composer_open = true;
-            });
+            .on_press(|s: &mut AppState| s.new_studio_thread());
         return col().w_full().h_full().fill(t.ground).center().child(
             col()
                 .w(256.0)
@@ -52,14 +49,30 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         );
     }
 
+    let mut column_nav = row().gap(6.0).center_y();
+    if let Some(panes) = s.studio_layout["rows"].as_array().and_then(|rows| rows.iter().find(|r| r["projectPath"] == s.studio.project_path)).and_then(|r| r["panes"].as_array()) {
+        if panes.len() > 1 {
+            for (index, pane) in panes.iter().enumerate() {
+                if let Some(thread) = pane["anchor"]["threadId"].as_str() {
+                    let thread = thread.to_owned();
+                    let focused = thread == s.studio.thread_id;
+                    column_nav = column_nav.child(el().key(format!("studio-column-{index}")).w(if focused { 24.0 } else { 13.0 }).h(18.0).center()
+                        .child(el().w_full().h(2.0).radius(1.0).fill(if focused { t.ink } else { t.faint }))
+                        .on_press(move |s: &mut AppState| s.open_studio_thread(thread.clone())));
+                }
+            }
+        }
+    }
     let header = row()
         .w_full()
         .h(56.0)
         .px(32.0)
         .items_end()
         .justify_between()
-        .child(el().w(120.0))
-        .child(label("New thread", 13.5, 620.0, t.ink))
+        .child(el().key("studio-add-thread").w(120.0).h(30.0).center_y()
+            .child(label("+", 17.0, 400.0, t.muted))
+            .on_press(|s: &mut AppState| s.new_studio_thread()))
+        .child(col().items_center().gap(8.0).child(column_nav).child(label("New thread", 13.5, 620.0, t.ink)))
         .child(
             row()
                 .w(120.0)
@@ -74,17 +87,30 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .child(row().gap(8.0)
                 .child(el().key("approval-reject").px(14.0).h(32.0).center().radius(9.0).hover(t.hover).child(label("Decline", 12.5, 500.0, t.ink_soft)).on_press(|s: &mut AppState| s.answer_approval("reject-once")))
                 .child(el().key("approval-allow").px(14.0).h(32.0).center().radius(9.0).fill(t.accent).child(label("Allow once", 12.5, 500.0, t.accent_ink)).on_press(|s: &mut AppState| s.answer_approval("allow-once"))))
-    } else if let Some(question) = &s.studio.question {
+    } else if let Some(request) = &s.studio.question {
+        let question = &request.questions[request.index];
         let mut card = col().w_full().max_w(680.0).padding(18.0).gap(12.0).radius(20.0).border(1.0, t.line).fill(t.raised_high)
             .child(label(question.prompt.clone(), 14.0, 600.0, t.ink));
         for (index, option) in question.options.iter().enumerate() {
             let answer = option.clone();
+            let multi = question.multi;
+            let prefix = if multi { if request.selected.contains(option) { "☑  " } else { "□  " } } else { "" };
             card = card.child(el().key(format!("question-option-{index}")).w_full().h(32.0).px(8.0).center_y().radius(8.0).hover(t.hover)
-                .child(label(option.clone(), 13.0, 500.0, t.ink_soft)).on_press(move |s: &mut AppState| s.answer_question(Some(answer.clone()))));
+                .child(label(format!("{prefix}{option}"), 13.0, 500.0, t.ink_soft)).on_press(move |s: &mut AppState| {
+                    if multi { s.toggle_question_option(answer.clone()); } else { s.answer_question(answer.clone().into()); }
+                }));
         }
-        card.child(text_input(&s.studio.answer, TextStyle::new(14.0, 400.0)).key("studio-answer").w_full().h(38.0).placeholder("Your answer…", t.placeholder).color(t.ink)
-            .on_edit(|s: &mut AppState| &mut s.studio.answer)
-            .on_submit(|s: &mut AppState, _: &mut rune::Tx| { let answer = s.studio.answer.text.clone(); s.answer_question(Some(answer)); }))
+        if question.multi {
+            card.child(el().key("question-submit").h(32.0).px(12.0).center().radius(9.0).fill(t.accent)
+                .child(label("Continue", 12.5, 500.0, t.accent_ink)).on_press(|s: &mut AppState| {
+                    let selected = s.studio.question.as_ref().map(|q| q.selected.clone()).unwrap_or_default();
+                    s.answer_question(serde_json::json!(selected));
+                }))
+        } else {
+            card.child(text_input(&s.studio.answer, TextStyle::new(14.0, 400.0)).key("studio-answer").w_full().h(38.0).placeholder("Your answer…", t.placeholder).color(t.ink)
+                .on_edit(|s: &mut AppState| &mut s.studio.answer)
+                .on_submit(|s: &mut AppState, _: &mut rune::Tx| { let answer = s.studio.answer.text.clone(); s.answer_question(answer.into()); }))
+        }
     } else if s.studio.composer_open {
         let input = text_input(&s.composer, TextStyle::new(14.0, 400.0))
             .key("studio-composer")
@@ -101,12 +127,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .gap(8.0)
             .child(label("+", 21.0, 400.0, t.muted))
             .child(el().grow(1.0))
-            .child(el().key("studio-provider").px(7.0).h(30.0).center().radius(9.0).hover(t.hover)
-                .child(label(s.studio.providers.get(s.studio.provider_index).map(|p| p.label.as_str()).unwrap_or("No provider").to_owned(), 12.5, 500.0, t.ink_soft))
-                .on_press(|s: &mut AppState| { if !s.studio.providers.is_empty() { let next = (s.studio.provider_index + 1) % s.studio.providers.len(); s.select_provider(next); } }))
-            .child(el().key("studio-model").px(7.0).h(30.0).center().radius(9.0).hover(t.hover)
-                .child(label(s.studio.models.get(s.studio.model_index).map(|m| m.label.as_str()).unwrap_or("Default model").to_owned(), 12.5, 500.0, t.ink_soft))
-                .on_press(|s: &mut AppState| { if !s.studio.models.is_empty() { s.studio.model_index = (s.studio.model_index + 1) % s.studio.models.len(); } }))
+            .child(el().key("studio-model-picker").px(7.0).h(30.0).center().radius(9.0).hover(t.hover)
+                .child(label(format!("{}  {}", s.studio.providers.get(s.studio.provider_index).map(|p| p.label.as_str()).unwrap_or("Select provider"), s.studio.models.get(s.studio.model_index).map(|m| m.label.as_str()).unwrap_or("")), 12.5, 500.0, t.ink_soft))
+                .on_press(|s: &mut AppState| s.studio.picker_open = !s.studio.picker_open))
             .child(
                 el().w(32.0)
                     .h(32.0)
@@ -116,11 +139,24 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .child(label(if s.studio.busy { "■" } else { "↑" }, 18.0, 600.0, t.accent_ink))
                     .on_press_tx(|s: &mut AppState, tx| { if s.studio.busy { s.interrupt_studio(); } else { s.send_studio(tx); } }),
             );
-        col()
-            .w_full()
-            .max_w(680.0)
-            .items_center()
-            .child(
+        let mut picker = col().w_full().max_w(360.0).padding(6.0).gap(2.0).radius(14.0).border(1.0, t.line).fill(t.raised_high);
+        if s.studio.picker_open {
+            picker = picker.child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
+            for (index, provider) in s.studio.providers.iter().enumerate() {
+                picker = picker.child(el().key(format!("provider-{index}")).w_full().h(32.0).px(8.0).center_y().radius(8.0).hover(t.hover)
+                    .child(label(format!("{}{}", if index == s.studio.provider_index { "✓  " } else { "    " }, provider.label), 12.5, 500.0, t.ink))
+                    .on_press(move |s: &mut AppState| s.select_provider(index)));
+            }
+            picker = picker.child(label("MODEL", 10.0, 600.0, t.muted).px(8.0).py(4.0));
+            for (index, model) in s.studio.models.iter().enumerate() {
+                picker = picker.child(el().key(format!("model-{index}")).w_full().h(32.0).px(8.0).center_y().radius(8.0).hover(t.hover)
+                    .child(label(format!("{}{}", if index == s.studio.model_index { "✓  " } else { "    " }, model.label), 12.5, 500.0, t.ink))
+                    .on_press(move |s: &mut AppState| { s.studio.model_index = index; s.studio.picker_open = false; }));
+            }
+        }
+        let mut dock = col().w_full().max_w(680.0).items_center();
+        if s.studio.picker_open { dock = dock.child(picker); }
+        dock.child(
                 col()
                     .w_full()
                     .padding(14.0)

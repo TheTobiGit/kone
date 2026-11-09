@@ -1,6 +1,6 @@
-use rune::{col, el, row, text, text_input, Cx, El, TextStyle};
+use rune::{col, el, row, text, text_input, icon, Cx, El, TextStyle};
 use crate::{state::{AppState, Page}, theme::Palette};
-use super::empty::{actions, wordmark};
+use super::empty::{actions, wordmark, SETTINGS, SEARCH};
 
 pub(super) fn folder(name: &str, t: Palette) -> El {
     let sheet = el().size(168.0, 44.0).radius(16.0)
@@ -17,9 +17,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let header = row().w_full().center_y().justify_between()
         .child(wordmark(t))
         .child(row().center_y().gap(12.0)
-            .child(text("⚙").font(TextStyle::new(18.0, 400.0)).color(t.muted))
+            .child(el().size(36.0, 36.0).center().child(icon(&SETTINGS, 16.0).color(t.muted)))
             .child(row().h(36.0).px(12.0).gap(10.0).center_y().radius(11.0).fill(t.hover)
-                .child(text("⌕").font(TextStyle::new(16.0, 400.0)).color(t.muted))
+                .child(icon(&SEARCH, 15.0).color(t.muted))
                 .child(text_input(&s.search, TextStyle::new(14.0, 400.0)).key("project-search").w(176.0).single_line().placeholder("Search projects", t.muted).color(t.ink).on_edit(|s: &mut AppState| &mut s.search))
                 .child(text("⌘K").font(TextStyle::new(10.0, 400.0)).color(t.muted)))
             .child(text("Recent  ⌄").font(TextStyle::new(14.0, 500.0)).color(t.ink_soft)));

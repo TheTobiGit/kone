@@ -1,0 +1,7 @@
+# Rune Studio status
+
+The Rune Studio currently renders the empty-column chooser and a single focused thread with a composer. It discovers installed providers and their models, starts and resumes agent sessions, streams normalized items, sends and interrupts turns, and presents basic approval and question prompts. It loads and saves Studio rows with the existing v2 layout schema and can reopen saved thread transcripts. Column dashes select saved threads, and new threads are added without replacing the rest of the layout.
+
+This is an intermediate port. The thread strip is not yet the Electron component's scrollable tiling rail; switching threads is held while a turn runs, and unsent blank panes are not persisted. The composer, chooser artwork, transcript formatting, controls, motion, and dark/light rendering need pixel comparison and refinement. Provider and model selection currently cycle instead of opening the Electron picker; model/effort/mode selection restoration and full transcript interactions are unfinished. Multi-question and multi-select prompts, multiple simultaneous approvals, and complete error/retry handling remain. Terminal and scratchpad panes are preserved in saved layout but are not rendered. History and Studio data use the Rune data directory, which is currently separate from Electron's data.
+
+Do not treat this document as a parity sign-off. Verify with the actual Electron app and a live provider before claiming Studio is finished.
