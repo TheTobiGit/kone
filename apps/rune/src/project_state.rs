@@ -29,6 +29,11 @@ pub struct ProjectSession {
     pub added: i64,
     pub removed: i64,
     pub tokens: i64,
+    pub cost: Option<f64>,
+    pub model: String,
+    pub agent_name: String,
+    pub avatar_svg: String,
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug)]
@@ -37,6 +42,7 @@ enum Pending {
     Overview(String),
     Sessions(String),
     HomeSessions(String),
+    SessionAction(String),
 }
 
 #[derive(Default)]
@@ -47,6 +53,9 @@ pub struct ProjectState {
     pub overview: Value,
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
+    pub metric_cost: bool,
+    pub hovered_session: Option<String>,
+    pub delete_hold: Option<std::time::Instant>,
     pending: HashMap<u64, Pending>,
 }
 
@@ -150,6 +159,19 @@ impl AppState {
         }
     }
 
+    pub fn session_action(&mut self, path: String, id: String, action: &str, pinned: bool) {
+        let (method, params) = match action {
+            "pin" => (
+                "history.setPinned",
+                json!({"threadId": id, "pinned": !pinned}),
+            ),
+            "delete" => ("history.delete", json!({"threadId": id})),
+            "archive" => ("history.archive", json!({"threadId": id, "archived": true})),
+            _ => return,
+        };
+        self.project_request(method, params, Pending::SessionAction(path));
+    }
+
     pub fn open_home_session(&mut self, path: String, id: String) {
         self.open_project(path);
         self.open_recent_session(id);
@@ -239,6 +261,33 @@ impl AppState {
                     }
                 }
             }
+            Pending::SessionAction(path) => {
+                if result.get("ok").and_then(Value::as_bool) == Some(false) {
+                    self.studio.error = Some(
+                        result["reason"]
+                            .as_str()
+                            .unwrap_or("Could not update conversation")
+                            .to_owned(),
+                    );
+                    return true;
+                }
+                self.project_request(
+                    "history.list",
+                    json!({"projectPath": path}),
+                    Pending::HomeSessions(path.clone()),
+                );
+                if self
+                    .selected_project
+                    .and_then(|i| self.projects.get(i))
+                    .is_some_and(|p| p.path == path)
+                {
+                    self.project_request(
+                        "history.list",
+                        json!({"projectPath": path}),
+                        Pending::Sessions(path),
+                    );
+                }
+            }
             Pending::Overview(path) => {
                 if self
                     .selected_project
@@ -271,7 +320,7 @@ impl AppState {
     }
 }
 
-fn parse_sessions(result: &Value, path: &str) -> Vec<ProjectSession> {
+pub(crate) fn parse_sessions(result: &Value, path: &str) -> Vec<ProjectSession> {
     let mut sessions: Vec<_> = result
         .as_array()
         .into_iter()
@@ -296,6 +345,11 @@ fn parse_sessions(result: &Value, path: &str) -> Vec<ProjectSession> {
                 added: v["added"].as_i64().unwrap_or(0),
                 removed: v["removed"].as_i64().unwrap_or(0),
                 tokens: v["tokens"].as_i64().unwrap_or(0),
+                cost: v["costUsd"].as_f64().filter(|n| n.is_finite() && *n >= 0.0),
+                model: v["model"].as_str().unwrap_or("").into(),
+                agent_name: v["identity"]["name"].as_str().unwrap_or("Guest").into(),
+                avatar_svg: v["identity"]["svg"].as_str().unwrap_or("").into(),
+                avatar: v["identity"]["avatar"].as_str().map(str::to_owned),
             })
         })
         .collect();
@@ -312,6 +366,7 @@ fn sort_sessions(sessions: &mut [ProjectSession]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

@@ -192,11 +192,13 @@ impl AppState {
         if self.studio.thread_id.is_empty() {
             return;
         }
-        let mut next = StudioState::default();
-        next.providers = self.studio.providers.clone();
-        next.provider_index = self.studio.provider_index;
-        next.models = self.studio.models.clone();
-        next.model_index = self.studio.model_index;
+        let next = StudioState {
+            providers: self.studio.providers.clone(),
+            provider_index: self.studio.provider_index,
+            models: self.studio.models.clone(),
+            model_index: self.studio.model_index,
+            ..Default::default()
+        };
         let mut previous = std::mem::replace(&mut self.studio, next);
         previous.draft = std::mem::take(&mut self.composer);
         self.studio_threads
@@ -228,7 +230,31 @@ impl AppState {
     }
 
     pub fn enter_studio(&mut self) {
+        let opening = self.page != Page::Studio;
         self.page = Page::Studio;
+        let saved_paths: Vec<String> = self.studio_layout["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["projectPath"].as_str().map(str::to_owned))
+            .collect();
+        for path in saved_paths {
+            if !self.projects.iter().any(|project| project.path == path) {
+                let name = path
+                    .rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or(&path)
+                    .to_owned();
+                self.projects.push(Project { name, path });
+            }
+        }
+        if self.selected_project.is_none() {
+            self.selected_project = self.studio_layout["focusedRow"].as_str().and_then(|path| {
+                self.projects
+                    .iter()
+                    .position(|project| project.path == path)
+            });
+        }
         let Some(path) = self
             .selected_project
             .and_then(|i| self.projects.get(i))
@@ -236,6 +262,9 @@ impl AppState {
         else {
             return;
         };
+        if opening {
+            self.studio_scroll_row = Some(path.clone());
+        }
         if self.studio.project_path != path {
             self.park_studio_thread();
             self.studio.project_path = path.clone();
@@ -309,7 +338,23 @@ impl AppState {
     }
 
     pub fn studio_key(s: &mut Self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
-        if s.page != Page::Studio || !event.mods.cmd {
+        if s.page != Page::Studio {
+            return false;
+        }
+        if event.key == rune::Key::Escape {
+            if s.studio.picker_open || s.studio.mode_picker_open || s.studio.effort_picker_open {
+                s.studio.picker_open = false;
+                s.studio.mode_picker_open = false;
+                s.studio.effort_picker_open = false;
+                return true;
+            }
+            if s.studio.composer_open {
+                s.studio.composer_open = false;
+                s.composer.focused = false;
+                return true;
+            }
+        }
+        if !event.mods.cmd {
             return false;
         }
         if event.key == rune::Key::Command('n') && !event.mods.shift && !event.mods.alt {
@@ -350,11 +395,11 @@ impl AppState {
                     .as_str()
                     .map(str::to_owned)
             });
-            if let Some(path) = path {
-                if let Some(index) = s.projects.iter().position(|p| p.path == path) {
-                    s.select_studio_project(index);
-                    tx.scroll_into_view(format!("studio-row-slot-{path}"));
-                }
+            if let Some(path) = path
+                && let Some(index) = s.projects.iter().position(|p| p.path == path)
+            {
+                s.select_studio_project(index);
+                tx.scroll_into_view(format!("studio-row-slot-{path}"));
             }
             return true;
         }
@@ -394,17 +439,16 @@ impl AppState {
         if let Some(row) = self.studio_layout["rows"]
             .as_array_mut()
             .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            && let Some(panes) = row["panes"].as_array_mut()
         {
-            if let Some(panes) = row["panes"].as_array_mut() {
-                let index = panes.iter().position(|p| p["anchor"]["threadId"] == thread);
-                if let Some(index) = index {
-                    panes.remove(index);
-                }
-                next = panes
-                    .get(index.unwrap_or(0).min(panes.len().saturating_sub(1)))
-                    .and_then(|p| p["anchor"]["threadId"].as_str())
-                    .map(str::to_owned);
+            let index = panes.iter().position(|p| p["anchor"]["threadId"] == thread);
+            if let Some(index) = index {
+                panes.remove(index);
             }
+            next = panes
+                .get(index.unwrap_or(0).min(panes.len().saturating_sub(1)))
+                .and_then(|p| p["anchor"]["threadId"].as_str())
+                .map(str::to_owned);
         }
         if self.studio.thread_id == thread {
             if let Some(next) = next {
@@ -424,15 +468,12 @@ impl AppState {
             .as_array_mut()
             .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
             .and_then(|r| r["panes"].as_array_mut())
-        {
-            if let Some(index) = panes
+            && let Some(index) = panes
                 .iter()
                 .position(|p| p["anchor"]["threadId"] == self.studio.thread_id)
-            {
-                if let Some(target) = index.checked_add_signed(delta).filter(|i| *i < panes.len()) {
-                    panes.swap(index, target);
-                }
-            }
+            && let Some(target) = index.checked_add_signed(delta).filter(|i| *i < panes.len())
+        {
+            panes.swap(index, target);
         }
         self.persist_studio_layout();
     }
@@ -457,10 +498,9 @@ impl AppState {
             .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
             .and_then(|r| r["panes"].as_array_mut())
             .and_then(|panes| panes.iter_mut().find(|p| p["anchor"]["threadId"] == thread))
+            && !pane["zen"].as_bool().unwrap_or(false)
         {
-            if !pane["zen"].as_bool().unwrap_or(false) {
-                pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
-            }
+            pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
         }
         self.persist_studio_layout();
     }
@@ -510,6 +550,23 @@ impl AppState {
         self.studio.error = None;
         self.composer.clear();
         self.save_studio_layout();
+    }
+
+    pub fn insert_studio_thread(&mut self, at: usize) {
+        self.new_studio_thread();
+        let path = self.studio.project_path.clone();
+        if let Some(panes) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+            && let Some(index) = panes
+                .iter()
+                .position(|p| p["anchor"]["threadId"] == self.studio.thread_id)
+        {
+            let pane = panes.remove(index);
+            panes.insert(at.min(panes.len()), pane);
+            self.persist_studio_layout();
+        }
     }
 
     fn save_studio_layout(&mut self) {
@@ -759,11 +816,10 @@ impl AppState {
                 let result = &message["result"];
                 self.studio.resume = result["conversationId"].as_str().map(str::to_owned);
                 self.studio.restore_model = result["model"].as_str().map(str::to_owned);
-                if let Some(provider) = result["provider"].as_str() {
-                    if let Some(index) = self.studio.providers.iter().position(|p| p.id == provider)
-                    {
-                        self.select_provider(index);
-                    }
+                if let Some(provider) = result["provider"].as_str()
+                    && let Some(index) = self.studio.providers.iter().position(|p| p.id == provider)
+                {
+                    self.select_provider(index);
                 }
                 self.studio.items.clear();
                 for block in result["blocks"].as_array().into_iter().flatten() {
@@ -784,6 +840,27 @@ impl AppState {
                             });
                         }
                     }
+                }
+                return;
+            }
+            if self.launcher.completion_request_id == Some(id) {
+                self.launcher.completion_request_id = None;
+                if message.get("error").is_none() {
+                    crate::launcher::completion_completed(self, &message["result"]);
+                }
+                return;
+            }
+            if self.launcher.browser_request_id == Some(id) {
+                self.launcher.browser_request_id = None;
+                if let Some(error) = message.get("error") {
+                    crate::launcher::browser_failed(
+                        self,
+                        error["message"]
+                            .as_str()
+                            .unwrap_or("Directory listing failed"),
+                    );
+                } else {
+                    crate::launcher::browser_completed(self, &message["result"]);
                 }
                 return;
             }
@@ -892,10 +969,10 @@ impl AppState {
                         })
                     })
                     .collect();
-                if let Some(model) = self.studio.restore_model.take() {
-                    if let Some(index) = self.studio.models.iter().position(|m| m.id == model) {
-                        self.studio.model_index = index;
-                    }
+                if let Some(model) = self.studio.restore_model.take()
+                    && let Some(index) = self.studio.models.iter().position(|m| m.id == model)
+                {
+                    self.studio.model_index = index;
                 }
             } else if self.studio.start_request == Some(id) {
                 self.studio.start_request = None;
@@ -923,6 +1000,10 @@ impl AppState {
                 state.pending_send = None;
                 state.start_request = None;
                 state.send_request = None;
+            }
+            self.launcher.completion_request_id = None;
+            if self.launcher.browser_request_id.take().is_some() {
+                crate::launcher::browser_failed(self, &detail);
             }
             if self.launcher.request_id.is_some() {
                 crate::launcher::failed(self, &detail);
@@ -1005,6 +1086,7 @@ impl AppState {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1065,6 +1147,29 @@ mod tests {
         assert!(!s.studio.busy && s.studio.pending_send.is_none());
         assert!(!s.studio_threads["b"].busy && s.studio_threads["b"].pending_send.is_none());
         assert_eq!(s.studio_threads["b"].error.as_deref(), Some("pipe closed"));
+    }
+
+    #[test]
+    fn reorder_and_maximize_preserve_width_and_pane_identity() {
+        let mut s = AppState {
+            studio_layout_ready: true,
+            ..Default::default()
+        };
+        s.studio.project_path = "/demo".into();
+        s.studio.thread_id = "a".into();
+        s.studio_layout = json!({"version":2,"rows":[{"projectPath":"/demo","panes":[
+            {"id":"a", "anchor":{"threadId":"a"}, "width":1},
+            {"id":"b", "anchor":{"threadId":"b"}, "width":0}
+        ]}]});
+        s.move_studio_thread(1);
+        assert_eq!(s.studio_layout["rows"][0]["panes"][1]["id"], "a");
+        s.toggle_studio_zen("a");
+        s.cycle_studio_width("a");
+        assert_eq!(s.studio_layout["rows"][0]["panes"][1]["width"], 1);
+        assert_eq!(s.studio_layout["rows"][0]["panes"][1]["zen"], true);
+        s.toggle_studio_zen("a");
+        s.cycle_studio_width("a");
+        assert_eq!(s.studio_layout["rows"][0]["panes"][1]["width"], 2);
     }
 
     #[test]

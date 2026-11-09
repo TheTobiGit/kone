@@ -1,3 +1,13 @@
+static FOLDER_META: Icon = Icon {
+    name: "Folder01Icon",
+    view: 24.0,
+    body: r#"<path d="M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static DELETE: Icon = Icon {
+    name: "Delete02Icon",
+    view: 24.0,
+    body: r#"<path d="M19.5 5.5L18.8803 15.5251C18.7219 18.0864 18.6428 19.3671 18.0008 20.2879C17.6833 20.7431 17.2747 21.1273 16.8007 21.416C15.8421 22 14.559 22 11.9927 22C9.42312 22 8.1383 22 7.17905 21.4149C6.7048 21.1257 6.296 20.7408 5.97868 20.2848C5.33688 19.3626 5.25945 18.0801 5.10461 15.5152L4.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 5.5H21M16.0557 5.5L15.3731 4.09173C14.9196 3.15626 14.6928 2.68852 14.3017 2.39681C14.215 2.3321 14.1231 2.27454 14.027 2.2247C13.5939 2 13.0741 2 12.0345 2C10.9688 2 10.436 2 9.99568 2.23412C9.8981 2.28601 9.80498 2.3459 9.71729 2.41317C9.32164 2.7167 9.10063 3.20155 8.65861 4.17126L8.05292 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 16.5L9.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 16.5L14.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 use super::empty::{SEARCH, SETTINGS, actions, wordmark};
 use crate::{
     project_state::{ProjectSession, ProjectSort},
@@ -6,11 +16,6 @@ use crate::{
 };
 use rune::{Cx, El, Family, Icon, TextStyle, col, el, icon, row, text, text_input};
 
-static CHAT: Icon = Icon {
-    name: "session-chat",
-    view: 24.0,
-    body: r#"<path d="M4 5h16v12H9l-5 3V5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
-};
 static CLOCK: Icon = Icon {
     name: "session-clock",
     view: 24.0,
@@ -135,7 +140,7 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
             (
                 10.0,
                 if del > 0 {
-                    rune::color::hex("#e86b79").unwrap()
+                    rune::color::hex("#e11d48").unwrap()
                 } else {
                     t.faint
                 },
@@ -143,7 +148,7 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
             (
                 13.0,
                 if add > 0 {
-                    rune::color::hex("#35ae83").unwrap()
+                    rune::color::hex("#059669").unwrap()
                 } else {
                     t.faint
                 },
@@ -334,7 +339,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .pt(96.0)
                 .child(
                     el().w(820.0)
-                        .child(sessions(&s.project_data.home_sessions, t, true)),
+                        .child(sessions(s, &s.project_data.home_sessions, t, true)),
                 ),
         )
 }
@@ -344,15 +349,35 @@ fn time_ago(timestamp: i64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    let seconds = ((now - timestamp).max(0)) / 1000;
-    if seconds < 60 {
-        "now".into()
-    } else if seconds < 3600 {
-        format!("{}m ago", seconds / 60)
-    } else if seconds < 86400 {
-        format!("{}h ago", seconds / 3600)
+    time_ago_at(timestamp, now)
+}
+
+fn time_ago_at(timestamp: i64, now: i64) -> String {
+    let seconds = (now - timestamp).max(0) / 1000;
+    if seconds < 45 {
+        return "just now".into();
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{days}d ago");
+    }
+    let weeks = days / 7;
+    if weeks < 5 {
+        return format!("{weeks}w ago");
+    }
+    let months = days / 30;
+    if months < 12 {
+        format!("{months}mo ago")
     } else {
-        format!("{}d ago", seconds / 86400)
+        format!("{}y ago", days / 365)
     }
 }
 
@@ -361,14 +386,55 @@ fn token_count(tokens: i64) -> String {
         let value = format!("{:.2}", tokens as f64 / 1_000_000.0);
         format!("{}M", value.trim_end_matches('0').trim_end_matches('.'))
     } else if tokens >= 1000 {
-        format!("{}K", tokens / 1000)
+        let value = tokens as f64 / 1000.0;
+        if value >= 100.0 {
+            format!("{value:.0}K")
+        } else {
+            let value = format!("{value:.1}");
+            format!("{}K", value.strip_suffix(".0").unwrap_or(&value))
+        }
     } else {
         tokens.to_string()
     }
 }
 
-pub(super) fn sessions(sessions: &[ProjectSession], t: Palette, home: bool) -> El {
-    let mut list = col().w_full().gap(16.0);
+fn session_cost(session: &ProjectSession) -> f64 {
+    if let Some(cost) = session.cost {
+        return cost;
+    }
+    let model = session.model.to_lowercase();
+    let rate = if model.contains("opus") {
+        24.0
+    } else if model.contains("haiku") {
+        1.4
+    } else if model.contains("sonnet") {
+        4.8
+    } else if model.contains("flash") {
+        0.2
+    } else if model.contains("pro")
+        && (model.contains("gemini") || session.provider == "antigravity")
+    {
+        1.5
+    } else if (model.contains("mini") && !model.contains("gemini"))
+        || model.contains("deepseek")
+        || model.contains("r1")
+    {
+        0.45
+    } else if model.contains("o1") || model.contains("o3") {
+        6.0
+    } else if session.provider == "claudeAgent" {
+        4.8
+    } else if session.provider == "antigravity" {
+        1.5
+    } else {
+        3.5
+    };
+    session.tokens.max(0) as f64 / 1_000_000.0 * rate
+}
+
+pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, home: bool) -> El {
+    let mut list = col().w_full().gap(40.0);
+    let mut first = true;
     for (pinned, label) in [(true, "PINNED"), (false, "RECENT")] {
         let group: Vec<_> = sessions
             .iter()
@@ -377,42 +443,82 @@ pub(super) fn sessions(sessions: &[ProjectSession], t: Palette, home: bool) -> E
         if group.is_empty() {
             continue;
         }
-        list = list.child(
+        let tint = if pinned { t.folder } else { t.faint };
+        let mut head = row().w_full().center_y().justify_between().child(
             row()
                 .center_y()
-                .gap(8.0)
-                .child(icon(if pinned { &PIN } else { &CLOCK }, 12.0).color(t.muted))
+                .gap(7.0)
+                .child(icon(if pinned { &PIN } else { &CLOCK }, 11.0).color(tint))
                 .child(
                     text(label)
                         .font(
-                            TextStyle::new(10.0, 500.0)
+                            TextStyle::new(10.0, 400.0)
                                 .family(Family::Mono)
-                                .tracking(1.2),
+                                .tracking(1.4),
                         )
-                        .color(if pinned { t.folder } else { t.muted }),
+                        .color(tint),
                 ),
         );
+        if first {
+            let mut toggle = row()
+                .center_y()
+                .gap(2.0)
+                .padding(2.0)
+                .radius(8.0)
+                .fill(t.hover);
+            for (label, cost) in [("Tokens", false), ("Cost", true)] {
+                let selected = s.project_data.metric_cost == cost;
+                let mut button = el().px(7.0).py(2.0).radius(6.0);
+                if selected {
+                    button = button.fill(t.ground);
+                }
+                toggle = toggle.child(
+                    button
+                        .child(
+                            text(label)
+                                .font(
+                                    TextStyle::new(10.0, 500.0)
+                                        .family(Family::Mono)
+                                        .tracking(0.4),
+                                )
+                                .color(if selected { t.ink } else { t.muted }),
+                        )
+                        .on_press(move |s: &mut AppState| s.project_data.metric_cost = cost),
+                );
+            }
+            head = head.child(toggle);
+            first = false;
+        }
+        let mut rows = col().w_full().gap(22.0);
         for session in group {
             let id = session.id.clone();
             let path = session.project_path.clone();
+            let hovered = s.project_data.hovered_session.as_deref() == Some(id.as_str());
             let mut metadata = row().gap(10.0).center_y();
             let mono = TextStyle::new(11.0, 400.0).family(Family::Mono);
-            if !session.provider.is_empty() {
-                metadata = metadata.child(text(session.provider.clone()).font(mono).color(t.muted));
-            }
-            if home {
-                if let Some(project) = std::path::Path::new(&session.project_path)
+            metadata = metadata.child(
+                text(session.agent_name.clone())
+                    .font(mono)
+                    .color(t.ink_soft),
+            );
+            if home
+                && let Some(project) = std::path::Path::new(&path)
                     .file_name()
                     .and_then(|p| p.to_str())
-                {
-                    metadata = metadata.child(text(project.to_owned()).font(mono).color(t.muted));
-                }
+            {
+                metadata = metadata.child(
+                    row()
+                        .center_y()
+                        .gap(5.0)
+                        .child(icon(&FOLDER_META, 12.0).color(t.ink_soft))
+                        .child(text(project.to_owned()).font(mono).color(t.ink_soft)),
+                );
             }
             if let Some(branch) = &session.branch {
                 metadata = metadata.child(
                     row()
                         .center_y()
-                        .gap(4.0)
+                        .gap(5.0)
                         .child(icon(&BRANCH, 12.0).color(t.muted))
                         .child(text(branch.clone()).font(mono).color(t.muted)),
                 );
@@ -421,71 +527,284 @@ pub(super) fn sessions(sessions: &[ProjectSession], t: Palette, home: bool) -> E
                 metadata = metadata.child(
                     text(format!("+{}", session.added))
                         .font(mono)
-                        .color(rune::color::hex("#35ae83").unwrap()),
+                        .color(rune::color::hex("#059669").unwrap()),
                 );
             }
             if session.removed > 0 {
                 metadata = metadata.child(
                     text(format!("−{}", session.removed))
                         .font(mono)
-                        .color(rune::color::hex("#e86b79").unwrap()),
+                        .color(rune::color::hex("#e11d48").unwrap()),
                 );
             }
+            if session.added == 0 && session.removed == 0 && !session.model.is_empty() {
+                metadata = metadata.child(text(session.model.clone()).font(mono).color(t.muted));
+            }
             metadata = metadata.child(text(time_ago(session.updated_at)).font(mono).color(t.faint));
-            let mut item = row()
-                .w_full()
-                .h(48.0)
-                .gap(14.0)
-                .center_y()
-                .radius(10.0)
-                .hover(t.hover)
-                .child(
-                    el().size(36.0, 36.0)
-                        .radius(18.0)
-                        .fill(t.hover)
-                        .center()
-                        .child(icon(&CHAT, 16.0).color(t.muted)),
-                )
-                .child(
-                    col()
-                        .grow(1.0)
-                        .gap(4.0)
+            let mut trail = row().w(180.0).h(40.0).center_y().justify_end();
+            if hovered {
+                for (label, action) in [
+                    (if session.pinned { "Unpin" } else { "Pin" }, "pin"),
+                    ("Archive", "archive"),
+                ] {
+                    let action_id = id.clone();
+                    let action_path = path.clone();
+                    let pinned = session.pinned;
+                    trail = trail.child(
+                        el().px(6.0)
+                            .py(3.0)
+                            .radius(7.0)
+                            .hover(t.hover)
+                            .child(text(label).font(TextStyle::new(11.0, 500.0)).color(t.muted))
+                            .on_press(move |s: &mut AppState| {
+                                s.session_action(
+                                    action_path.clone(),
+                                    action_id.clone(),
+                                    action,
+                                    pinned,
+                                )
+                            }),
+                    );
+                }
+                let delete_id = id.clone();
+                let delete_path = path.clone();
+                trail = trail.child(
+                    el().px(6.0)
+                        .py(3.0)
+                        .radius(7.0)
+                        .hover(t.hover)
                         .child(
-                            text(session.title.clone())
-                                .font(TextStyle::new(16.0, 500.0))
-                                .color(t.ink_soft)
-                                .truncate(),
+                            row()
+                                .center_y()
+                                .gap(5.0)
+                                .child(icon(&DELETE, 12.0).color(t.muted))
+                                .child(
+                                    text("Delete")
+                                        .font(TextStyle::new(11.0, 500.0))
+                                        .color(t.muted),
+                                ),
                         )
-                        .child(metadata),
+                        .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
+                            rune::Phase::Down => {
+                                s.project_data.delete_hold = Some(std::time::Instant::now())
+                            }
+                            rune::Phase::Up => {
+                                let held = s.project_data.delete_hold.take().is_some_and(|start| {
+                                    start.elapsed() >= std::time::Duration::from_millis(850)
+                                });
+                                if held
+                                    && !drag.cancelled()
+                                    && drag.x >= 0.0
+                                    && drag.y >= 0.0
+                                    && drag.x <= drag.w
+                                    && drag.y <= drag.h
+                                {
+                                    s.session_action(
+                                        delete_path.clone(),
+                                        delete_id.clone(),
+                                        "delete",
+                                        false,
+                                    );
+                                }
+                            }
+                            rune::Phase::Move => {}
+                        }),
                 );
-            if session.tokens > 0 {
-                item = item.child(
-                    col()
-                        .gap(2.0)
-                        .child(
-                            text(token_count(session.tokens))
-                                .font(TextStyle::new(23.0, 400.0).family(Family::Mono))
-                                .color(t.ink_soft),
-                        )
-                        .child(
-                            text("TOKENS")
+            } else {
+                let cost = session_cost(session);
+                let value = if s.project_data.metric_cost && cost > 0.0 {
+                    Some(if cost < 0.01 {
+                        "<$0.01".to_owned()
+                    } else {
+                        format!("${cost:.2}")
+                    })
+                } else if !s.project_data.metric_cost && session.tokens > 0 {
+                    Some(token_count(session.tokens))
+                } else {
+                    None
+                };
+                if let Some(value) = value {
+                    trail = trail.child(
+                        col()
+                            .child(
+                                text(value)
+                                    .font(
+                                        TextStyle::new(22.0, 400.0)
+                                            .family(Family::Mono)
+                                            .tracking(-0.44),
+                                    )
+                                    .color(t.ink),
+                            )
+                            .child(
+                                text(if s.project_data.metric_cost {
+                                    "USD"
+                                } else {
+                                    "TOKENS"
+                                })
                                 .font(
                                     TextStyle::new(9.0, 400.0)
                                         .family(Family::Mono)
-                                        .tracking(1.0),
+                                        .tracking(0.9),
                                 )
                                 .color(t.faint),
-                        ),
-                );
-            }
-            list = list.child(item.on_press(move |s: &mut AppState| {
-                if home {
-                    s.open_home_session(path.clone(), id.clone())
-                } else {
-                    s.open_recent_session(id.clone())
+                            ),
+                    );
                 }
-            }));
+            }
+            let hover_id = id.clone();
+            rows = rows.child(
+                row()
+                    .w_full()
+                    .gap(14.0)
+                    .center_y()
+                    .child(identity_lead(
+                        &session.avatar_svg,
+                        session.avatar.as_deref(),
+                        &session.provider,
+                        t,
+                        hovered,
+                    ))
+                    .child(
+                        col()
+                            .grow(1.0)
+                            .gap(6.0)
+                            .child(
+                                text(session.title.clone())
+                                    .font(TextStyle::new(16.0, 600.0).tracking(-0.16))
+                                    .color(if hovered {
+                                        t.ink
+                                    } else if t.dark {
+                                        t.muted
+                                    } else {
+                                        t.ink_soft
+                                    })
+                                    .truncate(),
+                            )
+                            .child(metadata),
+                    )
+                    .child(trail)
+                    .on_hover_change(move |s: &mut AppState, over, _| {
+                        if over {
+                            s.project_data.hovered_session = Some(hover_id.clone());
+                        } else if s.project_data.hovered_session.as_deref()
+                            == Some(hover_id.as_str())
+                        {
+                            s.project_data.hovered_session = None;
+                        }
+                    })
+                    .on_press(move |s: &mut AppState| {
+                        if home {
+                            s.open_home_session(path.clone(), id.clone())
+                        } else {
+                            s.open_recent_session(id.clone())
+                        }
+                    }),
+            );
         }
+        list = list.child(col().w_full().gap(14.0).child(head).child(rows));
     }
     list
+}
+
+static PROVIDER_CLAUDE: Icon = Icon {
+    name: "provider-claude",
+    view: 256.0,
+    body: r#"<path d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z" fill="currentColor" fill-rule="evenodd"/>"#,
+};
+
+static PROVIDER_GPT: Icon = Icon {
+    name: "provider-gpt",
+    view: 24.0,
+    body: r#"<path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.911 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.182a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.998-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.142-.08 4.778-2.758a.795.795 0 0 0 .393-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.495 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.677l5.815 3.354-2.02 1.169a.076.076 0 0 1-.071 0l-4.83-2.787A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.856-5.833-3.388L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.666zm2.01-3.023-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.062l4.83-2.786a4.5 4.5 0 0 1 6.68 4.66zM8.307 12.863l-2.02-1.164a.08.08 0 0 1-.038-.057V6.074a4.5 4.5 0 0 1 7.376-3.454l-.142.08L8.704 5.46a.795.795 0 0 0-.393.68zm1.098-2.366 2.602-1.5 2.607 1.5v3l-2.597 1.5-2.607-1.5z" fill="currentColor" fill-rule="evenodd"/>"#,
+};
+
+static PROVIDER_CURSOR: Icon = Icon {
+    name: "provider-cursor",
+    view: 24.0,
+    body: r#"<path d="M22.07 5.7L12.5 0.18C12.19 0 11.81 0 11.5 0.18L1.93 5.7C1.67 5.85 1.51 6.13 1.51 6.43V17.57C1.51 17.87 1.67 18.15 1.93 18.3L11.5 23.82C11.81 24 12.19 24 12.5 23.82L22.07 18.3C22.33 18.15 22.49 17.87 22.49 17.57V6.43C22.49 6.13 22.33 5.85 22.07 5.7H22.07ZM21.47 6.87L12.23 22.88C12.16 22.99 12 22.94 12 22.82V12.34C12 12.13 11.89 11.94 11.71 11.83L2.63 6.59C2.52 6.53 2.57 6.36 2.69 6.36H21.17C21.44 6.36 21.6 6.65 21.47 6.88H21.47Z" fill="currentColor" fill-rule="evenodd"/>"#,
+};
+
+static PROVIDER_OPENCODE: Icon = Icon {
+    name: "provider-opencode",
+    view: 24.0,
+    body: r#"<path d="M22 24H2V0h20zM17 4.8H7v14.4h10z" fill="currentColor" fill-rule="evenodd"/>"#,
+};
+
+pub(super) fn identity_lead(
+    svg: &str,
+    avatar: Option<&str>,
+    brand: &str,
+    t: Palette,
+    hovered: bool,
+) -> El {
+    use std::sync::{Arc, OnceLock};
+    static IMAGES: OnceLock<rune::ImageCache> = OnceLock::new();
+    let cache = IMAGES.get_or_init(|| rune::ImageCache::new(Arc::new(|| {})));
+    let avatar_image = avatar.and_then(|src| {
+        use base64::Engine;
+        if src == "/agents/kone.jpg" {
+            Some(cache.load(include_bytes!("../../../web/public/agents/kone.jpg").as_slice()))
+        } else {
+            let (header, data) = src.strip_prefix("data:")?.split_once(',')?;
+            let mime = header.strip_suffix(";base64")?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .ok()?;
+            Some(cache.load_mime(bytes, mime, 36.0, 2.0))
+        }
+    });
+    let image = avatar_image
+        .filter(|image| image.wait().is_ok())
+        .unwrap_or_else(|| {
+            let fallback = cache.svg(Arc::<[u8]>::from(svg.as_bytes()), 36.0, 2.0);
+            let _ = fallback.wait();
+            fallback
+        });
+    let (mark, color) = match brand {
+        "claude" | "claudeAgent" => (&PROVIDER_CLAUDE, rune::color::hex("#d97757").unwrap()),
+        "codex" => (&PROVIDER_GPT, t.ink),
+        "gpt" | "openai" => (&PROVIDER_GPT, t.ink),
+        "cursor" => (&PROVIDER_CURSOR, t.ink),
+        "opencode" => (&PROVIDER_OPENCODE, t.ink),
+        _ => (&PROVIDER_DOT, t.ink),
+    };
+    let (width, badge_size, badge_x, badge_y, icon_size, badge_color) = if hovered {
+        (78.0, 36.0, 42.0, 0.0, 20.0, mix_srgb(t.ground, t.ink, 0.06))
+    } else {
+        (36.0, 21.8, 20.1, 20.1, 12.7, t.ground)
+    };
+    el().size(width, 36.0)
+        .child(
+            el().size(36.0, 36.0)
+                .radius(18.0)
+                .pixels_fit(image.pixels(), rune::SurfaceFit::Fill)
+                .absolute(0.0, 0.0),
+        )
+        .child(
+            el().size(badge_size, badge_size)
+                .radius(badge_size / 2.0)
+                .fill(badge_color)
+                .center()
+                .absolute(badge_x, badge_y)
+                .child(icon(mark, icon_size).color(color)),
+        )
+}
+
+static PROVIDER_DOT: Icon = Icon {
+    name: "provider-dot",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="4.5" fill="currentColor"/>"#,
+};
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    #[test]
+    fn formats_source_time_and_tokens() {
+        assert_eq!(time_ago_at(0, 44_000), "just now");
+        assert_eq!(time_ago_at(0, 45_000), "0m ago");
+        assert_eq!(time_ago_at(0, 8 * 86_400_000), "1w ago");
+        assert_eq!(token_count(12_400), "12.4K");
+        assert_eq!(token_count(1_240_000), "1.24M");
+    }
 }

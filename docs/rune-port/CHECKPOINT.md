@@ -31,7 +31,29 @@ Valid source and native captures in `/tmp/kone-rune-parity`. Electron/Vue refere
 
 A major folder-color discrepancy was fixed by replacing linear-light `Color::mix` with `theme::mix_srgb` for CSS-authored `color-mix(in srgb,...)` stops. Do not undo this. Exact visual parity has NOT been achieved/signed off: source session avatars/rows, Studio composer/orb/row tiling and advanced controls, launcher motion/scoops/browser behavior still being refined.
 
-## Active refinement ownership
+## State at handoff (Codex usage limit hit, all contractors withdrawn)
+
+Green at this commit: `cargo fmt --check`, `cargo clippy -p kone-rune --all-targets -D warnings`, 18 native tests, release build, sidecar build + `tsc`, 4 sidecar node integration tests, 6 bun tests (identity, protocol), oxlint on sidecar.
+
+Landed since the last checkpoint:
+- Studio (Seth): every persisted project row renders and the saved focused row is restored; row reorder, pane width and maximize persist; provider mark, width/maximize controls and composer control order fixed.
+- Projects/overview (Noah): `review.rs` fixtures (`--scene projects-review|overview-review`) with source-generated Dicebear guest faces (`sidecar/src/identity.ts`), session rows with identity, provider mark, metadata and the cost/tokens switch.
+- Launcher (Mira): directory listing routed by request id off the UI thread; closing or navigating again invalidates stale replies; per-request clone cancellation tested with two concurrent sidecar requests.
+- Sidecar (root): `history.delete` with worktree cleanup; zod `protocol.ts` validates agent.start/send/steer and studio.save; frame limit raised to 64 MiB.
+- CodeGolf art (Ezra): `art/codegolf.rs` + `.wgsl` compiles and is in the module tree but is NOT yet drawn by Studio (`#[allow(dead_code)]`). API: `slot(mark, focused_and_visible, color)`, `CodeGolf::begin_frame(device_key, dt, active)`, `CodeGolf::draw(device, queue, pass, site)`; pipelines keyed by (mark, format), so Studio must hand out unique marks per visible slot; colour is sRGB with alpha.
+
+## Next steps (in order)
+
+1. Escape layering: in `main.rs::app_key`, call `AppState::studio_key` BEFORE the global Escape branch so Escape first collapses the composer/picker to the resting orb, and only then leaves Studio. Then add the composer/picker layer handling in `studio_key`.
+2. Add a `studio-solo-review` scene: one saved pane, `composer_open = false`, bundled provider/model fixture, to compare the resting orb and solo strip against `electron-studio-light.png`.
+3. Wire CodeGolf into Studio's empty-thread pane (unique mark per slot, active only when focused and visible) and drop the dead_code allow.
+4. Overview: the greeting and empty-state artwork still differ from Electron; sessions are close.
+5. Launcher: exact icons, scooped header/body band shapes, spring morph transitions, browser double-click/path completion.
+6. Regenerate captures (`target/debug/kone-rune --scene <name> --snap ... --size 1280x840 --theme light|dark`) and diff against `/tmp/kone-rune-parity/electron-*.png` (tmp is not durable: re-capture Electron with the Playwright snippet in this doc's history if gone).
+7. Rerun the full Bun suite and repackage the macOS bundle (`apps/rune/scripts/package-macos.sh`).
+8. Settings pane only after the user signs off on the four screens.
+
+## Last ownership split (all withdrawn; reuse when restarting workers)
 
 Seth: state.rs + ui/studio.rs (next pass all project rows, column movement/zen, exact composer/art).
 Noah: project_state.rs + projects/overview UI + review.rs fixtures and identity/session backend metadata.

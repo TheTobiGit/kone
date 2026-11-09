@@ -1,7 +1,11 @@
 mod bridge;
+#[allow(dead_code)]
+#[path = "art/codegolf.rs"]
+mod codegolf;
 mod launcher;
 mod plasma;
 mod project_state;
+mod review;
 mod state;
 mod theme;
 mod ui;
@@ -22,7 +26,7 @@ fn main() {
     let spec: AppSpec<AppState> = AppSpec {
         min_size: Some((960.0, 640.0)),
         fonts: FONTS,
-        setup: Some(AppState::setup),
+        setup: Some(app_setup),
         poll: Some(AppState::poll),
         on_key: Some(app_key),
         families: ("Geist", "Geist Mono"),
@@ -37,6 +41,8 @@ fn main() {
                 s.page = Page::Overview;
             }),
             ("studio-review", studio_review),
+            ("projects-review", |s| review::populate(s, Page::Projects)),
+            ("overview-review", |s| review::populate(s, Page::Overview)),
             ("studio", |s| {
                 s.example_project();
                 s.page = Page::Studio;
@@ -116,4 +122,11 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
         return true;
     }
     AppState::studio_key(s, event, tx)
+}
+
+fn app_setup(s: &mut AppState, wake: rune::Waker) {
+    if std::env::args().any(|arg| arg == "--scene" || arg.starts_with("--scene=")) {
+        return;
+    }
+    AppState::setup(s, wake);
 }

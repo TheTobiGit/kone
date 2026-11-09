@@ -1,24 +1,36 @@
 use crate::{state::AppState, theme::Palette};
 use rune::{
-    Cx, El, Family, Icon, ScrollSpec, TextEdit, TextStyle, Tx, col, el, icon, row, text, text_input,
+    Cx, El, Family, Icon, Key, ScrollSpec, Spring, TextEdit, TextStyle, Transition, Tx, col, el,
+    icon, row, text, text_input,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 static FOLDER: Icon = Icon {
     name: "launcher-folder",
     view: 24.0,
-    body: r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static FOLDER_ADD: Icon = Icon {
     name: "launcher-folder-add",
     view: 24.0,
-    body: r#"<path d="M20 11V9a2 2 0 0 0-2-2h-7L9 5H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8M18 14v7m-3.5-3.5h7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M13 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C21.9796 9.05942 21.9992 10.0588 22 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 13V21M22 17H14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static GITHUB: Icon = Icon {
     name: "launcher-github",
     view: 24.0,
-    body: r#"<path d="M9 21v-3c-4-.5-5-2.5-5-5 0-1.4.5-2.6 1.5-3.5C5 8 5 6.5 5.5 5c1.5 0 2.5.5 3.5 1.5a11 11 0 0 1 6 0C16 5.5 17 5 18.5 5c.5 1.5.5 3 0 4.5C19.5 10.4 20 11.6 20 13c0 2.5-1 4.5-5 5v3M9 20c-3 1-4-1-5-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M10 20.5675C6.57143 21.7248 3.71429 20.5675 2 17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 22V18.7579C10 18.1596 10.1839 17.6396 10.4804 17.1699C10.6838 16.8476 10.5445 16.3904 10.1771 16.2894C7.13394 15.4528 5 14.1077 5 9.64606C5 8.48611 5.38005 7.39556 6.04811 6.4464C6.21437 6.21018 6.29749 6.09208 6.31748 5.9851C6.33746 5.87813 6.30272 5.73852 6.23322 5.45932C5.95038 4.32292 5.96871 3.11619 6.39322 2.02823C6.39322 2.02823 7.27042 1.74242 9.26698 2.98969C9.72282 3.27447 9.95075 3.41686 10.1515 3.44871C10.3522 3.48056 10.6206 3.41384 11.1573 3.28041C11.8913 3.09795 12.6476 3 13.5 3C14.3524 3 15.1087 3.09795 15.8427 3.28041C16.3794 3.41384 16.6478 3.48056 16.8485 3.44871C17.0493 3.41686 17.2772 3.27447 17.733 2.98969C19.7296 1.74242 20.6068 2.02823 20.6068 2.02823C21.0313 3.11619 21.0496 4.32292 20.7668 5.45932C20.6973 5.73852 20.6625 5.87813 20.6825 5.9851C20.7025 6.09207 20.7856 6.21019 20.9519 6.4464C21.6199 7.39556 22 8.48611 22 9.64606C22 14.1077 19.8661 15.4528 16.8229 16.2894C16.4555 16.3904 16.3162 16.8476 16.5196 17.1699C16.8161 17.6396 17 18.1596 17 18.7579V22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ARROW_UP: Icon = Icon {
+    name: "launcher-arrow-up",
+    view: 24.0,
+    body: r#"<path d="M17.9998 15C17.9998 15 13.5809 9.00001 11.9998 9C10.4187 8.99999 5.99985 15 5.99985 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ARROW_BACK: Icon = Icon {
+    name: "launcher-arrow-back",
+    view: 24.0,
+    body: r#"<path d="M11 6H15.5C17.9853 6 20 8.01472 20 10.5C20 12.9853 17.9853 15 15.5 15H4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.99998 12C6.99998 12 4.00001 14.2095 4 15C3.99999 15.7906 7 18 7 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,6 +60,11 @@ pub struct LauncherState {
     path: TextEdit,
     entries: Vec<(String, String)>,
     browser_error: Option<String>,
+    pub browser_request_id: Option<u64>,
+    pub completion_request_id: Option<u64>,
+    completion_draft: String,
+    recent_descend: Option<(String, Instant)>,
+    current_path: String,
     remote: bool,
     repo_name: TextEdit,
     command: TextEdit,
@@ -72,6 +89,11 @@ impl Default for LauncherState {
             path: TextEdit::default(),
             entries: Vec::new(),
             browser_error: None,
+            browser_request_id: None,
+            completion_request_id: None,
+            completion_draft: String::new(),
+            recent_descend: None,
+            current_path: String::new(),
             remote: false,
             repo_name: TextEdit::default(),
             command: TextEdit::default(),
@@ -87,48 +109,18 @@ impl LauncherState {
         self.mode = Some(mode);
         self.error = None;
         self.view = View::Form;
-        if mode == LauncherMode::Open {
-            self.browse(self.parent.clone());
-        }
     }
     pub fn close(&mut self) {
         if self.busy {
             return;
         }
+        self.browser_request_id = None;
+        self.completion_request_id = None;
         if self.view != View::Form && self.mode != Some(LauncherMode::Open) {
             self.view = View::Form;
         } else {
             self.mode = None;
             self.error = None;
-        }
-    }
-    fn browse(&mut self, path: String) {
-        let expanded = expand_path(&path);
-        match std::fs::read_dir(&expanded) {
-            Ok(entries) => {
-                let mut folders: Vec<_> = entries
-                    .filter_map(Result::ok)
-                    .filter_map(|e| {
-                        if !e.file_type().ok()?.is_dir() {
-                            return None;
-                        }
-                        let name = e.file_name().to_string_lossy().into_owned();
-                        if name.starts_with('.') {
-                            return None;
-                        }
-                        Some((name, e.path().to_string_lossy().into_owned()))
-                    })
-                    .collect();
-                folders.sort_by_key(|(name, _)| name.to_lowercase());
-                self.path.text = expanded.to_string_lossy().into_owned();
-                self.entries = folders;
-                self.browser_error = None;
-                self.view = View::Browser;
-            }
-            Err(error) => {
-                self.browser_error = Some(format!("Can’t read this folder: {error}"));
-                self.view = View::Browser;
-            }
         }
     }
 }
@@ -191,10 +183,118 @@ pub fn remember(s: &mut AppState, path: String, name: String) {
 }
 pub fn open_folder(s: &mut AppState, _tx: &mut Tx) {
     s.launcher.open(LauncherMode::Open);
+    browse(s, s.launcher.parent.clone());
+}
+fn browse(s: &mut AppState, path: String) {
+    let path = expand_path(&path).to_string_lossy().into_owned();
+    s.launcher.view = View::Browser;
+    s.launcher.completion_request_id = None;
+    s.launcher.browser_error = None;
+    s.launcher.browser_request_id = s.request("projects.listDirectories", json!({"path": path}));
+    if s.launcher.browser_request_id.is_none() {
+        s.launcher.browser_error = Some("The project service is unavailable.".into());
+    }
+}
+fn complete_path(s: &mut AppState, draft: String) {
+    let expanded = expand_path(&draft);
+    let Some(parent) = expanded.parent() else {
+        return;
+    };
+    s.launcher.completion_draft = draft;
+    s.launcher.completion_request_id = s.request(
+        "projects.listDirectories",
+        json!({"path": parent.to_string_lossy()}),
+    );
+}
+pub fn completion_completed(s: &mut AppState, result: &Value) {
+    let draft = &s.launcher.completion_draft;
+    if s.launcher.path.text != *draft || s.launcher.view != View::Browser {
+        return;
+    }
+    let fragment = draft.rsplit('/').next().unwrap_or("");
+    if fragment.is_empty() {
+        return;
+    }
+    if let Some(name) = result["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["name"].as_str())
+        .find(|name| {
+            name.len() > fragment.len() && name.to_lowercase().starts_with(&fragment.to_lowercase())
+        })
+    {
+        let Some(suffix) = name.get(fragment.len()..) else {
+            return;
+        };
+        let completed = format!("{}{}", draft, suffix);
+        s.launcher.path.text = completed;
+        s.launcher.path.anchor = draft.len();
+        s.launcher.path.focus = s.launcher.path.text.len();
+    }
+}
+fn choose(s: &mut AppState, path: String) {
+    if path.is_empty() {
+        return;
+    }
+    s.launcher.browser_request_id = None;
+    s.launcher.completion_request_id = None;
+    if s.launcher.mode == Some(LauncherMode::Open) {
+        s.launcher.mode = None;
+        remember(s, path.clone(), folder_name(&path));
+    } else {
+        s.launcher.parent = path;
+        s.launcher.view = View::Form;
+    }
+}
+fn descend(s: &mut AppState, path: String) {
+    if s.launcher
+        .recent_descend
+        .as_ref()
+        .is_some_and(|(last, at)| *last == path && at.elapsed() < Duration::from_millis(500))
+    {
+        s.launcher.recent_descend = None;
+        choose(s, path);
+    } else {
+        s.launcher.recent_descend = Some((path.clone(), Instant::now()));
+        browse(s, path);
+    }
+}
+pub fn browser_completed(s: &mut AppState, result: &Value) {
+    let Some(path) = result["path"].as_str() else {
+        return;
+    };
+    s.launcher.current_path = path.to_owned();
+    s.launcher.path.text = display_path(path);
+    s.launcher.path.anchor = s.launcher.path.text.len();
+    s.launcher.path.focus = s.launcher.path.text.len();
+    s.launcher.entries = result["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry["name"].as_str()?.to_owned(),
+                entry["path"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    s.launcher.browser_error = None;
+}
+pub fn browser_failed(s: &mut AppState, message: &str) {
+    s.launcher.path.text = display_path(&s.launcher.current_path);
+    s.launcher.path.anchor = s.launcher.path.text.len();
+    s.launcher.path.focus = s.launcher.path.text.len();
+    s.launcher.browser_error = Some(format!("Can’t read this folder: {message}"));
 }
 pub fn completed(s: &mut AppState, result: &Value) {
     s.launcher.busy = false;
     s.launcher.request_id = None;
+    if s.launcher.cancelling {
+        s.launcher.cancelling = false;
+        s.launcher.mode = None;
+        return;
+    }
     if let (Some(path), Some(name)) = (result["path"].as_str(), result["name"].as_str()) {
         s.launcher.mode = None;
         remember(s, path.to_owned(), name.to_owned());
@@ -207,6 +307,7 @@ pub fn failed(s: &mut AppState, message: &str) {
     s.launcher.request_id = None;
     if s.launcher.cancelling {
         s.launcher.cancelling = false;
+        s.launcher.mode = None;
     } else {
         s.launcher.error = Some(message.to_owned());
     }
@@ -225,6 +326,9 @@ pub fn progress(s: &mut AppState, params: &Value) {
         .to_owned();
 }
 fn cancel(s: &mut AppState) {
+    if s.launcher.cancelling {
+        return;
+    }
     if s.launcher.busy && s.launcher.mode == Some(LauncherMode::Clone) {
         if let Some(id) = s.launcher.request_id {
             s.launcher.cancelling = true;
@@ -286,7 +390,7 @@ fn action(key: impl Into<String>, value: impl Into<String>, color: rune::Color) 
 }
 fn browser(s: &AppState, t: Palette) -> El {
     let embedded = s.launcher.mode != Some(LauncherMode::Open);
-    let current = s.launcher.path.text.clone();
+    let current = s.launcher.current_path.clone();
     let name = folder_name(&current);
     let header = row()
         .w_full()
@@ -296,18 +400,41 @@ fn browser(s: &AppState, t: Palette) -> El {
         .center_y()
         .fill(t.hover)
         .child(
-            text_input(&s.launcher.path, TextStyle::new(11.5, 450.0))
-                .key("launcher-path")
-                .label("Directory path")
-                .single_line()
-                .grow(1.0)
-                .h(24.0)
-                .color(t.muted)
-                .on_edit(|s: &mut AppState| &mut s.launcher.path)
-                .on_submit(|s: &mut AppState, _| {
-                    let p = s.launcher.path.text.clone();
-                    s.launcher.browse(p);
-                }),
+            text_input(
+                &s.launcher.path,
+                TextStyle::new(11.5, 450.0).family(Family::Mono),
+            )
+            .key("launcher-path")
+            .label("Directory path")
+            .single_line()
+            .grow(1.0)
+            .h(24.0)
+            .color(t.muted)
+            .on_edit(|s: &mut AppState| &mut s.launcher.path)
+            .on_key(|s: &mut AppState, event, _| {
+                if event.key == Key::Tab {
+                    if s.launcher.path.anchor != s.launcher.path.focus {
+                        s.launcher.path.anchor = s.launcher.path.focus;
+                    } else {
+                        complete_path(s, s.launcher.path.text.clone());
+                    }
+                    true
+                } else if let Key::Text(inserted) = &event.key {
+                    if s.launcher.path.anchor == s.launcher.path.focus
+                        && s.launcher.path.focus == s.launcher.path.text.len()
+                        && !inserted.contains('/')
+                    {
+                        complete_path(s, format!("{}{}", s.launcher.path.text, inserted));
+                    }
+                    false
+                } else {
+                    false
+                }
+            })
+            .on_submit(|s: &mut AppState, _| {
+                let p = s.launcher.path.text.clone();
+                browse(s, p);
+            }),
         )
         .child(
             action(
@@ -321,25 +448,51 @@ fn browser(s: &AppState, t: Palette) -> El {
     if let Some(parent) = Path::new(&current).parent() {
         let p = parent.to_string_lossy().into_owned();
         list = list.child(
-            action(
-                "launcher-parent",
-                format!("↑  {}", folder_name(&p)),
-                t.muted,
-            )
-            .h(34.0)
-            .px(12.0)
-            .on_press(move |s: &mut AppState| s.launcher.browse(p.clone())),
+            row()
+                .key("launcher-parent")
+                .focusable(true)
+                .role("button")
+                .h(34.0)
+                .px(12.0)
+                .gap(6.0)
+                .center_y()
+                .hover(t.hover)
+                .child(icon(&ARROW_UP, 16.0).color(t.muted))
+                .child(label(folder_name(&p), 15.0, 600.0, t.muted))
+                .on_press(move |s: &mut AppState| browse(s, p.clone())),
         );
     }
-    list = list.child(label(format!("↳  {name}"), 15.0, 600.0, t.ink_soft));
+    list = list.child(
+        row()
+            .h(34.0)
+            .px(12.0)
+            .gap(6.0)
+            .center_y()
+            .child(icon(&ARROW_BACK, 16.0).color(t.muted))
+            .child(label(name.clone(), 15.0, 600.0, t.ink_soft))
+            .key("launcher-current")
+            .focusable(true)
+            .role("button")
+            .on_press(|s: &mut AppState| {
+                let path = s.launcher.current_path.clone();
+                descend(s, path);
+            }),
+    );
     for (i, (name, path)) in s.launcher.entries.iter().enumerate() {
         let path = path.clone();
         list = list.child(
-            action(format!("launcher-folder-{i}"), format!("▱  {name}"), t.ink)
+            row()
+                .key(format!("launcher-folder-{i}"))
+                .focusable(true)
+                .role("button")
                 .h(34.0)
                 .px(24.0)
+                .gap(6.0)
+                .center_y()
                 .hover(t.hover)
-                .on_press(move |s: &mut AppState| s.launcher.browse(path.clone())),
+                .child(icon(&FOLDER, 16.0).color(t.muted))
+                .child(label(name.clone(), 15.0, 600.0, t.ink))
+                .on_press(move |s: &mut AppState| descend(s, path.clone())),
         );
     }
     if s.launcher.entries.is_empty() {
@@ -363,18 +516,12 @@ fn browser(s: &AppState, t: Palette) -> El {
         .child(
             action("launcher-choose", format!("{verb} “{name}”  →"), t.ink).on_press(
                 |s: &mut AppState| {
-                    let path = s.launcher.path.text.clone();
-                    if !Path::new(&path).is_dir() {
+                    let path = s.launcher.current_path.clone();
+                    if path.is_empty() || s.launcher.browser_request_id.is_some() {
                         s.launcher.browser_error = Some("Choose a valid folder".into());
                         return;
                     }
-                    if s.launcher.mode == Some(LauncherMode::Open) {
-                        s.launcher.mode = None;
-                        remember(s, path.clone(), folder_name(&path));
-                    } else {
-                        s.launcher.parent = path;
-                        s.launcher.view = View::Form;
-                    }
+                    choose(s, path);
                 },
             ),
         );
@@ -385,6 +532,8 @@ fn browser(s: &AppState, t: Palette) -> El {
             col()
                 .w_full()
                 .padding(16.0)
+                .radius(14.0)
+                .fill(t.raised_high)
                 .max_h(360.0)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -542,7 +691,20 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     550.0,
                     t.ink,
                 ))
-                .child(el().w_full().h(4.0).radius(2.0).fill(t.accent))
+                .child(
+                    row()
+                        .w_full()
+                        .h(4.0)
+                        .radius(2.0)
+                        .fill(t.hover)
+                        .child(
+                            el().h(4.0)
+                                .grow((s.launcher.progress as f32).max(0.001))
+                                .radius(2.0)
+                                .fill(t.accent),
+                        )
+                        .child(el().grow((1.0 - s.launcher.progress as f32).max(0.001))),
+                )
                 .child(label(
                     if s.launcher.cancelling {
                         "Cancelling…".to_owned()
@@ -626,7 +788,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         )
                         .on_press(|s: &mut AppState| {
                             let path = s.launcher.parent.clone();
-                            s.launcher.browse(path);
+                            browse(s, path);
                         }),
                 );
             if let Some(error) = &s.launcher.error {
@@ -666,8 +828,19 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         }
         card
     };
+    let content = el()
+        .key(match s.launcher.view {
+            View::Form => "launcher-form",
+            View::Browser => "launcher-browser",
+            View::More => "launcher-more-view",
+        })
+        .w_full()
+        .transition(Transition::offset(0.0, 8.0).combined(Transition::opacity()))
+        .child(content);
     let card = col()
         .key("launcher-card")
+        .animate_layout()
+        .motion(Spring::from_stiffness_damping(360.0, 34.0, 0.8))
         .w(448.0)
         .max_w(448.0)
         .radius(18.0)
@@ -675,7 +848,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .border(1.0, t.line)
         .clip_rounded(18.0)
         .child(content)
-        .modal(true, |s: &mut AppState| s.launcher.close());
+        .modal(true, |s: &mut AppState| cancel(s));
     col()
         .key("launcher-overlay")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -705,5 +878,25 @@ mod tests {
             "repo"
         );
         assert!(repository("https://example.com/owner/repo").is_none());
+    }
+    #[test]
+    fn stale_browser_results_and_cancelled_clone_do_not_open() {
+        let mut s = AppState::default();
+        s.launcher.open(LauncherMode::Open);
+        s.launcher.browser_request_id = Some(2);
+        s.studio_message(json!({"id": 1, "result": {"path": "/old", "entries": []}}));
+        assert!(s.launcher.current_path.is_empty());
+        s.studio_message(json!({"id": 2, "result": {"path": "/new", "entries": []}}));
+        assert_eq!(s.launcher.current_path, "/new");
+        s.launcher.close();
+        s.studio_message(json!({"id": 2, "result": {"path": "/late", "entries": []}}));
+        assert_eq!(s.launcher.current_path, "/new");
+        s.launcher.open(LauncherMode::Clone);
+        s.launcher.busy = true;
+        s.launcher.cancelling = true;
+        s.launcher.request_id = Some(3);
+        s.studio_message(json!({"id": 3, "result": {"path": "/cloned", "name": "cloned"}}));
+        assert!(s.launcher.mode.is_none());
+        assert!(s.pending_project_path.is_none());
     }
 }

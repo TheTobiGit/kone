@@ -203,7 +203,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .child(folder_with_git(name, t, tree)),
                 )
                 .child(changes_panel)
-                .child(sessions(&s.project_data.sessions, t, false)),
+                .child(sessions(s, &s.project_data.sessions, t, false)),
         ),
     )
 }
