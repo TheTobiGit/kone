@@ -40,3 +40,14 @@ impl Compositor<AppState> for Plasma {
         });
     }
 }
+
+pub fn slot(s: &AppState, cx: &rune::Cx<AppState>) -> rune::El {
+    let height = cx.layout_size("empty-root").map_or(352.8, |size| (size[1] * 0.42).clamp(220.0, 380.0));
+    let art = rune::effect(0x504c)
+        .effect_data([if cx.system_dark() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0])
+        .h(height).pin(Some(0.0), None, Some(0.0), Some(0.0));
+    if s.art_focused {
+        // The shader changes its pixels; this clock only schedules bounded GPU frames.
+        art.cycle(rune::Cycle { period: 1.0, phase: 0.0, stops: &[(0.0, 1.0), (1.0, 1.0)], still: 1.0, fps: 20.0 })
+    } else { art }
+}

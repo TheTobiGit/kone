@@ -13,7 +13,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         Page::Overview => overview::view(s, cx),
         Page::Studio => studio::view(s, cx),
     };
+    let stage = el().w_full().h_full().child(page)
+        .child(el().key("window-drag").h(20.0).pin(Some(0.0), Some(0.0), Some(0.0), None).window_drag());
     if s.launcher.mode.is_some() {
-        el().w_full().h_full().child(page).child(crate::launcher::view(s, cx))
-    } else { page }
+        stage.child(crate::launcher::view(s, cx))
+    } else { stage }
 }

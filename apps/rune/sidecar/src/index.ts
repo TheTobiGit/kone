@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
-import { clone } from "@kone/git-core/clone.js";
+import { cancelAllClones, clone } from "@kone/git-core/clone.js";
+import { detect, status } from "@kone/git-core/status.js";
 import { createProject } from "../../../desktop/src/modules/git/create.js";
 import { readme, identity, logo, contributors } from "../../../desktop/src/modules/git/about.js";
 import { provisionWorktree } from "../../../desktop/src/modules/git/worktreeProvision.js";
@@ -33,7 +34,26 @@ const output = process.stdout;
 // Library diagnostics must not corrupt the protocol stream.
 console.log = (...args: unknown[]) => console.error(...args);
 console.warn = (...args: unknown[]) => console.error(...args);
-const send = <T>(value: T) => output.write(`${JSON.stringify(value)}\n`);
+const MAX_OUTPUT_BUFFER = 16 * 1024 * 1024;
+let outputFailed = false;
+let waitingForDrain = false;
+output.on("error", (error) => {
+  outputFailed = true;
+  console.error("[sidecar] output failed:", error.message);
+  process.exit(1);
+});
+const send = <T>(value: T) => {
+  if (outputFailed) return;
+  if (output.writableLength > MAX_OUTPUT_BUFFER) {
+    console.error("[sidecar] output buffer limit exceeded");
+    process.exit(1);
+  }
+  if (!output.write(`${JSON.stringify(value)}\n`) && !waitingForDrain) {
+    waitingForDrain = true;
+    process.stdin.pause();
+    output.once("drain", () => { waitingForDrain = false; process.stdin.resume(); });
+  }
+};
 const notify = <T>(method: string, params: T) => send({ jsonrpc: "2.0", method, params });
 const transient = new Set<RuntimeEvent["type"]>(["user-input.requested", "user-input.resolved", "approval.requested", "approval.resolved", "thread.spawned", "thread.spawn-updated", "thread.archived", "thread.unarchived", "thread.done.updated", "app.theme_mutation", "app.agent_mutation", "app.subagent_presets_changed", "app.strip_mutation", "app.typography_mutation", "bench.job-changed"]);
 const dispatcher = initThreadDispatcher({
@@ -107,12 +127,13 @@ function updateProjects(change: (list: Project[]) => Project[]): Promise<Project
   projectWrites = result.then(() => undefined, () => undefined);
   return result;
 }
-async function call(method: string, params: z.infer<typeof object>) {
+const cloneRequests = new Map<string | number, AbortController>();
+async function call(method: string, params: z.infer<typeof object>, requestId: string | number) {
   switch (method) {
     case "initialize": return { version: 1, capabilities: ["projects", "studio", "agent"] };
-    case "projects.list": return (await projects()).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastOpenedAt - a.lastOpenedAt);
+    case "projects.list": await projectWrites; return (await projects()).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastOpenedAt - a.lastOpenedAt);
     case "projects.create": {
-      const input = z.object({ parent: z.string(), name: z.string().min(1), git: z.boolean().optional(), readme: z.boolean().optional() }).parse(params);
+      const input = z.object({ parent: z.string(), name: z.string().min(1), git: z.boolean().optional(), readme: z.boolean().optional(), remote: z.boolean().optional(), repoName: z.string().optional(), visibility: z.enum(["public", "private"]).optional(), command: z.string().optional() }).parse(params);
       if (!path.isAbsolute(input.parent)) throw new Error("Parent path must be absolute");
       const result = await createProject({ ...input, git: input.git ?? false });
       return { path: result.root, name: result.name };
@@ -121,13 +142,25 @@ async function call(method: string, params: z.infer<typeof object>) {
       const input = z.object({ url: z.string().min(1), parent: z.string(), name: z.string().min(1) }).parse(params);
       if (!path.isAbsolute(input.parent) || input.name === "." || input.name === ".." || /[/\\\0]/.test(input.name)) throw new Error("Invalid destination");
       const target = path.join(input.parent, input.name);
-      await clone(input.url, target, (progress) => notify("projects.cloneProgress", progress));
-      return { path: target, name: input.name };
+      const controller = new AbortController();
+      cloneRequests.set(requestId, controller);
+      try {
+        await clone(input.url, target, (progress) => notify("projects.cloneProgress", { requestId, progress }), { signal: controller.signal });
+        return { path: target, name: input.name };
+      } finally {
+        cloneRequests.delete(requestId);
+      }
+    }
+    case "projects.cancelClone": {
+      const input = z.object({ requestId: z.union([z.string(), z.number()]) }).parse(params);
+      const controller = cloneRequests.get(input.requestId);
+      controller?.abort();
+      return { cancelled: Boolean(controller) };
     }
     case "projects.overview": {
       const input = z.object({ path: z.string().min(1) }).parse(params);
-      const [projectReadme, projectIdentity, projectLogo, projectContributors] = await Promise.all([readme(input.path), identity(input.path), logo(input.path), contributors(input.path)]);
-      return { readme: projectReadme, identity: projectIdentity, logo: projectLogo, contributors: projectContributors };
+      const [projectReadme, projectIdentity, projectLogo, projectContributors, repository, workingTree] = await Promise.all([readme(input.path), identity(input.path), logo(input.path), contributors(input.path), detect(input.path), status(input.path)]);
+      return { readme: projectReadme, identity: projectIdentity, logo: projectLogo, contributors: projectContributors, repository, workingTree };
     }
     case "projects.remember": {
       const input = z.object({ path: z.string().min(1), name: z.string().min(1) }).parse(params);
@@ -176,7 +209,14 @@ async function call(method: string, params: z.infer<typeof object>) {
       const input = z.object({ threadId: z.string(), name: z.string(), mimeType: z.string(), data: z.string() }).parse(params);
       return getAttachmentStore().save(input);
     }
-    case "history.list": return store.listThreads(z.object({ projectPath: z.string() }).parse(params).projectPath);
+    case "history.list": {
+      const input = z.object({ projectPath: z.string(), archived: z.boolean().optional() }).parse(params);
+      return store.listThreads(input.projectPath, { archived: input.archived });
+    }
+    case "history.setPinned": { const input = thread.extend({ pinned: z.boolean() }).parse(params); return store.setPinned(input.threadId, input.pinned); }
+    case "history.setDone": { const input = thread.extend({ done: z.boolean() }).parse(params); return service.setThreadDone(input.threadId, input.done); }
+    case "history.setVisited": { const input = thread.extend({ at: z.number().finite(), force: z.boolean().optional() }).parse(params); return store.setVisited(input.threadId, input.at, input.force); }
+    case "history.archive": { const input = thread.extend({ archived: z.boolean() }).parse(params); return service.setThreadArchived(input.threadId, input.archived); }
     case "history.latest": return store.latestThreadMeta(z.object({ projectPath: z.string() }).parse(params).projectPath);
     case "history.thread": { const value = store.loadThread(thread.parse(params).threadId); return value ? projectStoredThreadForIpc(value) : null; }
     case "history.page": {
@@ -194,9 +234,14 @@ lines.on("line", (line) => {
   const task = (async () => {
     let id: string | number | null = null;
     try {
-      const request = envelope.parse(JSON.parse(line));
+      let decoded: unknown;
+      try { decoded = JSON.parse(line); }
+      catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); return; }
+      const parsed = envelope.safeParse(decoded);
+      if (!parsed.success) { send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } }); return; }
+      const request = parsed.data;
       id = request.id;
-      const result = await call(request.method, object.parse(request.params ?? {}));
+      const result = await call(request.method, object.parse(request.params ?? {}), id);
       send({ jsonrpc: "2.0", id, result: result ?? null });
     } catch (error) {
       send({ jsonrpc: "2.0", id, error: { code: -32000, message: error instanceof Error ? error.message : "Request failed" } });
@@ -205,4 +250,18 @@ lines.on("line", (line) => {
   pending.add(task);
   void task.finally(() => pending.delete(task));
 });
-lines.on("close", () => { void Promise.allSettled(pending).then(() => service.stopAll()).then(() => gateway.shutdown()).finally(() => process.exit(0)); });
+lines.on("close", () => {
+  cancelAllClones();
+  void (async () => {
+    await Promise.allSettled(pending);
+    try {
+      await service.stopAll();
+    } finally {
+      await gateway.shutdown();
+    }
+    await new Promise<void>((resolve, reject) => output.write("", (error) => error ? reject(error) : resolve()));
+  })().then(() => process.exit(0), (error) => {
+    console.error("[sidecar] shutdown failed:", error);
+    process.exit(1);
+  });
+});
