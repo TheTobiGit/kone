@@ -1,3 +1,5 @@
+mod bridge;
+mod launcher;
 mod state;
 mod theme;
 mod ui;
@@ -16,6 +18,8 @@ fn main() {
     let spec: AppSpec<AppState> = AppSpec {
         min_size: Some((960.0, 640.0)),
         fonts: FONTS,
+        setup: Some(AppState::setup),
+        poll: Some(AppState::poll),
         families: ("Geist", "ui-monospace"),
         scenes: &[
             ("empty", |s| s.page = Page::Empty),

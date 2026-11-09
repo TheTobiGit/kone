@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "50feb4fe1cd28e28e7f2c6865c59c856e9a14f64" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "50feb4fe1cd28e28e7f2c6865c59c856e9a14f64", features = ["native-file-dialog"] }
 serde_json = "1"
