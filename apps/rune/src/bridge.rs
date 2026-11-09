@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-const MAX_FRAME: usize = 32 * 1024 * 1024;
+const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 /// Supervises the local JSON-RPC process without doing pipe I/O on the UI thread.
 pub struct Bridge {
@@ -26,7 +26,7 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     if count > MAX_FRAME {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "sidecar frame exceeds 32 MiB",
+            "sidecar frame exceeds 64 MiB",
         ));
     }
     serde_json::from_slice(&frame)
@@ -116,7 +116,7 @@ impl Bridge {
         if frame.len() > MAX_FRAME {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "request exceeds 32 MiB",
+                "request exceeds 64 MiB",
             ));
         }
         let writer = self

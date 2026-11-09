@@ -1,5 +1,8 @@
+import { sessionSchema, turnSchema, studioLayoutSchema } from "./protocol.js";
+import { collectSubtreeWorktrees, removeCollectedWorktrees } from "../../../desktop/src/modules/git/worktreeCleanup.js";
+import { agentIdentity, namedIdentity } from "./identity.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
@@ -21,8 +24,7 @@ import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
 import { projectRuntimeEventForIpc, projectStoredBlocksForIpc, projectStoredThreadForIpc } from "@kone/agent-core/conversationWire.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
-import type { RuntimeEvent, SendTurnInput, SessionStartInput } from "@kone/agent-core/types.js";
-import type { StoredStudioLayout } from "@kone/agent-core/conversationStoreTypes.js";
+import type { RuntimeEvent } from "@kone/agent-core/types.js";
 
 const directory = process.env.KONE_RUNE_DATA_DIR;
 if (!directory || !path.isAbsolute(directory)) throw new Error("KONE_RUNE_DATA_DIR must be an absolute isolated data directory");
@@ -132,6 +134,18 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
   switch (method) {
     case "initialize": return { version: 1, capabilities: ["projects", "studio", "agent"] };
     case "projects.list": await projectWrites; return (await projects()).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastOpenedAt - a.lastOpenedAt);
+    case "projects.listDirectories": {
+      const input = z.object({ path: z.string().min(1) }).parse(params);
+      if (!path.isAbsolute(input.path)) throw new Error("Directory path must be absolute");
+      const resolved = path.resolve(input.path);
+      const entries = await readdir(resolved, { withFileTypes: true });
+      const folders = await Promise.all(entries.filter((entry) => !entry.name.startsWith(".")).map(async (entry) => {
+        const entryPath = path.join(resolved, entry.name);
+        const isDirectory = entry.isDirectory() || (entry.isSymbolicLink() && await stat(entryPath).then((info) => info.isDirectory(), () => false));
+        return isDirectory ? { name: entry.name, path: entryPath } : null;
+      }));
+      return { path: resolved, entries: folders.filter((entry) => entry !== null).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })) };
+    }
     case "projects.create": {
       const input = z.object({ parent: z.string(), name: z.string().min(1), git: z.boolean().optional(), readme: z.boolean().optional(), remote: z.boolean().optional(), repoName: z.string().optional(), visibility: z.enum(["public", "private"]).optional(), command: z.string().optional() }).parse(params);
       if (!path.isAbsolute(input.parent)) throw new Error("Parent path must be absolute");
@@ -171,25 +185,21 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     case "projects.pin": { const input = z.object({ path: z.string(), pinned: z.boolean() }).parse(params); return updateProjects((list) => list.map((p) => p.path === input.path ? { ...p, pinned: input.pinned } : p)); }
     case "studio.load": return store.loadStudio();
     case "studio.save": {
-      const input = z.object({ layout: z.object({ version: z.literal(2), rows: z.array(z.unknown()) }).passthrough() }).parse(params);
-      // SAFETY: The persisted layout has the version and rows checked here; pane validation belongs to the consumer, as in StudioRepo.
-      return store.saveStudio(input.layout as StoredStudioLayout);
+      const input = z.object({ layout: studioLayoutSchema }).parse(params);
+      return store.saveStudio(input.layout);
     }
     case "agent.surface": return service.cachedSurface();
     case "agent.warm": return service.warm();
     case "agent.discover": return service.discover();
     case "agent.models": { const input = z.object({ provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]) }).parse(params); return service.listModels(input.provider); }
     case "agent.start": {
-      const input = z.object({ threadId: z.string().min(1), provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]), cwd: z.string().min(1) }).passthrough().parse(params);
+      const input = sessionSchema.parse(params);
       await gateway.ready;
-      // SAFETY: Required session identity fields and provider are validated; optional provider parameters retain their shared wire types.
-      return dispatcher.startThread(input as SessionStartInput);
+      return dispatcher.startThread(input);
     }
     case "agent.send": case "agent.steer": {
-      const input = z.object({ threadId: z.string().min(1), input: z.string() }).passthrough().parse(params);
-      // SAFETY: Required turn identity and text are validated; optional turn parameters retain their shared wire types.
-      const turn = input as SendTurnInput;
-      return method === "agent.send" ? dispatcher.sendThreadTurn(turn) : dispatcher.steerThreadTurn(turn);
+      const input = turnSchema.parse(params);
+      return method === "agent.send" ? dispatcher.sendThreadTurn(input) : dispatcher.steerThreadTurn(input);
     }
     case "agent.interrupt": return service.interruptTurn(thread.parse(params).threadId);
     case "agent.stop": return service.stopSession(thread.parse(params).threadId);
@@ -211,12 +221,44 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     }
     case "history.list": {
       const input = z.object({ projectPath: z.string(), archived: z.boolean().optional() }).parse(params);
-      return store.listThreads(input.projectPath, { archived: input.archived });
+      return store.listThreads(input.projectPath, { archived: input.archived }).map((session) => {
+        let root = session;
+        const visited = new Set<string>();
+        while (root.sourceThreadId && !visited.has(root.threadId)) {
+          visited.add(root.threadId);
+          const parent = store.threadMeta(root.sourceThreadId);
+          if (!parent) break;
+          root = parent;
+        }
+        const binding = store.getThreadAgent(session.threadId) ?? store.getThreadAgent(root.threadId);
+        const agent = binding?.agentId ? store.getAgent(binding.agentId) : null;
+        return { ...session, identity: namedIdentity(session.threadId, agent) ?? agentIdentity(root.threadId) };
+      });
     }
     case "history.setPinned": { const input = thread.extend({ pinned: z.boolean() }).parse(params); return store.setPinned(input.threadId, input.pinned); }
     case "history.setDone": { const input = thread.extend({ done: z.boolean() }).parse(params); return service.setThreadDone(input.threadId, input.done); }
     case "history.setVisited": { const input = thread.extend({ at: z.number().finite(), force: z.boolean().optional() }).parse(params); return store.setVisited(input.threadId, input.at, input.force); }
     case "history.archive": { const input = thread.extend({ archived: z.boolean() }).parse(params); return service.setThreadArchived(input.threadId, input.archived); }
+    case "history.delete": {
+      const { threadId } = thread.parse(params);
+      const guard = store.canDeleteThread(threadId);
+      if (!guard.ok) return guard;
+      const doomed = collectSubtreeWorktrees(store, threadId);
+      const meta = store.threadMeta(threadId);
+      const queued = store.cancelQueuedTurnsForThread(threadId);
+      if (meta) {
+        for (const queueId of queued) broadcast({ type: "turn.queued-cancelled", threadId, provider: meta.provider, queueId, reason: "thread-deleted", at: Date.now(), source: "kone.store" });
+      }
+      await getAttachmentStore().deleteThreadFiles(threadId);
+      const deleted = store.deleteThread(threadId);
+      dispatcher.forgetThread(threadId);
+      if (!deleted.ok) return deleted;
+      await removeCollectedWorktrees(doomed, {
+        isReferenced: (worktreePath) => store.isWorktreePathReferenced(worktreePath),
+        remove: (projectPath, worktreePath) => removeWorktree(projectPath, { path: worktreePath, force: true, reclaimGeneratedBranch: true }),
+      });
+      return deleted;
+    }
     case "history.latest": return store.latestThreadMeta(z.object({ projectPath: z.string() }).parse(params).projectPath);
     case "history.thread": { const value = store.loadThread(thread.parse(params).threadId); return value ? projectStoredThreadForIpc(value) : null; }
     case "history.page": {

@@ -1364,6 +1364,7 @@ dependencies = [
 name = "kone-rune"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "rune",
  "serde_json",
  "wgpu",
