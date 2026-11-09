@@ -1,4 +1,4 @@
-struct Uniforms { rect: vec4<f32>, target: vec4<f32>, clock: vec4<f32> }
+struct Uniforms { rect: vec4<f32>, surface: vec4<f32>, clock: vec4<f32> }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let positions = array<vec2<f32>,3>(vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
@@ -22,14 +22,14 @@ fn snoise(v: vec2<f32>) -> f32 {
     return 130.0*dot(m,g);
 }
 fn fbm(input: vec2<f32>) -> f32 {
-    var p=input; var total=0.0; var amp=0.5; var freq=1.0;
-    let rotation=mat2x2(cos(0.45),sin(0.45),-sin(0.45),cos(0.45));
-    for(var i=0;i<5;i++) { total+=snoise(p*freq)*amp; p=rotation*p; freq*=mix(1.85,2.35,0.85*0.5); amp*=0.5; }
+    var p=input; var total: f32=0.0; var amp: f32=0.5; var freq: f32=1.0;
+    let rotation=mat2x2<f32>(cos(0.45),sin(0.45),-sin(0.45),cos(0.45));
+    for(var i=0;i<5;i++) { total+=snoise(p*freq)*amp; p=rotation*p; freq*=2.0625; amp*=0.5; }
     return total;
 }
 fn linear(c: vec3<f32>) -> vec3<f32> { return select(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),c>vec3(0.04045)); }
 @fragment fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let pixel=position.xy+u.target.zw-u.rect.xy;
+    let pixel=position.xy+u.surface.zw-u.rect.xy;
     if any(pixel<vec2(0.0)) || any(pixel>u.rect.zw) { discard; }
     let frag=vec2(pixel.x,u.rect.w-pixel.y);
     let uv=frag/u.rect.zw; let aspect=u.rect.z/max(u.rect.w,1.0);
