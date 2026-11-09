@@ -9,9 +9,9 @@ NODE_VERSION=${KONE_NODE_VERSION:-25.9.0}
 NODE_TMP=$(mktemp -d)
 trap 'rm -rf "$NODE_TMP"' EXIT
 NODE_ARCHIVE="node-v$NODE_VERSION-darwin-$PLATFORM.tar.gz"
-curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/$NODE_ARCHIVE" -o "$NODE_TMP/$NODE_ARCHIVE"
-curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" -o "$NODE_TMP/SHASUMS256.txt"
-(cd "$NODE_TMP" && awk -v file="$NODE_ARCHIVE" '$2 == file { print }' SHASUMS256.txt | shasum -a 256 -c -)
+curl --connect-timeout 20 --max-time 300 -fsSL "https://nodejs.org/dist/v$NODE_VERSION/$NODE_ARCHIVE" -o "$NODE_TMP/$NODE_ARCHIVE"
+curl --connect-timeout 20 --max-time 300 -fsSL "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" -o "$NODE_TMP/SHASUMS256.txt"
+(cd "$NODE_TMP" && awk -v file="$NODE_ARCHIVE" '$2 == file { print }' SHASUMS256.txt > checksum.txt && test -s checksum.txt && shasum -a 256 -c checksum.txt)
 tar -xzf "$NODE_TMP/$NODE_ARCHIVE" -C "$NODE_TMP"
 NODE_BIN="$NODE_TMP/node-v$NODE_VERSION-darwin-$PLATFORM/bin/node"
 "$BUN_BIN" run --cwd "$RUNE_DIR/sidecar" build
@@ -25,15 +25,15 @@ cp "$RUNE_DIR/sidecar/dist/"*.mjs "$APP/Contents/Resources/sidecar/"
 SDK_ROOT=$(CDPATH= cd -- "$RUNE_DIR/sidecar/node_modules/@anthropic-ai/claude-agent-sdk" && pwd -P)
 AST_ROOT=$(CDPATH= cd -- "$RUNE_DIR/sidecar/node_modules/@ast-grep/napi" && pwd -P)
 cp -R "$SDK_ROOT" "$APP/Contents/Resources/sidecar/node_modules/@anthropic-ai/claude-agent-sdk"
-cp -R "$(dirname "$SDK_ROOT")/claude-agent-sdk-darwin-$PLATFORM" "$APP/Contents/Resources/sidecar/node_modules/@anthropic-ai/"
+cp -R "$(CDPATH= cd -- "$(dirname "$SDK_ROOT")/claude-agent-sdk-darwin-$PLATFORM" && pwd -P)" "$APP/Contents/Resources/sidecar/node_modules/@anthropic-ai/"
 cp -R "$AST_ROOT" "$APP/Contents/Resources/sidecar/node_modules/@ast-grep/napi"
-cp -R "$(dirname "$AST_ROOT")/napi-darwin-$PLATFORM" "$APP/Contents/Resources/sidecar/node_modules/@ast-grep/"
+cp -R "$(CDPATH= cd -- "$(dirname "$AST_ROOT")/napi-darwin-$PLATFORM" && pwd -P)" "$APP/Contents/Resources/sidecar/node_modules/@ast-grep/"
 cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
 #!/bin/sh
 CONTENTS=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 export KONE_RUNE_SIDECAR_NODE="$CONTENTS/Resources/node"
 export KONE_RUNE_SIDECAR_SCRIPT="$CONTENTS/Resources/sidecar/index.mjs"
-exec "$CONTENTS/MacOS/kone-rune"
+exec "$CONTENTS/MacOS/kone-rune" "$@"
 LAUNCH
 chmod +x "$APP/Contents/MacOS/launch"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
