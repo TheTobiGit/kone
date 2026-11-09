@@ -1,7 +1,25 @@
 use crate::{state::AppState, theme::Palette};
-use rune::{Cx, El, ScrollSpec, TextEdit, TextStyle, Tx, col, el, row, text, text_input};
+use rune::{
+    Cx, El, Family, Icon, ScrollSpec, TextEdit, TextStyle, Tx, col, el, icon, row, text, text_input,
+};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+static FOLDER: Icon = Icon {
+    name: "launcher-folder",
+    view: 24.0,
+    body: r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+};
+static FOLDER_ADD: Icon = Icon {
+    name: "launcher-folder-add",
+    view: 24.0,
+    body: r#"<path d="M20 11V9a2 2 0 0 0-2-2h-7L9 5H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8M18 14v7m-3.5-3.5h7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static GITHUB: Icon = Icon {
+    name: "launcher-github",
+    view: 24.0,
+    body: r#"<path d="M9 21v-3c-4-.5-5-2.5-5-5 0-1.4.5-2.6 1.5-3.5C5 8 5 6.5 5.5 5c1.5 0 2.5.5 3.5 1.5a11 11 0 0 1 6 0C16 5.5 17 5 18.5 5c.5 1.5.5 3 0 4.5C19.5 10.4 20 11.6 20 13c0 2.5-1 4.5-5 5v3M9 20c-3 1-4-1-5-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LauncherMode {
@@ -264,7 +282,7 @@ fn action(key: impl Into<String>, value: impl Into<String>, color: rune::Color) 
         .role("button")
         .h(24.0)
         .center_y()
-        .child(label(value, 14.0, 600.0, color))
+        .child(label(value, 14.0, 500.0, color))
 }
 fn browser(s: &AppState, t: Palette) -> El {
     let embedded = s.launcher.mode != Some(LauncherMode::Open);
@@ -502,7 +520,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         let mut body = col()
             .w_full()
             .padding(16.0)
-            .gap(16.0)
+            .gap(4.0)
             .radius(14.0)
             .fill(t.raised_high);
         let project = if cloning {
@@ -547,52 +565,70 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 ));
         } else {
             let field = if cloning {
-                text_input(&s.launcher.url, TextStyle::new(15.0, 450.0))
-                    .key("launcher-url")
-                    .label("Repository URL")
-                    .single_line()
-                    .w_full()
-                    .h(32.0)
-                    .placeholder("owner/repo or https://github.com/…", t.placeholder)
-                    .color(t.ink)
-                    .on_edit(|s: &mut AppState| &mut s.launcher.url)
-                    .on_submit(|s: &mut AppState, _| submit(s))
+                text_input(
+                    &s.launcher.url,
+                    TextStyle::new(15.0, 450.0).family(Family::Mono),
+                )
+                .key("launcher-url")
+                .label("Repository URL")
+                .single_line()
+                .w_full()
+                .h(32.0)
+                .placeholder("owner/repo or https://github.com/…", t.placeholder)
+                .color(t.ink)
+                .on_edit(|s: &mut AppState| &mut s.launcher.url)
+                .on_submit(|s: &mut AppState, _| submit(s))
             } else {
-                text_input(&s.launcher.name, TextStyle::new(15.0, 450.0))
-                    .key("launcher-name")
-                    .label("Project name")
-                    .single_line()
-                    .w_full()
-                    .h(32.0)
-                    .placeholder("project-name", t.placeholder)
-                    .color(t.ink)
-                    .on_edit(|s: &mut AppState| &mut s.launcher.name)
-                    .on_submit(|s: &mut AppState, _| submit(s))
+                text_input(
+                    &s.launcher.name,
+                    TextStyle::new(15.0, 450.0).family(Family::Mono),
+                )
+                .key("launcher-name")
+                .label("Project name")
+                .single_line()
+                .w_full()
+                .h(32.0)
+                .placeholder("project-name", t.placeholder)
+                .color(t.ink)
+                .on_edit(|s: &mut AppState| &mut s.launcher.name)
+                .on_submit(|s: &mut AppState, _| submit(s))
             };
-            body = body.child(field).child(
-                row()
-                    .key("launcher-destination")
-                    .focusable(true)
-                    .role("button")
-                    .h(30.0)
-                    .gap(8.0)
-                    .center_y()
-                    .child(label("▱", 15.0, 500.0, t.muted))
-                    .child(label(
-                        if cloning { "Clone into" } else { "Create in" },
-                        12.0,
-                        500.0,
-                        t.muted,
-                    ))
-                    .child(
-                        label(display_path(&s.launcher.parent), 12.0, 500.0, t.ink_soft).grow(1.0),
-                    )
-                    .child(label("Change", 12.0, 500.0, t.muted))
-                    .on_press(|s: &mut AppState| {
-                        let path = s.launcher.parent.clone();
-                        s.launcher.browse(path);
-                    }),
-            );
+            body = body
+                .child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .center_y()
+                        .child(
+                            icon(if cloning { &GITHUB } else { &FOLDER_ADD }, 18.0)
+                                .color(t.ink_soft),
+                        )
+                        .child(field.grow(1.0)),
+                )
+                .child(
+                    row()
+                        .key("launcher-destination")
+                        .focusable(true)
+                        .role("button")
+                        .h(30.0)
+                        .gap(8.0)
+                        .center_y()
+                        .child(icon(&FOLDER, 15.0).color(t.muted))
+                        .child(label(
+                            if cloning { "Clone into" } else { "Create in" },
+                            12.0,
+                            500.0,
+                            t.muted,
+                        ))
+                        .child(
+                            label(display_path(&s.launcher.parent), 12.0, 500.0, t.ink_soft)
+                                .grow(1.0),
+                        )
+                        .on_press(|s: &mut AppState| {
+                            let path = s.launcher.parent.clone();
+                            s.launcher.browse(path);
+                        }),
+                );
             if let Some(error) = &s.launcher.error {
                 body = body.child(label(error, 12.0, 450.0, t.accent).wrap());
             }
@@ -611,9 +647,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     "launcher-submit",
                     if project.is_empty() {
                         if cloning {
-                            "Clone".into()
+                            "Clone  →".into()
                         } else {
-                            "Create".into()
+                            "Create  →".into()
                         }
                     } else {
                         format!(
@@ -622,7 +658,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                             project
                         )
                     },
-                    t.ink,
+                    if project.is_empty() { t.muted } else { t.ink },
                 )
                 .on_press(|s: &mut AppState| submit(s)),
             );
@@ -646,6 +682,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .padding(24.0)
         .items_end()
         .justify_end()
+        .backdrop_blur(4.0)
         .fill(t.ground.alpha(0.62))
         .child(card)
 }

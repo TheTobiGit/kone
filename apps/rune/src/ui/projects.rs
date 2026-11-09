@@ -2,7 +2,7 @@ use super::empty::{SEARCH, SETTINGS, actions, wordmark};
 use crate::{
     project_state::{ProjectSession, ProjectSort},
     state::AppState,
-    theme::Palette,
+    theme::{Palette, mix_srgb},
 };
 use rune::{Cx, El, Family, Icon, TextStyle, col, el, icon, row, text, text_input};
 
@@ -35,20 +35,20 @@ pub(super) fn folder(name: &str, t: Palette) -> El {
 pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) -> El {
     let (sheet_top, sheet_bottom, pocket_top, pocket_middle, pocket_bottom, shadow) = if t.dark {
         (
-            t.ground.mix(t.ink, 0.068),
-            t.ground.mix(t.ink, 0.04),
-            t.ground.mix(t.ink, 0.094),
-            t.ground.mix(t.ink, 0.057),
-            t.ground.mix(t.ink, 0.035),
+            mix_srgb(t.ground, t.ink, 0.068),
+            mix_srgb(t.ground, t.ink, 0.04),
+            mix_srgb(t.ground, t.ink, 0.094),
+            mix_srgb(t.ground, t.ink, 0.057),
+            mix_srgb(t.ground, t.ink, 0.035),
             t.ground.alpha(0.3),
         )
     } else {
         (
-            t.raised.mix(t.ink, 0.052),
-            t.raised.mix(t.ink, 0.123),
-            t.raised.mix(t.ink, 0.013),
-            t.raised.mix(t.ink, 0.077),
-            t.raised.mix(t.ink, 0.12),
+            mix_srgb(t.raised, t.ink, 0.052),
+            mix_srgb(t.raised, t.ink, 0.123),
+            mix_srgb(t.raised, t.ink, 0.013),
+            mix_srgb(t.raised, t.ink, 0.077),
+            mix_srgb(t.raised, t.ink, 0.12),
             t.ink.alpha(0.06),
         )
     };

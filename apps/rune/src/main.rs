@@ -10,6 +10,7 @@ use rune::{App, AppSpec, FontSmoothing};
 use state::{AppState, Page};
 
 const FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/GeistMono-Variable.ttf"),
     include_bytes!("../assets/fonts/Fraunces-Variable.ttf"),
     include_bytes!("../assets/fonts/Geist-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Medium.ttf"),
@@ -23,8 +24,8 @@ fn main() {
         fonts: FONTS,
         setup: Some(AppState::setup),
         poll: Some(AppState::poll),
-        on_key: Some(AppState::studio_key),
-        families: ("Geist", "ui-monospace"),
+        on_key: Some(app_key),
+        families: ("Geist", "Geist Mono"),
         scenes: &[
             ("empty", |s| s.page = Page::Empty),
             ("projects", |s| {
@@ -43,12 +44,24 @@ fn main() {
         ],
         ..AppSpec::new("kone", (1280.0, 840.0), AppState::default, ui::view)
     };
-    App::new(spec).chrome(rune::Chrome { full_size_content: true, traffic_lights: Some((16.0, 6.0)), drag_regions: true }).on_focus(|s, focused, _| s.art_focused = focused).font_smoothing(FontSmoothing::Off).compositor(plasma::Plasma::default()).run();
+    App::new(spec)
+        .chrome(rune::Chrome {
+            full_size_content: true,
+            traffic_lights: Some((16.0, 6.0)),
+            drag_regions: true,
+        })
+        .on_focus(|s, focused, _| s.art_focused = focused)
+        .font_smoothing(FontSmoothing::Off)
+        .compositor(plasma::Plasma::default())
+        .run();
 }
 
 fn studio_review(s: &mut AppState) {
-    use state::{Project, StudioState, StudioProvider, StudioModel};
-    s.projects = vec![Project { name: "kone".into(), path: "/demo".into() }];
+    use state::{Project, StudioModel, StudioProvider, StudioState};
+    s.projects = vec![Project {
+        name: "kone".into(),
+        path: "/demo".into(),
+    }];
     s.selected_project = Some(0);
     s.page = Page::Studio;
     s.studio_layout_ready = true;
@@ -60,12 +73,47 @@ fn studio_review(s: &mut AppState) {
     s.studio.composer_open = true;
     s.studio.thread_id = "review-one".into();
     s.studio.project_path = "/demo".into();
-    s.studio.providers = vec![StudioProvider { id:"codex".into(), label:"Codex".into() }];
-    s.studio.models = vec![StudioModel { id:"gpt-6.1-terra".into(), label:"GPT-6.1 Terra".into(), efforts:vec!["low".into(),"medium".into(),"high".into()], default_effort:Some("medium".into()) }];
-    let mut second = StudioState::default();
-    second.thread_open = true;
-    second.composer_open = true;
-    second.thread_id = "review-two".into();
-    second.project_path = "/demo".into();
+    s.studio.providers = vec![StudioProvider {
+        id: "codex".into(),
+        label: "Codex".into(),
+    }];
+    s.studio.models = vec![StudioModel {
+        id: "gpt-6.1-terra".into(),
+        label: "GPT-6.1 Terra".into(),
+        efforts: vec!["low".into(), "medium".into(), "high".into()],
+        default_effort: Some("medium".into()),
+    }];
+    let second = StudioState {
+        thread_open: true,
+        composer_open: true,
+        thread_id: "review-two".into(),
+        project_path: "/demo".into(),
+        ..StudioState::default()
+    };
     s.studio_threads.insert("review-two".into(), second);
+}
+
+fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+    if s.launcher.mode.is_some() {
+        return false;
+    }
+    if event.is_command('b') || (s.page == Page::Studio && event.key == rune::Key::Escape) {
+        if s.page == Page::Studio {
+            s.page = if s.selected_project.is_some() {
+                Page::Overview
+            } else if s.projects.is_empty() {
+                Page::Empty
+            } else {
+                Page::Projects
+            };
+        } else {
+            s.enter_studio();
+        }
+        return true;
+    }
+    if s.page == Page::Projects && event.is_command('k') {
+        s.search.focused = true;
+        return true;
+    }
+    AppState::studio_key(s, event, tx)
 }

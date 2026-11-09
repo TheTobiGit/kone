@@ -9,6 +9,38 @@ fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
+fn project_nav(s: &AppState, t: Palette) -> El {
+    let mut project_nav = row().center_y().gap(4.0);
+    for (index, project) in s.projects.iter().enumerate() {
+        let has_row = s.studio_layout["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["projectPath"] == project.path));
+        if !has_row && Some(index) != s.selected_project {
+            continue;
+        }
+        project_nav = project_nav.child(
+            el().key(format!("studio-row-{index}"))
+                .px(8.0)
+                .h(26.0)
+                .center()
+                .radius(8.0)
+                .hover(t.hover)
+                .child(label(
+                    project.name.clone(),
+                    12.0,
+                    500.0,
+                    if Some(index) == s.selected_project {
+                        t.ink
+                    } else {
+                        t.muted
+                    },
+                ))
+                .on_press(move |s: &mut AppState| s.select_studio_project(index)),
+        );
+    }
+    project_nav
+}
+
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
     let project = s.selected_project.and_then(|i| s.projects.get(i));
@@ -16,6 +48,32 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let path = project
         .and_then(|p| p.path.rsplit_once('/').map(|(parent, _)| parent))
         .unwrap_or("");
+
+    if project.is_none() {
+        let mut choices = col().w(300.0).gap(4.0);
+        for (index, project) in s.projects.iter().enumerate() {
+            choices = choices.child(
+                row()
+                    .key(format!("studio-project-{index}"))
+                    .w_full()
+                    .h(44.0)
+                    .px(12.0)
+                    .center_y()
+                    .radius(10.0)
+                    .hover(t.hover)
+                    .child(label(project.name.clone(), 14.0, 600.0, t.ink).grow(1.0))
+                    .child(label("→", 15.0, 400.0, t.muted))
+                    .on_press(move |s: &mut AppState| s.select_studio_project(index)),
+            );
+        }
+        return col().w_full().h_full().fill(t.ground).center().child(
+            col()
+                .items_center()
+                .gap(18.0)
+                .child(label("Choose a project", 16.0, 600.0, t.ink))
+                .child(choices),
+        );
+    }
 
     if !s.studio.thread_open {
         let folder = col()
@@ -43,16 +101,30 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 s.new_studio_thread();
                 tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
             });
-        return col().w_full().h_full().fill(t.ground).center().child(
-            col()
-                .w(256.0)
-                .items_center()
-                .gap(10.0)
-                .child(folder)
-                .child(label(path.to_owned(), 12.0, 450.0, t.muted))
-                .child(el().h(10.0))
-                .child(action),
-        );
+        return col()
+            .w_full()
+            .h_full()
+            .fill(t.ground)
+            .child(
+                row()
+                    .w_full()
+                    .h(32.0)
+                    .px(32.0)
+                    .justify_end()
+                    .child(project_nav(s, t)),
+            )
+            .child(
+                col().w_full().grow(1.0).center().child(
+                    col()
+                        .w(256.0)
+                        .items_center()
+                        .gap(10.0)
+                        .child(folder)
+                        .child(label(path.to_owned(), 12.0, 450.0, t.muted))
+                        .child(el().h(10.0))
+                        .child(action),
+                ),
+            );
     }
 
     let panes = s.studio_layout["rows"]
@@ -183,7 +255,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                             tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
                         }),
                 )
-                .child(label(name.to_owned(), 12.5, 500.0, t.muted)),
+                .child(project_nav(s, t)),
         )
         .child(
             col()

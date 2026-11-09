@@ -51,3 +51,18 @@ impl Palette {
         }
     }
 }
+
+pub fn mix_srgb(a: Color, b: Color, fraction: f32) -> Color {
+    let channel = |left: f32, right: f32| {
+        rune::color::srgb_decode(
+            rune::color::srgb_encode(left) * (1.0 - fraction)
+                + rune::color::srgb_encode(right) * fraction,
+        )
+    };
+    Color {
+        r: channel(a.r, b.r),
+        g: channel(a.g, b.g),
+        b: channel(a.b, b.b),
+        a: a.a * (1.0 - fraction) + b.a * fraction,
+    }
+}

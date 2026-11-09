@@ -34,6 +34,8 @@ pub struct AppState {
     pub studio_layout: serde_json::Value,
     pub studio_load_request: Option<u64>,
     pub studio_layout_ready: bool,
+    pub studio_viewport: (f32, f32),
+    pub studio_scroll_row: Option<String>,
 }
 
 impl AppState {
@@ -211,6 +213,20 @@ impl AppState {
         }
     }
 
+    pub fn select_studio_project(&mut self, index: usize) {
+        if index >= self.projects.len() {
+            return;
+        }
+        self.selected_project = Some(index);
+        self.enter_studio();
+        let path = self.projects[index].path.clone();
+        self.studio_scroll_row = Some(path.clone());
+        if self.studio_layout_ready {
+            self.studio_layout["focusedRow"] = path.into();
+            self.persist_studio_layout();
+        }
+    }
+
     pub fn enter_studio(&mut self) {
         self.page = Page::Studio;
         let Some(path) = self
@@ -254,24 +270,31 @@ impl AppState {
     }
 
     fn load_visible_studio_threads(&mut self) {
-        let threads: Vec<String> = self.studio_layout["rows"]
+        let threads: Vec<(String, String)> = self.studio_layout["rows"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|r| r["projectPath"] == self.studio.project_path)
-            .and_then(|r| r["panes"].as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p["anchor"]["threadId"].as_str().map(str::to_owned))
-            .filter(|id| id != &self.studio.thread_id && !self.studio_threads.contains_key(id))
+            .flat_map(|r| {
+                let path = r["projectPath"].as_str().unwrap_or("").to_owned();
+                r["panes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |p| {
+                        p["anchor"]["threadId"]
+                            .as_str()
+                            .map(|id| (id.to_owned(), path.clone()))
+                    })
+            })
+            .filter(|(id, _)| id != &self.studio.thread_id && !self.studio_threads.contains_key(id))
             .collect();
-        for thread in threads {
+        for (thread, path) in threads {
             let request = self.request("history.thread", serde_json::json!({"threadId": thread}));
             self.studio_threads.insert(
                 thread.clone(),
                 StudioState {
                     thread_id: thread,
-                    project_path: self.studio.project_path.clone(),
+                    project_path: path,
                     thread_open: true,
                     composer_open: true,
                     history_request: request,
@@ -299,6 +322,21 @@ impl AppState {
             s.cycle_studio_width(&id);
             return true;
         }
+        if event.mods.alt && event.key == rune::Key::Enter && !event.mods.shift {
+            let id = s.studio.thread_id.clone();
+            s.toggle_studio_zen(&id);
+            tx.scroll_into_view(format!("studio-pane-{id}"));
+            return true;
+        }
+        if event.mods.alt
+            && event.mods.shift
+            && matches!(event.key, rune::Key::Left | rune::Key::Right)
+        {
+            let delta = if event.key == rune::Key::Left { -1 } else { 1 };
+            s.move_studio_thread(delta);
+            tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+            return true;
+        }
         if event.mods.alt
             && !event.mods.shift
             && matches!(event.key, rune::Key::Up | rune::Key::Down)
@@ -314,11 +352,8 @@ impl AppState {
             });
             if let Some(path) = path {
                 if let Some(index) = s.projects.iter().position(|p| p.path == path) {
-                    s.selected_project = Some(index);
-                    s.enter_studio();
-                    s.studio_layout["focusedRow"] = path.into();
-                    s.persist_studio_layout();
-                    tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                    s.select_studio_project(index);
+                    tx.scroll_into_view(format!("studio-row-slot-{path}"));
                 }
             }
             return true;
@@ -383,6 +418,38 @@ impl AppState {
         self.persist_studio_layout();
     }
 
+    pub fn move_studio_thread(&mut self, delta: isize) {
+        let path = self.studio.project_path.clone();
+        if let Some(panes) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+        {
+            if let Some(index) = panes
+                .iter()
+                .position(|p| p["anchor"]["threadId"] == self.studio.thread_id)
+            {
+                if let Some(target) = index.checked_add_signed(delta).filter(|i| *i < panes.len()) {
+                    panes.swap(index, target);
+                }
+            }
+        }
+        self.persist_studio_layout();
+    }
+
+    pub fn toggle_studio_zen(&mut self, thread: &str) {
+        let path = self.studio.project_path.clone();
+        if let Some(pane) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+            .and_then(|panes| panes.iter_mut().find(|p| p["anchor"]["threadId"] == thread))
+        {
+            pane["zen"] = (!pane["zen"].as_bool().unwrap_or(false)).into();
+        }
+        self.persist_studio_layout();
+    }
+
     pub fn cycle_studio_width(&mut self, thread: &str) {
         let path = self.studio.project_path.clone();
         if let Some(pane) = self.studio_layout["rows"]
@@ -391,7 +458,9 @@ impl AppState {
             .and_then(|r| r["panes"].as_array_mut())
             .and_then(|panes| panes.iter_mut().find(|p| p["anchor"]["threadId"] == thread))
         {
-            pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
+            if !pane["zen"].as_bool().unwrap_or(false) {
+                pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
+            }
         }
         self.persist_studio_layout();
     }
@@ -437,7 +506,7 @@ impl AppState {
             .as_nanos();
         self.studio.thread_id = format!("rune-{}-{time}", std::process::id());
         self.studio.thread_open = true;
-        self.studio.composer_open = true;
+        self.studio.composer_open = false;
         self.studio.error = None;
         self.composer.clear();
         self.save_studio_layout();
@@ -838,8 +907,26 @@ impl AppState {
             return;
         }
         if message["method"] == "sidecar.exited" {
-            self.studio.error = Some("Agent service exited".into());
+            let detail = message["params"]["error"]
+                .as_str()
+                .unwrap_or("Agent service exited")
+                .to_owned();
+            self.bridge.take();
+            self.studio.error = Some(detail.clone());
             self.studio.busy = false;
+            self.studio.pending_send = None;
+            self.studio.start_request = None;
+            self.studio.send_request = None;
+            for state in self.studio_threads.values_mut() {
+                state.error = Some(detail.clone());
+                state.busy = false;
+                state.pending_send = None;
+                state.start_request = None;
+                state.send_request = None;
+            }
+            if self.launcher.request_id.is_some() {
+                crate::launcher::failed(self, &detail);
+            }
             return;
         }
         if message["method"] != "agent.event" {
@@ -959,6 +1046,25 @@ mod tests {
         s.open_studio_thread(b);
         assert_eq!(s.composer.text, "draft b");
         assert!(s.studio.approval.is_none());
+    }
+
+    #[test]
+    fn sidecar_exit_settles_every_running_thread() {
+        let mut s = AppState::default();
+        s.studio.busy = true;
+        s.studio.pending_send = Some("one".into());
+        s.studio_threads.insert(
+            "b".into(),
+            StudioState {
+                busy: true,
+                pending_send: Some("two".into()),
+                ..Default::default()
+            },
+        );
+        s.studio_message(json!({"method":"sidecar.exited", "params":{"error":"pipe closed"}}));
+        assert!(!s.studio.busy && s.studio.pending_send.is_none());
+        assert!(!s.studio_threads["b"].busy && s.studio_threads["b"].pending_send.is_none());
+        assert_eq!(s.studio_threads["b"].error.as_deref(), Some("pipe closed"));
     }
 
     #[test]

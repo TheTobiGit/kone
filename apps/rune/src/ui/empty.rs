@@ -1,5 +1,5 @@
 use crate::{state::AppState, theme::Palette};
-use rune::{col, el, icon, row, text, Cx, El, Family, Icon, TextStyle};
+use rune::{Cx, El, Family, Icon, TextStyle, col, el, icon, row, text};
 
 static PLUS: Icon = Icon {
     name: "plus",
