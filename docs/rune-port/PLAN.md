@@ -2,7 +2,7 @@
 
 Branch: `feat/rune-port`. Worktree: `~/Developer/kone-rune`.
 Base: `46a77768` on `dev`. Existing Electron and GPUI worktrees remain independent.
-Rune pinned revision: `7c4639dfdca7e2dfc8f2bd8ca83d69ba05557d24`.
+Rune initially evaluated at `7c4639dfdca7e2dfc8f2bd8ca83d69ba05557d24`; pin advanced to the immediate upstream fix `50feb4f` for a missing ScrollState field (see Cargo.toml for full revision).
 
 ## Authorized scope
 

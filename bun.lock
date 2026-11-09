@@ -40,6 +40,19 @@
         "typescript": "catalog:",
       },
     },
+    "apps/rune/sidecar": {
+      "name": "@kone/rune-sidecar",
+      "dependencies": {
+        "@kone/agent-core": "workspace:*",
+        "@kone/git-core": "workspace:*",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@kone/config": "workspace:*",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "apps/web": {
       "name": "web",
       "dependencies": {
@@ -411,6 +424,8 @@
     "@kone/git-core": ["@kone/git-core@workspace:packages/git-core"],
 
     "@kone/protocol": ["@kone/protocol@workspace:packages/protocol"],
+
+    "@kone/rune-sidecar": ["@kone/rune-sidecar@workspace:apps/rune/sidecar"],
 
     "@kwsites/file-exists": ["@kwsites/file-exists@1.1.1", "", { "dependencies": { "debug": "^4.1.1" } }, "sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw=="],
 

@@ -4,7 +4,8 @@
   "workspaces": {
     "packages": [
       "apps/*",
-      "packages/*"
+      "packages/*",
+      "apps/rune/sidecar"
     ],
     "catalog": {
       "typescript": "^6",
@@ -22,7 +23,10 @@
     "dev:desktop": "turbo run dev -F desktop",
     "build:desktop": "turbo run build -F desktop",
     "package:desktop": "turbo run package -F desktop",
-    "install:desktop": "turbo run install:local -F desktop"
+    "install:desktop": "turbo run install:local -F desktop",
+    "dev:rune": "cargo run -p kone-rune",
+    "build:rune": "cargo build -p kone-rune --release",
+    "test:rune": "cargo test -p kone-rune"
   },
   "devDependencies": {
     "@kone/config": "workspace:*",

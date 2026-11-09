@@ -83,3 +83,6 @@ temp
 .sandbox/
 
 promo/
+
+# Native Rune build outputs
+/target/
