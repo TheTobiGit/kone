@@ -53,9 +53,14 @@ fn main() {
     App::new(spec)
         .chrome(rune::Chrome {
             full_size_content: true,
-            traffic_lights: Some((16.0, 6.0)),
+            traffic_lights: None,
             drag_regions: true,
         })
+        .window_options(rune::WindowOptions {
+            transparent: true,
+            ..Default::default()
+        })
+        .standard_menus()
         .on_focus(|s, focused, _| s.art_focused = focused)
         .font_smoothing(FontSmoothing::Off)
         .compositor(plasma::Plasma::default())
@@ -100,6 +105,16 @@ fn studio_review(s: &mut AppState) {
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+    for (key, action) in [('q', 0), ('w', 1), ('m', 2)] {
+        if event.is_command(key) {
+            match action {
+                0 => tx.quit(),
+                1 => tx.close_window(),
+                _ => tx.minimize(),
+            }
+            return true;
+        }
+    }
     if s.launcher.mode.is_some() {
         return false;
     }

@@ -6,6 +6,7 @@ pub struct Palette {
     pub dark: bool,
     pub ground: Color,
     pub raised: Color,
+    pub sunken: Color,
     pub raised_high: Color,
     pub ink: Color,
     pub ink_soft: Color,
@@ -33,6 +34,7 @@ impl Palette {
         Self {
             dark,
             ground: c(if dark { "#070708" } else { "#f6f5f3" }),
+            sunken: c(if dark { "#000000" } else { "#e9e8e5" }),
             raised: c(if dark { "#18181a" } else { "#fffefb" }),
             raised_high: c(if dark { "#212124" } else { "#ffffff" }),
             ink,

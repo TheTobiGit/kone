@@ -1,5 +1,7 @@
 # Current Rune port checkpoint
 
+- Frame work in progress: inset panel and backdrop added; macOS traffic-light hiding and Linux client-side resize remain unresolved.
+
 Worktree `/Users/gideonsarfo/Developer/kone-rune`, branch `feat/rune-port`. User authorizes frequent local commits; no push/PR. User requires exact current Electron UI. Settings is deferred; git/files/space/other portals omitted.
 
 ## Delegation policy
