@@ -21,6 +21,7 @@ pub struct Palette {
     pub accent_ink: Color,
     pub accent_wash: Color,
     pub folder: Color,
+    pub warn: Color,
 }
 
 fn c(value: &str) -> Color {
@@ -50,6 +51,7 @@ impl Palette {
             accent_ink: c(if dark { "#1b0f0a" } else { "#ffffff" }),
             accent_wash: accent.alpha(0.1),
             folder: c("#c4a44a"),
+            warn: c(if dark { "#c99b45" } else { "#a57c2b" }),
         }
     }
 }

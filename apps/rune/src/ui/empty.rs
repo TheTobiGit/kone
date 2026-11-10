@@ -9,9 +9,9 @@ use rune::{
     row, text,
 };
 
-const EASE: Easing = Easing::cubic(0.22, 1.0, 0.36, 1.0);
+pub(crate) const EASE: Easing = Easing::cubic(0.22, 1.0, 0.36, 1.0);
 /// Tailwind's `transition-colors` default.
-const COLORS_EASE: Easing = Easing::cubic(0.4, 0.0, 0.2, 1.0);
+pub(crate) const COLORS_EASE: Easing = Easing::cubic(0.4, 0.0, 0.2, 1.0);
 /// Lands a per-frame value at once: the poll clock already eased it.
 const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 

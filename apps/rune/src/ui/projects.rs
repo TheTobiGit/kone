@@ -4,12 +4,27 @@ static FOLDER_META: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
+static ROW_PIN: Icon = Icon {
+    name: "row-pin",
+    view: 24.0,
+    body: r#"<path d="M3 21L8 16M13.2585 18.8714C9.51516 18.0215 5.97844 14.4848 5.12853 10.7415C4.99399 10.1489 4.92672 9.85266 5.12161 9.37197C5.3165 8.89129 5.55457 8.74255 6.03071 8.44509C7.10705 7.77265 8.27254 7.55888 9.48209 7.66586C11.1793 7.81598 12.0279 7.89104 12.4512 7.67048C12.8746 7.44991 13.1622 6.93417 13.7376 5.90269L14.4664 4.59604C14.9465 3.73528 15.1866 3.3049 15.7513 3.10202C16.316 2.89913 16.6558 3.02199 17.3355 3.26771C18.9249 3.84236 20.1576 5.07505 20.7323 6.66449C20.978 7.34417 21.1009 7.68401 20.898 8.2487C20.6951 8.8134 20.2647 9.05346 19.4039 9.53358L18.0672 10.2792C17.0376 10.8534 16.5229 11.1406 16.3024 11.568C16.0819 11.9955 16.162 12.8256 16.3221 14.4859C16.4399 15.7068 16.2369 16.88 15.5555 17.9697C15.2577 18.4458 15.1088 18.6839 14.6283 18.8786C14.1477 19.0733 13.8513 19.006 13.2585 18.8714Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ROW_PIN_OFF: Icon = Icon {
+    name: "row-pin-off",
+    view: 24.0,
+    body: r#"<path d="M7.5 8C6.95863 8.1281 6.49932 8.14239 5.99268 8.45891C5.07234 9.03388 4.85108 9.71674 5.08821 10.7612C5.94028 14.5139 9.48599 18.0596 13.2388 18.9117C14.2834 19.1489 14.9661 18.928 15.5416 18.0077C15.8411 17.5288 15.8716 17.0081 16 16.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7.79915C12.1776 7.77794 12.3182 7.74034 12.4295 7.68235C13.3997 7.17686 13.9291 5.53361 14.4498 4.60009C14.9311 3.73715 15.1718 3.30567 15.7379 3.10227C16.3041 2.89888 16.6448 3.02205 17.3262 3.26839C18.9197 3.8445 20.1555 5.08032 20.7316 6.6738C20.9779 7.35521 21.1011 7.69591 20.8977 8.26204C20.6943 8.82817 20.2628 9.06884 19.3999 9.55018C18.4608 10.074 16.7954 10.6108 16.2905 11.5898C16.2345 11.6983 16.1978 11.8327 16.1769 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 21L8 16M3 3L21 21" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ROW_ARCHIVE: Icon = Icon {
+    name: "row-archive",
+    view: 24.0,
+    body: r#"<path d="M7 21H16.9999C19.3569 21 20.5354 21 21.2677 20.2678C21.9999 19.5355 21.9999 18.357 21.9999 16C21.9999 13.643 21.9999 12.4645 21.2677 11.7322C20.5354 11 19.3569 11 16.9999 11H7C4.64302 11 3.46453 11 2.7323 11.7322C2.00007 12.4644 2.00005 13.6429 2 15.9999C1.99995 18.357 1.99993 19.5355 2.73217 20.2677C3.4644 21 4.64294 21 7 21Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 11C4.00005 9.59977 4.00008 8.89966 4.27263 8.36485C4.5123 7.89455 4.89469 7.51218 5.365 7.27253C5.89981 7 6.59993 7 8.00015 7H16C17.4001 7 18.1002 7 18.635 7.27248C19.1054 7.51217 19.4878 7.89462 19.7275 8.36502C20 8.8998 20 9.59987 20 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 7C6.00004 5.5998 6.00006 4.89969 6.27259 4.3649C6.51227 3.89457 6.89467 3.51218 7.36501 3.27252C7.89981 3 8.59991 3 10.0001 3H14C15.4001 3 16.1002 3 16.635 3.27248C17.1054 3.51217 17.4878 3.89462 17.7275 4.36502C18 4.8998 18 5.59987 18 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 15L15.7 15.4C15.1111 16.1851 14.8167 16.5777 14.3944 16.7889C13.9721 17 13.4814 17 12.5 17H11.5C10.5186 17 10.0279 17 9.60557 16.7889C9.18328 16.5777 8.88885 16.1851 8.3 15.4L8 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 static DELETE: Icon = Icon {
     name: "Delete02Icon",
     view: 24.0,
     body: r#"<path d="M19.5 5.5L18.8803 15.5251C18.7219 18.0864 18.6428 19.3671 18.0008 20.2879C17.6833 20.7431 17.2747 21.1273 16.8007 21.416C15.8421 22 14.559 22 11.9927 22C9.42312 22 8.1383 22 7.17905 21.4149C6.7048 21.1257 6.296 20.7408 5.97868 20.2848C5.33688 19.3626 5.25945 18.0801 5.10461 15.5152L4.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 5.5H21M16.0557 5.5L15.3731 4.09173C14.9196 3.15626 14.6928 2.68852 14.3017 2.39681C14.215 2.3321 14.1231 2.27454 14.027 2.2247C13.5939 2 13.0741 2 12.0345 2C10.9688 2 10.436 2 9.99568 2.23412C9.8981 2.28601 9.80498 2.3459 9.71729 2.41317C9.32164 2.7167 9.10063 3.20155 8.65861 4.17126L8.05292 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 16.5L9.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 16.5L14.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
-use super::empty::{SEARCH, actions, rotating_wordmark, settings_button};
+use super::empty::{COLORS_EASE, EASE, SEARCH, actions, rotating_wordmark, settings_button};
 use crate::{
     project_state::{ProjectSession, ProjectSort},
     state::AppState,
@@ -530,7 +545,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .font(
                         TextStyle::new(12.0, 400.0)
                             .family(Family::Mono)
-                            .tracking(0.6),
+                            .tracking(0.3),
                     )
                     .color(t.muted),
             ),
@@ -672,7 +687,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
         if group.is_empty() {
             continue;
         }
-        let tint = if pinned { t.folder } else { t.faint };
+        let tint = if pinned { t.warn } else { t.faint };
         let mut head = row().w_full().center_y().justify_between().child(
             row()
                 .center_y()
@@ -699,7 +714,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                 let selected = s.project_data.metric_cost == cost;
                 let mut button = el().px(7.0).py(2.0).radius(6.0);
                 if selected {
-                    button = button.fill(t.ground);
+                    button = button.fill(t.ground).shadow(1.0, 2.0, t.ink.alpha(0.08));
                 }
                 toggle = toggle.child(
                     button
@@ -708,6 +723,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                                 .font(
                                     TextStyle::new(10.0, 400.0)
                                         .family(Family::Mono)
+                                        .lh(14.0)
                                         .tracking(0.4),
                                 )
                                 .color(if selected { t.ink } else { t.muted }),
@@ -769,22 +785,55 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
             if session.added == 0 && session.removed == 0 && !session.model.is_empty() {
                 metadata = metadata.child(text(session.model.clone()).font(mono).color(t.muted));
             }
-            metadata = metadata.child(text(time_ago(session.updated_at)).font(mono).color(t.faint));
-            let mut trail = row().w(180.0).h(40.0).center_y().justify_end();
+            metadata = metadata.child(text(time_ago(session.updated_at)).font(mono).color(t.muted));
+            let mut trail = row().w(86.0).h(40.0).center_y().justify_end();
             if hovered {
-                for (label, action) in [
-                    (if session.pinned { "Unpin" } else { "Pin" }, "pin"),
-                    ("Archive", "archive"),
+                let action_font = TextStyle::new(11.0, 400.0).lh(11.0).tracking(-0.11);
+                let mut actions = row().center_y().gap(4.0);
+                for (label, aria, action, glyph) in [
+                    (
+                        if session.pinned { "Unpin" } else { "Pin" },
+                        if session.pinned {
+                            "Unpin conversation"
+                        } else {
+                            "Pin conversation"
+                        },
+                        "pin",
+                        if session.pinned {
+                            &ROW_PIN_OFF
+                        } else {
+                            &ROW_PIN
+                        },
+                    ),
+                    ("Archive", "Archive conversation", "archive", &ROW_ARCHIVE),
                 ] {
                     let action_id = id.clone();
                     let action_path = path.clone();
                     let pinned = session.pinned;
-                    trail = trail.child(
+                    let ink = if pinned && action == "pin" {
+                        t.warn
+                    } else {
+                        t.muted
+                    };
+                    actions = actions.child(
                         el().px(6.0)
                             .py(3.0)
                             .radius(7.0)
-                            .hover(t.hover)
-                            .child(text(label).font(TextStyle::new(11.0, 400.0)).color(t.muted))
+                            .role("button")
+                            .label(aria)
+                            .focusable(true)
+                            .focus_ring(2.0, 2.0, t.ink.alpha(0.3))
+                            .hover_group()
+                            .cursor(Cursor::Pointer)
+                            .child(
+                                row()
+                                    .center_y()
+                                    .gap(5.0)
+                                    .child(icon(glyph, 12.0).color(ink).group_color(t.ink))
+                                    .child(
+                                        text(label).font(action_font).color(ink).group_color(t.ink),
+                                    ),
+                            )
                             .on_press(move |s: &mut AppState| {
                                 s.session_action(
                                     action_path.clone(),
@@ -797,20 +846,24 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                 }
                 let delete_id = id.clone();
                 let delete_path = path.clone();
-                trail = trail.child(
+                actions = actions.child(
                     el().px(6.0)
                         .py(3.0)
                         .radius(7.0)
-                        .hover(t.hover)
+                        .role("button")
+                        .label("Hold to delete conversation")
+                        .hover_group()
+                        .cursor(Cursor::Pointer)
                         .child(
                             row()
                                 .center_y()
                                 .gap(5.0)
-                                .child(icon(&DELETE, 12.0).color(t.muted))
+                                .child(icon(&DELETE, 12.0).color(t.muted).group_color(t.ink))
                                 .child(
                                     text("Delete")
-                                        .font(TextStyle::new(11.0, 400.0))
-                                        .color(t.muted),
+                                        .font(action_font)
+                                        .color(t.muted)
+                                        .group_color(t.ink),
                                 ),
                         )
                         .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
@@ -839,6 +892,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                             rune::Phase::Move => {}
                         }),
                 );
+                trail = trail.child(actions);
             } else {
                 let cost = session_cost(session);
                 let value = if s.project_data.metric_cost && cost > 0.0 {
@@ -855,11 +909,13 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                 if let Some(value) = value {
                     trail = trail.child(
                         col()
+                            .items_end()
                             .child(
                                 text(value)
                                     .font(
                                         TextStyle::new(22.0, 400.0)
                                             .family(Family::Mono)
+                                            .lh(28.0)
                                             .tracking(-0.44),
                                     )
                                     .color(t.ink),
@@ -873,6 +929,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                                 .font(
                                     TextStyle::new(9.0, 400.0)
                                         .family(Family::Mono)
+                                        .lh(12.0)
                                         .tracking(0.9),
                                 )
                                 .color(t.faint),
@@ -884,8 +941,21 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
             rows = rows.child(
                 row()
                     .w_full()
+                    .pr(14.0)
                     .gap(14.0)
                     .center_y()
+                    .radius(10.0)
+                    .hover_group_focus()
+                    .hover_motion(
+                        Curve::tween(0.16, COLORS_EASE),
+                        Curve::tween(0.16, COLORS_EASE),
+                    )
+                    .focus_ring(2.0, 2.0, t.ink.alpha(0.3))
+                    .focusable(true)
+                    .cursor(Cursor::Pointer)
+                    .scale(if hovered { 1.009 } else { 1.0 })
+                    .origin(0.0, 0.5)
+                    .scale_motion(Curve::tween(0.34, EASE))
                     .child(identity_lead(
                         &session.avatar_svg,
                         session.avatar.as_deref(),
@@ -912,7 +982,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                             .child(metadata),
                     )
                     .child(trail)
-                    .on_hover_change(move |s: &mut AppState, over, _| {
+                    .on_hover_focus_change(move |s: &mut AppState, over, _| {
                         if over {
                             s.project_data.hovered_session = Some(hover_id.clone());
                         } else if s.project_data.hovered_session.as_deref()
