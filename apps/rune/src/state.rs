@@ -1250,6 +1250,7 @@ mod tests {
 
 #[derive(Default)]
 pub(crate) struct StartActionsState {
+    pub(crate) page: Option<Page>,
     pub(crate) bounds: [[f32; 4]; 3],
     pub(crate) offsets: [[f32; 2]; 3],
     pub(crate) active: [bool; 3],
@@ -1265,4 +1266,81 @@ pub(crate) struct StartActionsState {
     pub(crate) word: usize,
     pub(crate) prev_word: Option<usize>,
     pub(crate) word_at: Option<f64>,
+}
+
+impl StartActionsState {
+    pub(crate) fn reset_for_page(&mut self, page: Page) -> bool {
+        if self.page == Some(page) {
+            return false;
+        }
+        self.page = Some(page);
+        self.bounds = [[0.0; 4]; 3];
+        self.offsets = [[0.0; 2]; 3];
+        self.active = [false; 3];
+        self.started = [None; 3];
+        true
+    }
+
+    pub(crate) fn pointer_move(&mut self, x: f32, y: f32, pending: bool) -> bool {
+        let mut offsets = [[0.0; 2]; 3];
+        let mut active = self.active;
+        if !pending {
+            active = [false; 3];
+            for i in 0..3 {
+                let [left, top, width, height] = self.bounds[i];
+                let dx = x - (left + width / 2.0);
+                let dy = y - (top + height / 2.0);
+                active[i] =
+                    width > 0.0 && dx.abs() < width / 2.0 + 12.0 && dy.abs() < height / 2.0 + 12.0;
+                if active[i] {
+                    offsets[i] = [dx / 9.0, dy / 9.0];
+                }
+            }
+        }
+        let changed = offsets != self.offsets || active != self.active;
+        self.offsets = offsets;
+        self.active = active;
+        changed
+    }
+}
+
+#[cfg(test)]
+mod start_actions_tests {
+    use super::{Page, StartActionsState};
+
+    #[test]
+    fn page_change_clears_geometry_and_magnet_state_once() {
+        let mut state = StartActionsState::default();
+        assert!(state.reset_for_page(Page::Empty));
+        state.bounds[0] = [10.0, 20.0, 100.0, 40.0];
+        state.offsets[0] = [3.0, 2.0];
+        state.active[0] = true;
+        state.started[0] = Some(1.0);
+        assert!(!state.reset_for_page(Page::Empty));
+        assert_eq!(state.bounds[0], [10.0, 20.0, 100.0, 40.0]);
+        assert!(state.reset_for_page(Page::Projects));
+        assert_eq!(state.bounds, [[0.0; 4]; 3]);
+        assert_eq!(state.offsets, [[0.0; 2]; 3]);
+        assert_eq!(state.active, [false; 3]);
+        assert_eq!(state.started, [None; 3]);
+        assert!(!state.pointer_move(60.0, 40.0, false));
+    }
+
+    #[test]
+    fn pending_retains_pull_until_move_then_preserves_transition_state() {
+        let mut state = StartActionsState::default();
+        state.bounds[0] = [0.0, 0.0, 100.0, 40.0];
+        assert!(state.pointer_move(59.0, 20.0, false));
+        assert_eq!(state.offsets[0], [1.0, 0.0]);
+        assert!(state.active[0]);
+        // Entering pending does not itself update the magnet.
+        let pending = true;
+        assert_eq!(state.offsets[0], [1.0, 0.0]);
+        assert!(state.pointer_move(59.0, 20.0, pending));
+        assert_eq!(state.offsets[0], [0.0, 0.0]);
+        assert!(state.active[0]);
+        assert!(!state.pointer_move(60.0, 20.0, pending));
+        assert!(state.pointer_move(200.0, 20.0, false));
+        assert!(!state.active[0]);
+    }
 }

@@ -127,7 +127,12 @@ pub(super) fn settings_button(t: Palette) -> El {
 }
 
 pub(super) fn actions(t: Palette, s: &AppState, reduced: bool) -> El {
-    start_actions(t, s.launcher.mode, Some(&s.start_actions), reduced)
+    start_actions(
+        t,
+        s.launcher.mode,
+        (s.start_actions.page == Some(s.page)).then_some(&s.start_actions),
+        reduced,
+    )
 }
 
 fn start_actions(
@@ -217,29 +222,16 @@ fn start_actions(
     let wrap = |index: usize, button: El| {
         let (offset, active) =
             state.map_or(([0.0; 2], false), |s| (s.offsets[index], s.active[index]));
-        let offset = if pending.is_none() && !reduced {
-            offset
-        } else {
-            [0.0; 2]
-        };
+        let offset = if !reduced { offset } else { [0.0; 2] };
         el().key(format!("start-anchor-{index}"))
             .on_layout(move |s: &mut AppState, bounds| s.start_actions.bounds[index] = bounds)
             .child(
                 button
                     .offset(offset[0], offset[1])
-                    .offset_motion(Curve::tween(
-                        if active && pending.is_none() {
-                            0.35
-                        } else {
-                            0.6
-                        },
-                        EASE,
-                    )),
+                    .offset_motion(Curve::tween(if active { 0.35 } else { 0.6 }, EASE)),
             )
     };
     let reset = |s: &mut AppState| {
-        s.start_actions.offsets = [[0.0; 2]; 3];
-        s.start_actions.active = [false; 3];
         s.start_actions.started = [None; 3];
     };
     let (create, open, clone) = if pending.is_none() {
@@ -310,12 +302,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .opacity_motion(NOW)
                     .offset(0.0, 8.0 * (1.0 - rise))
                     .offset_motion(NOW)
-                    .child(start_actions(
-                        t,
-                        s.launcher.mode,
-                        Some(&s.start_actions),
-                        reduced,
-                    )),
+                    .child(actions(t, s, reduced)),
             ),
         )
 }
@@ -328,6 +315,7 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
     use std::time::Duration;
     let state = &mut s.start_actions;
     state.clock = clock;
+    let page_changed = state.reset_for_page(s.page);
     if !matches!(
         s.page,
         crate::state::Page::Empty | crate::state::Page::Projects
@@ -337,9 +325,9 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
         state.word_at = None;
         state.prev_word = None;
         state.word = 0;
-        return was;
+        return was || page_changed;
     }
-    let mut changed = false;
+    let mut changed = page_changed;
     if state.mounted.is_none() {
         // A `--scene` snapshot opens settled, its wordmark already landed.
         state.mounted = Some(if state.live { clock } else { clock - 10.0 });
@@ -390,26 +378,13 @@ pub(super) trait StartPointer {
 impl StartPointer for El {
     fn apply_start_pointer(self, reduced: bool) -> Self {
         self.on_pointer_move_local(move |s: &mut AppState, p, tx| {
-            if reduced || s.launcher.mode.is_some() {
+            if reduced
+                || s.start_actions.page != Some(s.page)
+                || !s
+                    .start_actions
+                    .pointer_move(p.window_x, p.window_y, s.launcher.mode.is_some())
+            {
                 tx.live_only();
-                return;
-            }
-            let mut offsets = [[0.0; 2]; 3];
-            let mut active = [false; 3];
-            for i in 0..3 {
-                let [x, y, w, h] = s.start_actions.bounds[i];
-                let dx = p.window_x - (x + w / 2.0);
-                let dy = p.window_y - (y + h / 2.0);
-                active[i] = w > 0.0 && dx.abs() < w / 2.0 + 12.0 && dy.abs() < h / 2.0 + 12.0;
-                if active[i] {
-                    offsets[i] = [dx / 9.0, dy / 9.0];
-                }
-            }
-            if offsets == s.start_actions.offsets && active == s.start_actions.active {
-                tx.live_only();
-            } else {
-                s.start_actions.offsets = offsets;
-                s.start_actions.active = active;
             }
         })
     }

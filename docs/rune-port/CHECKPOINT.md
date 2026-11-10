@@ -118,3 +118,20 @@ Seth: state.rs + ui/studio.rs (next pass all project rows, column movement/zen, 
 Noah: project_state.rs + projects/overview UI + review.rs fixtures and identity/session backend metadata.
 Mira: launcher.rs + launcher-related sidecar RPC/tests (nonblocking browser, exact paths/bands/morphs/cancellation test).
 Root: main.rs, ui/mod.rs, plasma.rs, theme.rs/color mixing, bridge.rs, integration/commits/testing.
+
+## Review: start-action magnet on pointer exit (`a0976f22`)
+
+Independent read-only review of the commit that deleted the window-exit reset in `StartPointer::apply_start_pointer`. Source of truth is `apps/web/app/components/ui/magnet/Magnet.vue`: it listens to `mousemove` on `window`, so a pointer leaving the window delivers no event and the transform stays frozen at the last in-window sample. `StartActions.vue` passes padding 12, strength 9, 0.35 s in / 0.6 s out, and Rune already uses those values (not the component defaults of 2 / 0.3 s / 0.5 s).
+
+- Result: the change matches the source. Both homes keep the pull; `reduced` and the launcher-`pending` guards still short-circuit; nothing else on the row changed.
+- Numeric parity: pointer at content (548, 420) on the Create row gives -9.63889 px in Electron and rect.x 539.11 on target 548.75 (-9.64 pt) in Rune.
+- The removed handler was near-inert: its reset only fired when the pointer left the page root while it was inside the magnet's 12 pt ring, and these rows sit mid-window, so a real exit (which crosses the window edge first) leaves a zero pull. Baseline (`a0976f22^`) and `a0976f22` renders of the same edge-exit path are pixel-identical (0 differing pixels at DPR 2).
+- What the commit does change: a pointer leave *without* first passing the window edge (macOS Space switch, window hidden/minimised under the pointer) now freezes the pull instead of snapping it home, as in Electron. Headless stand-in for that: an out-of-window scripted move.
+
+Capture scripts (same-size sheets, 2x, light):
+- Electron: `node /workspace/parity-scratch/pw/magnet-exit.mjs light /tmp/me2-light` (alpha of `pw/hov.mjs`: viewport 1280x840, DPR 2, `page.clock`, wait for the `kone.` aria label, glide 12 steps to the row at content (548, 420), then glide to the left edge (0, 420)). It also prints the three transforms.
+- Rune: `/tmp/kone-new-rune --scene empty-brand --size 1292x854 --theme light --script /tmp/magnet-exit.json --at 2.0 --snap raw.png`, cropped to (12, 16, +2560, +1680). Scripts are 12-step glides in window points (Electron + (6, 8)); `magnet-hover.json` stops on the row, `magnet-exit.json` continues to the page edge and then out, `magnet-synth.json` leaves straight from the row. `--tree` gives the exact `rect`/`target` pair.
+- Sheets: `python3 /workspace/parity-scratch/start/pair.py out.png "left label" a.png "right label" b.png "footer"` (equal pane sizes, 5144x1770).
+- Output: `/workspace/rune-compare/no-project-magnet-electron.png`, `no-project-magnet-rune.png`, and `no-project-magnet-rune-exit-proof.png` (baseline vs `a0976f22`, synthetic exit).
+
+Limits: Playwright cannot take the pointer out of a page, so the Electron "after" pane is the frozen state at the last in-window sample rather than a real leave (a stray move outside the viewport would reset it, which the app never receives). Electron's rotating word renders blank under the paused clock, as in the earlier start-screen captures. Rune's harness has no pointer-leave event, so a synthetic leave is an out-of-window move.
