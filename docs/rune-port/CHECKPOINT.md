@@ -1,5 +1,41 @@
 # Current Rune port checkpoint
 
+## Launcher modals (Create / Open / Clone) — DONE (2026-11-10)
+
+`launcher.rs` was rebuilt from the Vue sources (`db751a6e`, `0687658e`). The Create, Open and Clone cards now match Electron at 2x in light and dark: at rest, hovered, with an error, on the More panel and mid-clone. Measured text, panel and band edges agree to within 1 device px.
+
+- Side-by-sides (Electron | Rune) are in `/workspace/rune-compare/`:
+  - `modal-{create,open,clone}-{light,dark}.png`
+  - `modal-{create,open,clone}-hover-{light,dark}.png`
+  - `modal-create-err-{light,dark}.png`
+  - `modal-create-more-{light,dark}.png`
+  - `modal-clone-progress-{light,dark}.png`
+- Shell:
+  - Scrim: ground at 62% with a 4 pt backdrop blur, faded over 0.24 s (0.22,1,0.36,1).
+  - Card: 448 pt, bottom-right with 24 pt inset. It is `--band` with a 14 pt-radius `--panel` body scooped into it, 18 pt corners, and a 1 pt ink 8% ring. The ring is a 1 pt wider tinted pill under the card, because Rune's box-shadow was clipped by `clip_rounded`.
+  - Motion: enters on a spring (300, 22, mass 0.9) from opacity 0, y 12, scale 0.96. It exits for 240 ms (`EXIT`), then unmounts. The poll-clock `launcher::tick` drives this from `AppState::poll`.
+- Focus: a transparent card is inert, so it drops the open's focus request. `tick` asks for focus again when the card shows (Electron `autofocus`).
+- Linux text corrections (not applied on macOS):
+  - `mono_nudge`: Liberation Mono sits 0.5 to 1 pt higher in Chrome's line boxes.
+  - `ARROW_RISE`: the fallback "→" (Arimo at 104.755%) rides Geist's baseline, so it is raised 1 pt.
+- Scenes: `launcher-create`, `launcher-open`, `launcher-clone`, `launcher-more`, `launcher-clone-progress`. For the progress scene, `KONE_SCENE_PROGRESS` sets where the bar is caught.
+- Capture scripts (Electron):
+  - `/workspace/parity-scratch/pw/modal-rt.mjs` (rest)
+  - `modal-state.mjs <scheme> <which> <out> <typed> <x> <y>` (type, then hover)
+  - `modal-more.mjs <scheme> <out> more|progress`
+  - These use real-time waits, because modal content never renders under a paused Playwright clock. Rune scripts come from `/tmp/mkscript.py`; window coordinates = Electron + (6, 8).
+- Known remaining differences:
+  - Rune draws a caret in captures; Playwright hides Chrome's.
+  - Geist rasterizes about 1 device px taller in Rune.
+  - Mac SF Mono and the system arrow fallback are uncorrected and unverified.
+  - Buttons use Rune's focus ring, not Chrome's `auto` outline.
+  - The destination row reveals "Change" on hover only, not on keyboard focus-visible.
+  - The repo-name input is not right-aligned.
+  - The browser scrollbar is Rune's indicator, not Chrome's thin 10 px gutter thumb.
+  - Browser rows have no git metadata, because the sidecar returns no repo flag.
+  - Enter/exit/morph motion uses the source's parameters but was not frame-compared, because Electron is not deterministic there.
+  - Not captured side by side: the create sweep, the embedded browser (Change), and the More remote sub-rows.
+
 ## Start screen (no project) — DONE (2026-11-10)
 
 The no-project start screen matches Electron 1:1 at 2x in light and dark, at rest, on hover and mid-gesture (`30196eb1`). **Next: the projects list** (`ui/projects.rs`, `--scene projects-review`).
