@@ -67,18 +67,9 @@ fn fraunces() -> TextStyle {
         .family(Family::Named("Fraunces"))
 }
 
-/// The static `make it kone.` mark other pages show.
-pub(super) fn wordmark(t: Palette) -> El {
-    row()
-        .center_y()
-        .gap(4.2)
-        .child(text("make it").font(fraunces()).color(t.ink))
-        .child(text("kone.").font(fraunces()).color(t.accent))
-}
-
 /// `HomeRotatingWordmark`: `make it` and a word that builds the brand up letter
 /// by letter, each letter springing up out of a clip and away above it.
-fn rotating_wordmark(t: Palette, s: &StartActionsState) -> El {
+pub(super) fn rotating_wordmark(t: Palette, s: &StartActionsState) -> El {
     let elapsed = since(s, s.word_at);
     let (shown, phase) = match (elapsed, s.prev_word) {
         (Some(e), Some(prev)) if e < motion::exit_span(motion::word(prev).0.len()) => {
@@ -337,7 +328,10 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
     use std::time::Duration;
     let state = &mut s.start_actions;
     state.clock = clock;
-    if s.page != crate::state::Page::Empty {
+    if !matches!(
+        s.page,
+        crate::state::Page::Empty | crate::state::Page::Projects
+    ) {
         let was = state.mounted.is_some();
         state.mounted = None;
         state.word_at = None;
