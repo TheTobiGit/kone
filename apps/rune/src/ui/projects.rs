@@ -338,7 +338,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         }),
                 )
                 .child(controls);
-            el().w(236.0).child(tile)
+            // The source button's inline folder leaves a line-box descender below its
+            // 116 pt artwork; it contributes eight points to an all-card grid row.
+            el().w(236.0).h(124.0).child(tile)
         })
         .collect();
     let no_matches = cells.is_empty();
