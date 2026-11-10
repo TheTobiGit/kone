@@ -15,7 +15,9 @@ use crate::{
     state::AppState,
     theme::{Palette, mix_srgb},
 };
-use rune::{Cx, El, Family, Icon, Spring, TextStyle, col, el, icon, row, text, text_input};
+use rune::{
+    Cx, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el, icon, row, text, text_input,
+};
 
 static CLOCK: Icon = Icon {
     name: "session-clock",
@@ -381,6 +383,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .fill(t.ground)
         .px(64.0)
         .pt(20.0)
+        .pb(64.0)
         .child(header)
         .child(
             row()
@@ -392,11 +395,20 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .child(
             row()
                 .w_full()
+                .grow(1.0)
+                .min_h(0.0)
                 .justify_center()
                 .pt(96.0)
                 .child(
-                    el().w(820.0)
-                        .child(sessions(s, &s.project_data.home_sessions, t, true)),
+                    col()
+                        .key("home-sessions")
+                        .w(820.0)
+                        .h_full()
+                        .scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })
+                        .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
+                        .child(sessions(s, &s.project_data.home_sessions, t, true).pb(24.0)),
                 ),
         )
 }
