@@ -454,7 +454,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     }
     if no_matches {
         grid = grid.child(
-            el().pt(24.0).child(
+            el().pb(24.0).child(
                 text(format!("No projects match “{}”", s.search.text))
                     .font(
                         TextStyle::new(12.0, 400.0)
