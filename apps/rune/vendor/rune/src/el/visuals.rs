@@ -506,6 +506,7 @@ impl El {
     /// [`Self::hover_group`] that also counts as hovered while keyboard focus is on it or
     /// anywhere inside it, as CSS `:is(:hover, :has(:focus-visible))` does: a tab whose close
     /// button and hover wash show when Tab reaches it, as under the pointer.
+    /// An `on_hover_change` handler on this group also receives keyboard focus transitions.
     pub fn hover_group_focus(mut self) -> Self {
         self.vis_flags.set(VisualFlags::HOVER_GROUP, true);
         self.vis.cold_mut().hover_focus = true;

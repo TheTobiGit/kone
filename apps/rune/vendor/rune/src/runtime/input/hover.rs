@@ -97,6 +97,18 @@ impl<S: 'static> Runtime<S> {
                 }
             }
         }
+        // A focus-aware hover group reports the same state to its callback as it
+        // presents to group styles, including keyboard focus on descendants.
+        if self.keyboard_focus {
+            for (i, n) in self.nodes.iter().enumerate() {
+                if n.vis.hover_focus && n.handlers.get().is_some_and(|h| h.on_hover_change.is_some())
+                    && self.focus_within(i) && self.allowed(i) && !inside.contains(&n.path)
+                {
+                    if !self.hover_within.contains(&n.path) { entering.push(i); }
+                    inside.push(n.path.clone());
+                }
+            }
+        }
         // A held press stays inside what holds it until it releases.
         if let Some((captured, _)) = &self.capture {
             for path in &self.hover_within {

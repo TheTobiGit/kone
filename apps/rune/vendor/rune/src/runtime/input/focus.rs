@@ -204,6 +204,7 @@ impl<S: 'static> Runtime<S> {
         // `El::hover_group_focus`: a group keyboard focus enters or leaves hovers or rests now.
         if self.nodes.iter().any(|n| n.vis.hover_focus) {
             changed |= self.update_interaction(None);
+            self.refresh_hover_within();
         }
         changed
     }

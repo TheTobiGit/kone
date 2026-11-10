@@ -109,6 +109,7 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
     let mut pocket = col()
         .size(200.0, 92.0)
         .radius(22.0)
+        .focus_ring(2.0, 3.0, t.ink.alpha(0.26))
         .justify_end()
         .px(18.0)
         .pb(15.0)
@@ -331,6 +332,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             let action = |label: &'static str, glyph: &'static Icon, size: f32| {
                 el().size(24.0, 24.0)
                     .center()
+                    .radius(12.0)
+                    .focus_ring(2.0, 2.0, t.ink.alpha(0.34))
                     .role("button")
                     .label(label)
                     .help(label)
@@ -925,6 +928,38 @@ static PROVIDER_DOT: Icon = Icon {
 
 #[cfg(test)]
 mod session_tests {
+    #[test]
+    fn focus_aware_hover_notifies_once_per_group_transition() {
+        use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col, el};
+        use std::{cell::RefCell, rc::Rc};
+        type Events = Rc<RefCell<Vec<bool>>>;
+        fn view(_: &Events, _: &mut Cx<Events>) -> El {
+            col()
+                .child(
+                    col()
+                        .size(100.0, 40.0)
+                        .hover_group_focus()
+                        .on_hover_change(|events: &mut Events, over, _| {
+                            events.borrow_mut().push(over)
+                        })
+                        .child(el().size(30.0, 20.0).focusable(true))
+                        .child(el().size(30.0, 20.0).focusable(true)),
+                )
+                .child(el().size(30.0, 30.0).focusable(true))
+        }
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut rt = Runtime::new(events.clone(), view, (200.0, 100.0), Env::default());
+        rt.frame(0.0);
+        for expected in [&[true][..], &[true][..], &[true, false][..]] {
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            assert_eq!(&*events.borrow(), expected);
+        }
+    }
     use super::*;
     #[test]
     fn formats_source_time_and_tokens() {
