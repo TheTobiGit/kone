@@ -176,6 +176,7 @@ impl AppState {
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
         let start = crate::ui::start_tick(s, clock, tx);
+        let launcher = crate::launcher::tick(s, clock, tx);
         let mut messages = Vec::new();
         if let Some(bridge) = &s.bridge {
             while let Some(message) = bridge.try_recv() {
@@ -188,7 +189,7 @@ impl AppState {
                 s.studio_message(message);
             }
         }
-        changed || start
+        changed || start || launcher
     }
 
     fn park_studio_thread(&mut self) {

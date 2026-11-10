@@ -37,6 +37,21 @@ fn main() {
                 s.page = Page::Empty;
                 s.start_actions.word = 4;
             }),
+            ("launcher-create", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture(crate::launcher::LauncherMode::Create);
+            }),
+            ("launcher-open", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture(crate::launcher::LauncherMode::Open);
+            }),
+            ("launcher-clone", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture(crate::launcher::LauncherMode::Clone);
+            }),
             ("projects", |s| {
                 s.example_project();
                 s.page = Page::Projects;
