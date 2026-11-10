@@ -47,6 +47,11 @@ fn main() {
                 s.start_actions.word = 4;
                 s.launcher.fixture(crate::launcher::LauncherMode::Open);
             }),
+            ("launcher-create-browser", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture_create_browser();
+            }),
             ("launcher-clone", |s| {
                 s.page = Page::Empty;
                 s.start_actions.word = 4;

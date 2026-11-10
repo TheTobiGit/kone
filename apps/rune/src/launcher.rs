@@ -1,6 +1,6 @@
 use crate::{state::AppState, theme::Palette};
 use rune::{
-    Curve, Cx, Easing, El, Family, Icon, Key, ScrollFade, ScrollSpec, Shadow, Span, Spring,
+    Curve, Cx, Easing, El, Family, Icon, Key, Live, ScrollFade, ScrollSpec, Shadow, Span, Spring,
     TextEdit, TextStyle, Transition, Tx, col, el, icon, row, text, text_input,
 };
 use serde_json::{Value, json};
@@ -132,6 +132,8 @@ pub struct LauncherState {
     row_bounds: HashMap<String, [f32; 4]>,
     pull: HashMap<String, [f32; 2]>,
     viewport_h: f32,
+    browser_thumb: Live<[f32; 4]>,
+    browser_scroll: Live<[f32; 4]>,
 }
 impl Default for LauncherState {
     fn default() -> Self {
@@ -176,6 +178,8 @@ impl Default for LauncherState {
             row_bounds: HashMap::new(),
             pull: HashMap::new(),
             viewport_h: 840.0,
+            browser_thumb: Live::new([0.0; 4]),
+            browser_scroll: Live::new([0.0; 4]),
         }
     }
 }
@@ -337,6 +341,10 @@ impl LauncherState {
         self.fixture_more();
         self.remote = true;
         self.use_git = true;
+    }
+    pub fn fixture_create_browser(&mut self) {
+        self.fixture(LauncherMode::Open);
+        self.mode = Some(LauncherMode::Create);
     }
     /// A clone caught mid-transfer, for snapshot scenes.
     pub fn fixture_clone_progress(&mut self, progress: f64, stage: &str) {
@@ -1644,6 +1652,8 @@ fn browser(s: &AppState, t: Palette) -> El {
         }
         choose(s, path);
     });
+    let thumb = l.browser_thumb.clone();
+    let scroll_pos = l.browser_scroll.clone();
     let scroll = col()
         .key("launcher-scroll")
         .w_full()
@@ -1652,17 +1662,55 @@ fn browser(s: &AppState, t: Palette) -> El {
             stick_bottom: false,
         })
         .scroll_fade(ScrollFade::strength(22.0).linear().full_at(1.0))
+        .on_scroll_offset(move |at| {
+            let height = at.viewport[1];
+            let content = height + at.max[1];
+            let track = (height - 6.0).max(0.0);
+            let thumb_h = if at.max[1] > 0.0 {
+                (track * height / content).max(18.0).min(track)
+            } else {
+                0.0
+            };
+            let y = if at.max[1] > 0.0 {
+                3.0 + (track - thumb_h) * (at.offset[1] / at.max[1]).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            thumb.set([(at.viewport[0] - 7.0).max(0.0), y, 4.0, thumb_h]);
+            scroll_pos.set([at.offset[1], at.max[1], track, thumb_h]);
+        })
         .on_pointer_move(|s: &mut AppState, p| pull_rows(s, p.x, p.y))
         .on_hover_change(|s: &mut AppState, over, _| {
             if !over {
                 s.launcher.pull.clear();
             }
         })
-        .child(list);
+        .child(list.pr(10.0));
     col()
         .w_full()
         .child(header(vec![address, back]))
-        .child(panel(t, true).pl(16.0).py(16.0).child(scroll))
+        .child(
+            panel(t, true).pl(16.0).py(16.0).child(
+                el().w_full().hover_group().child(scroll).child(
+                    el().absolute(0.0, 0.0)
+                        .live_rect(&l.browser_thumb)
+                        .radius(99.0)
+                        .fill(t.ink.alpha(0.30))
+                        .group_opacity(0.16 / 0.30, 1.0)
+                        .hit()
+                        .on_drag(|s: &mut AppState, d, tx| {
+                            let [offset, max, track, thumb_h] = s.launcher.browser_scroll.get();
+                            if d.phase == rune::Phase::Down {
+                                d.data = offset;
+                            } else if d.phase == rune::Phase::Move && track > thumb_h {
+                                let next =
+                                    (d.data + d.dy * max / (track - thumb_h)).clamp(0.0, max);
+                                tx.scroll_to_instant("launcher-scroll", 0.0, next);
+                            }
+                        }),
+                ),
+            ),
+        )
         .child(footer(vec![choose_button]))
 }
 
