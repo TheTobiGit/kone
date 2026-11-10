@@ -16,7 +16,8 @@ use crate::{
     theme::{Palette, mix_srgb},
 };
 use rune::{
-    Cx, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el, icon, row, text, text_input,
+    AnimExt, Cx, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el, icon, row, text,
+    text_input,
 };
 
 static CLOCK: Icon = Icon {
@@ -251,12 +252,12 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
                 .absolute([44.0, 78.0, 112.0][i], [0.0, -6.0, 0.0][i])
                 .origin(0.0, 0.0)
                 .rotate(angle.to_radians())
-                .rotate_motion(spring)
+                .rotate_motion(spring.delay(if active { i as f32 * 0.04 } else { 0.0 }))
                 .offset(
                     if active { [-14.0, 0.0, 14.0][i] } else { 0.0 },
                     if active { [-4.0, -5.0, -4.0][i] } else { 0.0 },
                 )
-                .offset_motion(spring),
+                .offset_motion(spring.delay(if active { i as f32 * 0.04 } else { 0.0 })),
         );
     }
     stage.child(pocket)
