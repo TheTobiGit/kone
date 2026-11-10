@@ -232,6 +232,12 @@ impl AppState {
             s.project_data.lazy = Default::default();
             false
         };
+        let icons = if s.page == Page::Projects {
+            s.project_data.icons.tick(clock)
+        } else {
+            s.project_data.icons = Default::default();
+            false
+        };
         let start = crate::ui::start_tick(s, clock, tx);
         let launcher = crate::launcher::tick(s, clock, tx);
         let mut messages = Vec::new();
@@ -247,7 +253,7 @@ impl AppState {
             }
         }
         s.sync_project_watches();
-        changed || start || launcher || lazy
+        changed || start || launcher || lazy || icons
     }
 
     fn park_studio_thread(&mut self) {

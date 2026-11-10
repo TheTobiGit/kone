@@ -58,6 +58,7 @@ pub struct ProjectState {
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
     pub lazy: LazySessions,
+    pub icons: IconHover,
     pub metric_cost: bool,
     pub hovered_session: Option<String>,
     pub hovered_project: Option<String>,
@@ -121,6 +122,50 @@ impl LazySessions {
             return true;
         }
         false
+    }
+}
+
+/// One hover gesture per icon, keyed by where it was triggered (`sort`,
+/// `search`, `<project path>|pin`…). The Vue sources replay a gesture on
+/// `mouseenter` but ignore a re-entry while one is still playing, so a run is
+/// only stamped when the previous one has landed.
+#[derive(Default)]
+pub struct IconHover {
+    pub clock: f64,
+    runs: HashMap<String, (f64, f32)>,
+}
+
+impl IconHover {
+    /// Elapsed seconds of the gesture at `key`, or `None` when it is at rest.
+    pub fn since(&self, key: &str) -> Option<f32> {
+        let &(at, len) = self.runs.get(key)?;
+        let at = if at == f64::INFINITY { self.clock } else { at };
+        let elapsed = (self.clock - at).max(0.0) as f32;
+        (elapsed < len).then_some(elapsed)
+    }
+
+    /// A pointer entered `key`, which plays `len` seconds of gesture.
+    pub fn enter(&mut self, key: &str, len: f32) {
+        if self.since(key).is_some() {
+            return;
+        }
+        self.runs.insert(key.to_owned(), (f64::INFINITY, len));
+    }
+
+    /// Stamps runs that started between polls and asks for frames while any is
+    /// playing. Returns whether the view should run again.
+    pub fn tick(&mut self, clock: f64) -> bool {
+        self.clock = clock;
+        let mut moving = false;
+        self.runs.retain(|_, (at, len)| {
+            if *at == f64::INFINITY {
+                *at = clock;
+            }
+            let playing = clock - *at < *len as f64;
+            moving |= playing;
+            playing
+        });
+        moving
     }
 }
 
@@ -665,5 +710,24 @@ mod tests {
             ["b", "a"]
         );
         assert_eq!(state.project_data.home_sessions[0].project_path, "/b");
+    }
+}
+
+#[cfg(test)]
+mod icon_hover_tests {
+    use super::IconHover;
+
+    #[test]
+    fn gestures_finish_after_exit_and_ignore_reentry_until_complete() {
+        let mut icons = IconHover::default();
+        icons.enter("project|pin", 0.5);
+        assert!(icons.tick(1.0));
+        icons.enter("project|pin", 0.5);
+        assert!(icons.tick(1.3));
+        assert!((icons.since("project|pin").unwrap() - 0.3).abs() < 0.001);
+        assert!(!icons.tick(1.5));
+        icons.enter("project|pin", 0.5);
+        assert!(icons.tick(1.6));
+        assert_eq!(icons.since("project|pin"), Some(0.0));
     }
 }

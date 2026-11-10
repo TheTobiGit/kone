@@ -16,7 +16,7 @@ pub(crate) const FPS: f32 = 120.0;
 /// Glyphs are drawn on a 28-unit grid with the 24-unit artwork centred in it, so
 /// strokes that overshoot the 24 box mid-animation (SVG `overflow="visible"`)
 /// are not clipped.
-const PAD: f32 = 2.0;
+pub(crate) const PAD: f32 = 2.0;
 pub(crate) const VIEW: f32 = 24.0 + PAD * 2.0;
 /// Electron's glyphs are 18 px on the 24 grid; this is the same scale on 28.
 pub(crate) const GLYPH: f32 = 18.0 * VIEW / 24.0;

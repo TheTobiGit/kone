@@ -25,6 +25,7 @@ static DELETE: Icon = Icon {
     body: r#"<path d="M19.5 5.5L18.8803 15.5251C18.7219 18.0864 18.6428 19.3671 18.0008 20.2879C17.6833 20.7431 17.2747 21.1273 16.8007 21.416C15.8421 22 14.559 22 11.9927 22C9.42312 22 8.1383 22 7.17905 21.4149C6.7048 21.1257 6.296 20.7408 5.97868 20.2848C5.33688 19.3626 5.25945 18.0801 5.10461 15.5152L4.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 5.5H21M16.0557 5.5L15.3731 4.09173C14.9196 3.15626 14.6928 2.68852 14.3017 2.39681C14.215 2.3321 14.1231 2.27454 14.027 2.2247C13.5939 2 13.0741 2 12.0345 2C10.9688 2 10.436 2 9.99568 2.23412C9.8981 2.28601 9.80498 2.3459 9.71729 2.41317C9.32164 2.7167 9.10063 3.20155 8.65861 4.17126L8.05292 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 16.5L9.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 16.5L14.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 use super::empty::{COLORS_EASE, EASE, SEARCH, actions, rotating_wordmark, settings_button};
+use super::icon_motion;
 use crate::{
     project_state::{ProjectSession, ProjectSort},
     state::AppState,
@@ -49,21 +50,6 @@ static PROJECT_PIN: Icon = Icon {
     name: "project-pin",
     view: 24.0,
     body: r#"<path d="M3 21L8 16M13.2585 18.8714C9.51516 18.0215 5.97844 14.4848 5.12853 10.7415C4.99399 10.1489 4.92672 9.85266 5.12161 9.37197C5.3165 8.89129 5.55457 8.74255 6.03071 8.44509C7.10705 7.77265 8.27254 7.55888 9.48209 7.66586C11.1793 7.81598 12.0279 7.89104 12.4512 7.67048C12.8746 7.44991 13.1622 6.93417 13.7376 5.90269L14.4664 4.59604C14.9465 3.73528 15.1866 3.3049 15.7513 3.10202C16.316 2.89913 16.6558 3.02199 17.3355 3.26771C18.9249 3.84236 20.1576 5.07505 20.7323 6.66449C20.978 7.34417 21.1009 7.68401 20.898 8.2487C20.6951 8.8134 20.2647 9.05346 19.4039 9.53358L18.0672 10.2792C17.0376 10.8534 16.5229 11.1406 16.3024 11.568C16.0819 11.9955 16.162 12.8256 16.3221 14.4859C16.4399 15.7068 16.2369 16.88 15.5555 17.9697C15.2577 18.4458 15.1088 18.6839 14.6283 18.8786C14.1477 19.0733 13.8513 19.006 13.2585 18.8714Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static PROJECT_PINNED: Icon = Icon {
-    name: "project-pinned",
-    view: 24.0,
-    body: r#"<path d="M3 21L8 16M13.2585 18.8714C9.51516 18.0215 5.97844 14.4848 5.12853 10.7415C4.99399 10.1489 4.92672 9.85266 5.12161 9.37197C5.3165 8.89129 5.55457 8.74255 6.03071 8.44509C7.10705 7.77265 8.27254 7.55888 9.48209 7.66586C11.1793 7.81598 12.0279 7.89104 12.4512 7.67048C12.8746 7.44991 13.1622 6.93417 13.7376 5.90269L14.4664 4.59604C14.9465 3.73528 15.1866 3.3049 15.7513 3.10202C16.316 2.89913 16.6558 3.02199 17.3355 3.26771C18.9249 3.84236 20.1576 5.07505 20.7323 6.66449C20.978 7.34417 21.1009 7.68401 20.898 8.2487C20.6951 8.8134 20.2647 9.05346 19.4039 9.53358L18.0672 10.2792C17.0376 10.8534 16.5229 11.1406 16.3024 11.568C16.0819 11.9955 16.162 12.8256 16.3221 14.4859C16.4399 15.7068 16.2369 16.88 15.5555 17.9697C15.2577 18.4458 15.1088 18.6839 14.6283 18.8786C14.1477 19.0733 13.8513 19.006 13.2585 18.8714Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static FINDER: Icon = Icon {
-    name: "finder",
-    view: 24.0,
-    body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 8V10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 8V10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 16.5C10.5 18.5 13.5 18.5 17 16.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.9896 2.5C12.1238 3.78525 10.5163 7.71349 10.0737 11.5798C9.98097 12.3899 9.9346 12.795 10.1905 13.1176C10.2151 13.1486 10.2474 13.1843 10.2757 13.212C10.5708 13.5 11.0149 13.5 11.9031 13.5C12.3889 13.5 12.6317 13.5 12.7766 13.6314C12.7923 13.6457 12.8051 13.6588 12.819 13.6748C12.9468 13.8225 12.9383 14.072 12.9212 14.5709C12.8685 16.1156 12.9401 19.0524 14 21.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static CANCEL: Icon = Icon {
-    name: "cancel-01",
-    view: 24.0,
-    body: r#"<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 static BRANCH: Icon = Icon {
     name: "git-branch",
@@ -312,6 +298,15 @@ fn profile_chip(s: &AppState, t: Palette) -> Option<El> {
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
+    let reduced = cx.is_reduced_motion();
+    // Hover gestures play on the poll clock; reduced motion rests the glyph.
+    let since = |key: &str| {
+        if reduced {
+            None
+        } else {
+            s.project_data.icons.since(key)
+        }
+    };
     let mut trailing = row()
         .center_y()
         .gap(12.0)
@@ -409,9 +404,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             let spring = Spring::from_stiffness_damping(420.0, 38.0, 0.85);
             let action = |label: &'static str,
                           title: &'static str,
-                          glyph: &'static Icon,
+                          kind: usize,
                           size: f32,
-                          ink: rune::Color| {
+                          ink: rune::Color,
+                          key: String| {
+                let elapsed = since(&key);
                 el().size(24.0, 24.0)
                     .center()
                     // The source button carries no radius, so its outline is square.
@@ -422,7 +419,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .focusable(s.launcher.mode.is_none())
                     .cursor(rune::Cursor::Pointer)
                     .hover_group()
-                    .child(icon(glyph, size).color(ink).group_color(t.ink))
+                    .child(
+                        el().size(size, size)
+                            .center()
+                            .on_hover_change(move |s: &mut AppState, over, _| {
+                                if over {
+                                    s.project_data.icons.enter(&key, icon_motion::len(kind));
+                                }
+                            })
+                            .child(
+                                icon(
+                                    icon_motion::gesture(kind, elapsed),
+                                    size * icon_motion::GLYPH,
+                                )
+                                .color(ink)
+                                .group_color(t.ink),
+                            ),
+                    )
             };
             let controls = col()
                 .gap(6.0)
@@ -442,12 +455,13 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         },
                         if pinned { "Unpin" } else { "Pin to top" },
                         if pinned {
-                            &PROJECT_PINNED
+                            icon_motion::PINNED
                         } else {
-                            &PROJECT_PIN
+                            icon_motion::PIN
                         },
                         14.0,
                         if pinned { t.ink } else { t.muted },
+                        format!("{path}|pin"),
                     )
                     .on_press(move |s: &mut AppState| s.pin_project(pin_path.clone())),
                 )
@@ -455,15 +469,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     action(
                         "Reveal in Finder",
                         "Reveal in Finder",
-                        &FINDER,
+                        icon_motion::FINDER,
                         15.0,
                         t.muted,
+                        format!("{path}|reveal"),
                     )
                     .on_press(move |s: &mut AppState| s.reveal_project(reveal_path.clone())),
                 )
                 .child(
-                    action("Remove from recents", "Remove", &CANCEL, 14.0, t.muted)
-                        .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
+                    action(
+                        "Remove from recents",
+                        "Remove",
+                        icon_motion::CANCEL,
+                        14.0,
+                        t.muted,
+                        format!("{path}|forget"),
+                    )
+                    .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
                 );
             let tile = row()
                 .h(123.8)

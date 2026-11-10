@@ -165,3 +165,9 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - `b9f1bef6` applies the existing home focus refinements to the settings button, profile chip, sort control, and session rows. `cargo fmt --check`, the debug build, and all 34 native tests passed.
 - Captures: `/workspace/rune-compare/projects-focus-followup-{light,dark}.png`. These are **not a parity sign-off**: the Electron capture focuses the project card, while the Rune script's three Tab presses now land elsewhere. Update the script for the changed focus order and compare equivalent states.
 - Part B remains incomplete: session lazy-loading skeletons and entrance timing, card action icon animations and native tooltip presentation, full file-icon coverage, and equivalent-state motion/focus/empty-state checks remain open.
+
+### Follow-up: project action icons (2026-11-10)
+
+- Pin, Finder, and remove hover gestures sample the corresponding Vue keyframes on the projects poll clock, finish after pointer exit, ignore re-entry during a gesture, and rest under reduced motion. Hover starts on the icon itself, as in the source. Pin retains its pinned stroke weight.
+- The action titles remain `Pin to top`/`Unpin`, `Reveal in Finder`, and `Remove`. Rune's existing `help` tooltips are the closest available: Linux uses Rune's element-centred popup and timing, macOS uses AppKit; Chromium's native title tooltip can differ in delay, placement, appearance and platform motion. Playwright page screenshots omit Chromium's native tooltip, so the sheets cannot establish tooltip parity. The animation tracks have not been frame-compared against Electron.
+- Captures: `/workspace/rune-compare/projects-action-icons-{light,dark}.png` (settled pin hover). The Rune capture includes its tooltip; the Electron page screenshot omits its native tooltip. The paused Rune capture also omits the rotating wordmark, a known harness limitation.
