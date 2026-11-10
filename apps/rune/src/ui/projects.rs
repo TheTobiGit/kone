@@ -22,6 +22,11 @@ static CLOCK: Icon = Icon {
     view: 24.0,
     body: r#"<circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
 };
+static ARROW_DOWN: Icon = Icon {
+    name: "arrow-down-01",
+    view: 24.0,
+    body: r#"<path d="M18 9C18 9 13.5811 15 12 15C10.4188 15 6 9 6 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 static PIN: Icon = Icon {
     name: "session-pin",
     view: 24.0,
@@ -192,22 +197,44 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                                 .color(t.ink)
                                 .on_edit(|s: &mut AppState| &mut s.search),
                         )
-                        .child(text("⌘K").font(TextStyle::new(10.0, 400.0)).color(t.muted)),
+                        .child(
+                            el().px(6.0)
+                                .py(2.0)
+                                .radius(5.0)
+                                .border(1.0, t.muted.alpha(0.25))
+                                .child(
+                                    text("⌘K")
+                                        .font(
+                                            TextStyle::new(10.0, 400.0)
+                                                .family(Family::Mono)
+                                                .lh(10.0),
+                                        )
+                                        .color(t.muted),
+                                ),
+                        ),
                 )
                 .child(
-                    el().h(36.0)
+                    row()
+                        .h(36.0)
                         .px(12.0)
-                        .center()
+                        .center_y()
+                        .gap(6.0)
                         .radius(11.0)
                         .hover(t.hover)
+                        .focus_highlight(t.hover)
+                        .role("button")
+                        .label("Change project sort order")
+                        .focusable(true)
+                        .cursor(rune::Cursor::Pointer)
                         .child(
                             text(match s.project_data.sort {
-                                ProjectSort::Recent => "Recent  ⌄",
-                                ProjectSort::Name => "Name  ⌄",
+                                ProjectSort::Recent => "Recent",
+                                ProjectSort::Name => "Name",
                             })
-                            .font(TextStyle::new(14.0, 500.0))
+                            .font(TextStyle::new(14.0, 400.0))
                             .color(t.ink_soft),
                         )
+                        .child(icon(&ARROW_DOWN, 12.0).color(t.muted))
                         .on_press(|s: &mut AppState| {
                             s.project_data.sort = match s.project_data.sort {
                                 ProjectSort::Recent => ProjectSort::Name,
