@@ -54,6 +54,10 @@ test("project and Studio state survive a sidecar restart", async () => {
     const overview = await app.call("projects.overview", { path: created.path });
     assert.ok(overview.repository);
     assert.ok(overview.readme);
+    const summary = await app.call("projects.summary", { path: created.path });
+    assert.equal(summary.root, created.path);
+    assert.ok(Array.isArray(summary.changes));
+    assert.equal(await app.call("projects.summary", { path: directory }), null);
     assert.deepEqual(await app.call("history.list", { projectPath: created.path }), []);
     const cloned = await app.call("projects.clone", { url: created.path, parent: directory, name: "clone" });
     assert.equal(cloned.path, path.join(directory, "clone"));

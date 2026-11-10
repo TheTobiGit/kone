@@ -176,6 +176,10 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       const [projectReadme, projectIdentity, projectLogo, projectContributors, repository, workingTree] = await Promise.all([readme(input.path), identity(input.path), logo(input.path), contributors(input.path), detect(input.path), status(input.path)]);
       return { readme: projectReadme, identity: projectIdentity, logo: projectLogo, contributors: projectContributors, repository, workingTree };
     }
+    case "projects.summary": {
+      const input = z.object({ path: z.string().min(1) }).parse(params);
+      return status(input.path);
+    }
     case "projects.remember": {
       const input = z.object({ path: z.string().min(1), name: z.string().min(1) }).parse(params);
       if (!path.isAbsolute(input.path)) throw new Error("Project path must be absolute");

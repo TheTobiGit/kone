@@ -42,6 +42,7 @@ enum Pending {
     Overview(String),
     Sessions(String),
     HomeSessions(String),
+    Summary(String),
     SessionAction(String),
 }
 
@@ -50,6 +51,7 @@ pub struct ProjectState {
     pub sort: ProjectSort,
     pub menu_path: Option<String>,
     pub metadata: HashMap<String, ProjectMeta>,
+    pub summaries: HashMap<String, Value>,
     pub overview: Value,
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
@@ -200,6 +202,9 @@ impl AppState {
             self.project_data.pending.remove(&id)
         };
         let Some(pending) = pending else { return false };
+        if matches!(pending, Pending::Summary(_)) && message.get("error").is_some() {
+            return true;
+        }
         if let Some(error) = message.get("error") {
             self.studio.error = Some(
                 error["message"]
@@ -239,11 +244,17 @@ impl AppState {
                     self.selected_project =
                         selected.and_then(|path| self.projects.iter().position(|p| p.path == path));
                     self.project_data.home_sessions.clear();
-                    self.project_data
-                        .pending
-                        .retain(|_, pending| !matches!(pending, Pending::HomeSessions(_)));
+                    self.project_data.summaries.clear();
+                    self.project_data.pending.retain(|_, pending| {
+                        !matches!(pending, Pending::HomeSessions(_) | Pending::Summary(_))
+                    });
                     let paths: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
                     for path in paths {
+                        self.project_request(
+                            "projects.summary",
+                            json!({"path": path}),
+                            Pending::Summary(path.clone()),
+                        );
                         self.project_request(
                             "history.list",
                             json!({"projectPath": path}),
@@ -315,6 +326,11 @@ impl AppState {
                     .home_sessions
                     .extend(parse_sessions(result, &path));
                 sort_sessions(&mut self.project_data.home_sessions);
+            }
+            Pending::Summary(path) => {
+                if self.projects.iter().any(|p| p.path == path) {
+                    self.project_data.summaries.insert(path, result.clone());
+                }
             }
         }
         true
@@ -449,6 +465,33 @@ mod tests {
         assert!(state.project_message(&json!({"id":2,"result":[{"threadId":"old"}]})));
         assert!(state.project_data.overview.is_null());
         assert!(state.project_data.sessions.is_empty());
+    }
+
+    #[test]
+    fn project_summary_ignores_removed_projects_and_failed_reads() {
+        let mut state = AppState::default();
+        state.projects.push(Project {
+            name: "B".into(),
+            path: "/b".into(),
+        });
+        state
+            .project_data
+            .pending
+            .insert(1, Pending::Summary("/a".into()));
+        state
+            .project_data
+            .pending
+            .insert(2, Pending::Summary("/b".into()));
+        state
+            .project_data
+            .pending
+            .insert(3, Pending::Summary("/b".into()));
+        state.project_message(&json!({"id": 1, "result": {"branch": "old"}}));
+        state.project_message(&json!({"id": 2, "result": {"branch": "main"}}));
+        state.project_message(&json!({"id": 3, "error": {"message": "missing"}}));
+        assert!(!state.project_data.summaries.contains_key("/a"));
+        assert_eq!(state.project_data.summaries["/b"]["branch"], "main");
+        assert!(state.studio.error.is_none());
     }
 
     #[test]

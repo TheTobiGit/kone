@@ -93,6 +93,17 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("projects-review", |s| review::populate(s, Page::Projects)),
+            ("projects-repo", |s| {
+                review::populate(s, Page::Projects);
+                s.projects = vec![state::Project {
+                    name: "nxui".into(),
+                    path: "/Users/you/Developer/nxui".into(),
+                }];
+                s.project_data.summaries.insert(
+                    "/Users/you/Developer/nxui".into(),
+                    serde_json::json!({"branch":"main", "changes":[]}),
+                );
+            }),
             ("projects-grid", |s| {
                 review::populate(s, Page::Projects);
                 s.projects.push(state::Project {

@@ -55,10 +55,11 @@ static BRANCH: Icon = Icon {
     view: 24.0,
     body: r#"<circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="6" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 15V3m12 6a9 9 0 0 1-9 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
 };
-
-pub(super) fn folder(name: &str, t: Palette) -> El {
-    folder_with_git(name, t, &serde_json::Value::Null)
-}
+static REPO_MARK: Icon = Icon {
+    name: "project-repo-mark",
+    view: 16.0,
+    body: r#"<path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8C0 11.54 2.29 14.53 5.47 15.59C5.87 15.66 6.02 15.42 6.02 15.21C6.02 15.02 6.01 14.39 6.01 13.72C4 14.09 3.48 13.23 3.32 12.78C3.23 12.55 2.84 11.84 2.5 11.65C2.22 11.5 1.82 11.13 2.49 11.12C3.12 11.11 3.57 11.7 3.72 11.94C4.44 13.15 5.59 12.81 6.05 12.6C6.12 12.08 6.33 11.73 6.56 11.53C4.78 11.33 2.92 10.64 2.92 7.58C2.92 6.71 3.23 5.99 3.74 5.43C3.66 5.23 3.38 4.41 3.82 3.31C3.82 3.31 4.49 3.1 6.02 4.13C6.66 3.95 7.34 3.86 8.02 3.86C8.7 3.86 9.38 3.95 10.02 4.13C11.55 3.09 12.22 3.31 12.22 3.31C12.66 4.41 12.38 5.23 12.26 5.43C12.81 5.99 13.12 6.7 13.12 7.58C13.12 10.65 11.25 11.33 9.47 11.53C9.76 11.78 10.01 12.26 10.01 13.01C10.01 14.08 10 14.94 10 15.21C10 15.42 10.15 15.67 10.55 15.59C13.71 14.53 16 11.53 16 8C16 3.58 12.42 0 8 0Z"/>"#,
+};
 
 pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) -> El {
     let (sheet_top, sheet_bottom, pocket_top, pocket_middle, pocket_bottom, shadow) = if t.dark {
@@ -118,31 +119,56 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
         )
         .shadow(4.0, 10.0, shadow)
         .absolute(0.0, 24.0)
-        .child(
-            text(name.to_owned())
-                .font(TextStyle::new(17.0, 400.0).tracking(-0.408))
-                .color(t.ink)
-                .truncate(),
-        );
+        .child({
+            let mut name_row = row().w_full().items_end().gap(9.0);
+            if tree.is_object() {
+                name_row = name_row
+                    .child(icon(&REPO_MARK, 16.0).color(mix_srgb(t.ink, t.ink_soft, 0.565)));
+            }
+            name_row.child(
+                text(name.to_owned())
+                    .font(TextStyle::new(17.0, 400.0).lh(17.0).tracking(-0.408))
+                    .color(t.ink)
+                    .truncate(),
+            )
+        });
     if let Some(branch) = branch {
         let mut meta = row().w_full().center_y().justify_between().gap(6.0).child(
             row()
                 .center_y()
-                .gap(4.0)
+                .gap(6.0)
                 .child(icon(&BRANCH, 12.0).color(t.muted))
                 .child(
                     text(branch.to_owned())
-                        .font(TextStyle::new(11.0, 400.0).family(Family::Mono))
+                        .font(
+                            TextStyle::new(11.0, 400.0)
+                                .lh(11.0)
+                                .tracking(0.2)
+                                .family(Family::Mono),
+                        )
                         .color(t.muted)
                         .truncate(),
                 ),
         );
         if added > 0 || removed > 0 {
-            meta = meta.child(
-                text(format!("+{added}  −{removed}"))
-                    .font(TextStyle::new(11.0, 400.0).family(Family::Mono))
-                    .color(t.ink_soft),
-            );
+            let mut diff = row().center_y().gap(12.0);
+            if added > 0 {
+                diff = diff.child(
+                    text(format!("+{added}"))
+                        .font(TextStyle::new(12.5, 400.0).lh(12.5).family(Family::Mono))
+                        .color(
+                            rune::color::hex(if t.dark { "#10b981" } else { "#059669" }).unwrap(),
+                        ),
+                );
+            }
+            if removed > 0 {
+                diff = diff.child(
+                    text(format!("−{removed}"))
+                        .font(TextStyle::new(12.5, 400.0).lh(12.5).family(Family::Mono))
+                        .color(rune::color::hex("#e11d48").unwrap()),
+                );
+            }
+            meta = meta.child(diff);
         }
         pocket = pocket.gap(7.0).child(meta);
     }
@@ -325,19 +351,26 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     }
                 })
                 .child(
-                    folder(&p.name, t)
-                        .key(format!("project-{i}"))
-                        .role("button")
-                        .label(format!("Open {}", p.name))
-                        .focusable(s.launcher.mode.is_none())
-                        .cursor(rune::Cursor::Pointer)
-                        .offset(0.0, if active { -6.0 } else { 0.0 })
-                        .offset_motion(spring)
-                        .on_press(move |s: &mut AppState| {
-                            if s.launcher.mode.is_none() {
-                                s.open_project(path.clone());
-                            }
-                        }),
+                    folder_with_git(
+                        &p.name,
+                        t,
+                        s.project_data
+                            .summaries
+                            .get(&p.path)
+                            .unwrap_or(&serde_json::Value::Null),
+                    )
+                    .key(format!("project-{i}"))
+                    .role("button")
+                    .label(format!("Open {}", p.name))
+                    .focusable(s.launcher.mode.is_none())
+                    .cursor(rune::Cursor::Pointer)
+                    .offset(0.0, if active { -6.0 } else { 0.0 })
+                    .offset_motion(spring)
+                    .on_press(move |s: &mut AppState| {
+                        if s.launcher.mode.is_none() {
+                            s.open_project(path.clone());
+                        }
+                    }),
                 )
                 .child(controls);
             // The source button's inline folder leaves a line-box descender below its
