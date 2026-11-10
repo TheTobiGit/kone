@@ -50,12 +50,6 @@ static CANCEL: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
-static PIN: Icon = Icon {
-    name: "session-pin",
-    view: 24.0,
-    body: r#"<path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
-};
-
 static BRANCH: Icon = Icon {
     name: "git-branch",
     view: 24.0,
@@ -658,7 +652,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
             row()
                 .center_y()
                 .gap(7.0)
-                .child(icon(if pinned { &PIN } else { &CLOCK }, 11.0).color(tint))
+                .child(icon(if pinned { &PROJECT_PIN } else { &CLOCK }, 11.0).color(tint))
                 .child(
                     text(label)
                         .font(
