@@ -59,19 +59,18 @@ pub(super) fn for_path(path: &str) -> &'static Icon {
     }
     let mut parts = base.rsplit('.');
     let ext = parts.next().unwrap_or("");
-    if let Some(previous) = parts.next() {
-        if base.matches('.').count() >= 2 {
-            let pair = format!("{previous}.{ext}");
-            if let Some(index) = lookup(data::DOUBLE_EXTENSIONS, &pair) {
-                return &data::ICONS[index];
-            }
-        }
-    }
-    if !ext.is_empty() {
-        if let Some(index) = lookup(data::EXTENSIONS, ext).or_else(|| lookup(data::LANGUAGES, ext))
-        {
+    if let Some(previous) = parts.next()
+        && base.matches('.').count() >= 2
+    {
+        let pair = format!("{previous}.{ext}");
+        if let Some(index) = lookup(data::DOUBLE_EXTENSIONS, &pair) {
             return &data::ICONS[index];
         }
+    }
+    if !ext.is_empty()
+        && let Some(index) = lookup(data::EXTENSIONS, ext).or_else(|| lookup(data::LANGUAGES, ext))
+    {
+        return &data::ICONS[index];
     }
     named("default-file")
 }

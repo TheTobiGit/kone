@@ -36,6 +36,35 @@ use rune::{
     icon, row, text, text_input,
 };
 
+// HomeRecent mounts each grid item on this spring, staggered by 60 ms.
+fn grid_entrance(s: &AppState, index: usize, reduced: bool) -> f32 {
+    if reduced || !s.start_actions.live {
+        return 1.0;
+    }
+    let elapsed = s
+        .start_actions
+        .mounted
+        .map_or(0.0, |at| (s.start_actions.clock - at) as f32)
+        - index as f32 * 0.06;
+    if elapsed <= 0.0 {
+        return 0.0;
+    }
+    let decay = 13.0_f32 / (2.0 * 0.85);
+    let frequency = (340.0_f32 / 0.85 - decay * decay).sqrt();
+    1.0 - (-decay * elapsed).exp()
+        * ((frequency * elapsed).cos() + decay / frequency * (frequency * elapsed).sin())
+}
+
+fn enter_grid_item(item: El, progress: f32) -> El {
+    let now = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
+    item.opacity(progress.clamp(0.0, 1.0))
+        .opacity_motion(now)
+        .offset(0.0, 12.0 * (1.0 - progress))
+        .offset_motion(now)
+        .scale(0.97 + 0.03 * progress)
+        .scale_motion(now)
+}
+
 static CLOCK: Icon = Icon {
     name: "session-clock",
     view: 24.0,
@@ -389,7 +418,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .to_lowercase()
                 .contains(&s.search.text.trim().to_lowercase())
         })
-        .map(|(i, p)| {
+        .enumerate()
+        .map(|(position, (i, p))| {
             let path = p.path.clone();
             let hover_path = path.clone();
             let press_path = path.clone();
@@ -543,15 +573,20 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(controls);
             // The source button's inline folder leaves a line-box descender below its
             // 116 pt artwork; it contributes eight points to an all-card grid row.
-            el().w(236.0).h(124.0).child(tile)
+            enter_grid_item(
+                el().w(236.0).h(124.0).child(tile),
+                grid_entrance(s, position, reduced),
+            )
         })
         .collect();
     let no_matches = cells.is_empty();
-    cells.push(
+    let actions_progress = grid_entrance(s, cells.len(), reduced);
+    cells.push(enter_grid_item(
         el().w(236.0)
             .self_center()
             .child(actions(t, s, cx.is_reduced_motion()).offset(-6.0, 0.0)),
-    );
+        actions_progress,
+    ));
     let mut grid = col().gap(24.0);
     let mut iter = cells.into_iter();
     loop {

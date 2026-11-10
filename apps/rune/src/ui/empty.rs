@@ -364,8 +364,13 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
         .map_or(0.0, |p| motion::exit_span(motion::word(p).0.len()))
         + motion::enter_span(motion::word(state.word).0.len());
     let mounted = since(state, state.mounted).unwrap_or(0.0);
+    let grid_end = if s.page == crate::state::Page::Projects {
+        0.06 * s.projects.len() as f32 + 1.0
+    } else {
+        0.0
+    };
     let moving = shown < word_end
-        || mounted < 1.6
+        || mounted < 1.6_f32.max(grid_end)
         || (0..3).any(|i| {
             since(state, state.started[i]).is_some_and(|e| e < motion::DURATIONS[i] + 0.05)
         });
