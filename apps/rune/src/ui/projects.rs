@@ -355,12 +355,15 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .map(|(i, p)| {
             let path = p.path.clone();
             let hover_path = path.clone();
+            let press_path = path.clone();
             let pin_path = path.clone();
             let reveal_path = path.clone();
             let forget_path = path.clone();
             let pinned = s.project_data.metadata.get(&path).is_some_and(|m| m.pinned);
             let active = s.project_data.hovered_project.as_deref() == Some(path.as_str())
                 && s.launcher.mode.is_none();
+            let pressed =
+                active && s.project_data.pressed_project.as_deref() == Some(path.as_str());
             let spring = Spring::from_stiffness_damping(420.0, 38.0, 0.85);
             let action = |label: &'static str,
                           title: &'static str,
@@ -442,8 +445,24 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .focusable(s.launcher.mode.is_none())
                     .cursor(rune::Cursor::Pointer)
                     .press_scale(0.985)
-                    .offset(0.0, if active { -6.0 } else { 0.0 })
+                    .offset(
+                        0.0,
+                        if pressed {
+                            -3.0
+                        } else if active {
+                            -6.0
+                        } else {
+                            0.0
+                        },
+                    )
                     .offset_motion(spring)
+                    .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
+                        rune::Phase::Down => {
+                            s.project_data.pressed_project = Some(press_path.clone())
+                        }
+                        rune::Phase::Up => s.project_data.pressed_project = None,
+                        rune::Phase::Move => {}
+                    })
                     .on_press(move |s: &mut AppState| {
                         if s.launcher.mode.is_none() {
                             s.open_project(path.clone());
@@ -978,6 +997,24 @@ static PROVIDER_DOT: Icon = Icon {
 
 #[cfg(test)]
 mod session_tests {
+    #[test]
+    fn clicking_a_pressed_card_opens_its_project() {
+        use rune::{Env, Runtime};
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, crate::state::Page::Projects);
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env::default());
+        rt.frame(0.0);
+        let (x, y) = rt.find("project-0").expect("project card");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.frame(1.0 / 60.0);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        rt.update(|s, _| {
+            assert_eq!(s.page, crate::state::Page::Overview);
+            assert!(s.project_data.pressed_project.is_none());
+        });
+    }
     #[test]
     fn focus_aware_hover_notifies_once_per_group_transition() {
         use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col, el};

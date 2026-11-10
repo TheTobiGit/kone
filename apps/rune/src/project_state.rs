@@ -60,6 +60,7 @@ pub struct ProjectState {
     pub metric_cost: bool,
     pub hovered_session: Option<String>,
     pub hovered_project: Option<String>,
+    pub pressed_project: Option<String>,
     pub delete_hold: Option<std::time::Instant>,
     pending: HashMap<u64, Pending>,
 }
