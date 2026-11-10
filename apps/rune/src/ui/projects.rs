@@ -98,7 +98,7 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
         .absolute(0.0, 24.0)
         .child(
             text(name.to_owned())
-                .font(TextStyle::new(17.0, 600.0).tracking(-0.408))
+                .font(TextStyle::new(17.0, 400.0).tracking(-0.408))
                 .color(t.ink)
                 .truncate(),
         );
@@ -232,12 +232,15 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             let forget_path = path.clone();
             let pinned = s.project_data.metadata.get(&path).is_some_and(|m| m.pinned);
             let menu_open = s.project_data.menu_path.as_deref() == Some(path.as_str());
-            let mut tile = row().center_y().gap(6.0).child(
+            let mut tile = row().center_y().gap(6.0).hover_group_focus().child(
                 folder(&p.name, t)
                     .key(format!("project-{i}"))
+                    .role("button")
+                    .label(format!("Open {}", p.name))
+                    .focusable(true)
                     .on_press(move |s: &mut AppState| s.open_project(path.clone())),
             );
-            let mut menu = col().gap(3.0).child(
+            let mut menu = col().gap(3.0).group_opacity(0.0, 1.0).child(
                 el().size(24.0, 24.0)
                     .center()
                     .radius(6.0)
@@ -281,23 +284,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 }
             }
             tile = tile.child(menu);
-            tile
+            el().w(236.0).child(tile)
         })
         .collect();
     let no_matches = cells.is_empty();
-    cells.push(actions(t, s, cx.is_reduced_motion()).opacity(0.65));
+    cells.push(
+        el().w(236.0)
+            .self_center()
+            .child(actions(t, s, cx.is_reduced_motion()).offset(-6.0, 0.0)),
+    );
     let mut grid = col().gap(24.0);
     let mut iter = cells.into_iter();
     loop {
         let Some(first) = iter.next() else { break };
-        let mut line = row()
-            .w_full()
-            .gap(56.0)
-            .center_y()
-            .child(el().w(236.0).child(first));
+        let mut line = row().w_full().gap(56.0).items_start().child(first);
         for _ in 0..2 {
             if let Some(cell) = iter.next() {
-                line = line.child(el().w(236.0).child(cell));
+                line = line.child(cell);
             }
         }
         grid = grid.child(line);
@@ -327,7 +330,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             row()
                 .w_full()
                 .justify_center()
-                .pt(86.0)
+                .pt(96.0)
                 .child(col().w(820.0).child(grid)),
         )
         .child(
