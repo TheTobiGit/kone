@@ -420,6 +420,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .label(format!("Open {}", p.name))
                     .focusable(s.launcher.mode.is_none())
                     .cursor(rune::Cursor::Pointer)
+                    .press_scale(0.985)
                     .offset(0.0, if active { -6.0 } else { 0.0 })
                     .offset_motion(spring)
                     .on_press(move |s: &mut AppState| {
