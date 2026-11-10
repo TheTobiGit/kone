@@ -1,11 +1,48 @@
 use crate::launcher::LauncherMode;
-use crate::{state::AppState, theme::Palette};
-use rune::{Cursor, Cx, El, Family, Icon, LoopSpec, TextStyle, col, el, icon, row, text};
+use crate::{
+    state::{AppState, StartActionsState},
+    theme::Palette,
+};
+use rune::{
+    Beat, Cursor, Curve, Cx, Easing, El, Family, Icon, LoopSpec, Sequence, TextStyle, col, el,
+    icon, row, text,
+};
+use std::time::{Duration, Instant};
+
+const EASE: Easing = Easing::cubic(0.22, 1.0, 0.36, 1.0);
+const ICON_EASE: Easing = Easing::cubic(0.77, 0.0, 0.175, 1.0);
+static PLUS_BEATS: [Beat; 4] = [
+    Beat::new(0.0),
+    Beat::new(0.16).scale(1.175),
+    Beat::new(0.34).scale(0.925),
+    Beat::new(0.5),
+];
+static FOLDER_BEATS: [Beat; 3] = [
+    Beat::new(0.0),
+    Beat::new(0.42).scale(0.96).easing(ICON_EASE),
+    Beat::new(0.84).easing(ICON_EASE),
+];
+static GITHUB_BEATS: [Beat; 4] = [
+    Beat::new(0.0),
+    Beat::new(0.13).scale(0.95).easing(ICON_EASE),
+    Beat::new(0.302).scale(1.025).easing(ICON_EASE),
+    Beat::new(0.72).easing(ICON_EASE),
+];
 
 static PLUS: Icon = Icon {
     name: "plus",
     view: 24.0,
     body: r#"<path d="M12 4V20M20 12H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static PLUS_STEM: Icon = Icon {
+    name: "plus-stem",
+    view: 24.0,
+    body: r#"<path d="M12 4V20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
+};
+static PLUS_ARM: Icon = Icon {
+    name: "plus-arm",
+    view: 24.0,
+    body: r#"<path d="M20 12H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
 };
 static FOLDER: Icon = Icon {
     name: "folder",
@@ -18,10 +55,15 @@ static GITHUB: Icon = Icon {
     body: r#"<path d="M10 20.5675C8.28572 21.1462 6.71429 21.1462 5.35715 20.5556C4.00001 19.965 2.85715 18.7838 2 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 22V18.7579C10 18.1596 10.1839 17.6396 10.4804 17.1699C10.6838 16.8476 10.5445 16.3904 10.1771 16.2894C7.13394 15.4528 5 14.1077 5 9.64606C5 8.48611 5.38005 7.39556 6.04811 6.4464C6.21437 6.21018 6.29749 6.09208 6.31748 5.9851C6.33746 5.87813 6.30272 5.73852 6.23322 5.45932C5.95038 4.32292 5.96871 3.11619 6.39322 2.02823C6.39322 2.02823 7.27042 1.74242 9.26698 2.98969C9.72282 3.27447 9.95075 3.41686 10.1515 3.44871C10.3522 3.48056 10.6206 3.41384 11.1573 3.28041C11.8913 3.09795 12.6476 3 13.5 3C14.3524 3 15.1087 3.09795 15.8427 3.28041C16.3794 3.41384 16.6478 3.48056 16.8485 3.44871C17.0493 3.41686 17.2772 3.27447 17.733 2.98969C19.7296 1.74242 20.6068 2.02823 20.6068 2.02823C21.0313 3.11619 21.0496 4.32292 20.7668 5.45932C20.6973 5.73852 20.6625 5.87813 20.6825 5.9851C20.7025 6.09207 20.7856 6.21019 20.9519 6.4464C21.6199 7.39556 22 8.48611 22 9.64606C22 14.1077 19.8661 15.4528 16.8229 16.2894C16.4555 16.3904 16.3162 16.8476 16.5196 17.1699C16.8161 17.6396 17 18.1596 17 18.7579V22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-static SPINNER: Icon = Icon {
-    name: "start-spinner",
+static SPINNER_BASE: Icon = Icon {
+    name: "start-spinner-base",
     view: 24.0,
-    body: r#"<circle cx="12" cy="12" r="10.6" fill="none" stroke="currentColor" stroke-opacity="0.3" stroke-width="2.8"/><path d="M12 1.4A10.6 10.6 0 0 1 22.6 12" fill="none" stroke="currentColor" stroke-width="2.8"/>"#,
+    body: r#"<circle cx="12" cy="12" r="10.6" fill="none" stroke="currentColor" stroke-width="2.8"/>"#,
+};
+static SPINNER_TOP: Icon = Icon {
+    name: "start-spinner-top",
+    view: 24.0,
+    body: r#"<path d="M4.5047 4.5047A10.6 10.6 0 0 1 19.4953 4.5047" fill="none" stroke="currentColor" stroke-width="2.8"/>"#,
 };
 
 pub(super) static SETTINGS: Icon = Icon {
@@ -56,85 +98,216 @@ pub(super) fn wordmark(t: Palette) -> El {
         )
 }
 
-pub(super) fn actions(t: Palette) -> El {
-    start_actions(t, None)
+pub(super) fn actions(t: Palette, s: &AppState, reduced: bool) -> El {
+    start_actions(t, s.launcher.mode, Some(&s.start_actions), reduced)
 }
 
-fn start_actions(t: Palette, pending: Option<LauncherMode>) -> El {
-    let action =
-        |key: &'static str, mode: LauncherMode, glyph: &'static Icon, title: &'static str| {
-            let loading = pending == Some(mode);
-            let disabled = pending.is_some();
-            let symbol = if loading {
-                icon(&SPINNER, 15.0)
-                    .color(t.ink_soft)
-                    .looping(LoopSpec::rotation(1.0))
+fn start_actions(
+    t: Palette,
+    pending: Option<LauncherMode>,
+    state: Option<&StartActionsState>,
+    reduced: bool,
+) -> El {
+    let action = |index: usize,
+                  key: &'static str,
+                  mode: LauncherMode,
+                  glyph: &'static Icon,
+                  title: &'static str| {
+        let loading = pending == Some(mode);
+        let disabled = pending.is_some();
+        let symbol = if loading {
+            let top = icon(&SPINNER_TOP, 15.0)
+                .color(t.ink_soft)
+                .absolute(0.0, 0.0);
+            let top = if reduced {
+                top
             } else {
-                icon(glyph, 18.0).color(t.ink)
+                top.looping(LoopSpec::rotation(1.0))
             };
-            let button = row()
-                .key(key)
-                .h(40.0)
-                .pl(6.0)
-                .pr(12.0)
-                .gap(14.0)
-                .center_y()
-                .radius(14.0)
-                .opacity(if disabled && !loading { 0.35 } else { 1.0 })
-                .child(el().w(22.0).center().child(symbol))
+            el().size(15.0, 15.0)
                 .child(
-                    text(title)
-                        .font(TextStyle::new(14.0, 600.0).lh(14.0).tracking(-0.14))
-                        .color(t.ink),
-                );
-            if disabled {
-                button.disabled(true)
+                    icon(&SPINNER_BASE, 15.0)
+                        .color(t.muted)
+                        .opacity(0.3)
+                        .absolute(0.0, 0.0),
+                )
+                .child(top)
+        } else {
+            let symbol = icon(glyph, 18.0).color(t.ink);
+            if let Some(state) = state.filter(|_| !reduced) {
+                if pending.is_none()
+                    && state.started[index].is_some_and(|start| {
+                        start.elapsed() < Duration::from_secs_f32([0.55, 0.84, 0.72][index])
+                    })
+                {
+                    let beats = match index {
+                        0 => &PLUS_BEATS[..],
+                        1 => &FOLDER_BEATS[..],
+                        _ => &GITHUB_BEATS[..],
+                    };
+                    if index == 0 {
+                        el().size(18.0, 18.0)
+                            .key(format!("{key}-icon-{}", state.runs[index]))
+                            .child(
+                                icon(&PLUS_STEM, 18.0)
+                                    .color(t.ink)
+                                    .absolute(0.0, 0.0)
+                                    .sequence(Sequence::new(&PLUS_BEATS)),
+                            )
+                            .child(
+                                icon(&PLUS_ARM, 18.0)
+                                    .color(t.ink)
+                                    .absolute(0.0, 0.0)
+                                    .sequence(Sequence::new(&PLUS_BEATS).delay(0.05)),
+                            )
+                    } else {
+                        symbol
+                            .key(format!("{key}-icon-{}", state.runs[index]))
+                            .sequence(Sequence::new(beats))
+                    }
+                } else {
+                    symbol
+                }
             } else {
-                button.hover(t.hover).cursor(Cursor::Pointer)
+                symbol
             }
         };
+        let button = row()
+            .key(key)
+            .h(40.0)
+            .pl(6.0)
+            .pr(12.0)
+            .gap(14.0)
+            .center_y()
+            .radius(14.0)
+            .opacity(if disabled && !loading { 0.35 } else { 1.0 })
+            .child(el().w(22.0).center().child(symbol))
+            .child(
+                text(title)
+                    .font(TextStyle::new(14.0, 600.0).lh(14.0).tracking(-0.14))
+                    .color(t.ink),
+            );
+        if disabled {
+            button.disabled(true)
+        } else {
+            button
+                .hover(t.hover)
+                .hover_motion(Curve::tween(0.28, EASE), Curve::tween(0.28, EASE))
+                .focus_highlight(t.hover)
+                .cursor(Cursor::Pointer)
+                .on_hover_change(move |s: &mut AppState, over, _| {
+                    if over && !reduced && s.launcher.mode.is_none() {
+                        let duration = [0.55, 0.84, 0.72][index];
+                        let action = &mut s.start_actions;
+                        if action.started[index].is_none_or(|start| {
+                            start.elapsed() >= Duration::from_secs_f32(duration)
+                        }) {
+                            action.started[index] = Some(Instant::now());
+                            action.runs[index] += 1;
+                        }
+                    }
+                })
+        }
+    };
     let create = action(
+        0,
         "create-project",
         LauncherMode::Create,
         &PLUS,
         "Create a new project",
     );
     let open = action(
+        1,
         "open-folder",
         LauncherMode::Open,
         &FOLDER,
         "Open from local folder",
     );
     let clone = action(
+        2,
         "clone-project",
         LauncherMode::Clone,
         &GITHUB,
         "Clone from GitHub",
     );
+    let wrap = |index: usize, button: El| {
+        let (offset, active) =
+            state.map_or(([0.0; 2], false), |s| (s.offsets[index], s.active[index]));
+        el().key(format!("start-anchor-{index}"))
+            .on_layout(move |s: &mut AppState, bounds| s.start_actions.bounds[index] = bounds)
+            .child(
+                button
+                    .offset(
+                        if pending.is_none() && !reduced {
+                            offset[0]
+                        } else {
+                            0.0
+                        },
+                        if pending.is_none() && !reduced {
+                            offset[1]
+                        } else {
+                            0.0
+                        },
+                    )
+                    .offset_motion(Curve::tween(
+                        if active && pending.is_none() {
+                            0.35
+                        } else {
+                            0.6
+                        },
+                        EASE,
+                    )),
+            )
+    };
     col()
         .items_start()
         .gap(4.0)
-        .child(if pending.is_none() {
-            create.on_press(|s: &mut AppState| s.launcher.open(LauncherMode::Create))
-        } else {
-            create
-        })
-        .child(if pending.is_none() {
-            open.on_press_tx(|s: &mut AppState, tx| crate::launcher::open_folder(s, tx))
-        } else {
-            open
-        })
-        .child(if pending.is_none() {
-            clone.on_press(|s: &mut AppState| s.launcher.open(LauncherMode::Clone))
-        } else {
-            clone
-        })
+        .child(wrap(
+            0,
+            if pending.is_none() {
+                create.on_press(|s: &mut AppState| {
+                    s.start_actions.offsets = [[0.0; 2]; 3];
+                    s.start_actions.active = [false; 3];
+                    s.start_actions.started = [None; 3];
+                    s.launcher.open(LauncherMode::Create);
+                })
+            } else {
+                create
+            },
+        ))
+        .child(wrap(
+            1,
+            if pending.is_none() {
+                open.on_press_tx(|s: &mut AppState, tx| {
+                    s.start_actions.offsets = [[0.0; 2]; 3];
+                    s.start_actions.active = [false; 3];
+                    s.start_actions.started = [None; 3];
+                    crate::launcher::open_folder(s, tx);
+                })
+            } else {
+                open
+            },
+        ))
+        .child(wrap(
+            2,
+            if pending.is_none() {
+                clone.on_press(|s: &mut AppState| {
+                    s.start_actions.offsets = [[0.0; 2]; 3];
+                    s.start_actions.active = [false; 3];
+                    s.start_actions.started = [None; 3];
+                    s.launcher.open(LauncherMode::Clone);
+                })
+            } else {
+                clone
+            },
+        ))
 }
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
     col()
         .key("empty-root")
+        .apply_start_pointer(cx.is_reduced_motion())
         .w_full()
         .h_full()
         .fill(t.ground)
@@ -153,11 +326,54 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .child(icon(&SETTINGS, 16.0).color(t.muted)),
                 ),
         )
-        .child(
-            col()
-                .grow(1.0)
-                .w_full()
-                .center()
-                .child(start_actions(t, s.launcher.mode)),
-        )
+        .child(col().grow(1.0).w_full().center().child(start_actions(
+            t,
+            s.launcher.mode,
+            Some(&s.start_actions),
+            cx.is_reduced_motion(),
+        )))
+}
+
+// Both home layouts use window coordinates for the same magnetic targets.
+pub(super) trait StartPointer {
+    fn apply_start_pointer(self, reduced: bool) -> Self;
+}
+
+impl StartPointer for El {
+    fn apply_start_pointer(self, reduced: bool) -> Self {
+        self.on_pointer_move_local(move |s: &mut AppState, p, tx| {
+            if reduced || s.launcher.mode.is_some() {
+                tx.live_only();
+                return;
+            }
+            let mut offsets = [[0.0; 2]; 3];
+            let mut active = [false; 3];
+            for i in 0..3 {
+                let [x, y, w, h] = s.start_actions.bounds[i];
+                let dx = p.window_x - (x + w / 2.0);
+                let dy = p.window_y - (y + h / 2.0);
+                active[i] = w > 0.0 && dx.abs() < w / 2.0 + 12.0 && dy.abs() < h / 2.0 + 12.0;
+                if active[i] {
+                    offsets[i] = [dx / 9.0, dy / 9.0];
+                }
+            }
+            if offsets == s.start_actions.offsets && active == s.start_actions.active {
+                tx.live_only();
+            } else {
+                s.start_actions.offsets = offsets;
+                s.start_actions.active = active;
+            }
+        })
+        .on_hover_change(|s: &mut AppState, over, tx| {
+            if !over
+                && (s.start_actions.active != [false; 3]
+                    || s.start_actions.offsets != [[0.0; 2]; 3])
+            {
+                s.start_actions.offsets = [[0.0; 2]; 3];
+                s.start_actions.active = [false; 3];
+            } else {
+                tx.live_only();
+            }
+        })
+    }
 }

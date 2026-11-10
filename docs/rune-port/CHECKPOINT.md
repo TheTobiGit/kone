@@ -1,5 +1,13 @@
 # Current Rune port checkpoint
 
+## Linux continuation — start actions (2026-11-10)
+
+- Worktree `/workspace/thetobi-developer/kone-rune`, branch `feat/rune-port`; the user now authorizes and requires normal pushes after components. Commit `57b6268b` is pushed.
+- Start actions have shared pending state, pointer pull, hover effects and reduced-motion handling on empty and populated home. The pending ring has separate muted and ink-soft parts. This is work in progress, not a parity sign-off.
+- Three review rounds leave exact icon motion unresolved: the plus scales its strokes, the folder lacks its separate hinge poses, and GitHub lacks its tail morph and body transform. Rune needs suitable geometry/transform rendering support. Review confirmed the shared state and no-op pointer updates by source inspection, not interactive testing.
+- Fresh Rune capture: `/workspace/rune-compare/no-project-start-actions-rune.png` (1280 × 800). The Electron capture in that directory is stale; no valid current side-by-side comparison exists. Recreate both at matching viewport and scale before signing off.
+- On this Linux host, tests link with `LIBRARY_PATH=/tmp/kone-rune-link`, where `libxkbcommon.so` points to the installed `libxkbcommon.so.0`. Run the required fmt, clippy and tests before each commit. Settings remains deferred.
+
 - Frame: vendored Rune at `50feb4f` adds explicit macOS traffic-light hiding and Linux undecorated edge resize through winit; Linux X11 edge resizing was verified; band double-click did not maximize in the attempted X11 check. Mac blur, button hiding, dragging, double-click and resizing need a native run.
 
 Worktree `/Users/gideonsarfo/Developer/kone-rune`, branch `feat/rune-port`. User authorizes frequent local commits; no push/PR. User requires exact current Electron UI. Settings is deferred; git/files/space/other portals omitted.

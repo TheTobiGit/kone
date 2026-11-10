@@ -1,3 +1,4 @@
+use super::empty::StartPointer;
 static FOLDER_META: Icon = Icon {
     name: "Folder01Icon",
     view: 24.0,
@@ -288,7 +289,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         })
         .collect();
     let no_matches = cells.is_empty();
-    cells.push(actions(t).opacity(0.65));
+    cells.push(actions(t, s, cx.is_reduced_motion()).opacity(0.65));
     let mut grid = col().gap(24.0);
     let mut iter = cells.into_iter();
     loop {
@@ -319,6 +320,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         );
     }
     col()
+        .apply_start_pointer(cx.is_reduced_motion())
         .w_full()
         .h_full()
         .fill(t.ground)

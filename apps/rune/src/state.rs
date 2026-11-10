@@ -18,6 +18,7 @@ pub struct Project {
 #[derive(Default)]
 pub struct AppState {
     pub art_focused: bool,
+    pub start_actions: StartActionsState,
     pub project_data: crate::project_state::ProjectState,
     pub page: Page,
     pub projects: Vec<Project>,
@@ -1242,4 +1243,13 @@ mod tests {
         assert_eq!(rows[0]["focusedId"], "new");
         assert_eq!(rows[1]["projectPath"], "/b");
     }
+}
+
+#[derive(Default)]
+pub(crate) struct StartActionsState {
+    pub(crate) bounds: [[f32; 4]; 3],
+    pub(crate) offsets: [[f32; 2]; 3],
+    pub(crate) active: [bool; 3],
+    pub(crate) runs: [u64; 3],
+    pub(crate) started: [Option<std::time::Instant>; 3],
 }
