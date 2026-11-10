@@ -15,9 +15,54 @@ pub struct Project {
     pub path: String,
 }
 
+/// The machine's signed-in user, resolved the way Electron's `useUser` does: the
+/// OS account name, split into words and capitalised, with its first letter as
+/// the avatar initial. Electron shows the profile chip only once a name resolves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    pub name: Option<String>,
+    pub initial: String,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self::system()
+    }
+}
+
+impl Profile {
+    pub fn system() -> Self {
+        let username = ["USER", "USERNAME", "LOGNAME"]
+            .into_iter()
+            .find_map(|key| std::env::var(key).ok())
+            .map(|user| user.trim().to_owned())
+            .filter(|user| !user.is_empty());
+        let name = username.map(|user| {
+            user.split(['.', '_', '-', ' '])
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_uppercase().collect::<String>() + chars.as_str()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let initial = name
+            .as_deref()
+            .and_then(|name| name.chars().next())
+            .map(|first| first.to_uppercase().collect())
+            .unwrap_or_default();
+        Self { name, initial }
+    }
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub art_focused: bool,
+    pub profile: Profile,
+    pub profile_hover: bool,
     pub start_actions: StartActionsState,
     pub project_data: crate::project_state::ProjectState,
     pub page: Page,

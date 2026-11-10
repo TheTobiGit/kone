@@ -16,8 +16,8 @@ use crate::{
     theme::{Palette, mix_srgb},
 };
 use rune::{
-    AnimExt, Cx, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el, icon, row, text,
-    text_input,
+    AnimExt, Cursor, Curve, Cx, Easing, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el,
+    icon, row, text, text_input,
 };
 
 static CLOCK: Icon = Icon {
@@ -267,82 +267,107 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
     stage.child(pocket)
 }
 
+/// `HomeRecent`'s corner chip: the signed-in user's initial in a 30 pt ink disc,
+/// shown once a machine name resolves and easing up 5% on hover.
+fn profile_chip(s: &AppState, t: Palette) -> Option<El> {
+    let name = s.profile.name.clone()?;
+    Some(
+        el().key("profile-chip")
+            .ml(2.0)
+            .size(30.0, 30.0)
+            .radius(15.0)
+            .center()
+            .fill(t.ink)
+            .scale(if s.profile_hover { 1.05 } else { 1.0 })
+            .scale_motion(Curve::tween(0.3, Easing::cubic(0.0, 0.0, 0.2, 1.0)))
+            .role("button")
+            .label(format!("Open profile — {name}"))
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .help(name)
+            .on_hover_change(|s: &mut AppState, over, _| s.profile_hover = over)
+            .child(
+                text(s.profile.initial.clone())
+                    .font(TextStyle::new(13.0, 400.0).lh(13.0))
+                    .color(t.ground),
+            ),
+    )
+}
+
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
+    let mut trailing = row()
+        .center_y()
+        .gap(12.0)
+        .child(settings_button(t))
+        .child(
+            row()
+                .h(36.0)
+                .px(12.0)
+                .gap(10.0)
+                .center_y()
+                .radius(11.0)
+                .fill(t.hover)
+                .child(icon(&SEARCH, 15.0).color(t.muted))
+                .child(
+                    text_input(&s.search, TextStyle::new(14.0, 400.0))
+                        .key("project-search")
+                        .w(176.0)
+                        .single_line()
+                        .placeholder("Search projects", t.muted)
+                        .color(t.ink)
+                        .on_edit(|s: &mut AppState| &mut s.search),
+                )
+                .child(
+                    el().px(6.0)
+                        .py(2.0)
+                        .radius(5.0)
+                        .border(1.0, t.muted.alpha(0.25))
+                        .child(
+                            text("⌘K")
+                                .font(TextStyle::new(10.0, 400.0).family(Family::Mono).lh(10.0))
+                                .color(t.muted),
+                        ),
+                ),
+        )
+        .child(
+            row()
+                .h(36.0)
+                .px(12.0)
+                .center_y()
+                .gap(6.0)
+                .radius(11.0)
+                .hover(t.hover)
+                .focus_highlight(t.hover)
+                .role("button")
+                .label("Change project sort order")
+                .focusable(true)
+                .cursor(rune::Cursor::Pointer)
+                .child(
+                    text(match s.project_data.sort {
+                        ProjectSort::Recent => "Recent",
+                        ProjectSort::Name => "Name",
+                    })
+                    .font(TextStyle::new(14.0, 400.0))
+                    .color(t.ink_soft),
+                )
+                .child(icon(&ARROW_DOWN, 12.0).color(t.muted))
+                .on_press(|s: &mut AppState| {
+                    s.project_data.sort = match s.project_data.sort {
+                        ProjectSort::Recent => ProjectSort::Name,
+                        ProjectSort::Name => ProjectSort::Recent,
+                    };
+                }),
+        );
+    if let Some(chip) = profile_chip(s, t) {
+        trailing = trailing.child(chip);
+    }
     let header = row()
         .w_full()
         .center_y()
         .justify_between()
         .child(rotating_wordmark(t, &s.start_actions))
-        .child(
-            row()
-                .center_y()
-                .gap(12.0)
-                .child(settings_button(t))
-                .child(
-                    row()
-                        .h(36.0)
-                        .px(12.0)
-                        .gap(10.0)
-                        .center_y()
-                        .radius(11.0)
-                        .fill(t.hover)
-                        .child(icon(&SEARCH, 15.0).color(t.muted))
-                        .child(
-                            text_input(&s.search, TextStyle::new(14.0, 400.0))
-                                .key("project-search")
-                                .w(176.0)
-                                .single_line()
-                                .placeholder("Search projects", t.muted)
-                                .color(t.ink)
-                                .on_edit(|s: &mut AppState| &mut s.search),
-                        )
-                        .child(
-                            el().px(6.0)
-                                .py(2.0)
-                                .radius(5.0)
-                                .border(1.0, t.muted.alpha(0.25))
-                                .child(
-                                    text("⌘K")
-                                        .font(
-                                            TextStyle::new(10.0, 400.0)
-                                                .family(Family::Mono)
-                                                .lh(10.0),
-                                        )
-                                        .color(t.muted),
-                                ),
-                        ),
-                )
-                .child(
-                    row()
-                        .h(36.0)
-                        .px(12.0)
-                        .center_y()
-                        .gap(6.0)
-                        .radius(11.0)
-                        .hover(t.hover)
-                        .focus_highlight(t.hover)
-                        .role("button")
-                        .label("Change project sort order")
-                        .focusable(true)
-                        .cursor(rune::Cursor::Pointer)
-                        .child(
-                            text(match s.project_data.sort {
-                                ProjectSort::Recent => "Recent",
-                                ProjectSort::Name => "Name",
-                            })
-                            .font(TextStyle::new(14.0, 400.0))
-                            .color(t.ink_soft),
-                        )
-                        .child(icon(&ARROW_DOWN, 12.0).color(t.muted))
-                        .on_press(|s: &mut AppState| {
-                            s.project_data.sort = match s.project_data.sort {
-                                ProjectSort::Recent => ProjectSort::Name,
-                                ProjectSort::Name => ProjectSort::Recent,
-                            };
-                        }),
-                ),
-        );
+        .child(trailing);
     // Electron shows the repository mark while the first status read is pending.
     let loading_summary = serde_json::json!({});
     let mut cells: Vec<El> = s
