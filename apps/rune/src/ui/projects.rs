@@ -344,6 +344,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         }),
                 ),
         );
+    // Electron shows the repository mark while the first status read is pending.
+    let loading_summary = serde_json::json!({});
     let mut cells: Vec<El> = s
         .sorted_projects()
         .into_iter()
@@ -436,7 +438,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         s.project_data
                             .summaries
                             .get(&p.path)
-                            .unwrap_or(&serde_json::Value::Null),
+                            .unwrap_or(&loading_summary),
                         active,
                     )
                     .key(format!("project-{i}"))

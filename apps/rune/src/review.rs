@@ -53,7 +53,9 @@ pub fn populate(s: &mut AppState, page: Page) {
         .collect();
     s.selected_project = Some(0);
     s.project_data.metadata.clear();
+    s.project_data.summaries.clear();
     for (index, path) in [KONE, NOVA, ATLAS].into_iter().enumerate() {
+        s.project_data.summaries.insert(path.into(), Value::Null);
         s.project_data.metadata.insert(
             path.into(),
             ProjectMeta {
