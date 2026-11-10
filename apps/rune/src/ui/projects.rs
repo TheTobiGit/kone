@@ -15,7 +15,7 @@ use crate::{
     state::AppState,
     theme::{Palette, mix_srgb},
 };
-use rune::{Cx, El, Family, Icon, TextStyle, col, el, icon, row, text, text_input};
+use rune::{Cx, El, Family, Icon, Spring, TextStyle, col, el, icon, row, text, text_input};
 
 static CLOCK: Icon = Icon {
     name: "session-clock",
@@ -26,6 +26,21 @@ static ARROW_DOWN: Icon = Icon {
     name: "arrow-down-01",
     view: 24.0,
     body: r#"<path d="M18 9C18 9 13.5811 15 12 15C10.4188 15 6 9 6 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static PROJECT_PIN: Icon = Icon {
+    name: "project-pin",
+    view: 24.0,
+    body: r#"<path d="M3 21L8 16M13.2585 18.8714C9.51516 18.0215 5.97844 14.4848 5.12853 10.7415C4.99399 10.1489 4.92672 9.85266 5.12161 9.37197C5.3165 8.89129 5.55457 8.74255 6.03071 8.44509C7.10705 7.77265 8.27254 7.55888 9.48209 7.66586C11.1793 7.81598 12.0279 7.89104 12.4512 7.67048C12.8746 7.44991 13.1622 6.93417 13.7376 5.90269L14.4664 4.59604C14.9465 3.73528 15.1866 3.3049 15.7513 3.10202C16.316 2.89913 16.6558 3.02199 17.3355 3.26771C18.9249 3.84236 20.1576 5.07505 20.7323 6.66449C20.978 7.34417 21.1009 7.68401 20.898 8.2487C20.6951 8.8134 20.2647 9.05346 19.4039 9.53358L18.0672 10.2792C17.0376 10.8534 16.5229 11.1406 16.3024 11.568C16.0819 11.9955 16.162 12.8256 16.3221 14.4859C16.4399 15.7068 16.2369 16.88 15.5555 17.9697C15.2577 18.4458 15.1088 18.6839 14.6283 18.8786C14.1477 19.0733 13.8513 19.006 13.2585 18.8714Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static FINDER: Icon = Icon {
+    name: "finder",
+    view: 24.0,
+    body: r#"<path d="M2.5 12C2.5 7.52 2.5 5.28 3.89 3.89C5.28 2.5 7.52 2.5 12 2.5S18.72 2.5 20.11 3.89C21.5 5.28 21.5 7.52 21.5 12S21.5 18.72 20.11 20.11C18.72 21.5 16.48 21.5 12 21.5S5.28 21.5 3.89 20.11C2.5 18.72 2.5 16.48 2.5 12ZM7 8v2m10-2v2M7 16.5c3.5 2 6.5 2 10 0M13 2.5c-.9 1.3-2.5 5.2-2.9 9.1-.2 1.9.2 1.9 1.8 1.9h.9c.2 0 .2.3.1 1.1-.1 1.5 0 4.5 1.1 6.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static CANCEL: Icon = Icon {
+    name: "cancel-01",
+    view: 24.0,
+    body: r#"<path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 static PIN: Icon = Icon {
     name: "session-pin",
@@ -253,64 +268,74 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         })
         .map(|(i, p)| {
             let path = p.path.clone();
-            let menu_path = path.clone();
+            let hover_path = path.clone();
             let pin_path = path.clone();
             let reveal_path = path.clone();
             let forget_path = path.clone();
             let pinned = s.project_data.metadata.get(&path).is_some_and(|m| m.pinned);
-            let menu_open = s.project_data.menu_path.as_deref() == Some(path.as_str());
-            let mut tile = row().center_y().gap(6.0).hover_group_focus().child(
-                folder(&p.name, t)
-                    .key(format!("project-{i}"))
-                    .role("button")
-                    .label(format!("Open {}", p.name))
-                    .focusable(true)
-                    .on_press(move |s: &mut AppState| s.open_project(path.clone())),
-            );
-            let mut menu = col().gap(3.0).group_opacity(0.0, 1.0).child(
+            let active = s.project_data.hovered_project.as_deref() == Some(path.as_str())
+                && s.launcher.mode.is_none();
+            let spring = Spring::from_stiffness_damping(420.0, 38.0, 0.85);
+            let action = |label: &'static str, glyph: &'static Icon, size: f32| {
                 el().size(24.0, 24.0)
                     .center()
-                    .radius(6.0)
-                    .hover(t.hover)
-                    .child(text("⋯").font(TextStyle::new(18.0, 500.0)).color(t.muted))
-                    .on_press(move |s: &mut AppState| {
-                        s.project_data.menu_path =
-                            if s.project_data.menu_path.as_deref() == Some(menu_path.as_str()) {
-                                None
-                            } else {
-                                Some(menu_path.clone())
-                            };
-                    }),
-            );
-            if menu_open {
-                for (label, action) in [
-                    (if pinned { "Unpin" } else { "Pin" }, 0),
-                    ("Reveal", 1),
-                    ("Forget", 2),
-                ] {
-                    let pin_path = pin_path.clone();
-                    let reveal_path = reveal_path.clone();
-                    let forget_path = forget_path.clone();
-                    menu = menu.child(
-                        el().px(4.0)
-                            .h(22.0)
-                            .center()
-                            .radius(5.0)
-                            .hover(t.hover)
-                            .child(
-                                text(label)
-                                    .font(TextStyle::new(10.0, 500.0))
-                                    .color(t.ink_soft),
-                            )
-                            .on_press(move |s: &mut AppState| match action {
-                                0 => s.pin_project(pin_path.clone()),
-                                1 => s.reveal_project(reveal_path.clone()),
-                                _ => s.forget_project(forget_path.clone()),
-                            }),
-                    );
-                }
-            }
-            tile = tile.child(menu);
+                    .role("button")
+                    .label(label)
+                    .help(label)
+                    .focusable(true)
+                    .cursor(rune::Cursor::Pointer)
+                    .hover_group()
+                    .child(icon(glyph, size).color(t.muted).group_color(t.ink))
+            };
+            let controls = col()
+                .gap(6.0)
+                .group_opacity(0.0, 1.0)
+                .offset(0.0, if active { -6.0 } else { 0.0 })
+                .offset_motion(spring)
+                .child(
+                    action(
+                        if pinned { "Unpin" } else { "Pin to top" },
+                        &PROJECT_PIN,
+                        14.0,
+                    )
+                    .on_press(move |s: &mut AppState| s.pin_project(pin_path.clone())),
+                )
+                .child(
+                    action("Reveal in Finder", &FINDER, 15.0)
+                        .on_press(move |s: &mut AppState| s.reveal_project(reveal_path.clone())),
+                )
+                .child(
+                    action("Remove", &CANCEL, 14.0)
+                        .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
+                );
+            let tile = row()
+                .center_y()
+                .gap(12.0)
+                .hover_group_focus()
+                .on_hover_change(move |s: &mut AppState, over, _| {
+                    if over {
+                        s.project_data.hovered_project = Some(hover_path.clone());
+                    } else if s.project_data.hovered_project.as_deref() == Some(hover_path.as_str())
+                    {
+                        s.project_data.hovered_project = None;
+                    }
+                })
+                .child(
+                    folder(&p.name, t)
+                        .key(format!("project-{i}"))
+                        .role("button")
+                        .label(format!("Open {}", p.name))
+                        .focusable(s.launcher.mode.is_none())
+                        .cursor(rune::Cursor::Pointer)
+                        .offset(0.0, if active { -6.0 } else { 0.0 })
+                        .offset_motion(spring)
+                        .on_press(move |s: &mut AppState| {
+                            if s.launcher.mode.is_none() {
+                                s.open_project(path.clone());
+                            }
+                        }),
+                )
+                .child(controls);
             el().w(236.0).child(tile)
         })
         .collect();
