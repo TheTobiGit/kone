@@ -93,6 +93,17 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("projects-review", |s| review::populate(s, Page::Projects)),
+            ("projects-grid", |s| {
+                review::populate(s, Page::Projects);
+                s.projects.push(state::Project {
+                    name: "nova".into(),
+                    path: "/review/nova".into(),
+                });
+                s.projects.push(state::Project {
+                    name: "atlas".into(),
+                    path: "/review/atlas".into(),
+                });
+            }),
             ("overview-review", |s| review::populate(s, Page::Overview)),
             ("studio", |s| {
                 s.example_project();

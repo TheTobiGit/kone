@@ -138,7 +138,7 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
         if added > 0 || removed > 0 {
             meta = meta.child(
                 text(format!("+{added}  −{removed}"))
-                    .font(TextStyle::new(11.0, 500.0).family(Family::Mono))
+                    .font(TextStyle::new(11.0, 400.0).family(Family::Mono))
                     .color(t.ink_soft),
             );
         }
@@ -530,7 +530,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                         .child(
                             text(label)
                                 .font(
-                                    TextStyle::new(10.0, 500.0)
+                                    TextStyle::new(10.0, 400.0)
                                         .family(Family::Mono)
                                         .tracking(0.4),
                                 )
@@ -608,7 +608,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                             .py(3.0)
                             .radius(7.0)
                             .hover(t.hover)
-                            .child(text(label).font(TextStyle::new(11.0, 500.0)).color(t.muted))
+                            .child(text(label).font(TextStyle::new(11.0, 400.0)).color(t.muted))
                             .on_press(move |s: &mut AppState| {
                                 s.session_action(
                                     action_path.clone(),
@@ -633,7 +633,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                                 .child(icon(&DELETE, 12.0).color(t.muted))
                                 .child(
                                     text("Delete")
-                                        .font(TextStyle::new(11.0, 500.0))
+                                        .font(TextStyle::new(11.0, 400.0))
                                         .color(t.muted),
                                 ),
                         )
@@ -723,7 +723,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                             .gap(6.0)
                             .child(
                                 text(session.title.clone())
-                                    .font(TextStyle::new(16.0, 600.0).tracking(-0.16))
+                                    .font(TextStyle::new(16.0, 400.0).tracking(-0.16))
                                     .color(if hovered {
                                         t.ink
                                     } else if t.dark {
