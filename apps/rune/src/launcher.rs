@@ -849,6 +849,8 @@ fn destination(s: &AppState, t: Palette, verb: &'static str) -> El {
         .role("button")
         .label(verb)
         .focusable(true)
+        .hover_group_focus()
+        .hover_motion(fade, fade)
         .w_full()
         .mt(16.0)
         .h(13.0 * LH + 1.0)
@@ -893,10 +895,7 @@ fn destination(s: &AppState, t: Palette, verb: &'static str) -> El {
                 .font(sans(12.0))
                 .color(t.ink_soft)
                 .mt(1.0)
-                .opacity(if on { 1.0 } else { 0.0 })
-                .opacity_motion(fade)
-                .offset(if on { 0.0 } else { -2.0 }, 0.0)
-                .offset_motion(fade),
+                .group_opacity(0.0, 1.0),
         )
 }
 
