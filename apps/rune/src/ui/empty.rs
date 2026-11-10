@@ -315,7 +315,14 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
     use std::time::Duration;
     let state = &mut s.start_actions;
     state.clock = clock;
+    let previous_page = state.page;
     let page_changed = state.reset_for_page(s.page);
+    if page_changed && state.live && previous_page.is_some() {
+        state.mounted = None;
+        state.word_at = None;
+        state.prev_word = None;
+        state.word = 0;
+    }
     if !matches!(
         s.page,
         crate::state::Page::Empty | crate::state::Page::Projects
@@ -387,5 +394,23 @@ impl StartPointer for El {
                 tx.live_only();
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rotating_wordmark_restarts_when_home_view_changes() {
+        let mut state = AppState::default();
+        state.start_actions.live = true;
+        let mut tx = rune::Tx::default();
+        tick(&mut state, 1.0, &mut tx);
+        state.start_actions.word = 3;
+        state.start_actions.word_at = Some(1.5);
+        state.page = crate::state::Page::Projects;
+        tick(&mut state, 2.0, &mut tx);
+        assert_eq!(state.start_actions.word, 0);
+        assert_eq!(state.start_actions.word_at, Some(2.0));
     }
 }
