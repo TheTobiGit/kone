@@ -187,35 +187,62 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
     for (i, change) in changes.into_iter().flatten().take(3).enumerate() {
         let add = change["added"].as_i64().unwrap_or(0);
         let del = change["removed"].as_i64().unwrap_or(0);
+        let path = change["path"].as_str().unwrap_or("");
+        let seed: usize = path.chars().map(|c| c as usize).sum();
+        let jitter = |base: i32, i: usize| (base + ((seed + i * 7) % 5) as i32 - 2).max(6) as f32;
+        let status = change["status"].as_str().unwrap_or("");
+        let is_new = matches!(status, "added" | "untracked");
+        let context = if t.dark {
+            mix_srgb(t.ground, t.ink, 0.446)
+        } else {
+            mix_srgb(t.raised_high, t.faint, 0.5)
+        };
+        let green = rune::color::hex(if t.dark { "#12b981" } else { "#059669" }).unwrap();
+        let red = rune::color::hex("#e11d48").unwrap();
+        let marks = if add > 0 && del > 0 {
+            vec![
+                (jitter(16, 0), context),
+                (jitter(10, 1), red),
+                (jitter(13, 2), green),
+            ]
+        } else if add > 0 || is_new {
+            vec![
+                (jitter(15, 0), green),
+                (jitter(10, 1), green),
+                (jitter(8, 2), context),
+            ]
+        } else if del > 0 {
+            vec![
+                (jitter(15, 0), red),
+                (jitter(9, 1), red),
+                (jitter(7, 2), context),
+            ]
+        } else {
+            vec![(15.0, context), (10.0, context)]
+        };
+        let mut mark_col = col().gap(3.0);
+        if status != "deleted" {
+            for (width, color) in marks {
+                mark_col = mark_col.child(el().size(width, 3.0).radius(2.0).fill(color));
+            }
+        }
         let mut paper = col()
             .key(format!("project-paper-{i}"))
             .size(50.0, 62.0)
-            .padding(8.0)
-            .gap(3.0)
+            .px(8.0)
+            .pt(8.0)
+            .gap(2.0)
             .radius(6.0)
-            .fill(t.raised_high)
+            .fill(if t.dark {
+                mix_srgb(t.raised_high, t.ink, 0.057)
+            } else {
+                t.raised_high
+            })
             .shadow(0.0, 4.0, t.line)
-            .child(el().size(10.0, 9.0).radius(2.0).fill(t.hover));
-        for (width, color) in [
-            (16.0, t.faint),
-            (
-                10.0,
-                if del > 0 {
-                    rune::color::hex("#e11d48").unwrap()
-                } else {
-                    t.faint
-                },
-            ),
-            (
-                13.0,
-                if add > 0 {
-                    rune::color::hex("#059669").unwrap()
-                } else {
-                    t.faint
-                },
-            ),
-        ] {
-            paper = paper.child(el().size(width, 3.0).radius(2.0).fill(color));
+            .child(icon(super::file_icons::for_path(path), 10.0).color(t.ink))
+            .child(mark_col);
+        if status == "deleted" {
+            paper = paper.opacity(0.9).border(1.5, red).border_dash(3.0, 2.0);
         }
         let spring = Spring::from_stiffness_damping(340.0, 15.0, 0.7);
         let angle = [-10.0_f32, 1.0, 11.0][i] + if active { [-6.0, 0.0, 6.0][i] } else { 0.0 };

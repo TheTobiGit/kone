@@ -1,4 +1,5 @@
 mod empty;
+mod file_icons;
 mod overview;
 mod projects;
 mod start_motion;
