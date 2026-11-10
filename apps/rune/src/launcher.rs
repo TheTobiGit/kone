@@ -915,7 +915,8 @@ fn destination(s: &AppState, t: Palette, verb: &'static str) -> El {
                     el().absolute(0.0, underline_y.round())
                         .w_full()
                         .h(1.0)
-                        .fill(t.ink.alpha(if on { 0.42 } else { 0.16 })),
+                        .fill(t.ink.alpha(if on { 0.42 } else { 0.16 }))
+                        .focus_ring(1.0, -1.0, t.accent.alpha(0.60)),
                 ),
         )
         .child(el().grow(1.0))

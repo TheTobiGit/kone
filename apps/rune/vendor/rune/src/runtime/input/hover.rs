@@ -101,7 +101,7 @@ impl<S: 'static> Runtime<S> {
         // presents to group styles, including keyboard focus on descendants.
         if self.keyboard_focus {
             for (i, n) in self.nodes.iter().enumerate() {
-                if n.vis.hover_focus && n.handlers.get().is_some_and(|h| h.on_hover_change.is_some())
+                if n.vis.hover_focus && n.handlers.get().is_some_and(|h| h.hover_focus_change && h.on_hover_change.is_some())
                     && self.focus_within(i) && self.allowed(i) && !inside.contains(&n.path)
                 {
                     if !self.hover_within.contains(&n.path) { entering.push(i); }

@@ -421,7 +421,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .items_start()
                 .gap(12.0)
                 .hover_group_focus()
-                .on_hover_change(move |s: &mut AppState, over, _| {
+                .on_hover_focus_change(move |s: &mut AppState, over, _| {
                     if over {
                         s.project_data.hovered_project = Some(hover_path.clone());
                     } else if s.project_data.hovered_project.as_deref() == Some(hover_path.as_str())
@@ -1026,7 +1026,7 @@ mod session_tests {
                     col()
                         .size(100.0, 40.0)
                         .hover_group_focus()
-                        .on_hover_change(|events: &mut Events, over, _| {
+                        .on_hover_focus_change(|events: &mut Events, over, _| {
                             events.borrow_mut().push(over)
                         })
                         .child(el().size(30.0, 20.0).focusable(true))
@@ -1046,6 +1046,30 @@ mod session_tests {
             rt.frame(1.0 / 60.0);
             assert_eq!(&*events.borrow(), expected);
         }
+    }
+
+    #[test]
+    fn pointer_only_hover_does_not_fire_for_keyboard_focus() {
+        use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col, el};
+        use std::{cell::RefCell, rc::Rc};
+        type Events = Rc<RefCell<Vec<bool>>>;
+        fn view(_: &Events, _: &mut Cx<Events>) -> El {
+            col()
+                .size(100.0, 40.0)
+                .hover_group_focus()
+                .on_hover_change(|events: &mut Events, over, _| events.borrow_mut().push(over))
+                .child(el().size(30.0, 30.0).focusable(true))
+        }
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut rt = Runtime::new(events.clone(), view, (200.0, 100.0), Env::default());
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        assert!(events.borrow().is_empty());
     }
     use super::*;
     #[test]

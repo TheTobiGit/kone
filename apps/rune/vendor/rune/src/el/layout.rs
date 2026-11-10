@@ -679,6 +679,12 @@ impl El {
         { self.handlers.sites.hover_change = Some(std::panic::Location::caller()); }
         self
     }
+    /// Like `on_hover_change`, also reporting keyboard focus within a `hover_group_focus`.
+    pub fn on_hover_focus_change<S: 'static>(self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Self {
+        let mut this = self.on_hover_change(f);
+        this.handlers.hover_focus_change = true;
+        this
+    }
     /// [`El::on_hover_change`] for a component that doesn't read the app's state.
     #[track_caller]
     pub fn on_hover_change_any(mut self, f: impl Fn(bool, &mut Tx) + 'static) -> Self {
