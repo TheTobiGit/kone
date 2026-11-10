@@ -289,6 +289,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             };
             let controls = col()
                 .gap(6.0)
+                .self_center()
                 .group_opacity(0.0, 1.0)
                 .offset(0.0, if active { -6.0 } else { 0.0 })
                 .offset_motion(spring)
@@ -309,7 +310,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
                 );
             let tile = row()
-                .center_y()
+                .h(123.8)
+                .items_start()
                 .gap(12.0)
                 .hover_group_focus()
                 .on_hover_change(move |s: &mut AppState, over, _| {
