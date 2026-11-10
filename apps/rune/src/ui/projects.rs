@@ -128,8 +128,12 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
         .child({
             let mut name_row = row().w_full().items_end().gap(9.0);
             if tree.is_object() {
-                name_row = name_row
-                    .child(icon(&REPO_MARK, 16.0).color(mix_srgb(t.ink, t.ink_soft, 0.565)));
+                let mark = if t.dark {
+                    mix_srgb(t.ground, t.ink, 0.937)
+                } else {
+                    mix_srgb(t.ink, t.ink_soft, 0.565)
+                };
+                name_row = name_row.child(icon(&REPO_MARK, 16.0).color(mark));
             }
             name_row.child(
                 text(name.to_owned())
