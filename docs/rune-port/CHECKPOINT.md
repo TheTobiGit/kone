@@ -159,3 +159,9 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - `a2ebfee8` refines home session rows and actions; compare `projects-{sessions,session-hover}-{light,dark}.png`.
 - `38c8afac` gives the project action column its source horizontal offset and 500/30 spring; settled hover comparisons are `projects-action-slide-{light,dark}.png`. These captures do not establish frame-by-frame parity.
 - The native debug build and 34 tests passed after these changes. Part B remains open: session lazy-loading skeletons and entrance timing, card action icon animations and native tooltip presentation, full file-icon coverage, and motion/focus/empty-state verification still need work. Existing no-match sheets are `projects-nomatch-{light,dark}.png`.
+
+### Follow-up: keyboard focus (2026-11-10)
+
+- `b9f1bef6` applies the existing home focus refinements to the settings button, profile chip, sort control, and session rows. `cargo fmt --check`, the debug build, and all 34 native tests passed.
+- Captures: `/workspace/rune-compare/projects-focus-followup-{light,dark}.png`. These are **not a parity sign-off**: the Electron capture focuses the project card, while the Rune script's three Tab presses now land elsewhere. Update the script for the changed focus order and compare equivalent states.
+- Part B remains incomplete: session lazy-loading skeletons and entrance timing, card action icon animations and native tooltip presentation, full file-icon coverage, and equivalent-state motion/focus/empty-state checks remain open.
