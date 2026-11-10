@@ -427,8 +427,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .gap(6.0)
                 .self_center()
                 .group_opacity(0.0, 1.0)
-                .offset(0.0, if active { -6.0 } else { 0.0 })
-                .offset_motion(spring)
+                .offset(
+                    if active { 0.0 } else { 4.0 },
+                    if active { -6.0 } else { 0.0 },
+                )
+                .offset_motion(Spring::from_stiffness_damping(500.0, 30.0, 1.0))
                 .child(
                     action(
                         if pinned {
