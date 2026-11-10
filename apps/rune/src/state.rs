@@ -189,6 +189,7 @@ impl AppState {
                 s.studio_message(message);
             }
         }
+        s.sync_project_watches();
         changed || start || launcher
     }
 

@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { z } from "zod";
 import { cancelAllClones, clone } from "@kone/git-core/clone.js";
 import { detect, status } from "@kone/git-core/status.js";
+import { watchStatus } from "../../../desktop/src/modules/git/watch.js";
 import { createProject } from "../../../desktop/src/modules/git/create.js";
 import { readme, identity, logo, contributors } from "../../../desktop/src/modules/git/about.js";
 import { provisionWorktree } from "../../../desktop/src/modules/git/worktreeProvision.js";
@@ -130,6 +131,13 @@ function updateProjects(change: (list: Project[]) => Project[]): Promise<Project
   return result;
 }
 const cloneRequests = new Map<string | number, AbortController>();
+let summaryWatchGeneration = 0;
+let summaryStops: Array<() => void> = [];
+function stopSummaryWatches() {
+  summaryWatchGeneration++;
+  for (const stop of summaryStops) stop();
+  summaryStops = [];
+}
 async function call(method: string, params: z.infer<typeof object>, requestId: string | number) {
   switch (method) {
     case "initialize": return { version: 1, capabilities: ["projects", "studio", "agent"] };
@@ -179,6 +187,17 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     case "projects.summary": {
       const input = z.object({ path: z.string().min(1) }).parse(params);
       return status(input.path);
+    }
+    case "projects.watchSummaries": {
+      const input = z.object({ paths: z.array(z.string().min(1)).max(24) }).parse(params);
+      stopSummaryWatches();
+      const generation = summaryWatchGeneration;
+      const stops = await Promise.all(input.paths.map((projectPath) => watchStatus(projectPath, (tree) => {
+        if (generation === summaryWatchGeneration) notify("projects.status", { path: projectPath, tree });
+      })));
+      if (generation === summaryWatchGeneration) summaryStops = stops;
+      else for (const stop of stops) stop();
+      return { ok: true };
     }
     case "projects.remember": {
       const input = z.object({ path: z.string().min(1), name: z.string().min(1) }).parse(params);
@@ -298,6 +317,7 @@ lines.on("line", (line) => {
 });
 lines.on("close", () => {
   cancelAllClones();
+  stopSummaryWatches();
   void (async () => {
     await Promise.allSettled(pending);
     try {

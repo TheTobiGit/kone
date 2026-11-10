@@ -43,6 +43,7 @@ enum Pending {
     Sessions(String),
     HomeSessions(String),
     Summary(String),
+    Watches,
     SessionAction(String),
 }
 
@@ -52,6 +53,7 @@ pub struct ProjectState {
     pub menu_path: Option<String>,
     pub metadata: HashMap<String, ProjectMeta>,
     pub summaries: HashMap<String, Value>,
+    watched_paths: Vec<String>,
     pub overview: Value,
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
@@ -63,6 +65,20 @@ pub struct ProjectState {
 }
 
 impl AppState {
+    pub(crate) fn sync_project_watches(&mut self) {
+        let paths: Vec<String> = if self.page == Page::Projects {
+            self.projects.iter().map(|p| p.path.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        if paths != self.project_data.watched_paths
+            && self.bridge.is_some()
+            && let Some(id) = self.request("projects.watchSummaries", json!({"paths": paths}))
+        {
+            self.project_data.watched_paths = paths;
+            self.project_data.pending.insert(id, Pending::Watches);
+        }
+    }
     pub fn sorted_projects(&self) -> Vec<(usize, &Project)> {
         let mut projects: Vec<_> = self
             .projects
@@ -187,6 +203,20 @@ impl AppState {
 
     /// Returns true when this response belongs to project state.
     pub fn project_message(&mut self, message: &Value) -> bool {
+        if message["method"] == "projects.status" {
+            if let Some(path) = message["params"]["path"].as_str()
+                && self.page == Page::Projects
+                && self.projects.iter().any(|p| p.path == path)
+            {
+                self.project_data.pending.retain(
+                    |_, p| !matches!(p, Pending::Summary(pending_path) if pending_path == path),
+                );
+                self.project_data
+                    .summaries
+                    .insert(path.to_owned(), message["params"]["tree"].clone());
+            }
+            return true;
+        }
         let Some(id) = message.get("id").and_then(Value::as_u64) else {
             return false;
         };
@@ -202,7 +232,9 @@ impl AppState {
             self.project_data.pending.remove(&id)
         };
         let Some(pending) = pending else { return false };
-        if matches!(pending, Pending::Summary(_)) && message.get("error").is_some() {
+        if matches!(pending, Pending::Summary(_) | Pending::Watches)
+            && message.get("error").is_some()
+        {
             return true;
         }
         if let Some(error) = message.get("error") {
@@ -332,6 +364,7 @@ impl AppState {
                     self.project_data.summaries.insert(path, result.clone());
                 }
             }
+            Pending::Watches => {}
         }
         true
     }
@@ -492,6 +525,30 @@ mod tests {
         assert!(!state.project_data.summaries.contains_key("/a"));
         assert_eq!(state.project_data.summaries["/b"]["branch"], "main");
         assert!(state.studio.error.is_none());
+    }
+
+    #[test]
+    fn watched_status_wins_over_an_older_read_and_ignores_hidden_home() {
+        let mut state = AppState::default();
+        state.page = Page::Projects;
+        state.projects.push(Project {
+            name: "B".into(),
+            path: "/b".into(),
+        });
+        state
+            .project_data
+            .pending
+            .insert(1, Pending::Summary("/b".into()));
+        assert!(state.project_message(
+            &json!({"method":"projects.status", "params":{"path":"/b", "tree":{"branch":"new"}}})
+        ));
+        assert!(!state.project_message(&json!({"id":1, "result":{"branch":"old"}})));
+        assert_eq!(state.project_data.summaries["/b"]["branch"], "new");
+        state.page = Page::Overview;
+        state.project_message(
+            &json!({"method":"projects.status", "params":{"path":"/b", "tree":{"branch":"late"}}}),
+        );
+        assert_eq!(state.project_data.summaries["/b"]["branch"], "new");
     }
 
     #[test]

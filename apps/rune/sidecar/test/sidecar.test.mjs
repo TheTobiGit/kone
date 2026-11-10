@@ -16,14 +16,22 @@ test("project and Studio state survive a sidecar restart", async () => {
     const child = spawn(node, [script], { env: { ...process.env, KONE_RUNE_DATA_DIR: directory }, stdio: ["pipe", "pipe", "pipe"] });
     let next = 0;
     const waiters = new Map();
+    let statusWaiter;
     child.once("error", (error) => { for (const waiter of waiters.values()) waiter.reject(error); waiters.clear(); });
     child.once("close", (code) => { for (const waiter of waiters.values()) waiter.reject(new Error(`sidecar exited: ${code}`)); waiters.clear(); });
     createInterface({ input: child.stdout }).on("line", (line) => {
       const message = JSON.parse(line);
+      if (message.method === "projects.status" && statusWaiter) { const resolve = statusWaiter; statusWaiter = undefined; resolve(message.params); }
       const waiter = waiters.get(message.id);
       if (waiter) { waiters.delete(message.id); waiter.resolve(message); }
     });
     return {
+      nextStatus() {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => { statusWaiter = undefined; reject(new Error("status notification timed out")); }, 10000);
+          statusWaiter = (value) => { clearTimeout(timer); resolve(value); };
+        });
+      },
       async call(method, params = {}) {
         const id = ++next;
         const result = new Promise((resolve, reject) => {
@@ -58,6 +66,11 @@ test("project and Studio state survive a sidecar restart", async () => {
     assert.equal(summary.root, created.path);
     assert.ok(Array.isArray(summary.changes));
     assert.equal(await app.call("projects.summary", { path: directory }), null);
+    await app.call("projects.watchSummaries", { paths: [created.path] });
+    const changed = app.nextStatus();
+    await writeFile(path.join(created.path, "watch-proof.txt"), "changed\n");
+    assert.ok((await changed).tree.changes.some((entry) => entry.path === "watch-proof.txt"));
+    await app.call("projects.watchSummaries", { paths: [] });
     assert.deepEqual(await app.call("history.list", { projectPath: created.path }), []);
     const cloned = await app.call("projects.clone", { url: created.path, parent: directory, name: "clone" });
     assert.equal(cloned.path, path.join(directory, "clone"));
