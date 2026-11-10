@@ -1,13 +1,25 @@
 # Current Rune port checkpoint
 
-## Linux continuation — start actions (2026-11-10)
+## Start screen (no project) — DONE (2026-11-10)
 
-- Worktree `/workspace/thetobi-developer/kone-rune`, branch `feat/rune-port`; the user now authorizes and requires normal pushes after components. Commit `57b6268b` is pushed.
-- Start actions have shared pending state, pointer pull, hover effects and reduced-motion handling on empty and populated home. The pending ring has separate muted and ink-soft parts. This is work in progress, not a parity sign-off.
-- Three review rounds left exact icon motion unresolved; the subsequent plus pass is described below. The folder lacks its separate hinge poses, and GitHub lacks its tail morph and body transform. Review confirmed the shared state and no-op pointer updates by source inspection, not interactive testing.
-- Fresh Rune capture: `/workspace/rune-compare/no-project-start-actions-rune.png` (1280 × 800). The Electron capture in that directory is stale; no valid current side-by-side comparison exists. Recreate both at matching viewport and scale before signing off.
-- PlusSign now animates its endpoints at constant stroke width using Rune shape-coordinate animation. Independent source review found its timing and geometry consistent with Vue; motion and antialiasing still need a matched visual check. Resting 1280 × 800 captures: `/workspace/rune-compare/no-project-plus-electron.png` (Nuxt renderer) and `/workspace/rune-compare/no-project-plus-rune.png`; Rune-only motion frame: `/workspace/rune-compare/no-project-plus-rune-motion.png`. Folder and GitHub gestures remain outstanding.
-- On this Linux host, tests link with `LIBRARY_PATH=/tmp/kone-rune-link`, where `libxkbcommon.so` points to the installed `libxkbcommon.so.0`. Run the required fmt, clippy and tests before each commit. Settings remains deferred.
+The no-project start screen matches Electron 1:1 at 2x in light and dark, at rest, on hover and mid-gesture (`30196eb1`). **Next: the projects list** (`ui/projects.rs`, `--scene projects-review`).
+
+- Side-by-sides (Electron | Rune): `/workspace/rune-compare/start-final-{light,dark}.png`, `start-final-hover-{light,dark}.png`, `start-final-hover-light-mid250ms.png`. Mean pixel difference is about 1 of 255, and is mostly text antialiasing and plasma noise.
+- `ui/start_motion.rs` holds the per-frame glyph gestures: plus stems and arms, the folder (back/paper rise plus the projective perspective(70px) flap), and the GitHub tail morph and cat transform. These follow motion's keyframes (one ease per segment, transform-box fill-box, origin 50% 50%). It also holds the rotating wordmark, with springs at stiffness 300 and damping 25, motion's rest thresholds and a 0.03 s stagger.
+- The start screen runs on the **poll clock**: `StartActionsState.clock`, and hover stamps `PENDING`. Headless `--script`/`--at` therefore renders hover and gesture frames deterministically. `--scene` snapshots open settled; a live app plays the entrance (`live`).
+- **App-wide finding:** Electron loads only Geist 400 and Fraunces 400 (@nuxt/fonts) with `font-synthesis: none`, so every weight renders Regular. The start screen uses 400, and Fraunces is now the static `Fraunces-Regular.ttf` (opsz 14, wght 400; the variable font was removed). Other screens should also use 400. Check whether Geist Medium/SemiBold/Bold can then be dropped.
+- The plasma output is premultiplied like WebGL (`vec4(col, opacity)`), with the CSS mask applied after. Do not go back to straight alpha, because dark mode gets dimmer.
+- Capture method:
+  - Electron: `/workspace/parity-scratch/pw/hov.mjs <scheme> <prefix> <x> <y> <ms,...>`. This is Playwright at DPR 2, 1280×840, with `page.clock`. It waits for the wordmark's "kone.", glides in with a 12-step move and pauses the clock.
+  - Rune: `--scene empty-brand --script <13-step glide> --at <t> --snap x.png --size 1292x854`, cropped at (12, 16, +2560, +1680) to remove the frame band.
+  - Rune holds hover while layout (the magnet offset) moves under a *still* pointer, so a headless one-jump `move` lights the hover late. Use a glide.
+- The projects page should use `rotating_wordmark` too. It currently uses the static `wordmark`.
+- Known remaining differences:
+  - Text antialiasing: light-on-dark Geist is slightly heavier in Rune.
+  - The folder flap's stroke width is not foreshortened by the projection.
+  - The plasma noise grain differs slightly, because Electron caps the canvas DPR at 1.75.
+  - The magnet offset resets when the pointer leaves the window, while Electron keeps it.
+  - The Settings tooltip is Rune's, not Chromium's native title tooltip.
 
 - Frame: vendored Rune at `50feb4f` adds explicit macOS traffic-light hiding and Linux undecorated edge resize through winit; Linux X11 edge resizing was verified; band double-click did not maximize in the attempted X11 check. Mac blur, button hiding, dragging, double-click and resizing need a native run.
 
