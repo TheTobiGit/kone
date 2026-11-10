@@ -52,6 +52,11 @@ fn main() {
                 s.start_actions.word = 4;
                 s.launcher.fixture_create_browser();
             }),
+            ("launcher-create-progress", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture_create_progress();
+            }),
             ("launcher-clone", |s| {
                 s.page = Page::Empty;
                 s.start_actions.word = 4;

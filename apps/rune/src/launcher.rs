@@ -115,6 +115,7 @@ pub struct LauncherState {
     public: bool,
     cancelling: bool,
     progress: f64,
+    sweep_started: Option<f64>,
     stage: String,
     home: String,
     /// The card's shown pose (Electron's `shown`), set a frame after it mounts.
@@ -166,6 +167,7 @@ impl Default for LauncherState {
             public: false,
             cancelling: false,
             progress: 0.0,
+            sweep_started: None,
             stage: String::new(),
             home,
             shown: false,
@@ -345,6 +347,12 @@ impl LauncherState {
     pub fn fixture_create_browser(&mut self) {
         self.fixture(LauncherMode::Open);
         self.mode = Some(LauncherMode::Create);
+    }
+    pub fn fixture_create_progress(&mut self) {
+        self.fixture(LauncherMode::Create);
+        self.name = TextEdit::new("demo");
+        self.busy = true;
+        self.sweep_started = Some(PENDING);
     }
     /// A clone caught mid-transfer, for snapshot scenes.
     pub fn fixture_clone_progress(&mut self, progress: f64, stage: &str) {
@@ -606,6 +614,7 @@ fn submit(s: &mut AppState) {
     s.launcher.cancelling = false;
     s.launcher.request_id = s.request(method, params);
     s.launcher.busy = s.launcher.request_id.is_some();
+    s.launcher.sweep_started = s.launcher.busy.then_some(PENDING);
     if !s.launcher.busy {
         s.launcher.error = Some("The project service is unavailable.".into());
     }
@@ -635,6 +644,9 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
     }
     if l.busy && mode == LauncherMode::Create && l.closing.is_none() {
+        if l.sweep_started == Some(PENDING) {
+            l.sweep_started = Some(clock);
+        }
         // So is the indeterminate sweep.
         tx.wake_after(Duration::ZERO);
         changed = true;
@@ -1083,7 +1095,7 @@ fn progress_view(s: &AppState, t: Palette) -> El {
         .child(if cloning {
             text(name.clone()).font(sans(16.0)).color(t.ink)
         } else {
-            text(name.clone()).font(mono(13.0, 600.0)).color(t.ink)
+            text(name.clone()).font(mono(13.0, REGULAR)).color(t.ink)
         })
         .child(
             text(format!("→ {into}"))
@@ -1104,7 +1116,11 @@ fn progress_view(s: &AppState, t: Palette) -> El {
         track.child(el().h(4.0).w_frac(p.max(0.0)).radius(2.0).fill(t.accent))
     } else {
         // `cp-sweep`: a 38 % bar crossing from -110 % to 370 % of its width every 1.1 s.
-        let phase = ((l.clock % 1.1) / 1.1) as f32;
+        let elapsed = l
+            .sweep_started
+            .filter(|at| at.is_finite())
+            .map_or(0.0, |at| (l.clock - at).max(0.0));
+        let phase = ((elapsed % 1.1) / 1.1) as f32;
         let eased = Easing::cubic(0.65, 0.0, 0.35, 1.0).eval(phase);
         let x = (-1.1 + eased * 4.8) * 0.38;
         track.child(
