@@ -220,6 +220,18 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        let recent_count = s
+            .project_data
+            .home_sessions
+            .iter()
+            .filter(|row| !row.pinned)
+            .count();
+        let lazy = if s.page == Page::Projects {
+            s.project_data.lazy.tick(recent_count, clock, tx)
+        } else {
+            s.project_data.lazy = Default::default();
+            false
+        };
         let start = crate::ui::start_tick(s, clock, tx);
         let launcher = crate::launcher::tick(s, clock, tx);
         let mut messages = Vec::new();
@@ -235,7 +247,7 @@ impl AppState {
             }
         }
         s.sync_project_watches();
-        changed || start || launcher
+        changed || start || launcher || lazy
     }
 
     fn park_studio_thread(&mut self) {

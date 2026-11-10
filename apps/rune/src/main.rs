@@ -93,6 +93,11 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("projects-review", |s| review::populate(s, Page::Projects)),
+            ("projects-skeletons", |s| {
+                review::populate(s, Page::Projects);
+                s.project_data.lazy.ready = 0;
+                s.project_data.lazy.reveal = Some(0.0);
+            }),
             ("projects-repo", |s| {
                 review::populate(s, Page::Projects);
                 s.projects = vec![state::Project {

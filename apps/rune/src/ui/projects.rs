@@ -555,6 +555,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             ),
         );
     }
+    s.project_data.lazy.reduced.set(cx.is_reduced_motion());
+    let session_scroll = s.project_data.lazy.scroll.clone();
     col()
         .apply_start_pointer(cx.is_reduced_motion())
         .w_full()
@@ -586,6 +588,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .scroll(ScrollSpec {
                             stick_bottom: false,
                         })
+                        .on_scroll_offset(move |at| session_scroll.set((at.offset[1], at.max[1])))
                         .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
                         .child(sessions(s, &s.project_data.home_sessions, t, true).pb(24.0)),
                 ),
@@ -680,6 +683,89 @@ fn session_cost(session: &ProjectSession) -> f64 {
     session.tokens.max(0) as f64 / 1_000_000.0 * rate
 }
 
+fn skeleton_piece(
+    width: f32,
+    height: f32,
+    radius: f32,
+    t: Palette,
+    elapsed: f64,
+    reduced: bool,
+) -> El {
+    // CSS background-size is 220%; its 180% to -80% position is relative
+    // to the remaining -120% of the element's width.
+    let phase = (elapsed / 1.4).fract() as f32;
+    let eased = super::start_motion::bezier([0.42, 0.0, 0.58, 1.0], phase);
+    let left = if reduced {
+        0.0
+    } else {
+        -1.2 * (1.8 - 2.6 * eased)
+    };
+    let stops = [
+        (0.0, 0.0),
+        (0.2, 0.0),
+        (0.4, 0.06),
+        (0.5, 0.10),
+        (0.6, 0.06),
+        (0.8, 0.0),
+        (1.0, 0.0),
+    ];
+    let sample = |x: f32| {
+        let u = ((x - left) / 2.2).clamp(0.0, 1.0);
+        let pair = stops
+            .windows(2)
+            .find(|p| u <= p[1].0)
+            .unwrap_or(&stops[5..7]);
+        let v = (u - pair[0].0) / (pair[1].0 - pair[0].0);
+        t.ink.alpha(pair[0].1 + (pair[1].1 - pair[0].1) * v)
+    };
+    let mut colors = vec![(0.0, sample(0.0))];
+    for &(x, alpha) in &stops[1..6] {
+        let x = left + x * 2.2;
+        if x > 0.0 && x < 1.0 {
+            colors.push((x, t.ink.alpha(alpha)));
+        }
+    }
+    colors.push((1.0, sample(1.0)));
+    el().w(width)
+        .h(height)
+        .radius(radius)
+        .fill(t.ink.alpha(0.05))
+        .linear_gradient(100_f32.to_radians(), colors)
+}
+
+fn skeleton(ri: usize, t: Palette, elapsed: f64, opacity: f32, reduced: bool) -> El {
+    let piece = |w, h, r| skeleton_piece(w, h, r, t, elapsed, reduced);
+    row()
+        .w_full()
+        .h_full()
+        .center_y()
+        .gap(14.0)
+        .fill(t.ground)
+        .opacity(opacity)
+        .child(piece(36.0, 36.0, 18.0))
+        .child(
+            col()
+                .grow(1.0)
+                .gap(8.0)
+                .child(
+                    el().w_frac((42 + (ri * 13) % 34) as f32 / 100.0)
+                        .max_w(320.0)
+                        .h(14.0)
+                        .child(skeleton_piece(320.0, 14.0, 5.0, t, elapsed, reduced).w_full()),
+                )
+                .child(
+                    row()
+                        .gap(10.0)
+                        .child(piece(48.0, 9.0, 4.0))
+                        .child(piece(68.0, 9.0, 4.0))
+                        .child(piece(40.0, 9.0, 4.0))
+                        .child(piece(52.0, 9.0, 4.0)),
+                ),
+        )
+        .child(piece(54.0, 24.0, 6.0))
+        .pr(14.0)
+}
+
 pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, home: bool) -> El {
     let mut list = col().w_full().gap(40.0);
     let mut first = true;
@@ -739,7 +825,16 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
             first = false;
         }
         let mut rows = col().w_full().gap(22.0);
-        for session in group {
+        for (ri, session) in group.into_iter().enumerate() {
+            if home && !pinned && ri >= s.project_data.lazy.limit {
+                break;
+            }
+            let masked = home && !pinned && ri >= s.project_data.lazy.ready;
+            let loading = masked
+                && s.project_data
+                    .lazy
+                    .reveal
+                    .is_none_or(|at| s.project_data.lazy.clock - at < 0.46);
             let id = session.id.clone();
             let path = session.project_path.clone();
             let hovered = s.project_data.hovered_session.as_deref() == Some(id.as_str());
@@ -942,67 +1037,84 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                 }
             }
             let hover_id = id.clone();
-            rows = rows.child(
-                row()
-                    .w_full()
-                    .pr(14.0)
-                    .gap(14.0)
-                    .center_y()
-                    .radius(10.0)
-                    .hover_group_focus()
-                    .hover_motion(
-                        Curve::tween(0.16, COLORS_EASE),
-                        Curve::tween(0.16, COLORS_EASE),
-                    )
-                    .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
-                    .focusable(true)
-                    .cursor(Cursor::Pointer)
-                    .scale(if hovered { 1.009 } else { 1.0 })
-                    .origin(0.0, 0.5)
-                    .scale_motion(Curve::tween(0.34, EASE))
-                    .child(identity_lead(
-                        &session.avatar_svg,
-                        session.avatar.as_deref(),
-                        &session.provider,
-                        t,
-                        hovered,
-                    ))
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .gap(6.0)
-                            .child(
-                                text(session.title.clone())
-                                    .font(TextStyle::new(16.0, 400.0).tracking(-0.16))
-                                    .color(if hovered {
-                                        t.ink
-                                    } else if t.dark {
-                                        t.muted
-                                    } else {
-                                        t.ink_soft
-                                    })
-                                    .truncate(),
-                            )
-                            .child(metadata),
-                    )
-                    .child(trail)
-                    .on_hover_focus_change(move |s: &mut AppState, over, _| {
-                        if over {
-                            s.project_data.hovered_session = Some(hover_id.clone());
-                        } else if s.project_data.hovered_session.as_deref()
-                            == Some(hover_id.as_str())
-                        {
-                            s.project_data.hovered_session = None;
-                        }
-                    })
-                    .on_press(move |s: &mut AppState| {
-                        if home {
-                            s.open_home_session(path.clone(), id.clone())
-                        } else {
-                            s.open_recent_session(id.clone())
-                        }
-                    }),
-            );
+            let content = row()
+                .w_full()
+                .pr(14.0)
+                .gap(14.0)
+                .center_y()
+                .radius(10.0)
+                .hover_group_focus()
+                .hover_motion(
+                    Curve::tween(0.16, COLORS_EASE),
+                    Curve::tween(0.16, COLORS_EASE),
+                )
+                .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
+                .focusable(!masked)
+                .cursor(Cursor::Pointer)
+                .scale(if hovered && !loading { 1.009 } else { 1.0 })
+                .origin(0.0, 0.5)
+                .scale_motion(Curve::tween(0.34, EASE))
+                .child(identity_lead(
+                    &session.avatar_svg,
+                    session.avatar.as_deref(),
+                    &session.provider,
+                    t,
+                    hovered,
+                ))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .gap(6.0)
+                        .child(
+                            text(session.title.clone())
+                                .font(TextStyle::new(16.0, 400.0).tracking(-0.16))
+                                .color(if hovered {
+                                    t.ink
+                                } else if t.dark {
+                                    t.muted
+                                } else {
+                                    t.ink_soft
+                                })
+                                .truncate(),
+                        )
+                        .child(metadata),
+                )
+                .child(trail)
+                .on_hover_focus_change(move |s: &mut AppState, over, _| {
+                    if over {
+                        s.project_data.hovered_session = Some(hover_id.clone());
+                    } else if s.project_data.hovered_session.as_deref() == Some(hover_id.as_str()) {
+                        s.project_data.hovered_session = None;
+                    }
+                })
+                .on_press(move |s: &mut AppState| {
+                    if masked {
+                        return;
+                    }
+                    if home {
+                        s.open_home_session(path.clone(), id.clone())
+                    } else {
+                        s.open_recent_session(id.clone())
+                    }
+                });
+            rows = rows.child(if masked {
+                let lazy = &s.project_data.lazy;
+                let elapsed = lazy.reveal.map_or(0.0, |at| (lazy.clock - at).max(0.0));
+                let reduced = lazy.reduced.get();
+                let fade =
+                    ((elapsed - 0.46) / if reduced { 0.16 } else { 0.44 }).clamp(0.0, 1.0) as f32;
+                let curve = if reduced {
+                    [0.25, 0.1, 0.25, 1.0]
+                } else {
+                    [0.22, 1.0, 0.36, 1.0]
+                };
+                let opacity = 1.0 - super::start_motion::bezier(curve, fade);
+                el().w_full()
+                    .child(content)
+                    .child(skeleton(ri, t, elapsed, opacity, reduced).absolute(0.0, 0.0))
+            } else {
+                content
+            });
         }
         list = list.child(col().w_full().gap(14.0).child(head).child(rows));
     }

@@ -57,12 +57,100 @@ pub struct ProjectState {
     pub overview: Value,
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
+    pub lazy: LazySessions,
     pub metric_cost: bool,
     pub hovered_session: Option<String>,
     pub hovered_project: Option<String>,
     pub pressed_project: Option<String>,
     pub delete_hold: Option<std::time::Instant>,
     pending: HashMap<u64, Pending>,
+}
+
+/// The recent list mounts eight rows at a time; its scroll watcher is read on
+/// the poll clock so the 460 ms hold and the following fade share one clock.
+pub struct LazySessions {
+    pub limit: usize,
+    pub ready: usize,
+    pub clock: f64,
+    pub opened: Option<f64>,
+    pub reveal: Option<f64>,
+    pub scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    pub reduced: std::cell::Cell<bool>,
+}
+impl Default for LazySessions {
+    fn default() -> Self {
+        Self {
+            limit: 8,
+            ready: 8,
+            clock: 0.0,
+            opened: None,
+            reveal: None,
+            scroll: std::rc::Rc::new(std::cell::Cell::new((0.0, -1.0))),
+            reduced: std::cell::Cell::new(false),
+        }
+    }
+}
+impl LazySessions {
+    pub fn tick(&mut self, count: usize, clock: f64, tx: &mut rune::Tx) -> bool {
+        self.clock = clock;
+        let opened = *self.opened.get_or_insert(clock);
+        if let Some(start) = self.reveal {
+            let duration = if self.reduced.get() { 0.62 } else { 0.9 };
+            if clock - start >= duration {
+                self.ready = self.limit;
+                self.reveal = None;
+            } else {
+                tx.wake_after(std::time::Duration::ZERO);
+                return true;
+            }
+        }
+        if self.limit < count {
+            // Scroll watchers report after polling; keep a wake pending to consume
+            // the newest position even when the window becomes idle.
+            tx.wake_after(std::time::Duration::from_millis(30));
+        }
+        let (offset, max) = self.scroll.get();
+        if self.limit < count && max >= 0.0 && max - offset <= 240.0 {
+            self.limit = (self.limit + 8).min(count);
+            if offset > 0.0 || clock - opened >= 0.75 {
+                self.reveal = Some(clock);
+            } else {
+                self.ready = self.limit;
+            }
+            tx.wake_after(std::time::Duration::ZERO);
+            return true;
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod lazy_tests {
+    use super::*;
+    #[test]
+    fn scroll_reveals_in_batches_and_holds_masks_through_fade() {
+        let mut lazy = LazySessions::default();
+        let mut tx = rune::Tx::default();
+        lazy.scroll.set((0.0, 500.0));
+        assert!(!lazy.tick(20, 0.0, &mut tx));
+        lazy.scroll.set((260.0, 500.0));
+        assert!(lazy.tick(20, 1.0, &mut tx));
+        assert_eq!((lazy.limit, lazy.ready), (16, 8));
+        lazy.scroll.set((260.0, 1000.0));
+        lazy.tick(20, 1.46, &mut tx);
+        assert_eq!(lazy.ready, 8);
+        lazy.tick(20, 1.91, &mut tx);
+        assert_eq!(lazy.ready, 16);
+    }
+    #[test]
+    fn opening_fills_nearby_rows_without_masking() {
+        let mut lazy = LazySessions::default();
+        let mut tx = rune::Tx::default();
+        lazy.scroll.set((0.0, 100.0));
+        assert!(lazy.tick(20, 0.1, &mut tx));
+        assert_eq!((lazy.limit, lazy.ready), (16, 16));
+        assert!(lazy.reveal.is_none());
+    }
 }
 
 impl AppState {
