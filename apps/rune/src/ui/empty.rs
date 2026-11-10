@@ -418,16 +418,5 @@ impl StartPointer for El {
                 s.start_actions.active = active;
             }
         })
-        .on_hover_change(|s: &mut AppState, over, tx| {
-            if !over
-                && (s.start_actions.active != [false; 3]
-                    || s.start_actions.offsets != [[0.0; 2]; 3])
-            {
-                s.start_actions.offsets = [[0.0; 2]; 3];
-                s.start_actions.active = [false; 3];
-            } else {
-                tx.live_only();
-            }
-        })
     }
 }
