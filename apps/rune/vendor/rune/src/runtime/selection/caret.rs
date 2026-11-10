@@ -43,6 +43,7 @@ impl<S: 'static> Runtime<S> {
         let (x0, x1) = (t[0] + n.inset[0], t[2] - n.inset[2]);
         let mut x = text_x(spec, x0, x1, tw);
         if inp.single_line {
+            x = x.max(x0);
             let prev = self.input_scroll.get(&n.path).copied().unwrap_or(0.0);
             x -= single_line_offset(prev, inp, &spec.content, layout, s, (x1 - x0) * s) / s;
         }

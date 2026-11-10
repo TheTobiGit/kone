@@ -168,6 +168,7 @@ impl<S: 'static> Runtime<S> {
             let ins = n.inset.map(|v| v * zk * s);
             let (x0, x1) = (zr[0] + ins[0], zr[2] - ins[2]);
             let mut origin = [text_x(spec, x0, x1, (layout.full_width() * tk).ceil()), zr[1] + ins[1]];
+            if n.input.as_ref().is_some_and(|i| i.single_line) { origin[0] = origin[0].max(x0); }
             // A gliding box's glyphs and decorations lay out from its nearest whole pixel and move the rest.
             // Within a 64th of a pixel they don't move, but still lay out from that pixel, as at rest.
             let (glide, off) = if gliding && cover.is_none() && scale_motion == ScaleMotion::Still {
@@ -215,12 +216,13 @@ impl<S: 'static> Runtime<S> {
                     && f.alphas(f.destination, now, self.reduced_motion).0 > 0.0);
                 if e.text.is_empty() && e.preedit.is_none() && !inp.placeholder.is_empty() && !departing {
                     let pl_indent = spec.blocks.first().map_or(0.0, |b| (b.indent_pt(spec.style.size) * s).round() * tk);
-                    let pl_origin = [rest_origin[0] + pl_indent, rest_origin[1]];
-                    let pl_r_origin = if scale_motion == ScaleMotion::Still { pl_origin } else { [0.0, 0.0] };
                     // A one-line field's placeholder stays on its line, cut by the field's clip, as its
                     // text does; a multi-line field's wraps at its width.
                     let wrap = (!inp.single_line).then(|| (w - pl_indent).max(1.0) / tk.max(1e-4));
                     let pl = self.text.layout_rich(&inp.placeholder, &[], spec.style, s, wrap);
+                    let pl_x = if inp.single_line { text_x(spec, x0, x1, (pl.full_width() * tk).ceil()).max(x0) - off[0] } else { rest_origin[0] };
+                    let pl_origin = [pl_x + pl_indent, rest_origin[1]];
+                    let pl_r_origin = if scale_motion == ScaleMotion::Still { pl_origin } else { [0.0, 0.0] };
                     self.glyph_scratch.clear();
                     self.text.set_glyph_inks(inp.placeholder_color, &[]);
                     self.text.set_glide(glide);

@@ -17,7 +17,9 @@ pub(super) struct LinkState {
 /// Where node `n`'s text starts inside its border box `rect` (points, x0 y0 x1 y1), its text
 /// drawn `k` times its size.
 pub(super) fn origin(n: &Node, spec: &TextSpec, layout: &Layout<Ink>, rect: [f32; 4], s: f32, k: f32) -> [f32; 2] {
-    let x = text_x(spec, rect[0] + n.inset[0] * k, rect[2] - n.inset[2] * k, (layout.full_width() * k).ceil() / s);
+    let x0 = rect[0] + n.inset[0] * k;
+    let mut x = text_x(spec, x0, rect[2] - n.inset[2] * k, (layout.full_width() * k).ceil() / s);
+    if n.input.as_ref().is_some_and(|i| i.single_line) { x = x.max(x0); }
     [x, rect[1] + n.inset[1] * k]
 }
 

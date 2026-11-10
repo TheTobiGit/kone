@@ -333,6 +333,11 @@ impl LauncherState {
         self.view = View::More;
         self.name.focused = false;
     }
+    pub fn fixture_more_remote(&mut self) {
+        self.fixture_more();
+        self.remote = true;
+        self.use_git = true;
+    }
     /// A clone caught mid-transfer, for snapshot scenes.
     pub fn fixture_clone_progress(&mut self, progress: f64, stage: &str) {
         self.fixture(LauncherMode::Clone);
@@ -1306,6 +1311,7 @@ fn more_view(s: &AppState, t: Palette) -> El {
                     .key("launcher-repo-name")
                     .label("Repository name")
                     .single_line()
+                    .align(rune::Align::End)
                     .w(144.0)
                     .h(13.0 * LH)
                     .placeholder(placeholder, t.muted)
