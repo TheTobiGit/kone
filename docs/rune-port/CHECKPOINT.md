@@ -146,3 +146,9 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - Remaining projects gaps include the profile chip, native tooltip behavior, icon animation fidelity, complete file-icon coverage, loading edge states, and full motion frame comparisons. The visible screenshots are useful checks, not a 1:1 sign-off.
 - The prior worker's start-action navigation reset is preserved as WIP in `0b9882af`; its own review notes above apply. The separate orchestrator was interrupted after its review, so the WIP was committed without claiming that review completed.
 - Validation in this pass: `cargo fmt --check`, `cargo clippy -p kone-rune --all-targets -- -D warnings`, 33 native tests, sidecar type check/build and 4 integration tests. Linux requires `LIBRARY_PATH=/tmp/kone-rune-libs` for linking against the installed xkbcommon runtime.
+
+### Follow-up: project icon parity
+
+- `525cdf2d` replaces the approximate Finder action path with Electron's source SVG and uses the correct 2.4 stroke for pinned project actions. `5dd36bdb` uses the same source pin for the pinned session heading. Compare `projects-card-actions-{light,dark}.png`. These captures show the profile chip is still absent in Rune.
+- `9f3c056e` adds common language and image icons plus Electron's named brand overrides and strips line-number suffixes before resolving a file icon. The full VS Code icon catalog is still not covered.
+- Pin/Finder/remove hover keyframe animations and browser-style tooltip presentation still differ. The refreshed sheets are settled hover captures, not proof of frame-by-frame animation parity.
