@@ -326,6 +326,22 @@ impl LauncherState {
         }
     }
 }
+impl LauncherState {
+    /// The Create card on its More panel, for snapshot scenes.
+    pub fn fixture_more(&mut self) {
+        self.fixture(LauncherMode::Create);
+        self.view = View::More;
+        self.name.focused = false;
+    }
+    /// A clone caught mid-transfer, for snapshot scenes.
+    pub fn fixture_clone_progress(&mut self, progress: f64, stage: &str) {
+        self.fixture(LauncherMode::Clone);
+        self.url = TextEdit::new("vercel/next.js");
+        self.busy = true;
+        self.progress = progress;
+        self.stage = stage.into();
+    }
+}
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -688,6 +704,18 @@ fn mono_family() -> Family {
         Family::Named("Menlo, Consolas, Liberation Mono")
     }
 }
+/// Chrome sets Liberation Mono's glyphs higher in their line box than Rune does: 1 pt in
+/// the tight small lines, half a point in 1.55 ones (measured against Electron on Linux;
+/// SF Mono on macOS is drawn as is).
+fn mono_nudge(size: f32, line_height: f32) -> f32 {
+    if cfg!(target_os = "macos") {
+        0.0
+    } else if size <= 11.0 || line_height < size * 1.5 {
+        -1.0
+    } else {
+        -0.5
+    }
+}
 fn mono(size: f32, weight: f32) -> TextStyle {
     TextStyle::new(size, weight)
         .family(mono_family())
@@ -715,6 +743,9 @@ fn arrow(size: f32, color: rune::Color) -> El {
         )
         .color(color)
 }
+/// Chrome sets the fallback arrow on Geist's baseline; alone in its own line box Rune's
+/// sits 1 pt lower (measured on Linux, where the fallback is Arimo).
+const ARROW_RISE: f32 = if cfg!(target_os = "macos") { 0.0 } else { -1.0 };
 fn band(t: Palette) -> rune::Color {
     crate::theme::mix_srgb(t.ground, t.ink, 0.02)
 }
@@ -760,7 +791,7 @@ fn word(value: impl Into<String>, size: f32, color: rune::Color) -> El {
 /// The forward cue: the accent arrow eases 3 pt right while its action is hovered.
 fn nudge_arrow(t: Palette, on: bool) -> El {
     arrow(14.0, t.accent)
-        .offset(if on { 3.0 } else { 0.0 }, 0.0)
+        .offset(if on { 3.0 } else { 0.0 }, ARROW_RISE)
         .offset_motion(Curve::tween(0.2, EASE))
 }
 
@@ -796,6 +827,7 @@ fn field(
                 .grow(1.0)
                 .shrink()
                 .h(15.0 * LH)
+                .offset(0.0, mono_nudge(15.0, 15.0 * LH))
                 .placeholder(placeholder, t.muted)
                 .caret(t.ink, t.accent.alpha(0.24))
                 .color(t.ink)
@@ -922,6 +954,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
                     let all = format!("{head}{name}");
                     text(all.clone())
                         .font(mono(11.5, REGULAR).lh(11.5 * 1.2))
+                        .offset(0.0, mono_nudge(11.5, 11.5 * 1.2))
                         .color(t.muted)
                         .spans(vec![
                             Span::new(head.len(), all.len()).color(t.ink).weight(600.0),
@@ -929,6 +962,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
                 }
                 None => text("That doesn’t look like a GitHub repository")
                     .font(mono(11.5, REGULAR).lh(11.5 * 1.2))
+                    .offset(0.0, mono_nudge(11.5, 11.5 * 1.2))
                     .color(t.muted),
             };
             body = body.child(line.truncate().mt(6.0).ml(28.0));
@@ -949,6 +983,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
             body = body.child(
                 text("That isn’t a valid folder name")
                     .font(mono(11.5, REGULAR).lh(11.5 * 1.2))
+                    .offset(0.0, mono_nudge(11.5, 11.5 * 1.2))
                     .color(del(t, 0.78))
                     .truncate()
                     .mt(6.0)
@@ -961,6 +996,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
         body = body.child(
             text(error.clone())
                 .font(mono(11.5, REGULAR).lh(11.5 * 1.35))
+                .offset(0.0, mono_nudge(11.5, 11.5 * 1.35))
                 .color(del(t, 0.82))
                 .wrap()
                 .mt(14.0)
@@ -1030,7 +1066,8 @@ fn progress_view(s: &AppState, t: Palette) -> El {
         .gap(8.0)
         .items_end()
         .pt(4.0)
-        .pb(12.0)
+        // `align-items: baseline` lets the mono line hang 1 pt below Geist's box.
+        .pb(13.0)
         .child(if cloning {
             text(name.clone()).font(sans(16.0)).color(t.ink)
         } else {
@@ -1041,7 +1078,8 @@ fn progress_view(s: &AppState, t: Palette) -> El {
                 .font(mono(11.5, REGULAR))
                 .color(t.muted)
                 .truncate()
-                .shrink(),
+                .shrink()
+                .mb(1.0),
         );
     let track = row()
         .w_full()
@@ -1085,11 +1123,12 @@ fn progress_view(s: &AppState, t: Palette) -> El {
     } else {
         "Creating…".to_owned()
     };
-    let mut meta = row()
-        .w_full()
-        .mt(8.0)
-        .justify_between()
-        .child(text(stage).font(mono(11.5, REGULAR)).color(t.ink_soft));
+    let mut meta = row().w_full().mt(8.0).justify_between().child(
+        text(stage)
+            .font(mono(11.5, REGULAR))
+            .color(t.ink_soft)
+            .offset(0.0, mono_nudge(11.5, 11.5 * LH)),
+    );
     if cloning {
         let pct = if done {
             100.0
@@ -1099,6 +1138,7 @@ fn progress_view(s: &AppState, t: Palette) -> El {
         meta = meta.child(
             text(format!("{pct}%"))
                 .font(mono(11.5, REGULAR).features("tnum"))
+                .offset(0.0, mono_nudge(11.5, 11.5 * LH))
                 .color(t.muted),
         );
     }
@@ -1157,6 +1197,7 @@ fn more_view(s: &AppState, t: Palette) -> El {
     let section = |label: &'static str| {
         text(label.to_uppercase())
             .font(mono(10.0, 500.0).tracking(1.4))
+            .offset(0.0, mono_nudge(10.0, 10.0 * LH))
             .color(t.muted)
             .mb(9.6)
     };
@@ -1266,7 +1307,7 @@ fn more_view(s: &AppState, t: Palette) -> El {
                     .key("launcher-repo-name")
                     .label("Repository name")
                     .single_line()
-                    .w(192.0)
+                    .w(144.0)
                     .h(13.0 * LH)
                     .placeholder(placeholder, t.muted)
                     .caret(t.accent, t.accent.alpha(0.24))
@@ -1323,6 +1364,7 @@ fn more_view(s: &AppState, t: Palette) -> El {
         .child(word("Runs in the new folder after it’s created.", 11.5, t.muted).mt(8.0));
     let eyebrow = text("MORE")
         .font(mono(11.0, REGULAR).tracking(0.22))
+        .offset(0.0, mono_nudge(11.0, 11.0 * LH))
         .color(t.muted)
         .grow(1.0);
     col()
@@ -1428,7 +1470,7 @@ fn browser(s: &AppState, t: Palette) -> El {
         .h(11.5 * LH)
         .caret(t.ink, t.accent.alpha(0.24))
         .color(field_color)
-        .offset(shake, 0.0)
+        .offset(shake, mono_nudge(11.5, 11.5 * LH))
         .offset_motion(NOW)
         .on_edit(|s: &mut AppState| &mut s.launcher.path)
         .on_key(|s: &mut AppState, event, _| {

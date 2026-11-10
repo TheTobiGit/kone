@@ -52,6 +52,22 @@ fn main() {
                 s.start_actions.word = 4;
                 s.launcher.fixture(crate::launcher::LauncherMode::Clone);
             }),
+            ("launcher-more", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                s.launcher.fixture_more();
+            }),
+            ("launcher-clone-progress", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+                // Where Electron's mock ramp was caught, so the bar and readout agree.
+                let progress = std::env::var("KONE_SCENE_PROGRESS")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(0.37);
+                s.launcher
+                    .fixture_clone_progress(progress, "Compressing objects…");
+            }),
             ("projects", |s| {
                 s.example_project();
                 s.page = Page::Projects;
