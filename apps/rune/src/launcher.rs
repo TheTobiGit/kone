@@ -135,6 +135,7 @@ pub struct LauncherState {
     viewport_h: f32,
     browser_thumb: Live<[f32; 4]>,
     browser_thumb_hit: Live<[f32; 4]>,
+    browser_track_hit: Live<[f32; 4]>,
     browser_scroll: Live<[f32; 4]>,
 }
 impl Default for LauncherState {
@@ -183,6 +184,7 @@ impl Default for LauncherState {
             viewport_h: 840.0,
             browser_thumb: Live::new([0.0; 4]),
             browser_thumb_hit: Live::new([0.0; 4]),
+            browser_track_hit: Live::new([0.0; 4]),
             browser_scroll: Live::new([0.0; 4]),
         }
     }
@@ -1672,6 +1674,7 @@ fn browser(s: &AppState, t: Palette) -> El {
     });
     let thumb = l.browser_thumb.clone();
     let thumb_hit = l.browser_thumb_hit.clone();
+    let track_hit = l.browser_track_hit.clone();
     let scroll_pos = l.browser_scroll.clone();
     let scroll = col()
         .key("launcher-scroll")
@@ -1697,6 +1700,12 @@ fn browser(s: &AppState, t: Palette) -> El {
             };
             thumb.set([(at.viewport[0] - 7.0).max(0.0), y, 4.0, thumb_h]);
             thumb_hit.set([(at.viewport[0] - 10.0).max(0.0), y, 10.0, thumb_h]);
+            track_hit.set([
+                (at.viewport[0] - 10.0).max(0.0),
+                0.0,
+                10.0,
+                if at.max[1] > 0.0 { height } else { 0.0 },
+            ]);
             scroll_pos.set([at.offset[1], at.max[1], track, thumb_h]);
         })
         .on_pointer_move(|s: &mut AppState, p| pull_rows(s, p.x, p.y))
@@ -1714,6 +1723,27 @@ fn browser(s: &AppState, t: Palette) -> El {
                 el().w_full()
                     .hover_group()
                     .child(scroll)
+                    .child(
+                        el().absolute(0.0, 0.0)
+                            .key("launcher-track-hit")
+                            .live_rect(&l.browser_track_hit)
+                            .hit()
+                            .on_drag(|s: &mut AppState, d, tx| {
+                                if d.phase == rune::Phase::Down {
+                                    let [offset, max, track, thumb_h] =
+                                        s.launcher.browser_scroll.get();
+                                    if max > 0.0 && track > thumb_h {
+                                        let thumb_y = 3.0 + (track - thumb_h) * offset / max;
+                                        let direction = if d.y < thumb_y { -1.0 } else { 1.0 };
+                                        tx.scroll_to_instant(
+                                            "launcher-scroll",
+                                            0.0,
+                                            (offset + direction * (track + 6.0)).clamp(0.0, max),
+                                        );
+                                    }
+                                }
+                            }),
+                    )
                     .child(
                         el().absolute(0.0, 0.0)
                             .live_rect(&l.browser_thumb)
@@ -1856,6 +1886,28 @@ mod tests {
         rt.pointer_down(x, y);
         rt.pointer_move(x, y + 30.0);
         rt.pointer_up(x, y + 30.0);
+        rt.frame(2.0 / 60.0);
+        rt.frame(3.0 / 60.0);
+        assert!(scroll.get()[0] > 0.0);
+    }
+
+    #[test]
+    fn browser_scrollbar_track_pages_the_list() {
+        let mut state = AppState::default();
+        state.launcher.fixture_create_browser();
+        state.launcher.shown = true;
+        let scroll = state.launcher.browser_scroll.clone();
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let rect = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("launcher-track-hit"))
+            .unwrap()
+            .rect;
+        rt.pointer_down(rect[0] + 5.0, rect[1] + rect[3] - 1.0);
+        rt.pointer_up(rect[0] + 5.0, rect[1] + rect[3] - 1.0);
         rt.frame(2.0 / 60.0);
         rt.frame(3.0 / 60.0);
         assert!(scroll.get()[0] > 0.0);
