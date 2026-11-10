@@ -152,3 +152,10 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - `525cdf2d` replaces the approximate Finder action path with Electron's source SVG and uses the correct 2.4 stroke for pinned project actions. `5dd36bdb` uses the same source pin for the pinned session heading. Compare `projects-card-actions-{light,dark}.png`. These captures show the profile chip is still absent in Rune.
 - `9f3c056e` adds common language and image icons plus Electron's named brand overrides and strips line-number suffixes before resolving a file icon. The full VS Code icon catalog is still not covered.
 - Pin/Finder/remove hover keyframe animations and browser-style tooltip presentation still differ. The refreshed sheets are settled hover captures, not proof of frame-by-frame animation parity.
+
+### Follow-up: profile, sessions, and action slide
+
+- `78fe4f5b` adds the home profile chip; compare `projects-profile-chip{,-hover}-{light,dark}.png`.
+- `a2ebfee8` refines home session rows and actions; compare `projects-{sessions,session-hover}-{light,dark}.png`.
+- `38c8afac` gives the project action column its source horizontal offset and 500/30 spring; settled hover comparisons are `projects-action-slide-{light,dark}.png`. These captures do not establish frame-by-frame parity.
+- The native debug build and 34 tests passed after these changes. Part B remains open: session lazy-loading skeletons and entrance timing, card action icon animations and native tooltip presentation, full file-icon coverage, and motion/focus/empty-state verification still need work. Existing no-match sheets are `projects-nomatch-{light,dark}.png`.
