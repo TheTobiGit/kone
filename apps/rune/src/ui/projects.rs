@@ -305,7 +305,8 @@ fn profile_chip(s: &AppState, t: Palette) -> Option<El> {
                 text(s.profile.initial.clone())
                     .font(TextStyle::new(13.0, 400.0).lh(13.0))
                     .color(t.ground),
-            ),
+            )
+            .no_focus_ring(),
     )
 }
 
@@ -413,7 +414,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                           ink: rune::Color| {
                 el().size(24.0, 24.0)
                     .center()
-                    .radius(12.0)
+                    // The source button carries no radius, so its outline is square.
                     .focus_ring(2.0, 2.0, t.ink.alpha(0.34))
                     .role("button")
                     .label(label)
@@ -825,8 +826,8 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                             .role("button")
                             .label(aria)
                             .focusable(true)
-                            .focus_ring(2.0, 2.0, t.ink.alpha(0.3))
-                            .hover_group()
+                            .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
+                            .hover_group_focus()
                             .cursor(Cursor::Pointer)
                             .child(
                                 row()
@@ -953,7 +954,7 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                         Curve::tween(0.16, COLORS_EASE),
                         Curve::tween(0.16, COLORS_EASE),
                     )
-                    .focus_ring(2.0, 2.0, t.ink.alpha(0.3))
+                    .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
                     .focusable(true)
                     .cursor(Cursor::Pointer)
                     .scale(if hovered { 1.009 } else { 1.0 })
