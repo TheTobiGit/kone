@@ -62,6 +62,10 @@ static REPO_MARK: Icon = Icon {
 };
 
 pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) -> El {
+    folder_with_git_hover(name, t, tree, false)
+}
+
+fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, active: bool) -> El {
     let (sheet_top, sheet_bottom, pocket_top, pocket_middle, pocket_bottom, shadow) = if t.dark {
         (
             mix_srgb(t.ground, t.ink, 0.068),
@@ -129,6 +133,8 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
                 text(name.to_owned())
                     .font(TextStyle::new(17.0, 400.0).lh(17.0).tracking(-0.408))
                     .color(t.ink)
+                    .shrink()
+                    .min_w(0.0)
                     .truncate(),
             )
         });
@@ -137,6 +143,8 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
             row()
                 .center_y()
                 .gap(6.0)
+                .shrink()
+                .min_w(0.0)
                 .child(icon(&BRANCH, 12.0).color(t.muted))
                 .child(
                     text(branch.to_owned())
@@ -147,6 +155,8 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
                                 .family(Family::Mono),
                         )
                         .color(t.muted)
+                        .shrink()
+                        .min_w(0.0)
                         .truncate(),
                 ),
         );
@@ -177,6 +187,7 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
         let add = change["added"].as_i64().unwrap_or(0);
         let del = change["removed"].as_i64().unwrap_or(0);
         let mut paper = col()
+            .key(format!("project-paper-{i}"))
             .size(50.0, 62.0)
             .padding(8.0)
             .gap(3.0)
@@ -205,7 +216,20 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
         ] {
             paper = paper.child(el().size(width, 3.0).radius(2.0).fill(color));
         }
-        stage = stage.child(paper.absolute([44.0, 78.0, 112.0][i], [0.0, -6.0, 0.0][i]));
+        let spring = Spring::from_stiffness_damping(340.0, 15.0, 0.7);
+        let angle = [-10.0_f32, 1.0, 11.0][i] + if active { [-6.0, 0.0, 6.0][i] } else { 0.0 };
+        stage = stage.child(
+            paper
+                .absolute([44.0, 78.0, 112.0][i], [0.0, -6.0, 0.0][i])
+                .origin(0.0, 0.0)
+                .rotate(angle.to_radians())
+                .rotate_motion(spring)
+                .offset(
+                    if active { [-14.0, 0.0, 14.0][i] } else { 0.0 },
+                    if active { [-4.0, -5.0, -4.0][i] } else { 0.0 },
+                )
+                .offset_motion(spring),
+        );
     }
     stage.child(pocket)
 }
@@ -351,13 +375,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     }
                 })
                 .child(
-                    folder_with_git(
+                    folder_with_git_hover(
                         &p.name,
                         t,
                         s.project_data
                             .summaries
                             .get(&p.path)
                             .unwrap_or(&serde_json::Value::Null),
+                        active,
                     )
                     .key(format!("project-{i}"))
                     .role("button")

@@ -104,6 +104,18 @@ fn main() {
                     serde_json::json!({"branch":"main", "changes":[]}),
                 );
             }),
+            ("projects-changed", |s| {
+                review::populate(s, Page::Projects);
+                s.projects = vec![state::Project {
+                    name: "kone".into(),
+                    path: "/Users/you/Developer/kone".into(),
+                }];
+                s.project_data.summaries.insert(
+                    "/Users/you/Developer/kone".into(),
+                    serde_json::from_str(include_str!("../assets/fixtures/project-status.json"))
+                        .expect("valid status fixture"),
+                );
+            }),
             ("projects-grid", |s| {
                 review::populate(s, Page::Projects);
                 s.projects.push(state::Project {
