@@ -4,8 +4,8 @@ use crate::{
     theme::Palette,
 };
 use rune::{
-    Beat, Cursor, Curve, Cx, Easing, El, Family, Icon, LoopSpec, Sequence, TextStyle, col, el,
-    icon, row, text,
+    Beat, Cursor, Curve, Cx, Easing, El, Family, Icon, LoopSpec, Sequence, Shape, TextStyle,
+    canvas, col, el, icon, row, text,
 };
 use std::time::{Duration, Instant};
 
@@ -33,16 +33,6 @@ static PLUS: Icon = Icon {
     name: "plus",
     view: 24.0,
     body: r#"<path d="M12 4V20M20 12H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static PLUS_STEM: Icon = Icon {
-    name: "plus-stem",
-    view: 24.0,
-    body: r#"<path d="M12 4V20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
-};
-static PLUS_ARM: Icon = Icon {
-    name: "plus-arm",
-    view: 24.0,
-    body: r#"<path d="M20 12H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
 };
 static FOLDER: Icon = Icon {
     name: "folder",
@@ -149,16 +139,26 @@ fn start_actions(
                         el().size(18.0, 18.0)
                             .key(format!("{key}-icon-{}", state.runs[index]))
                             .child(
-                                icon(&PLUS_STEM, 18.0)
-                                    .color(t.ink)
-                                    .absolute(0.0, 0.0)
-                                    .sequence(Sequence::new(&PLUS_BEATS)),
+                                canvas(Shape::new().stroke(
+                                    vec![[9.0, 3.0], [9.0, 15.0]],
+                                    1.275,
+                                    t.ink,
+                                ))
+                                .size(18.0, 18.0)
+                                .shape_sequence_scale()
+                                .absolute(0.0, 0.0)
+                                .sequence(Sequence::new(&PLUS_BEATS)),
                             )
                             .child(
-                                icon(&PLUS_ARM, 18.0)
-                                    .color(t.ink)
-                                    .absolute(0.0, 0.0)
-                                    .sequence(Sequence::new(&PLUS_BEATS).delay(0.05)),
+                                canvas(Shape::new().stroke(
+                                    vec![[15.0, 9.0], [3.0, 9.0]],
+                                    1.275,
+                                    t.ink,
+                                ))
+                                .size(18.0, 18.0)
+                                .shape_sequence_scale()
+                                .absolute(0.0, 0.0)
+                                .sequence(Sequence::new(&PLUS_BEATS).delay(0.05)),
                             )
                     } else {
                         symbol

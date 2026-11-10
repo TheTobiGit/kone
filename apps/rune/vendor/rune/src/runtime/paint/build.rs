@@ -298,7 +298,7 @@ impl<S: 'static> Runtime<S> {
                 .filter(|_| matches!(n.looping.as_ref().map(|l| l.kind), Some(rune_motion::LoopKind::Sequence(_))));
             let static_k = if n.scale_track { self.scene.get(n.id, P_SCALE).unwrap_or(n.static_scale) } else { n.static_scale };
             let own_sc = p.transform.scale.x * press_k * static_k
-                * sequence.and_then(|l| l.pose(lnow, self.reduced_motion)).map_or(1.0, |p| p.scale);
+                * sequence.filter(|_| !n.vis.shape_sequence_scale).and_then(|l| l.pose(lnow, self.reduced_motion)).map_or(1.0, |p| p.scale);
             // An `El::scale` or `El::live_scale` an app drives from a slider, wheel or pinch
             // counts as moving until it holds still, then rasterizes crisp at its resting scale.
             let has_live_scale = n.live.iter().any(|b| b.property == crate::live::Property::Scale);
@@ -1124,6 +1124,7 @@ impl<S: 'static> Runtime<S> {
                         fade,
                         group: pinh.group,
                         loop_value,
+                        shape_scale: if n.vis.shape_sequence_scale { sequence.and_then(|l| l.pose(lnow, self.reduced_motion)).map_or(1.0, |p| p.scale) } else { 1.0 },
                         cover,
                         scale_motion,
                         rest: pinh.still.0,

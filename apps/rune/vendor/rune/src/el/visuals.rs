@@ -206,6 +206,12 @@ impl El {
         }
         self
     }
+    /// Apply a sequence's scale to shape coordinates about the center, keeping strokes constant.
+    pub fn shape_sequence_scale(mut self) -> Self {
+        self.vis.cold_mut().shape_sequence_scale = true;
+        self
+    }
+
     /// Shows `pixels`, scaled into the element's rect and clipped to its corner radius. The image
     /// can change without the view re-running: the next frame draws its latest contents.
     /// An element that sets only its width (`w`, `w_full`) or only its height takes the other

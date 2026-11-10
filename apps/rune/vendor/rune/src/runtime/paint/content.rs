@@ -13,6 +13,7 @@ pub(super) struct LeafBox {
     pub fade: [f32; 4],
     pub group: f32,
     pub loop_value: Option<f32>,
+    pub shape_scale: f32,
     pub cover: Option<(f32, [f32; 2])>,
     pub scale_motion: ScaleMotion,
     /// The scale of the nearest still ancestor, which moving text rasterizes at.
@@ -44,6 +45,7 @@ impl<S: 'static> Runtime<S> {
             fade,
             group,
             loop_value,
+            shape_scale,
             cover,
             scale_motion,
             rest,
@@ -70,6 +72,8 @@ impl<S: 'static> Runtime<S> {
                 Some([vw, vh]) => ([r[0], r[1]], [w / vw, h / vh]),
                 None => ([r[0] + (w - w_exact) * 0.5, r[1] + (h - h_exact) * 0.5], [k_px, k_px]),
             };
+            let origin = [r[0] + w * 0.5 + (origin[0] - r[0] - w * 0.5) * shape_scale, r[1] + h * 0.5 + (origin[1] - r[1] - h * 0.5) * shape_scale];
+            let k = [k[0] * shape_scale, k[1] * shape_scale];
             if let Some(t) = self.scene.get(node_id, P_TRIM) {
                 // A presence draw traces the trimmed span on from its start.
                 let end = t.x + (t.y - t.x) * draw;
