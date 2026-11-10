@@ -135,6 +135,7 @@ fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, activ
                 text(name.to_owned())
                     .font(TextStyle::new(17.0, 400.0).lh(17.0).tracking(-0.408))
                     .color(t.ink)
+                    .help(name.to_owned())
                     .shrink()
                     .min_w(0.0)
                     .truncate(),
@@ -357,18 +358,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             let active = s.project_data.hovered_project.as_deref() == Some(path.as_str())
                 && s.launcher.mode.is_none();
             let spring = Spring::from_stiffness_damping(420.0, 38.0, 0.85);
-            let action = |label: &'static str, glyph: &'static Icon, size: f32| {
+            let action = |label: &'static str,
+                          title: &'static str,
+                          glyph: &'static Icon,
+                          size: f32,
+                          ink: rune::Color| {
                 el().size(24.0, 24.0)
                     .center()
                     .radius(12.0)
                     .focus_ring(2.0, 2.0, t.ink.alpha(0.34))
                     .role("button")
                     .label(label)
-                    .help(label)
-                    .focusable(true)
+                    .help(title)
+                    .focusable(s.launcher.mode.is_none())
                     .cursor(rune::Cursor::Pointer)
                     .hover_group()
-                    .child(icon(glyph, size).color(t.muted).group_color(t.ink))
+                    .child(icon(glyph, size).color(ink).group_color(t.ink))
             };
             let controls = col()
                 .gap(6.0)
@@ -378,18 +383,30 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .offset_motion(spring)
                 .child(
                     action(
+                        if pinned {
+                            "Unpin project"
+                        } else {
+                            "Pin to top"
+                        },
                         if pinned { "Unpin" } else { "Pin to top" },
                         &PROJECT_PIN,
                         14.0,
+                        if pinned { t.ink } else { t.muted },
                     )
                     .on_press(move |s: &mut AppState| s.pin_project(pin_path.clone())),
                 )
                 .child(
-                    action("Reveal in Finder", &FINDER, 15.0)
-                        .on_press(move |s: &mut AppState| s.reveal_project(reveal_path.clone())),
+                    action(
+                        "Reveal in Finder",
+                        "Reveal in Finder",
+                        &FINDER,
+                        15.0,
+                        t.muted,
+                    )
+                    .on_press(move |s: &mut AppState| s.reveal_project(reveal_path.clone())),
                 )
                 .child(
-                    action("Remove", &CANCEL, 14.0)
+                    action("Remove from recents", "Remove", &CANCEL, 14.0, t.muted)
                         .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
                 );
             let tile = row()
