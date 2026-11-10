@@ -1,5 +1,6 @@
+use crate::launcher::LauncherMode;
 use crate::{state::AppState, theme::Palette};
-use rune::{Cx, El, Family, Icon, TextStyle, col, el, icon, row, text};
+use rune::{Cursor, Cx, El, Family, Icon, LoopSpec, TextStyle, col, el, icon, row, text};
 
 static PLUS: Icon = Icon {
     name: "plus",
@@ -15,6 +16,12 @@ static GITHUB: Icon = Icon {
     name: "github",
     view: 24.0,
     body: r#"<path d="M10 20.5675C8.28572 21.1462 6.71429 21.1462 5.35715 20.5556C4.00001 19.965 2.85715 18.7838 2 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 22V18.7579C10 18.1596 10.1839 17.6396 10.4804 17.1699C10.6838 16.8476 10.5445 16.3904 10.1771 16.2894C7.13394 15.4528 5 14.1077 5 9.64606C5 8.48611 5.38005 7.39556 6.04811 6.4464C6.21437 6.21018 6.29749 6.09208 6.31748 5.9851C6.33746 5.87813 6.30272 5.73852 6.23322 5.45932C5.95038 4.32292 5.96871 3.11619 6.39322 2.02823C6.39322 2.02823 7.27042 1.74242 9.26698 2.98969C9.72282 3.27447 9.95075 3.41686 10.1515 3.44871C10.3522 3.48056 10.6206 3.41384 11.1573 3.28041C11.8913 3.09795 12.6476 3 13.5 3C14.3524 3 15.1087 3.09795 15.8427 3.28041C16.3794 3.41384 16.6478 3.48056 16.8485 3.44871C17.0493 3.41686 17.2772 3.27447 17.733 2.98969C19.7296 1.74242 20.6068 2.02823 20.6068 2.02823C21.0313 3.11619 21.0496 4.32292 20.7668 5.45932C20.6973 5.73852 20.6625 5.87813 20.6825 5.9851C20.7025 6.09207 20.7856 6.21019 20.9519 6.4464C21.6199 7.39556 22 8.48611 22 9.64606C22 14.1077 19.8661 15.4528 16.8229 16.2894C16.4555 16.3904 16.3162 16.8476 16.5196 17.1699C16.8161 17.6396 17 18.1596 17 18.7579V22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static SPINNER: Icon = Icon {
+    name: "start-spinner",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="10.6" fill="none" stroke="currentColor" stroke-opacity="0.3" stroke-width="2.8"/><path d="M12 1.4A10.6 10.6 0 0 1 22.6 12" fill="none" stroke="currentColor" stroke-width="2.8"/>"#,
 };
 
 pub(super) static SETTINGS: Icon = Icon {
@@ -50,33 +57,78 @@ pub(super) fn wordmark(t: Palette) -> El {
 }
 
 pub(super) fn actions(t: Palette) -> El {
-    let action = |key: &'static str, glyph: &'static Icon, title: &'static str| {
-        row()
-            .key(key)
-            .h(42.0)
-            .px(6.0)
-            .gap(14.0)
-            .center_y()
-            .radius(14.0)
-            .hover(t.hover)
-            .child(el().w(22.0).center().child(icon(glyph, 18.0).color(t.ink)))
-            .child(text(title).font(TextStyle::new(14.0, 600.0)).color(t.ink))
-    };
+    start_actions(t, None)
+}
+
+fn start_actions(t: Palette, pending: Option<LauncherMode>) -> El {
+    let action =
+        |key: &'static str, mode: LauncherMode, glyph: &'static Icon, title: &'static str| {
+            let loading = pending == Some(mode);
+            let disabled = pending.is_some();
+            let symbol = if loading {
+                icon(&SPINNER, 15.0)
+                    .color(t.ink_soft)
+                    .looping(LoopSpec::rotation(1.0))
+            } else {
+                icon(glyph, 18.0).color(t.ink)
+            };
+            let button = row()
+                .key(key)
+                .h(40.0)
+                .pl(6.0)
+                .pr(12.0)
+                .gap(14.0)
+                .center_y()
+                .radius(14.0)
+                .opacity(if disabled && !loading { 0.35 } else { 1.0 })
+                .child(el().w(22.0).center().child(symbol))
+                .child(
+                    text(title)
+                        .font(TextStyle::new(14.0, 600.0).lh(14.0).tracking(-0.14))
+                        .color(t.ink),
+                );
+            if disabled {
+                button.disabled(true)
+            } else {
+                button.hover(t.hover).cursor(Cursor::Pointer)
+            }
+        };
+    let create = action(
+        "create-project",
+        LauncherMode::Create,
+        &PLUS,
+        "Create a new project",
+    );
+    let open = action(
+        "open-folder",
+        LauncherMode::Open,
+        &FOLDER,
+        "Open from local folder",
+    );
+    let clone = action(
+        "clone-project",
+        LauncherMode::Clone,
+        &GITHUB,
+        "Clone from GitHub",
+    );
     col()
+        .items_start()
         .gap(4.0)
-        .child(
-            action("create-project", &PLUS, "Create a new project").on_press(|s: &mut AppState| {
-                s.launcher.open(crate::launcher::LauncherMode::Create)
-            }),
-        )
-        .child(
-            action("open-folder", &FOLDER, "Open from local folder")
-                .on_press_tx(|s: &mut AppState, tx| crate::launcher::open_folder(s, tx)),
-        )
-        .child(
-            action("clone-project", &GITHUB, "Clone from GitHub")
-                .on_press(|s: &mut AppState| s.launcher.open(crate::launcher::LauncherMode::Clone)),
-        )
+        .child(if pending.is_none() {
+            create.on_press(|s: &mut AppState| s.launcher.open(LauncherMode::Create))
+        } else {
+            create
+        })
+        .child(if pending.is_none() {
+            open.on_press_tx(|s: &mut AppState, tx| crate::launcher::open_folder(s, tx))
+        } else {
+            open
+        })
+        .child(if pending.is_none() {
+            clone.on_press(|s: &mut AppState| s.launcher.open(LauncherMode::Clone))
+        } else {
+            clone
+        })
 }
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
@@ -101,5 +153,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .child(icon(&SETTINGS, 16.0).color(t.muted)),
                 ),
         )
-        .child(col().grow(1.0).w_full().center().child(actions(t)))
+        .child(
+            col()
+                .grow(1.0)
+                .w_full()
+                .center()
+                .child(start_actions(t, s.launcher.mode)),
+        )
 }
