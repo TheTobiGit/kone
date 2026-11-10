@@ -15,7 +15,7 @@ use state::{AppState, Page};
 
 const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/GeistMono-Variable.ttf"),
-    include_bytes!("../assets/fonts/Fraunces-Variable.ttf"),
+    include_bytes!("../assets/fonts/Fraunces-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Medium.ttf"),
     include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
@@ -32,6 +32,11 @@ fn main() {
         families: ("Geist", "Geist Mono"),
         scenes: &[
             ("empty", |s| s.page = Page::Empty),
+            // The start screen with its wordmark on the brand word, `make it kone.`.
+            ("empty-brand", |s| {
+                s.page = Page::Empty;
+                s.start_actions.word = 4;
+            }),
             ("projects", |s| {
                 s.example_project();
                 s.page = Page::Projects;

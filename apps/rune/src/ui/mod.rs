@@ -1,7 +1,10 @@
 mod empty;
 mod overview;
 mod projects;
+mod start_motion;
 mod studio;
+
+pub(crate) use empty::tick as start_tick;
 
 use crate::state::{AppState, Page};
 use rune::{Cx, El, el};

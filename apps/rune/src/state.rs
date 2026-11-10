@@ -149,6 +149,7 @@ impl AppState {
     }
 
     pub fn setup(s: &mut Self, wake: rune::Waker) {
+        s.start_actions.live = true;
         let home = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
@@ -173,7 +174,8 @@ impl AppState {
         }
     }
 
-    pub fn poll(s: &mut Self, _: f64, _: &mut rune::Tx) -> bool {
+    pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        let start = crate::ui::start_tick(s, clock, tx);
         let mut messages = Vec::new();
         if let Some(bridge) = &s.bridge {
             while let Some(message) = bridge.try_recv() {
@@ -186,7 +188,7 @@ impl AppState {
                 s.studio_message(message);
             }
         }
-        changed
+        changed || start
     }
 
     fn park_studio_thread(&mut self) {
@@ -1250,6 +1252,16 @@ pub(crate) struct StartActionsState {
     pub(crate) bounds: [[f32; 4]; 3],
     pub(crate) offsets: [[f32; 2]; 3],
     pub(crate) active: [bool; 3],
-    pub(crate) runs: [u64; 3],
-    pub(crate) started: [Option<std::time::Instant>; 3],
+    /// The poll's frame clock (seconds) the times below are on.
+    pub(crate) clock: f64,
+    /// When each action glyph's hover gesture began.
+    pub(crate) started: [Option<f64>; 3],
+    /// A running app (not a `--scene` snapshot), whose start screen enters.
+    pub(crate) live: bool,
+    /// When the start screen mounted, for its entrance.
+    pub(crate) mounted: Option<f64>,
+    /// The rotating wordmark's word, the one before it, and when it changed.
+    pub(crate) word: usize,
+    pub(crate) prev_word: Option<usize>,
+    pub(crate) word_at: Option<f64>,
 }

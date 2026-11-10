@@ -1,49 +1,23 @@
+use super::start_motion as motion;
 use crate::launcher::LauncherMode;
 use crate::{
     state::{AppState, StartActionsState},
     theme::Palette,
 };
 use rune::{
-    Beat, Cursor, Curve, Cx, Easing, El, Family, Icon, LoopSpec, Sequence, Shape, TextStyle,
-    canvas, col, el, icon, row, text,
+    Cursor, Curve, Cx, Easing, El, Family, Icon, LoopSpec, TextStyle, Transition, col, el, icon,
+    row, text,
 };
-use std::time::{Duration, Instant};
 
 const EASE: Easing = Easing::cubic(0.22, 1.0, 0.36, 1.0);
-const ICON_EASE: Easing = Easing::cubic(0.77, 0.0, 0.175, 1.0);
-static PLUS_BEATS: [Beat; 4] = [
-    Beat::new(0.0),
-    Beat::new(0.16).scale(1.175),
-    Beat::new(0.34).scale(0.925),
-    Beat::new(0.5),
-];
-static FOLDER_BEATS: [Beat; 3] = [
-    Beat::new(0.0),
-    Beat::new(0.42).scale(0.96).easing(ICON_EASE),
-    Beat::new(0.84).easing(ICON_EASE),
-];
-static GITHUB_BEATS: [Beat; 4] = [
-    Beat::new(0.0),
-    Beat::new(0.13).scale(0.95).easing(ICON_EASE),
-    Beat::new(0.302).scale(1.025).easing(ICON_EASE),
-    Beat::new(0.72).easing(ICON_EASE),
-];
+/// Tailwind's `transition-colors` default.
+const COLORS_EASE: Easing = Easing::cubic(0.4, 0.0, 0.2, 1.0);
+/// Lands a per-frame value at once: the poll clock already eased it.
+const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 
-static PLUS: Icon = Icon {
-    name: "plus",
-    view: 24.0,
-    body: r#"<path d="M12 4V20M20 12H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static FOLDER: Icon = Icon {
-    name: "folder",
-    view: 24.0,
-    body: r#"<path d="M2.5 20V8.87695C2.5 7.58945 2.5 6.9457 2.78533 6.47048C2.9541 6.18939 3.18939 5.9541 3.47048 5.78533C3.9457 5.5 4.59449 5.5 5.89206 5.5C6.52339 5.5 6.83906 5.5 7.12612 5.58819C7.31759 5.64702 7.49914 5.73428 7.66469 5.84705C7.91289 6.01611 8.10859 6.26074 8.5 6.75C8.89141 7.23926 9.08711 7.48389 9.33531 7.65295C9.50086 7.76572 9.68241 7.85298 9.87388 7.91181C10.1609 8 10.4742 8 11.1008 8H15C16.4045 8 17.1067 8 17.6111 8.33706C17.8295 8.48298 18.017 8.67048 18.1629 8.88886C18.5 9.39331 18.5 10.0955 18.5 11.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.42028 14.0144L3.63368 16.0144C2.65618 18.4998 2.16743 19.7425 2.7524 20.6213C3.33737 21.5 4.65337 21.5 7.28537 21.5H15.1903C16.4249 21.5 17.0422 21.5 17.5295 21.1795C18.0169 20.859 18.2702 20.2865 18.7769 19.1415L19.6618 17.1415C20.7866 14.5992 21.349 13.3281 20.7679 12.4141C20.1868 11.5 18.8163 11.5 16.0752 11.5H8.07196C6.78232 11.5 6.1375 11.5 5.63811 11.8439C5.13872 12.1877 4.89924 12.7966 4.42028 14.0144Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.5 4.51456C12.4151 3.28409 13.6662 2.55594 15.5125 2.50161C16.1155 2.48386 16.7152 2.61395 17.2682 2.85544C18.5748 3.42601 19.4185 4.15644 20 5.5L21.5 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
-static GITHUB: Icon = Icon {
-    name: "github",
-    view: 24.0,
-    body: r#"<path d="M10 20.5675C8.28572 21.1462 6.71429 21.1462 5.35715 20.5556C4.00001 19.965 2.85715 18.7838 2 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 22V18.7579C10 18.1596 10.1839 17.6396 10.4804 17.1699C10.6838 16.8476 10.5445 16.3904 10.1771 16.2894C7.13394 15.4528 5 14.1077 5 9.64606C5 8.48611 5.38005 7.39556 6.04811 6.4464C6.21437 6.21018 6.29749 6.09208 6.31748 5.9851C6.33746 5.87813 6.30272 5.73852 6.23322 5.45932C5.95038 4.32292 5.96871 3.11619 6.39322 2.02823C6.39322 2.02823 7.27042 1.74242 9.26698 2.98969C9.72282 3.27447 9.95075 3.41686 10.1515 3.44871C10.3522 3.48056 10.6206 3.41384 11.1573 3.28041C11.8913 3.09795 12.6476 3 13.5 3C14.3524 3 15.1087 3.09795 15.8427 3.28041C16.3794 3.41384 16.6478 3.48056 16.8485 3.44871C17.0493 3.41686 17.2772 3.27447 17.733 2.98969C19.7296 1.74242 20.6068 2.02823 20.6068 2.02823C21.0313 3.11619 21.0496 4.32292 20.7668 5.45932C20.6973 5.73852 20.6625 5.87813 20.6825 5.9851C20.7025 6.09207 20.7856 6.21019 20.9519 6.4464C21.6199 7.39556 22 8.48611 22 9.64606C22 14.1077 19.8661 15.4528 16.8229 16.2894C16.4555 16.3904 16.3162 16.8476 16.5196 17.1699C16.8161 17.6396 17 18.1596 17 18.7579V22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
+/// Electron loads Geist and Fraunces at weight 400 only (`@nuxt/fonts`) and sets
+/// `font-synthesis: none`, so every weight it asks for paints as Regular.
+const REGULAR: f32 = 400.0;
 
 static SPINNER_BASE: Icon = Icon {
     name: "start-spinner-base",
@@ -72,20 +46,93 @@ pub(super) static BACK: Icon = Icon {
     body: r#"<path d="M11 6H15.5C17.9853 6 20 8.01472 20 10.5C20 12.9853 17.9853 15 15.5 15H4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.99998 12C6.99998 12 4.00001 14.2095 4 15C3.99999 15.7906 7 18 7 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+/// A start time on the poll clock a handler set before it could read the clock;
+/// the next poll stamps it.
+const PENDING: f64 = f64::INFINITY;
+
+/// Seconds `s`'s poll clock has run since `at`.
+fn since(s: &StartActionsState, at: Option<f64>) -> Option<f32> {
+    at.map(|at| {
+        if at == PENDING {
+            0.0
+        } else {
+            (s.clock - at) as f32
+        }
+    })
+}
+
+fn fraunces() -> TextStyle {
+    TextStyle::new(15.0, REGULAR)
+        .lh(17.25)
+        .family(Family::Named("Fraunces"))
+}
+
+/// The static `make it kone.` mark other pages show.
 pub(super) fn wordmark(t: Palette) -> El {
     row()
         .center_y()
-        .gap(4.0)
-        .child(
-            text("make it")
-                .font(TextStyle::new(15.0, 500.0).family(Family::Named("Fraunces")))
-                .color(t.ink),
-        )
-        .child(
-            text("kone.")
-                .font(TextStyle::new(15.0, 500.0).family(Family::Named("Fraunces")))
-                .color(t.accent),
-        )
+        .gap(4.2)
+        .child(text("make it").font(fraunces()).color(t.ink))
+        .child(text("kone.").font(fraunces()).color(t.accent))
+}
+
+/// `HomeRotatingWordmark`: `make it` and a word that builds the brand up letter
+/// by letter, each letter springing up out of a clip and away above it.
+fn rotating_wordmark(t: Palette, s: &StartActionsState) -> El {
+    let elapsed = since(s, s.word_at);
+    let (shown, phase) = match (elapsed, s.prev_word) {
+        (Some(e), Some(prev)) if e < motion::exit_span(motion::word(prev).0.len()) => {
+            (prev, Some((e, false)))
+        }
+        (Some(e), Some(prev)) => (
+            s.word,
+            Some((e - motion::exit_span(motion::word(prev).0.len()), true)),
+        ),
+        (Some(e), None) => (s.word, Some((e, true))),
+        // Before the screen's first poll (live) every letter waits below the clip.
+        (None, _) if s.live => (s.word, Some((0.0, true))),
+        (None, _) => (s.word, None),
+    };
+    let (word, accent, _) = motion::word(shown);
+    let mut letters = row()
+        .key(format!("wordmark-word-{shown}"))
+        .transition(Transition::none());
+    for (i, ch) in word.chars().enumerate() {
+        let (y, opacity) = phase.map_or((0.0, 1.0), |(e, entering)| {
+            motion::letter(e - i as f32 * motion::STAGGER, entering)
+        });
+        letters = letters.child(
+            text(ch.to_string())
+                .font(fraunces())
+                .color(if i < accent { t.accent } else { t.ink })
+                .transition(Transition::none())
+                .offset(0.0, y * 17.25)
+                .offset_motion(NOW)
+                .opacity(opacity)
+                .opacity_motion(NOW),
+        );
+    }
+    row()
+        .center_y()
+        .gap(4.2)
+        .child(text("make it").font(fraunces()).color(t.ink))
+        .child(el().h(17.25).clip_rounded(0.0).child(letters))
+}
+
+/// `SettingsButton`: a 36 pt muted gear that washes and inks on hover.
+pub(super) fn settings_button(t: Palette) -> El {
+    let fade = Curve::tween(0.15, COLORS_EASE);
+    el().key("settings-button")
+        .size(36.0, 36.0)
+        .center()
+        .radius(11.0)
+        .hover(t.hover)
+        .hover_group()
+        .hover_motion(fade, fade)
+        .focus_highlight(t.hover)
+        .cursor(Cursor::Pointer)
+        .help("Settings")
+        .child(icon(&SETTINGS, 16.0).color(t.muted).group_color(t.ink))
 }
 
 pub(super) fn actions(t: Palette, s: &AppState, reduced: bool) -> El {
@@ -98,14 +145,11 @@ fn start_actions(
     state: Option<&StartActionsState>,
     reduced: bool,
 ) -> El {
-    let action = |index: usize,
-                  key: &'static str,
-                  mode: LauncherMode,
-                  glyph: &'static Icon,
-                  title: &'static str| {
+    let action = |index: usize, key: &'static str, mode: LauncherMode, title: &'static str| {
         let loading = pending == Some(mode);
         let disabled = pending.is_some();
         let symbol = if loading {
+            // A 15 pt ring: a muted/30 track and an ink-soft top quarter, spinning.
             let top = icon(&SPINNER_TOP, 15.0)
                 .color(t.ink_soft)
                 .absolute(0.0, 0.0);
@@ -117,60 +161,16 @@ fn start_actions(
             el().size(15.0, 15.0)
                 .child(
                     icon(&SPINNER_BASE, 15.0)
-                        .color(t.muted)
-                        .opacity(0.3)
+                        .color(t.muted.alpha(0.3))
                         .absolute(0.0, 0.0),
                 )
                 .child(top)
         } else {
-            let symbol = icon(glyph, 18.0).color(t.ink);
-            if let Some(state) = state.filter(|_| !reduced) {
-                if pending.is_none()
-                    && state.started[index].is_some_and(|start| {
-                        start.elapsed() < Duration::from_secs_f32([0.55, 0.84, 0.72][index])
-                    })
-                {
-                    let beats = match index {
-                        0 => &PLUS_BEATS[..],
-                        1 => &FOLDER_BEATS[..],
-                        _ => &GITHUB_BEATS[..],
-                    };
-                    if index == 0 {
-                        el().size(18.0, 18.0)
-                            .key(format!("{key}-icon-{}", state.runs[index]))
-                            .child(
-                                canvas(Shape::new().stroke(
-                                    vec![[9.0, 3.0], [9.0, 15.0]],
-                                    1.275,
-                                    t.ink,
-                                ))
-                                .size(18.0, 18.0)
-                                .shape_sequence_scale()
-                                .absolute(0.0, 0.0)
-                                .sequence(Sequence::new(&PLUS_BEATS)),
-                            )
-                            .child(
-                                canvas(Shape::new().stroke(
-                                    vec![[15.0, 9.0], [3.0, 9.0]],
-                                    1.275,
-                                    t.ink,
-                                ))
-                                .size(18.0, 18.0)
-                                .shape_sequence_scale()
-                                .absolute(0.0, 0.0)
-                                .sequence(Sequence::new(&PLUS_BEATS).delay(0.05)),
-                            )
-                    } else {
-                        symbol
-                            .key(format!("{key}-icon-{}", state.runs[index]))
-                            .sequence(Sequence::new(beats))
-                    }
-                } else {
-                    symbol
-                }
-            } else {
-                symbol
-            }
+            let elapsed = state
+                .filter(|_| !reduced && pending.is_none())
+                .and_then(|s| since(s, s.started[index]))
+                .filter(|e| *e < motion::DURATIONS[index]);
+            icon(motion::glyph(index, elapsed), motion::GLYPH).color(t.ink)
         };
         let button = row()
             .key(key)
@@ -181,10 +181,11 @@ fn start_actions(
             .center_y()
             .radius(14.0)
             .opacity(if disabled && !loading { 0.35 } else { 1.0 })
-            .child(el().w(22.0).center().child(symbol))
+            .opacity_motion(Curve::tween(0.28, EASE))
+            .child(el().w(22.0).h(18.0).center().child(symbol))
             .child(
                 text(title)
-                    .font(TextStyle::new(14.0, 600.0).lh(14.0).tracking(-0.14))
+                    .font(TextStyle::new(14.0, REGULAR).lh(14.0).tracking(-0.14))
                     .color(t.ink),
             );
         if disabled {
@@ -195,15 +196,15 @@ fn start_actions(
                 .hover_motion(Curve::tween(0.28, EASE), Curve::tween(0.28, EASE))
                 .focus_highlight(t.hover)
                 .cursor(Cursor::Pointer)
-                .on_hover_change(move |s: &mut AppState, over, _| {
+                .on_hover_change(move |s: &mut AppState, over, tx| {
+                    // mouseenter replays the glyph's gesture unless it is mid-play.
                     if over && !reduced && s.launcher.mode.is_none() {
-                        let duration = [0.55, 0.84, 0.72][index];
                         let action = &mut s.start_actions;
-                        if action.started[index].is_none_or(|start| {
-                            start.elapsed() >= Duration::from_secs_f32(duration)
-                        }) {
-                            action.started[index] = Some(Instant::now());
-                            action.runs[index] += 1;
+                        if since(action, action.started[index])
+                            .is_none_or(|e| e >= motion::DURATIONS[index])
+                        {
+                            action.started[index] = Some(PENDING);
+                            tx.wake_after(std::time::Duration::ZERO);
                         }
                     }
                 })
@@ -213,42 +214,28 @@ fn start_actions(
         0,
         "create-project",
         LauncherMode::Create,
-        &PLUS,
         "Create a new project",
     );
     let open = action(
         1,
         "open-folder",
         LauncherMode::Open,
-        &FOLDER,
         "Open from local folder",
     );
-    let clone = action(
-        2,
-        "clone-project",
-        LauncherMode::Clone,
-        &GITHUB,
-        "Clone from GitHub",
-    );
+    let clone = action(2, "clone-project", LauncherMode::Clone, "Clone from GitHub");
     let wrap = |index: usize, button: El| {
         let (offset, active) =
             state.map_or(([0.0; 2], false), |s| (s.offsets[index], s.active[index]));
+        let offset = if pending.is_none() && !reduced {
+            offset
+        } else {
+            [0.0; 2]
+        };
         el().key(format!("start-anchor-{index}"))
             .on_layout(move |s: &mut AppState, bounds| s.start_actions.bounds[index] = bounds)
             .child(
                 button
-                    .offset(
-                        if pending.is_none() && !reduced {
-                            offset[0]
-                        } else {
-                            0.0
-                        },
-                        if pending.is_none() && !reduced {
-                            offset[1]
-                        } else {
-                            0.0
-                        },
-                    )
+                    .offset(offset[0], offset[1])
                     .offset_motion(Curve::tween(
                         if active && pending.is_none() {
                             0.35
@@ -259,59 +246,62 @@ fn start_actions(
                     )),
             )
     };
+    let reset = |s: &mut AppState| {
+        s.start_actions.offsets = [[0.0; 2]; 3];
+        s.start_actions.active = [false; 3];
+        s.start_actions.started = [None; 3];
+    };
+    let (create, open, clone) = if pending.is_none() {
+        (
+            create.on_press(move |s: &mut AppState| {
+                reset(s);
+                s.launcher.open(LauncherMode::Create);
+            }),
+            open.on_press_tx(move |s: &mut AppState, tx| {
+                reset(s);
+                crate::launcher::open_folder(s, tx);
+            }),
+            clone.on_press(move |s: &mut AppState| {
+                reset(s);
+                s.launcher.open(LauncherMode::Clone);
+            }),
+        )
+    } else {
+        (create, open, clone)
+    };
     col()
         .items_start()
         .gap(4.0)
-        .child(wrap(
-            0,
-            if pending.is_none() {
-                create.on_press(|s: &mut AppState| {
-                    s.start_actions.offsets = [[0.0; 2]; 3];
-                    s.start_actions.active = [false; 3];
-                    s.start_actions.started = [None; 3];
-                    s.launcher.open(LauncherMode::Create);
-                })
-            } else {
-                create
-            },
-        ))
-        .child(wrap(
-            1,
-            if pending.is_none() {
-                open.on_press_tx(|s: &mut AppState, tx| {
-                    s.start_actions.offsets = [[0.0; 2]; 3];
-                    s.start_actions.active = [false; 3];
-                    s.start_actions.started = [None; 3];
-                    crate::launcher::open_folder(s, tx);
-                })
-            } else {
-                open
-            },
-        ))
-        .child(wrap(
-            2,
-            if pending.is_none() {
-                clone.on_press(|s: &mut AppState| {
-                    s.start_actions.offsets = [[0.0; 2]; 3];
-                    s.start_actions.active = [false; 3];
-                    s.start_actions.started = [None; 3];
-                    s.launcher.open(LauncherMode::Clone);
-                })
-            } else {
-                clone
-            },
-        ))
+        .child(wrap(0, create))
+        .child(wrap(1, open))
+        .child(wrap(2, clone))
+}
+
+/// Entrance progress of the start options (`opacity 0, y 8` over 0.5 s) and of
+/// the floor plasma (fade over 1.4 s after 0.2 s, `easeOut`).
+fn entrance(s: &StartActionsState, reduced: bool) -> (f32, f32) {
+    match since(s, s.mounted) {
+        _ if reduced => (1.0, 1.0),
+        Some(e) => (
+            motion::bezier([0.22, 1.0, 0.36, 1.0], e / 0.5),
+            motion::bezier([0.0, 0.0, 0.58, 1.0], (e - 0.2) / 1.4),
+        ),
+        None if s.live => (0.0, 0.0),
+        None => (1.0, 1.0),
+    }
 }
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
+    let reduced = cx.is_reduced_motion();
+    let (rise, glow) = entrance(&s.start_actions, reduced);
     col()
         .key("empty-root")
-        .apply_start_pointer(cx.is_reduced_motion())
+        .apply_start_pointer(reduced)
         .w_full()
         .h_full()
         .fill(t.ground)
-        .child(crate::plasma::slot(s, cx))
+        .child(crate::plasma::slot(s, cx, glow))
         .child(
             row()
                 .w_full()
@@ -319,19 +309,83 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .pt(52.0)
                 .justify_between()
                 .center_y()
-                .child(wordmark(t))
-                .child(
-                    el().size(36.0, 36.0)
-                        .center()
-                        .child(icon(&SETTINGS, 16.0).color(t.muted)),
-                ),
+                .child(rotating_wordmark(t, &s.start_actions))
+                .child(settings_button(t)),
         )
-        .child(col().grow(1.0).w_full().center().child(start_actions(
-            t,
-            s.launcher.mode,
-            Some(&s.start_actions),
-            cx.is_reduced_motion(),
-        )))
+        .child(
+            col().grow(1.0).w_full().center().child(
+                el().key("start-hero")
+                    .opacity(rise)
+                    .opacity_motion(NOW)
+                    .offset(0.0, 8.0 * (1.0 - rise))
+                    .offset_motion(NOW)
+                    .child(start_actions(
+                        t,
+                        s.launcher.mode,
+                        Some(&s.start_actions),
+                        reduced,
+                    )),
+            ),
+        )
+}
+
+/// Steps the start screen's clocks from the app's poll (`clock`, the frame
+/// clock, virtual in headless runs): mounts the entrance when the page appears,
+/// rotates the wordmark, stamps hover gestures, and asks for frames while
+/// anything moves. Returns whether the view should run again.
+pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
+    use std::time::Duration;
+    let state = &mut s.start_actions;
+    state.clock = clock;
+    if s.page != crate::state::Page::Empty {
+        let was = state.mounted.is_some();
+        state.mounted = None;
+        state.word_at = None;
+        state.prev_word = None;
+        state.word = 0;
+        return was;
+    }
+    let mut changed = false;
+    if state.mounted.is_none() {
+        // A `--scene` snapshot opens settled, its wordmark already landed.
+        state.mounted = Some(if state.live { clock } else { clock - 10.0 });
+        state.prev_word = None;
+        state.word_at = Some(if state.live { clock } else { clock - 1.5 });
+        changed = true;
+    }
+    for start in state.started.iter_mut().flatten() {
+        if *start == PENDING {
+            *start = clock;
+            changed = true;
+        }
+    }
+    let shown = since(state, state.word_at).unwrap_or(0.0);
+    if shown >= motion::word(state.word).2 {
+        state.prev_word = Some(state.word);
+        state.word = (state.word + 1) % motion::WORD_COUNT;
+        state.word_at = Some(clock);
+        changed = true;
+    }
+    let shown = since(state, state.word_at).unwrap_or(0.0);
+    let word_end = state
+        .prev_word
+        .map_or(0.0, |p| motion::exit_span(motion::word(p).0.len()))
+        + motion::enter_span(motion::word(state.word).0.len());
+    let mounted = since(state, state.mounted).unwrap_or(0.0);
+    let moving = shown < word_end
+        || mounted < 1.6
+        || (0..3).any(|i| {
+            since(state, state.started[i]).is_some_and(|e| e < motion::DURATIONS[i] + 0.05)
+        });
+    if moving {
+        tx.wake_after(Duration::ZERO);
+        true
+    } else {
+        tx.wake_after(Duration::from_secs_f32(
+            (motion::word(state.word).2 - shown).max(0.0),
+        ));
+        changed
+    }
 }
 
 // Both home layouts use window coordinates for the same magnetic targets.

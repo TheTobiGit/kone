@@ -110,7 +110,7 @@ impl Compositor<AppState> for Plasma {
                 time,
                 site.data[0],
                 if site.srgb_blend { 1.0 } else { 0.0 },
-                0.0,
+                site.data[1],
             ]) {
                 values.extend_from_slice(&value.to_ne_bytes());
             }
@@ -122,12 +122,13 @@ impl Compositor<AppState> for Plasma {
     }
 }
 
-pub fn slot(s: &AppState, cx: &rune::Cx<AppState>) -> rune::El {
+/// The floor plasma; `glow` is its entrance fade (1 at rest).
+pub fn slot(s: &AppState, cx: &rune::Cx<AppState>, glow: f32) -> rune::El {
     let height = cx
         .layout_size("empty-root")
         .map_or(352.8, |size| (size[1] * 0.42).clamp(220.0, 380.0));
     let art = rune::effect(0x504c)
-        .effect_data([if cx.system_dark() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0])
+        .effect_data([if cx.system_dark() { 1.0 } else { 0.0 }, glow, 0.0, 0.0])
         .h(height)
         .pin(Some(0.0), None, Some(0.0), Some(0.0));
     if s.art_focused {
