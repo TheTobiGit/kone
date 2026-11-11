@@ -337,6 +337,7 @@ fn studio_row(
             let hover_id = id.clone();
             let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str());
             let head = row()
+                .offset(0.0, -17.0)
                 .w_full()
                 .h(38.0)
                 .center_y()
