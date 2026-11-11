@@ -6,7 +6,117 @@ use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
 };
-use rune::{Cursor, Curve, Cx, Easing, El, Span, TextStyle, col, el, icon, row, text};
+use rune::{Color, Cursor, Curve, Cx, Easing, El, Icon, Span, TextStyle, col, el, icon, row, text};
+
+/// `.line--body { letter-spacing: -0.02em }` resolves against the paragraph's own 16 px, not
+/// the 30 px spans inside it.
+const BODY_TRACKING: f32 = -0.32;
+/// `.line--hey { letter-spacing: -0.01em }`, likewise against 16 px.
+const HEY_TRACKING: f32 = -0.16;
+
+/// Hugeicons `ArrowDown01Icon`, drawn at 15 px with a 2.2 stroke beside the project name.
+static CHEVRON: Icon = Icon {
+    name: "overview-project-chevron",
+    view: 24.0,
+    body: r#"<path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+/// `text-wrap: pretty` as Chromium applies it to the greeting: when the greedy wrap at `max`
+/// leaves the last word alone on the last line, the measure narrows until it doesn't, keeping
+/// the line count, so the lines break where Chromium's do.
+fn pretty_width(text: &str, spans: &[Span], style: TextStyle, max: f32) -> f32 {
+    let height = |value: &str, width: f32| {
+        let cut: Vec<Span> = spans
+            .iter()
+            .filter(|span| (span.start as usize) < value.len())
+            .map(|span| {
+                let mut span = span.clone();
+                span.end = span.end.min(value.len() as u32);
+                span
+            })
+            .collect();
+        rune::text::measure(value, &cut, style, Some(width)).1
+    };
+    let Some(last) = text.trim_end().rfind(' ') else {
+        return max;
+    };
+    let head = &text[..last];
+    let full = height(text, max);
+    if height(head, max) >= full {
+        return max;
+    }
+    let mut width = max.floor();
+    while width > max * 0.5 {
+        width -= 1.0;
+        if height(text, width) > full {
+            break;
+        }
+        if height(head, width) >= full {
+            return width;
+        }
+    }
+    max
+}
+
+/// The greeting's state sentence, assembled as tone-tagged segments like `HomeGreeting.vue`.
+struct Message {
+    text: String,
+    spans: Vec<Span>,
+    ink: Color,
+}
+
+impl Message {
+    fn new(ink: Color) -> Self {
+        Self {
+            text: String::new(),
+            spans: Vec::new(),
+            ink,
+        }
+    }
+
+    fn push(&mut self, value: &str, tone: &str) {
+        let start = self.text.len();
+        self.text.push_str(value);
+        let mut span = Span::new(start, self.text.len());
+        if tone == "ink" {
+            span = span.color(self.ink);
+        }
+        if tone == "num" || tone == "add" || tone == "del" {
+            span = span.mono().size(26.0).weight(700.0).color(match tone {
+                "add" => rune::color::hex("#059669").unwrap(),
+                "del" => rune::color::hex("#e11d48").unwrap(),
+                _ => self.ink,
+            });
+        }
+        self.spans.push(span);
+    }
+
+    /// Blank room `width` points wide, made of no-break spaces so it never wraps away from the
+    /// name: whole spaces at the body size, then one sized to the remainder.
+    fn gap(&mut self, width: f32) {
+        let at = |size: f32| {
+            rune::text::advance("\u{a0}", TextStyle::new(size, 400.0).tracking(BODY_TRACKING))
+        };
+        let full = at(30.0);
+        let (lo, hi) = (at(10.0), full);
+        let slope = (hi - lo) / 20.0;
+        let mut whole = (width / full).floor() as usize;
+        let mut rest = width - whole as f32 * full;
+        if rest < lo && whole > 0 {
+            whole -= 1;
+            rest += full;
+        }
+        if whole > 0 {
+            self.push(&"\u{a0}".repeat(whole), "muted");
+        }
+        if rest > 0.01 {
+            let size = 10.0 + (rest - lo) / slope;
+            let start = self.text.len();
+            self.text.push('\u{a0}');
+            self.spans.push(Span::new(start, self.text.len()).size(size));
+        }
+    }
+}
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
@@ -145,26 +255,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let count = changes.map_or(0, Vec::len);
     let clean = count == 0;
     let branch = tree["branch"].as_str().unwrap_or("");
-    let mut message = String::new();
-    let mut spans = Vec::new();
-    let mut push = |value: &str, tone: &str| {
-        let start = message.len();
-        message.push_str(value);
-        let mut span = Span::new(start, message.len());
-        if tone == "ink" {
-            span = span.color(t.ink);
-        }
-        if tone == "num" || tone == "add" || tone == "del" {
-            span = span.mono().size(26.0).weight(700.0).color(match tone {
-                "add" => rune::color::hex("#059669").unwrap(),
-                "del" => rune::color::hex("#e11d48").unwrap(),
-                _ => t.ink,
-            });
-        }
-        spans.push(span);
-    };
-    push(name, "ink");
-    push(" ⌄", "muted");
+    let body_style = TextStyle::new(30.0, 400.0).lh(38.5).tracking(BODY_TRACKING);
+    // The trigger is an inline-block (`margin: 0 -4px; padding: 1px 5px`) holding "{name} " and
+    // the 15 px chevron 3 px after it, so the name sits 1 px in and the sentence resumes 1 px
+    // past the chevron.
+    let name_space_w = rune::text::advance(&format!("{name} "), body_style);
+    let name_w = rune::text::advance(name, body_style);
+    let mut m = Message::new(t.ink);
+    m.gap(1.0);
+    m.push(name, "ink");
+    m.gap(name_space_w - name_w + 3.0 + 15.0 + 1.0);
     let staged = changes.map_or(0, |c| {
         c.iter()
             .filter(|v| v["staged"].as_bool().unwrap_or(false))
@@ -181,109 +281,96 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let plural = |singular, one, many| if singular { one } else { many };
     if !loaded {
     } else if !repo {
-        push(
-            " isn't a git repository yet. Initialize a repo to track changes, then start your first session",
-            "muted",
-        );
+        m.push(
+            " isn't a git repository yet. Initialize a repo to track changes, then start your first session", "muted");
     } else if !tree.is_null() && tree["head"].is_null() {
         if clean {
-            push(
-                " is a fresh repository. Nothing committed yet — your first changes will show up here",
-                "muted",
-            );
+            m.push(
+                " is a fresh repository. Nothing committed yet — your first changes will show up here", "muted");
         } else {
-            push(" is ready for its first commit. ", "muted");
+            m.push(" is ready for its first commit. ", "muted");
             if staged > 0 {
-                push(&staged.to_string(), "num");
-                push(" of ", "muted");
+                m.push(&staged.to_string(), "num");
+                m.push(" of ", "muted");
             }
-            push(&count.to_string(), "num");
-            push(plural(count == 1, " file", " files"), "muted");
-            push(
+            m.push(&count.to_string(), "num");
+            m.push(plural(count == 1, " file", " files"), "muted");
+            m.push(
                 if staged > 0 {
                     " staged — commit when you're ready"
                 } else {
                     " to stage for your first commit"
-                },
-                "muted",
-            );
+                }, "muted");
         }
     } else if clean {
-        push(" is ready when you are. ", "muted");
+        m.push(" is ready when you are. ", "muted");
         if ahead > 0 && behind > 0 {
-            push("Working tree clean — ", "muted");
-            push(&ahead.to_string(), "num");
-            push(" ahead, ", "muted");
-            push(&behind.to_string(), "num");
-            push(" behind", "muted");
+            m.push("Working tree clean — ", "muted");
+            m.push(&ahead.to_string(), "num");
+            m.push(" ahead, ", "muted");
+            m.push(&behind.to_string(), "num");
+            m.push(" behind", "muted");
         } else if ahead > 0 {
-            push("Working tree clean — you're ", "muted");
-            push(&ahead.to_string(), "num");
-            push(
-                plural(ahead == 1, " commit ahead", " commits ahead"),
-                "muted",
-            );
+            m.push("Working tree clean — you're ", "muted");
+            m.push(&ahead.to_string(), "num");
+            m.push(
+                plural(ahead == 1, " commit ahead", " commits ahead"), "muted");
         } else if behind > 0 {
-            push("Working tree clean — ", "muted");
-            push(&behind.to_string(), "num");
-            push(
-                plural(behind == 1, " commit behind", " commits behind"),
-                "muted",
-            );
+            m.push("Working tree clean — ", "muted");
+            m.push(&behind.to_string(), "num");
+            m.push(
+                plural(behind == 1, " commit behind", " commits behind"), "muted");
         } else {
-            push("No changes — everything's committed", "muted");
+            m.push("No changes — everything's committed", "muted");
         }
         if !branch.is_empty() {
-            push(" on ", "muted");
-            push(branch, "num");
+            m.push(" on ", "muted");
+            m.push(branch, "num");
         }
         if behind > 0 && ahead == 0 {
-            push(", pull when you're ready", "muted");
+            m.push(", pull when you're ready", "muted");
         }
     } else {
-        push(" has ", "muted");
-        push(&count.to_string(), "num");
-        push(
+        m.push(" has ", "muted");
+        m.push(&count.to_string(), "num");
+        m.push(
             plural(
                 count == 1,
                 " file with changes. You have ",
                 " files with changes. You have ",
-            ),
-            "muted",
-        );
+            ), "muted");
         if added > 0 || removed > 0 {
             if added > 0 {
-                push(&format!("+{added}"), "add");
+                m.push(&format!("+{added}"), "add");
             }
             if added > 0 && removed > 0 {
-                push(" ", "muted");
+                m.push(" ", "muted");
             }
             if removed > 0 {
-                push(&format!("−{removed}"), "del");
+                m.push(&format!("−{removed}"), "del");
             }
-            push(" uncommitted", "muted");
+            m.push(" uncommitted", "muted");
         } else {
-            push(&count.to_string(), "num");
-            push(
-                plural(count == 1, " uncommitted change", " uncommitted changes"),
-                "muted",
-            );
+            m.push(&count.to_string(), "num");
+            m.push(
+                plural(count == 1, " uncommitted change", " uncommitted changes"), "muted");
         }
         if count > 0 {
             if staged == count {
-                push(", all staged", "muted");
+                m.push(", all staged", "muted");
             } else if staged > 0 {
-                push(", ", "muted");
-                push(&staged.to_string(), "num");
-                push(" staged", "muted");
+                m.push(", ", "muted");
+                m.push(&staged.to_string(), "num");
+                m.push(" staged", "muted");
             } else {
-                push(" — nothing staged yet", "muted");
+                m.push(" — nothing staged yet", "muted");
             }
         }
     }
+    let wrap_w = pretty_width(&m.text, &m.spans, body_style, 620.0);
     let mut hello = row().center_y().gap(10.0).child(
         text("Hey,")
-            .font(TextStyle::new(30.0, 400.0).lh(33.0))
+            .font(TextStyle::new(30.0, 400.0).lh(33.0).tracking(HEY_TRACKING))
             .color(t.ink_soft),
     );
     if let Some(profile) = &s.profile.name {
@@ -301,33 +388,44 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             )
             .child(
                 text(profile.clone())
-                    .font(TextStyle::new(30.0, 400.0))
+                    .font(TextStyle::new(30.0, 400.0).lh(33.0).tracking(HEY_TRACKING))
                     .color(t.ink),
             );
     } else {
-        hello = hello.child(text("there").font(TextStyle::new(30.0, 400.0)).color(t.ink));
+        hello = hello.child(
+            text("there")
+                .font(TextStyle::new(30.0, 400.0).lh(33.0).tracking(HEY_TRACKING))
+                .color(t.ink),
+        );
     }
     let greet_in = super::start_motion::bezier(
         [0.22, 1.0, 0.36, 1.0],
         ((elapsed - 0.03) / 0.4).clamp(0.0, 1.0),
     );
-    let trigger_width = (name.chars().count() as f32 * 16.0 + 25.0).max(45.0);
+    let css_ease = Easing::cubic(0.25, 0.1, 0.25, 1.0);
     let trigger = el()
         .key("overview-project-trigger")
-        .absolute(-4.0, 33.0)
-        .size(trigger_width, 39.0)
+        .absolute(-4.0, 35.0)
+        .size(5.0 + name_space_w + 3.0 + 15.0 + 5.0, 39.5)
         .radius(9.0)
         .hover(t.ink.alpha(0.06))
-        .hover_motion(
-            Curve::tween(0.18, Easing::cubic(0.25, 0.1, 0.25, 1.0)),
-            Curve::tween(0.18, Easing::cubic(0.25, 0.1, 0.25, 1.0)),
-        )
+        .hover_motion(Curve::tween(0.18, css_ease), Curve::tween(0.18, css_ease))
+        .hover_group()
+        .on_hover_change(|s: &mut AppState, over, _| s.overview_name_hover = over)
         .role("button")
         .label(format!("Switch project — {name}"))
         .focusable(true)
         .focus_ring(2.0, 1.0, t.ink.alpha(0.26))
         .cursor(Cursor::Pointer)
-        .on_press(|s: &mut AppState| s.overview_switcher_open = !s.overview_switcher_open);
+        .on_press(|s: &mut AppState| s.overview_switcher_open = !s.overview_switcher_open)
+        .child(
+            icon(&CHEVRON, 15.0)
+                .absolute(5.0 + name_space_w + 3.0, 13.05)
+                .color(t.ink_soft)
+                .group_color(t.ink)
+                .offset(0.0, if s.overview_name_hover { 1.0 } else { 0.0 })
+                .offset_motion(Curve::tween(0.2, css_ease)),
+        );
     let mut greeting = col()
         .gap(2.0)
         .grow(1.0)
@@ -338,11 +436,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .offset_motion(now)
         .child(hello)
         .child(
-            text(message)
-                .spans(spans)
-                .font(TextStyle::new(30.0, 400.0).lh(37.5).tracking(-0.6))
+            // Chromium sets these 30 px lines (`line-height: 1.25`) with the trigger's 1 px of
+            // padding raising the first line box: baselines land 39 px then 37 px apart. A
+            // 38.5 px pitch nudged down half a point keeps every line within a point of them.
+            text(m.text)
+                .max_w(wrap_w)
+                .spans(m.spans)
+                .font(body_style)
                 .color(t.ink_soft)
-                .wrap(),
+                .wrap()
+                .pt(0.5),
         )
         .child(trigger);
     if s.overview_switcher_open {
