@@ -32,8 +32,8 @@ use crate::{
     theme::{Palette, mix_srgb},
 };
 use rune::{
-    AnimExt, Cursor, Curve, Cx, Easing, El, Family, Icon, ScrollSpec, Spring, TextStyle, col, el,
-    icon, row, text, text_input,
+    AnimExt, Cursor, Curve, Cx, Easing, El, Family, Icon, ScrollSpec, Shadow, Spring, TextStyle,
+    col, el, icon, row, text, text_input,
 };
 
 // HomeRecent mounts each grid item on this spring, staggered by 60 ms.
@@ -108,7 +108,7 @@ pub(super) fn folder_with_git_hover(
             mix_srgb(t.ground, t.ink, 0.094),
             mix_srgb(t.ground, t.ink, 0.057),
             mix_srgb(t.ground, t.ink, 0.035),
-            t.ground.alpha(0.3),
+            t.sunken.alpha(0.16),
         )
     } else {
         (
@@ -117,7 +117,7 @@ pub(super) fn folder_with_git_hover(
             mix_srgb(t.raised, t.ink, 0.013),
             mix_srgb(t.raised, t.ink, 0.077),
             mix_srgb(t.raised, t.ink, 0.12),
-            t.ink.alpha(0.06),
+            rune::Color::BLACK.alpha(0.06),
         )
     };
     let sheet = el()
@@ -158,6 +158,27 @@ pub(super) fn folder_with_git_hover(
             ],
         )
         .shadow(4.0, 10.0, shadow)
+        .box_shadow(Shadow {
+            y: -10.0,
+            blur: 18.0,
+            color: if t.dark {
+                t.sunken.alpha(0.14)
+            } else {
+                t.ink.alpha(0.03)
+            },
+            inset: true,
+            ..Shadow::default()
+        })
+        .box_shadow(Shadow {
+            y: if t.dark { 1.0 } else { 2.0 },
+            color: if t.dark {
+                t.ink.alpha(0.07)
+            } else {
+                t.raised_high.alpha(0.9)
+            },
+            inset: true,
+            ..Shadow::default()
+        })
         .absolute(0.0, 24.0)
         .child({
             let mut name_row = row().w_full().items_end().gap(9.0);
@@ -278,7 +299,15 @@ pub(super) fn folder_with_git_hover(
             } else {
                 t.raised_high
             })
-            .shadow(0.0, 4.0, t.line)
+            .shadow(
+                4.0,
+                10.0,
+                if t.dark {
+                    t.sunken.alpha(0.18)
+                } else {
+                    rune::Color::BLACK.alpha(0.07)
+                },
+            )
             .child(icon(super::file_icons::for_path(path), 10.0).color(t.ink))
             .child(mark_col);
         if status == "deleted" {

@@ -65,7 +65,7 @@ static FOLDER_BRANCH: Icon = Icon {
 static FOLDER_FINDER: Icon = Icon {
     name: "overview-folder-finder",
     view: 24.0,
-    body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12ZM12.99 2.5C12.12 3.79 10.52 7.71 10.07 11.58C9.93 12.8 10 13.5 11.9 13.5C13.1 13.5 12.9 13.8 12.92 14.57C12.87 16.12 12.94 19.05 14 21.5M7 8v2m10-2v2M7 16.5c3.5 2 6.5 2 10 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12ZM12.9896 2.5C12.1238 3.78525 10.5163 7.71349 10.0737 11.5798C9.98097 12.3899 9.9346 12.795 10.1905 13.1176C10.2151 13.1486 10.2474 13.1843 10.2757 13.212C10.5708 13.5 11.0149 13.5 11.9031 13.5C12.3889 13.5 12.6317 13.5 12.7766 13.6314C12.7923 13.6457 12.8051 13.6588 12.819 13.6748C12.9468 13.8225 12.9383 14.072 12.9212 14.5709C12.8685 16.1156 12.9401 19.0524 14 21.5M7 8v2m10-2v2M7 16.5C10.5 18.5 13.5 18.5 17 16.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 fn overview_folder(
@@ -102,22 +102,38 @@ fn overview_folder(
     let finder = action("Open in Finder", &FOLDER_FINDER)
         .role("button")
         .label("Reveal in Finder")
-        .focusable(over)
+        .focusable(true)
         .on_press(move |s: &mut AppState| s.reveal_project(path.clone()));
     let actions = if inline {
         let mut a = row().gap(14.0).center_y();
         if repo {
-            a = a.child(action("Switch branch", &FOLDER_BRANCH));
+            a = a.child(
+                action("Switch branch", &FOLDER_BRANCH)
+                    .role("button")
+                    .label("Switch branch")
+                    .focusable(true),
+            );
         }
         a.child(finder)
     } else {
         let mut a = col().gap(9.0);
         if repo {
-            a = a.child(action("Switch branch", &FOLDER_BRANCH));
+            a = a.child(
+                action("Switch branch", &FOLDER_BRANCH)
+                    .role("button")
+                    .label("Switch branch")
+                    .focusable(true),
+            );
         }
         a.child(finder)
     }
-    .opacity(if over { 1.0 } else { 0.0 })
+    .hover_group_focus()
+    .on_hover_focus_change(|s: &mut AppState, active, _| s.overview_folder_actions_focus = active)
+    .opacity(if over || s.overview_folder_actions_focus {
+        1.0
+    } else {
+        0.001
+    })
     .opacity_motion(Curve::tween(0.2, Easing::cubic(0.25, 0.1, 0.25, 1.0)));
     let tile = el()
         .size(200.0 * scale, 116.0 * scale)

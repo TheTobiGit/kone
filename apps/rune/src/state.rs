@@ -66,6 +66,7 @@ pub struct AppState {
     pub overview_switcher_open: bool,
     pub overview_name_hover: bool,
     pub overview_folder_hover: bool,
+    pub overview_folder_actions_focus: bool,
     pub changes_folded: std::collections::HashSet<String>,
     pub changes_hover: Option<bool>,
     pub overview_viewport: (f32, f32),
