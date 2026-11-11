@@ -1009,7 +1009,17 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         }
         picker = Some(menu.child(actions));
     }
-    let changes_panel = changes_panel(s, tree, loaded, repo, t, content_width, elapsed);
+    let changes_in = super::start_motion::bezier(
+        [0.22, 1.0, 0.36, 1.0],
+        ((elapsed - 0.13) / 0.34).clamp(0.0, 1.0),
+    );
+    let sessions_in = super::start_motion::bezier(
+        [0.22, 1.0, 0.36, 1.0],
+        ((elapsed - 0.23) / 0.32).clamp(0.0, 1.0),
+    );
+    let changes_panel = changes_panel(s, tree, loaded, repo, t, content_width, elapsed)
+        .opacity(changes_in)
+        .offset(0.0, 9.0 * (1.0 - changes_in));
     let mut dock = row().gap(40.0).center_y();
     for (i, path) in s.cycle_paths.iter().enumerate() {
         if let Some(project) = s.projects.iter().find(|p| &p.path == path) {
@@ -1072,18 +1082,24 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         + pinned_count as f32 * 40.0
                         + pinned_count.saturating_sub(1) as f32 * 22.0
                         + 40.0;
-                    let mut viewport = el().w_full().grow(1.0).min_h(0.0).child(
-                        col()
-                            .key("overview-sessions")
-                            .w_full()
-                            .h_full()
-                            .scroll(ScrollSpec {
-                                stick_bottom: false,
-                            })
-                            .on_scroll_offset(move |at| scroll.set((at.offset[1], at.max[1])))
-                            .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
-                            .child(sessions(s, &s.project_data.sessions, t, false).pb(24.0)),
-                    );
+                    let mut viewport = el()
+                        .w_full()
+                        .grow(1.0)
+                        .min_h(0.0)
+                        .opacity(sessions_in)
+                        .offset(0.0, 9.0 * (1.0 - sessions_in))
+                        .child(
+                            col()
+                                .key("overview-sessions")
+                                .w_full()
+                                .h_full()
+                                .scroll(ScrollSpec {
+                                    stick_bottom: false,
+                                })
+                                .on_scroll_offset(move |at| scroll.set((at.offset[1], at.max[1])))
+                                .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
+                                .child(sessions(s, &s.project_data.sessions, t, false).pb(24.0)),
+                        );
                     if offset > 0.0 && !s.project_data.sessions.is_empty() {
                         let pinned = pinned_count > 0 && (!has_recent || offset < boundary);
                         let push = if pinned && has_recent {
