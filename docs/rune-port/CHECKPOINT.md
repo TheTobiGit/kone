@@ -241,3 +241,21 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - Electron-left, Rune-right 2x rest captures: `/workspace/rune-compare/devsync-modal-{create,open,clone}-{light,dark}.png`, against port 3004. Motion note: the card rises 12 pt from scale 0.96 with the source overshoot, then exits down on the source ease-in; these stills do not establish frame-by-frame parity. Rune samples on its poll clock rather than Chromium's compositor, and the two can differ by a frame.
 - Remaining visible differences: Rune's caret appears in captures while Playwright hides Chromium's, and Rune's open-browser scrollbar remains visible in the rest capture while Chromium's is hidden. Text/SVG antialiasing and plasma phase vary. The existing browser has no repository metadata from the sidecar, and platform-specific rendering remains unverified.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Repeatable screenshot comparisons
+
+The orchestrator pre-captures Electron references for each upcoming piece into `/workspace/rune-ref/<piece>/`; workers use those files instead of capturing Electron themselves. The reference server must already be running from the separate `kone-dev-ref` worktree at `http://127.0.0.1:3004`. It is not modified by these scripts. Install `playwright-core` where Node can resolve it, or set `PLAYWRIGHT_CORE` to its module directory; set `CHROME_PATH` if Chrome is not `/usr/bin/google-chrome`. Stitching requires Python Pillow.
+
+From the repository root, for example:
+
+```sh
+cargo build -p kone-rune
+SCENES=empty-brand,empty-brand-hover,launcher-create,launcher-open,launcher-clone
+# Orchestrator, once per piece:
+node apps/rune/scripts/parity/capture-reference.cjs start-launcher "$SCENES"
+# Worker:
+python3 apps/rune/scripts/parity/capture-rune.py /workspace/rune-captures/start-launcher --scenes "$SCENES"
+python3 apps/rune/scripts/parity/stitch.py start-launcher /workspace/rune-captures/start-launcher --scenes "$SCENES"
+```
+
+Both capture commands write `<scene>-<theme>.png` for light and dark at 1292×854 pixels (1x); the stitcher checks dimensions and writes labelled Electron-left sheets to `/workspace/rune-compare/<piece>-<scene>-<theme>.png`. Rune renders strictly serially with a 180-second per-capture timeout (`--timeout` changes it); build first so the binary is current. `--scenes` accepts the named Rune fixtures in `main.rs`, plus `empty-brand-hover`. Reference capture currently maps `empty-brand`, `empty-brand-hover`, `launcher-create`, `launcher-open`, `launcher-clone`, and `launcher-more`; it rejects other names. Add explicit reference setup and matching hover scripts for a new piece before capturing it. The hover example glides over the first start action; other hover states need their own matching setup. The Rune image includes its window frame, so expect a small content offset from the browser viewport; prior 2x parity work cropped that frame. Animated artwork and font rasterization can also differ between renderers.
