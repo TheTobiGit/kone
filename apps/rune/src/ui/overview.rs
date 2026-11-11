@@ -1,10 +1,12 @@
 use super::empty::BACK;
+
+use super::empty::StartPointer;
 use super::projects::{folder_with_git, sessions};
 use crate::{
     state::{AppState, Page},
-    theme::Palette,
+    theme::{Palette, mix_srgb},
 };
-use rune::{Cx, El, TextStyle, col, el, icon, row, text};
+use rune::{Cursor, Curve, Cx, Easing, El, TextStyle, col, el, icon, row, text};
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
@@ -13,53 +15,128 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .and_then(|i| s.projects.get(i))
         .map(|p| p.name.as_str())
         .unwrap_or("");
+    let elapsed = if cx.is_reduced_motion() || !s.start_actions.live {
+        10.0
+    } else {
+        s.start_actions
+            .mounted
+            .map_or(0.0, |at| (s.start_actions.clock - at) as f32)
+    };
+    let progress = |duration: f32| {
+        super::start_motion::bezier([0.22, 1.0, 0.36, 1.0], (elapsed / duration).clamp(0.0, 1.0))
+    };
+    let now = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
+    let back_in = progress(0.3);
+    let nav_in = progress(0.42);
+    let avatar_in = progress(0.35);
+    let ease = Easing::cubic(0.22, 1.0, 0.36, 1.0);
     let nav = row()
-        .h(34.0)
+        .opacity(nav_in)
+        .opacity_motion(now)
+        .offset(0.0, -8.0 * (1.0 - nav_in))
+        .offset_motion(now)
+        .h(30.0)
         .center_y()
         .child(
             el().w(84.0)
-                .h(28.0)
+                .h(24.0)
                 .center()
                 .radius(20.0)
-                .fill(t.hover)
+                .fill(mix_srgb(t.ground, t.ink, 0.065))
+                .role("button")
+                .label("Overview")
+                .focusable(true)
+                .no_focus_ring()
                 .child(
                     text("Overview")
-                        .font(TextStyle::new(12.5, 400.0))
+                        .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
                         .color(t.ink),
                 ),
         )
         .child(
-            el().w(84.0)
-                .h(28.0)
-                .center()
-                .radius(20.0)
-                .hover(t.hover)
-                .child(
-                    text("Studio")
-                        .font(TextStyle::new(12.5, 400.0))
-                        .color(t.muted),
-                )
-                .on_press(|s: &mut AppState| s.enter_studio()),
+            el().w(84.0).h(30.0).center().child(
+                text("Git")
+                    .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
+                    .color(t.muted.alpha(0.4)),
+            ),
         );
-    let top = row()
-        .w_full()
-        .h(52.0)
-        .px(32.0)
-        .center_y()
+    let [dx, dy] = s.start_actions.offsets[0];
+    let active = s.start_actions.active[0];
+    let back = el()
+        .key("overview-back-anchor")
+        .size(18.0, 18.0)
+        .opacity(back_in)
+        .opacity_motion(now)
+        .offset(-6.0 * (1.0 - back_in), 0.0)
+        .offset_motion(now)
+        .on_layout(|s: &mut AppState, bounds| s.start_actions.bounds[0] = bounds)
         .child(
-            el().w(84.0)
-                .child(icon(&BACK, 18.0).color(t.muted))
+            el().key("overview-back")
+                .size(18.0, 18.0)
+                .offset(
+                    if cx.is_reduced_motion() { 0.0 } else { dx },
+                    if cx.is_reduced_motion() { 0.0 } else { dy },
+                )
+                .offset_motion(Curve::tween(if active { 0.35 } else { 0.6 }, ease))
+                .role("button")
+                .label("Back to projects")
+                .focusable(true)
+                .no_focus_ring()
+                .hover_group_focus()
+                .cursor(Cursor::Pointer)
+                .child(
+                    icon(&BACK, 18.0)
+                        .color(t.muted.alpha(0.7))
+                        .group_color(t.ink),
+                )
                 .on_press(|s: &mut AppState| {
                     s.refresh_project_list();
                     s.page = if s.projects.is_empty() {
                         Page::Empty
                     } else {
                         Page::Projects
-                    }
+                    };
                 }),
-        )
+        );
+    let mut avatar = el()
+        .w(84.0)
+        .h(30.0)
+        .justify_end()
+        .opacity(progress(0.3))
+        .opacity_motion(now)
+        .offset(0.0, -6.0 * (1.0 - avatar_in))
+        .offset_motion(now);
+    if let Some(name) = &s.profile.name {
+        avatar = avatar.child(
+            el().key("overview-profile")
+                .size(30.0, 30.0)
+                .radius(15.0)
+                .center()
+                .fill(t.ink)
+                .scale(if s.profile_hover { 1.06 } else { 1.0 })
+                .scale_motion(Curve::tween(0.35, ease))
+                .role("button")
+                .label(format!("Open profile — {name}"))
+                .focusable(true)
+                .focus_ring(2.0, 2.0, t.ink.alpha(0.26))
+                .cursor(Cursor::Pointer)
+                .help(name.clone())
+                .on_hover_change(|s: &mut AppState, over, _| s.profile_hover = over)
+                .child(
+                    text(s.profile.initial.clone())
+                        .font(TextStyle::new(13.0, 400.0).lh(13.0))
+                        .color(t.ground),
+                ),
+        );
+    }
+    let top = row()
+        .w_full()
+        .h(52.0)
+        .px(32.0)
+        .pt(20.0)
+        .child(el().w(84.0).child(back))
         .child(el().grow(1.0).center().child(nav))
-        .child(el().w(84.0));
+        .child(avatar);
     let overview = &s.project_data.overview;
     let tree = &overview["workingTree"];
     let loaded = !overview.is_null();
@@ -189,21 +266,27 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             changes_panel = changes_panel.child(cards);
         }
     }
-    col().w_full().h_full().fill(t.ground).child(top).child(
-        row().w_full().justify_center().pt(44.0).px(64.0).child(
-            col()
-                .w(896.0)
-                .gap(44.0)
-                .child(
-                    row()
-                        .w_full()
-                        .justify_between()
-                        .gap(32.0)
-                        .child(greeting)
-                        .child(folder_with_git(name, t, tree)),
-                )
-                .child(changes_panel)
-                .child(sessions(s, &s.project_data.sessions, t, false)),
-        ),
-    )
+    col()
+        .w_full()
+        .h_full()
+        .fill(t.ground)
+        .apply_start_pointer(cx.is_reduced_motion())
+        .child(top)
+        .child(
+            row().w_full().justify_center().pt(44.0).px(64.0).child(
+                col()
+                    .w(896.0)
+                    .gap(44.0)
+                    .child(
+                        row()
+                            .w_full()
+                            .justify_between()
+                            .gap(32.0)
+                            .child(greeting)
+                            .child(folder_with_git(name, t, tree)),
+                    )
+                    .child(changes_panel)
+                    .child(sessions(s, &s.project_data.sessions, t, false)),
+            ),
+        )
 }

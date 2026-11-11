@@ -41,9 +41,9 @@ pub(super) static SEARCH: Icon = Icon {
     body: r#"<path d="M17 17L21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 11C19 6.58172 15.4183 3 11 3C6.58172 3 3 6.58172 3 11C3 15.4183 6.58172 19 11 19C15.4183 19 19 15.4183 19 11Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 pub(super) static BACK: Icon = Icon {
-    name: "back",
+    name: "overview-back",
     view: 24.0,
-    body: r#"<path d="M11 6H15.5C17.9853 6 20 8.01472 20 10.5C20 12.9853 17.9853 15 15.5 15H4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.99998 12C6.99998 12 4.00001 14.2095 4 15C3.99999 15.7906 7 18 7 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M11 18H15.5C17.9853 18 20 15.98528 20 13.5C20 11.0147 17.9853 9 15.5 9H4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.99998 12C6.99998 12 4.00001 9.7905 4 9C3.99999 8.2094 7 6 7 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 /// A start time on the poll clock a handler set before it could read the clock;
@@ -325,6 +325,16 @@ pub(crate) fn tick(s: &mut AppState, clock: f64, tx: &mut rune::Tx) -> bool {
         state.word_at = None;
         state.prev_word = None;
         state.word = 0;
+    }
+    if s.page == crate::state::Page::Overview {
+        if state.mounted.is_none() {
+            state.mounted = Some(if state.live { clock } else { clock - 10.0 });
+        }
+        if since(state, state.mounted).unwrap_or(0.0) < 0.42 {
+            tx.wake_after(Duration::ZERO);
+            return true;
+        }
+        return page_changed;
     }
     if !matches!(
         s.page,
