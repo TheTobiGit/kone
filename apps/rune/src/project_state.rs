@@ -258,6 +258,12 @@ impl AppState {
         };
         let name = self.projects[index].name.clone();
         self.selected_project = Some(index);
+        if let Some(meta) = self.project_data.metadata.get_mut(&path) {
+            meta.last_opened_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+        }
         self.page = Page::Overview;
         self.project_data.menu_path = None;
         self.project_data

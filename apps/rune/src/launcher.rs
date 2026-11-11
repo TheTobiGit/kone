@@ -407,6 +407,7 @@ fn repository(input: &str) -> Option<(String, String)> {
 }
 
 pub fn remember(s: &mut AppState, path: String, name: String) {
+    s.overview_switcher_open = false;
     s.pending_project_path = Some(path.clone());
     s.project_remember_request = s.request("projects.remember", json!({"path":path,"name":name}));
 }

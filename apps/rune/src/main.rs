@@ -146,6 +146,31 @@ fn main() {
             ("overview-fresh-unstaged", |s| {
                 review::overview_greeting(s, "fresh-unstaged")
             }),
+            ("overview-switcher", |s| {
+                review::overview_greeting(s, "nonrepo");
+                s.projects.push(state::Project {
+                    name: "nova".into(),
+                    path: "/review/nova".into(),
+                });
+                s.projects.push(state::Project {
+                    name: "atlas".into(),
+                    path: "/review/atlas".into(),
+                });
+                s.overview_switcher_open = true;
+            }),
+            ("overview-cycle", |s| {
+                review::overview_greeting(s, "nonrepo");
+                s.projects.push(state::Project {
+                    name: "nova".into(),
+                    path: "/review/nova".into(),
+                });
+                s.projects.push(state::Project {
+                    name: "atlas".into(),
+                    path: "/review/atlas".into(),
+                });
+                s.cycle_paths = s.projects.iter().map(|p| p.path.clone()).collect();
+                s.cycle_index = 1;
+            }),
             ("overview-clean", |s| review::overview_greeting(s, "clean")),
             ("overview-dirty", |s| review::overview_greeting(s, "dirty")),
             ("overview-staged", |s| {
@@ -181,8 +206,14 @@ fn main() {
             borderless: cfg!(target_os = "linux"),
             ..Default::default()
         })
+        .modifier_keys()
         .standard_menus()
-        .on_focus(|s, focused, _| s.art_focused = focused)
+        .on_focus(|s, focused, _| {
+            s.art_focused = focused;
+            if !focused {
+                s.cycle_paths.clear();
+            }
+        })
         .font_smoothing(FontSmoothing::Off)
         .compositor(plasma::Plasma::default())
         .run();
@@ -238,6 +269,68 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
     }
     if s.launcher.mode.is_some() {
         return false;
+    }
+    if s.page == Page::Overview {
+        if event.key == rune::Key::Escape && (!s.cycle_paths.is_empty() || s.overview_switcher_open)
+        {
+            s.cycle_paths.clear();
+            s.overview_switcher_open = false;
+            return true;
+        }
+        if event.key == rune::Key::Tab && event.mods.ctrl {
+            if s.cycle_paths.is_empty()
+                && let Some(current) = s.selected_project.and_then(|i| s.projects.get(i))
+            {
+                let mut others: Vec<_> = s
+                    .projects
+                    .iter()
+                    .filter(|p| p.path != current.path)
+                    .collect();
+                others.sort_by_key(|p| {
+                    std::cmp::Reverse(
+                        s.project_data
+                            .metadata
+                            .get(&p.path)
+                            .map_or(0, |m| m.last_opened_at),
+                    )
+                });
+                s.cycle_paths = std::iter::once(current.path.clone())
+                    .chain(others.into_iter().map(|p| p.path.clone()))
+                    .collect();
+                if s.cycle_paths.len() < 2 {
+                    s.cycle_paths.clear();
+                    return true;
+                }
+                s.cycle_index = 0;
+            }
+            if !s.cycle_paths.is_empty() {
+                let n = s.cycle_paths.len();
+                s.cycle_index = (s.cycle_index + if event.mods.shift { n - 1 } else { 1 }) % n;
+            }
+            return true;
+        }
+        if matches!(
+            event.key,
+            rune::Key::Modifier {
+                modifier: rune::Modifier::ControlLeft | rune::Modifier::ControlRight,
+                pressed: false
+            }
+        ) && !event.mods.ctrl
+            && !s.cycle_paths.is_empty()
+        {
+            let path = s.cycle_paths.get(s.cycle_index).cloned();
+            let current = s
+                .selected_project
+                .and_then(|i| s.projects.get(i))
+                .map(|p| p.path.clone());
+            s.cycle_paths.clear();
+            if let Some(path) = path
+                && Some(&path) != current.as_ref()
+            {
+                s.open_project(path);
+            }
+            return true;
+        }
     }
     if event.is_command('b') || (s.page == Page::Studio && event.key == rune::Key::Escape) {
         if s.page == Page::Studio {

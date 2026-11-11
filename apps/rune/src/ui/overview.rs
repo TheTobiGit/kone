@@ -15,6 +15,12 @@ const BODY_TRACKING: f32 = -0.32;
 const HEY_TRACKING: f32 = -0.16;
 
 /// Hugeicons `ArrowDown01Icon`, drawn at 15 px with a 2.2 stroke beside the project name.
+static PICKER_FOLDER: Icon = Icon {
+    name: "picker-folder",
+    view: 24.0,
+    body: r#"<path d="M3 7C3 5 4 4 6 4H9L12 7H18C20 7 21 8 21 10V17C21 19 20 20 18 20H6C4 20 3 19 3 17Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static CHEVRON: Icon = Icon {
     name: "overview-project-chevron",
     view: 24.0,
@@ -489,7 +495,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .offset(0.0, if s.overview_name_hover { 1.0 } else { 0.0 })
                 .offset_motion(Curve::tween(0.2, css_ease)),
         );
-    let mut greeting = col()
+    let greeting = col()
         .gap(2.0)
         .grow(1.0)
         .max_w(620.0)
@@ -502,43 +508,71 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             // Chromium sets these 30 px lines (`line-height: 1.25`) with the trigger's 1 px of
             // padding raising the first line box: baselines land 39 px then 37 px apart. A
             // 38.5 px pitch nudged down half a point keeps every line within a point of them.
-            text(wrapped)
-                .spans(m.spans)
+            text(wrapped.clone())
+                .spans(m.spans.clone())
                 .font(body_style)
                 .color(t.ink_soft)
                 .wrap()
                 .pt(0.5),
         )
         .child(trigger);
+    let mut picker = None;
     if s.overview_switcher_open {
-        let mut menu = col()
-            .absolute(0.0, 75.0)
-            .w(300.0)
-            .padding(12.0)
-            .gap(4.0)
-            .radius(14.0)
-            .fill(t.raised_high)
-            .border(1.0, t.line);
-        for (index, project) in s.projects.iter().enumerate() {
-            if Some(index) == s.selected_project {
-                continue;
-            }
+        let band = mix_srgb(t.ground, t.ink, 0.02);
+        let mut list = col()
+            .w_full()
+            .padding(4.0)
+            .gap(2.0)
+            .radius(18.0)
+            .fill(t.raised);
+        let mut projects: Vec<_> = s
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != s.selected_project)
+            .collect();
+        projects.sort_by_key(|(_, p)| {
+            let meta = s.project_data.metadata.get(&p.path);
+            (
+                std::cmp::Reverse(meta.is_some_and(|m| m.pinned)),
+                std::cmp::Reverse(meta.map_or(0, |m| m.last_opened_at)),
+            )
+        });
+        let has_projects = !projects.is_empty();
+        for (_, project) in projects {
             let path = project.path.clone();
-            menu = menu.child(
-                el().w_full()
-                    .h(38.0)
-                    .px(10.0)
+            let branch = s
+                .project_data
+                .summaries
+                .get(&path)
+                .and_then(|v| v["branch"].as_str())
+                .unwrap_or("")
+                .to_owned();
+            list = list.child(
+                row()
+                    .w_full()
+                    .h(30.0)
+                    .px(9.0)
+                    .gap(7.0)
                     .center_y()
-                    .radius(8.0)
+                    .radius(9.0)
                     .hover(t.hover)
                     .cursor(Cursor::Pointer)
                     .role("button")
                     .focusable(true)
                     .label(project.name.clone())
+                    .child(icon(&PICKER_FOLDER, 15.0).color(t.muted))
                     .child(
                         text(project.name.clone())
-                            .font(TextStyle::new(14.0, 400.0))
-                            .color(t.ink),
+                            .font(TextStyle::new(13.0, 400.0))
+                            .color(t.ink)
+                            .truncate(),
+                    )
+                    .child(
+                        text(branch)
+                            .font(TextStyle::new(10.0, 400.0).mono())
+                            .color(t.muted)
+                            .truncate(),
                     )
                     .on_press(move |s: &mut AppState| {
                         s.overview_switcher_open = false;
@@ -546,7 +580,119 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     }),
             );
         }
-        greeting = greeting.child(menu);
+        let mut actions = col().w_full().padding(4.0).radius(18.0).fill(t.raised);
+        for (symbol, label, mode) in [
+            (
+                "+",
+                "Create a new project",
+                crate::launcher::LauncherMode::Create,
+            ),
+            (
+                "▱",
+                "Open from local folder",
+                crate::launcher::LauncherMode::Open,
+            ),
+            (
+                "◉",
+                "Clone from GitHub",
+                crate::launcher::LauncherMode::Clone,
+            ),
+        ] {
+            actions = actions.child(
+                row()
+                    .w_full()
+                    .h(30.0)
+                    .px(9.0)
+                    .gap(9.0)
+                    .center_y()
+                    .radius(9.0)
+                    .hover(t.hover)
+                    .cursor(Cursor::Pointer)
+                    .role("button")
+                    .focusable(true)
+                    .label(label)
+                    .child(
+                        text(symbol)
+                            .font(TextStyle::new(16.0, 400.0))
+                            .color(t.ink_soft),
+                    )
+                    .child(text(label).font(TextStyle::new(12.5, 400.0)).color(t.ink))
+                    .on_press_tx(move |s: &mut AppState, tx| {
+                        if mode == crate::launcher::LauncherMode::Open {
+                            crate::launcher::open_folder(s, tx);
+                        } else {
+                            s.launcher.open(mode);
+                        }
+                    }),
+            );
+        }
+        actions = actions.child(
+            row()
+                .w_full()
+                .h(30.0)
+                .px(9.0)
+                .gap(9.0)
+                .center_y()
+                .radius(9.0)
+                .hover(t.hover)
+                .cursor(Cursor::Pointer)
+                .role("button")
+                .focusable(true)
+                .label("All projects")
+                .child(
+                    text("←")
+                        .font(TextStyle::new(16.0, 400.0))
+                        .color(t.ink_soft),
+                )
+                .child(
+                    text("All projects")
+                        .font(TextStyle::new(12.5, 400.0))
+                        .color(t.ink),
+                )
+                .on_press(|s: &mut AppState| {
+                    s.overview_switcher_open = false;
+                    s.refresh_project_list();
+                    s.page = Page::Projects;
+                }),
+        );
+        let mut menu = col()
+            .w(300.0)
+            .gap(5.0)
+            .pb(1.0)
+            .px(1.0)
+            .radius(20.0)
+            .fill(band)
+            .border(1.0, t.line)
+            .shadow(0.0, 16.0, t.ink.alpha(0.2));
+        menu = menu.child(
+            row()
+                .w_full()
+                .h(34.0)
+                .px(12.0)
+                .center_y()
+                .justify_between()
+                .child(
+                    text("Switch project")
+                        .font(TextStyle::new(12.5, 400.0))
+                        .color(t.ink_soft),
+                )
+                .child(
+                    el().cursor(Cursor::Pointer)
+                        .role("button")
+                        .focusable(true)
+                        .label("Cancel")
+                        .child(
+                            text("Cancel")
+                                .font(TextStyle::new(13.0, 400.0))
+                                .color(t.muted),
+                        )
+                        .on_press(|s: &mut AppState| s.overview_switcher_open = false),
+                ),
+        );
+        if has_projects {
+            menu = menu.child(list);
+        }
+        picker = Some(menu.child(actions));
     }
     let mut changes_panel = col().w_full().gap(20.0);
     if loaded {
@@ -630,7 +776,28 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             changes_panel = changes_panel.child(cards);
         }
     }
-    col()
+    let mut dock = row().gap(40.0).center_y();
+    for (i, path) in s.cycle_paths.iter().enumerate() {
+        if let Some(project) = s.projects.iter().find(|p| &p.path == path) {
+            let tree = s
+                .project_data
+                .summaries
+                .get(path)
+                .unwrap_or(&serde_json::Value::Null);
+            dock = dock.child(
+                folder_with_git(&project.name, t, tree)
+                    .opacity(if i == s.cycle_index { 1.0 } else { 0.55 })
+                    .offset(0.0, if i == s.cycle_index { -10.0 } else { 0.0 }),
+            );
+        }
+    }
+    let dock = el()
+        .pin(Some(0.0), None, Some(0.0), Some(0.0))
+        .h(180.0)
+        .fill(t.ground)
+        .center()
+        .child(dock);
+    let root = col()
         .w_full()
         .h_full()
         .fill(t.ground)
@@ -652,5 +819,29 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .child(changes_panel)
                     .child(sessions(s, &s.project_data.sessions, t, false)),
             ),
+        );
+    let root = if let Some(menu) = picker {
+        let menu_top = 100.0
+            + 33.0
+            + 2.0
+            + rune::text::measure(&wrapped, &m.spans, body_style, Some(620.0)).1
+            + 8.0;
+        root.child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .on_press(|s: &mut AppState| s.overview_switcher_open = false),
         )
+        .child(
+            row()
+                .pin(Some(0.0), Some(menu_top), Some(0.0), None)
+                .justify_center()
+                .child(el().w(896.0).child(menu)),
+        )
+    } else {
+        root
+    };
+    if s.cycle_paths.is_empty() {
+        root
+    } else {
+        root.child(dock)
+    }
 }

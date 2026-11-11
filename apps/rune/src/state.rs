@@ -65,6 +65,8 @@ pub struct AppState {
     pub profile_hover: bool,
     pub overview_switcher_open: bool,
     pub overview_name_hover: bool,
+    pub cycle_paths: Vec<String>,
+    pub cycle_index: usize,
     pub start_actions: StartActionsState,
     pub project_data: crate::project_state::ProjectState,
     pub page: Page,

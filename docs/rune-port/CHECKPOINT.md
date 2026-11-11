@@ -199,3 +199,10 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
   - Figures use Geist Mono. Electron's `ui-monospace` resolves per platform (SF Mono on macOS).
   - The hover pill's colour is within 1–2/255 of Electron's `color-mix`.
   - The Overview area below the greeting is out of this piece's scope. In these captures Electron shows "Not a git repository" there because its props are forced.
+
+## Overview switcher (overview-3, 2026-11-11)
+
+- Added the greeting picker with pinned/recency ordering, branch summaries, outside and Escape dismissal, project selection, launcher actions, and an All projects action. Launcher success closes the picker. Ctrl+Tab holds a recency-ordered dock, Shift reverses, Control release switches, and Escape or window blur cancels. Opening a project updates its local recency immediately.
+- Captures: `/workspace/rune-compare/overview-switcher-{light,dark}.png`, `overview-switcher-hover-{light,dark}.png`, and `overview-cycle-{light,dark}.png` (Electron left, Rune right, 2x).
+- Remaining differences: the picker and dock currently appear and disappear without Electron's springs or delayed exit; the dock folders do not scale or animate on selection and overflow does not scroll. Picker action icons are approximations, branch icon and focus-visible hover styling are absent, and long project lists are not scroll-limited. The requested All projects row is present in Rune but absent from the current `ProjectPickerModal.vue` reference. The picker anchor uses the review layout's fixed vertical offset and can diverge at other window sizes. The surrounding Overview body is still unfinished. Motion and platform-specific modifier behavior have not been frame-tested.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 37 native tests passed using `LIBRARY_PATH=/tmp/kone-rune-libs`.
