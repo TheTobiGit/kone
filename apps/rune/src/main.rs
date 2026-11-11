@@ -96,6 +96,11 @@ fn main() {
                 studio_column_head(s);
                 s.studio_column_hover = Some("review-one".into());
             }),
+            ("studio-column-head-tooltip", |s| {
+                studio_column_head(s);
+                s.studio_column_hover = Some("review-one".into());
+                s.studio.head_tooltip = Some("Hand off to another provider".into());
+            }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);
                 s.studio.handoff_source = Some("claudeAgent".into());

@@ -155,6 +155,7 @@ impl AppState {
 pub struct StudioState {
     pub title: String,
     pub side_chat: bool,
+    pub head_tooltip: Option<String>,
     pub worktree_path: Option<String>,
     pub handoff_source: Option<String>,
     pub past_providers: Vec<String>,

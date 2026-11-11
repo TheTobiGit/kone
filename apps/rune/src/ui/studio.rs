@@ -37,6 +37,13 @@ static ARCHIVE: Icon = Icon {
     body: r#"<path d="M7 21H17C19.357 21 20.535 21 21.268 20.268C22 19.535 22 18.357 22 16S22 12.465 21.268 11.732C20.535 11 19.357 11 17 11H7C4.643 11 3.465 11 2.732 11.732C2 12.465 2 13.643 2 16S2 19.535 2.732 20.268C3.465 21 4.643 21 7 21ZM4 11C4 9.6 4 8.9 4.273 8.365C4.512 7.895 4.895 7.512 5.365 7.273C5.9 7 6.6 7 8 7H16C17.4 7 18.1 7 18.635 7.273C19.105 7.512 19.488 7.895 19.727 8.365C20 8.9 20 9.6 20 11M6 7C6 5.6 6 4.9 6.273 4.365C6.512 3.895 6.895 3.512 7.365 3.273C7.9 3 8.6 3 10 3H14C15.4 3 16.1 3 16.635 3.273C17.105 3.512 17.488 3.895 17.727 4.365C18 4.9 18 5.6 18 7M16 15L15.7 15.4C15.111 16.185 14.817 16.578 14.394 16.789C13.972 17 13.481 17 12.5 17H11.5C10.519 17 10.028 17 9.606 16.789C9.183 16.578 8.889 16.185 8.3 15.4L8 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+#[allow(dead_code)]
+static REFRESH: Icon = Icon {
+    name: "studio-refresh",
+    view: 24.0,
+    body: r#"<path d="M20.0092 2V5.13219C20.0092 5.42605 19.6418 5.55908 19.4537 5.33333C17.6226 3.2875 14.9617 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22C17.5228 22 22 17.5228 22 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static WORKTREE: Icon = Icon {
     name: "studio-worktree",
     view: 10.0,
@@ -102,6 +109,37 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
         }
     }
     marks.child(brand_mark(provider, t))
+}
+
+fn fork_tool(
+    glyph: &'static Icon,
+    tip: &'static str,
+    state: Option<&StudioState>,
+    t: Palette,
+) -> El {
+    let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip);
+    let mut button = el()
+        .w(20.0)
+        .h(20.0)
+        .center()
+        .radius(6.0)
+        .hover(t.hover)
+        .child(icon(glyph, 13.0).color(t.muted))
+        .on_hover_change(move |s: &mut AppState, over, _| {
+            s.studio.head_tooltip = if over { Some(tip.into()) } else { None };
+        });
+    if shown {
+        button = button.child(
+            el().pin(Some(-29.0), None, None, Some(-80.0))
+                .px(7.0)
+                .h(20.0)
+                .center()
+                .radius(6.0)
+                .fill(t.ink)
+                .child(label(tip, 11.0, 500.0, t.ground)),
+        );
+    }
+    button
 }
 
 fn title_of(state: &StudioState) -> String {
@@ -348,30 +386,14 @@ fn studio_row(
                         .center_y()
                         .gap(2.0)
                         .opacity(if show_tools { 1.0 } else { 0.0 })
-                        .child(
-                            el().w(20.0)
-                                .h(20.0)
-                                .center()
-                                .radius(6.0)
-                                .hover(t.hover)
-                                .child(icon(&SIDE_CHAT, 13.0).color(t.muted)),
-                        )
-                        .child(
-                            el().w(20.0)
-                                .h(20.0)
-                                .center()
-                                .radius(6.0)
-                                .hover(t.hover)
-                                .child(icon(&HANDOFF, 13.0).color(t.muted)),
-                        )
-                        .child(
-                            el().w(20.0)
-                                .h(20.0)
-                                .center()
-                                .radius(6.0)
-                                .hover(t.hover)
-                                .child(icon(&ARCHIVE, 13.0).color(t.muted)),
-                        ),
+                        .child(fork_tool(&SIDE_CHAT, "Open a side chat", state, t))
+                        .child(fork_tool(
+                            &HANDOFF,
+                            "Hand off to another provider",
+                            state,
+                            t,
+                        ))
+                        .child(fork_tool(&ARCHIVE, "Archive conversation", state, t)),
                 )
                 .child(
                     row()
