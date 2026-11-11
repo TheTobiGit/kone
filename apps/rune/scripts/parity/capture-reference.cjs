@@ -125,18 +125,24 @@ async function injectTerminalLive(page) {
   });
   await page.waitForTimeout(900);
   const ready = await page.evaluate(() => {
+    const unwrap = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : x);
     const col = document.querySelector('.col');
     let row = col && col.__vueParentComponent;
     while (row && row.type?.__name !== 'StudioRow') row = row.parent;
     const sessions = row.setupState.terminal?.sessions;
-    if (!sessions || !Array.isArray(sessions.value) || sessions.value.length === 0) return false;
-    const s = sessions.value[0];
-    s.hasRunningSubprocess = true;
-    s.childCommandLabel = 'npm run dev';
-    sessions.value = [...sessions.value];
+    const arr = unwrap(sessions);
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    for (const s of arr) {
+      s.hasRunningSubprocess = true;
+      s.childCommandLabel = 'npm run dev';
+    }
+    if (sessions && 'value' in sessions) sessions.value = [...arr];
+    // Terminal sessions are shallow, so bump entries to re-render the head pill.
+    const entries = row.setupState.studio.entries;
+    entries.value = entries.value.map((e) => ({ ...e }));
     return true;
   });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(500);
   const visible = await page.locator('.col__busy').count();
   if (!opened || !ready || visible === 0) {
     throw new Error(`terminal live-process pill not visible (opened=${opened} ready=${ready} busy=${visible})`);
