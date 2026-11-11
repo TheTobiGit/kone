@@ -343,3 +343,10 @@ Both capture commands write `<scene>-<theme>.png` for light and dark at 1292×85
 - Electron-left/Rune-right 2x settled comparisons: `/workspace/rune-compare/overview-fix-2-{light,dark}.png`. The reference and Rune use different session data and identities.
 - Remaining: this does not finish the requested piece. Row action and identity crossfades, magnet motion, delete-hold progress, metric swap, exact shimmer, and measured sticky handoff remain as described under overview-7. Entrance timing has not been frame-compared; its handling of late data and reduced motion may differ. The surrounding overview also differs. No motion timestamps were captured.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Overview greeting and cards follow-up (overview-fix-1b, 2026-11-11)
+
+- Moved the dirty changes panel down 10 pt, split the fresh-repository staged greeting at the Vue segment boundaries, and applied the source lane-header and individual tile entrance delays. Folding a lane clears its cards' CountUp start times so reopening starts them again. Card hover lift now uses the source spring-like easing.
+- Settled Electron-left/Rune-right 2x comparisons: `/workspace/rune-compare/overview-fix-1b-{light,dark}.png`. The Electron folder fixture differs from Rune's.
+- Remaining: departing greeting segments still vanish rather than lift out; bundle placement and rotation, deleted outlines and empty dash are approximations. File icons use the existing generated VS Code catalog, not a newly verified copy of all Electron assets. Fold animation and multiple timestamp comparisons remain unverified; entrances use the page clock and may differ for late-mounted lanes. The 10 pt adjustment is fixture-based and has not been verified across all responsive layouts. This pass does not establish 1:1 parity.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed using `LIBRARY_PATH=/tmp/kone-rune-libs`.

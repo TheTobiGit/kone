@@ -116,6 +116,12 @@ impl AppState {
     }
 
     pub fn toggle_changes(&mut self, key: String) {
+        let staged = key.ends_with(":true");
+        let suffix = format!(":{staged}");
+        self.card_count_starts
+            .borrow_mut()
+            .1
+            .retain(|card, _| !card.ends_with(&suffix));
         if !self.changes_folded.remove(&key) {
             self.changes_folded.insert(key);
         }

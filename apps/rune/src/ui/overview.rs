@@ -594,15 +594,13 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 m.push(" of ", "muted");
             }
             m.push(&count.to_string(), "num");
-            m.push(plural(count == 1, " file", " files"), "muted");
-            m.push(
-                if staged > 0 {
-                    " staged — commit when you're ready"
-                } else {
-                    " to stage for your first commit"
-                },
-                "muted",
-            );
+            if staged > 0 {
+                m.push(plural(count == 1, " file staged", " files staged"), "muted");
+                m.push(" — commit when you're ready", "muted");
+            } else {
+                m.push(plural(count == 1, " file", " files"), "muted");
+                m.push(" to stage for your first commit", "muted");
+            }
         }
     } else if clean {
         m.push(" is ready when you are", "muted");
@@ -1044,9 +1042,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         [0.22, 1.0, 0.36, 1.0],
         ((elapsed - 0.13) / 0.34).clamp(0.0, 1.0),
     );
-    let changes_panel = changes_panel(s, tree, loaded, repo, t, content_width, elapsed)
-        .opacity(changes_in)
-        .offset(0.0, 9.0 * (1.0 - changes_in));
+    let changes_panel = changes_panel(s, tree, loaded, repo, t, content_width, elapsed);
+    let changes_panel = if clean {
+        changes_panel
+            .opacity(changes_in)
+            .offset(0.0, 9.0 * (1.0 - changes_in))
+    } else {
+        changes_panel.pt(10.0)
+    };
     let mut dock = row().gap(40.0).center_y();
     for (i, path) in s.cycle_paths.iter().enumerate() {
         if let Some(project) = s.projects.iter().find(|p| &p.path == path) {
@@ -1274,7 +1277,11 @@ fn changes_panel(
         .collect();
     let both = !staged.is_empty() && !changed.is_empty();
     panel = panel.gap(30.0);
-    for (is_staged, items) in [(true, &staged), (false, &changed)] {
+    for (lane_index, (is_staged, items)) in [(true, &staged), (false, &changed)]
+        .into_iter()
+        .filter(|(_, items)| !items.is_empty())
+        .enumerate()
+    {
         if items.is_empty() {
             continue;
         }
@@ -1382,8 +1389,17 @@ fn changes_panel(
             }
             tail = tail.child(stat).child(dots);
         }
+        let enter = |delay: f32, duration: f32| {
+            super::start_motion::bezier(
+                [0.22, 1.0, 0.36, 1.0],
+                ((elapsed - delay) / duration).clamp(0.0, 1.0),
+            )
+        };
+        let head_in = enter(0.21 + lane_index as f32 * 0.06, 0.32);
         let head = row()
             .w_full()
+            .opacity(head_in)
+            .offset(0.0, 9.0 * (1.0 - head_in))
             .justify_between()
             .center_y()
             .px(2.0)
@@ -1408,11 +1424,17 @@ fn changes_panel(
             for start in (0..slots).step_by(cols) {
                 let mut r = row().gap(14.0);
                 for index in start..(start + cols).min(slots) {
-                    if index < visible {
-                        r = r.child(change_card(items[index], t, elapsed, s));
+                    let tile_in = enter(0.26 + lane_index as f32 * 0.06 + index as f32 * 0.03, 0.3);
+                    let tile = if index < visible {
+                        change_card(items[index], t, elapsed, s)
                     } else {
-                        r = r.child(change_bundle(items.len() - visible, t, s, is_staged));
-                    }
+                        change_bundle(items.len() - visible, t, s, is_staged)
+                    };
+                    r = r.child(
+                        tile.opacity(tile_in)
+                            .offset(0.0, 14.0 * (1.0 - tile_in))
+                            .scale(0.985 + 0.015 * tile_in),
+                    );
                 }
                 grid = grid.child(r);
             }
@@ -1533,6 +1555,7 @@ fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState)
             Color::BLACK.alpha(if hovered { 0.05 } else { 0.03 }),
         )
         .offset(0.0, if hovered { -6.0 } else { 0.0 })
+        .offset_motion(Curve::tween(0.4, Easing::cubic(0.34, 1.56, 0.64, 1.0)))
         .cursor(Cursor::Pointer)
         .focusable(true)
         .focus_ring(2.0, 2.0, t.ink.alpha(0.34))
