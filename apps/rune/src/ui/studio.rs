@@ -397,7 +397,9 @@ fn studio_row(
                         .child(
                             el().key(format!("studio-width-{id}"))
                                 .px(4.0)
-                                .h(22.0)
+                                .h(20.0)
+                                .min_w(20.0)
+                                .opacity(if zen { 0.4 } else { 1.0 })
                                 .center()
                                 .radius(6.0)
                                 .hover(t.hover)
@@ -408,10 +410,13 @@ fn studio_row(
                                         format!("{width:.0}")
                                     },
                                     10.0,
-                                    600.0,
+                                    650.0,
                                     t.muted,
                                 ))
                                 .on_press_tx(move |s: &mut AppState, tx| {
+                                    if zen {
+                                        return;
+                                    }
                                     s.select_studio_project(project_index);
                                     s.open_studio_thread(width_id.clone());
                                     s.cycle_studio_width(&width_id);
