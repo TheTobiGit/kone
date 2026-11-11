@@ -9,7 +9,8 @@ pub const MARK_BASE: u32 = 0x4347_0000;
 pub struct CodeGolf {
     device: Option<DeviceKey>,
     pipelines: HashMap<(u32, wgpu::TextureFormat), Pipeline>,
-    time: f32,
+    times: HashMap<u32, f32>,
+    dt: f32,
 }
 
 struct Pipeline {
@@ -156,9 +157,11 @@ impl CodeGolf {
             self.device = Some(device);
             self.pipelines.clear();
         }
-        if active {
-            self.time += dt.min(0.1) as f32 * 1.2;
-        }
+        self.dt = if active {
+            dt.min(0.1) as f32 * 1.2
+        } else {
+            0.0
+        };
     }
     /// Call for matching effect marks inside Rune's `draw_with` hook.
     pub fn draw(
@@ -168,6 +171,11 @@ impl CodeGolf {
         pass: &mut wgpu::RenderPass<'_>,
         site: &EffectSite<'_>,
     ) {
+        let time = self.times.entry(site.mark).or_default();
+        if site.data[3] >= 0.0 {
+            *time += self.dt;
+        }
+        let time = *time;
         let pipe = self
             .pipelines
             .entry((site.mark, site.format))
@@ -182,7 +190,7 @@ impl CodeGolf {
             site.size[1] as f32,
             site.origin[0],
             site.origin[1],
-            self.time,
+            time,
             site.scale,
             centroid[0],
             centroid[1],
@@ -190,9 +198,9 @@ impl CodeGolf {
             site.data[1],
             site.data[2],
             if site.srgb_blend {
-                site.data[3]
+                site.data[3].abs()
             } else {
-                -site.data[3]
+                -site.data[3].abs()
             },
         ];
         let mut bytes = [0u8; 64];
@@ -209,6 +217,10 @@ static CENTROID: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
 
 /// `color` is the CSS sRGB accent including its own alpha.
 pub fn slot(mark: u32, focused_and_visible: bool, color: [f32; 4]) -> rune::El {
+    let mut color = color;
+    if !focused_and_visible {
+        color[3] = -color[3];
+    }
     let art = rune::effect(mark).effect_data(color).w_full().h_full();
     let art = if focused_and_visible {
         art.cycle(rune::Cycle {

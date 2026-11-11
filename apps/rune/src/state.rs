@@ -61,6 +61,7 @@ impl Profile {
 #[derive(Default)]
 pub struct AppState {
     pub art_focused: bool,
+    pub(crate) chooser_magnet: StartActionsState,
     pub profile: Profile,
     pub profile_hover: bool,
     pub overview_switcher_open: bool,

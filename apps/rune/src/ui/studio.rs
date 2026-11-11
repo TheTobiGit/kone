@@ -159,14 +159,26 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             let selected = Some(index) == s.selected_project;
             selected_present |= selected;
             plane = plane.child(studio_row(
-                s, saved, index, selected, viewport_w, viewport_h, t,
+                s,
+                saved,
+                index,
+                selected,
+                (viewport_w, viewport_h),
+                t,
+                cx,
             ));
         }
     }
     if !selected_present && let Some(index) = s.selected_project {
         let empty = serde_json::json!({"projectPath":s.projects[index].path,"panes":[]});
         plane = plane.child(studio_row(
-            s, &empty, index, true, viewport_w, viewport_h, t,
+            s,
+            &empty,
+            index,
+            true,
+            (viewport_w, viewport_h),
+            t,
+            cx,
         ));
     }
     let plane = col()
@@ -201,10 +213,11 @@ fn studio_row(
     saved: &serde_json::Value,
     project_index: usize,
     selected_row: bool,
-    viewport_w: f32,
-    viewport_h: f32,
+    viewport: (f32, f32),
     t: Palette,
+    cx: &Cx<AppState>,
 ) -> El {
+    let (viewport_w, viewport_h) = viewport;
     let project = &s.projects[project_index];
     let path = project.path.clone();
     let panes = saved["panes"].as_array();
@@ -331,9 +344,19 @@ fn studio_row(
                         ),
                 );
             let body = if focused {
-                focused_body(s, &project.name, t)
+                focused_body(
+                    s,
+                    &project.name,
+                    t,
+                    crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
+                )
             } else if let Some(state) = state {
-                parked_body(state, &id, t)
+                parked_body(
+                    state,
+                    &id,
+                    t,
+                    crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
+                )
             } else {
                 col().w_full().grow(1.0)
             };
@@ -419,46 +442,92 @@ fn studio_row(
     } else {
         bar = bar.child(el().w(24.0));
     }
-    bar = bar.child(project_nav(s, t));
+    if count > 0 {
+        bar = bar.child(project_nav(s, t));
+    }
     let content = if count == 0 {
         let parent = project.path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
-        col().w_full().grow(1.0).center().child(
-            col()
-                .w(256.0)
-                .items_center()
+        let summary = s
+            .project_data
+            .summaries
+            .get(&project.path)
+            .cloned()
+            .unwrap_or_default();
+        let mut actions = col().w_full().gap(2.0);
+        for (index, (symbol, title, keys)) in [
+            ("◯", "New thread", "Ctrl N"),
+            ("›_", "Terminal", "Ctrl Shift T"),
+            ("▤", "Scratchpad", "Ctrl Shift N"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut chips = row().gap(3.0).center_y();
+            for key in keys.split_whitespace() {
+                chips = chips.child(
+                    el().px(4.0)
+                        .min_w(17.0)
+                        .h(17.0)
+                        .center()
+                        .radius(5.0)
+                        .fill(t.ink.alpha(0.07))
+                        .child(label(key, 11.0, 400.0, t.muted)),
+                );
+            }
+            let mut action = row()
+                .key(format!("studio-chooser-{index}"))
+                .w_full()
+                .h(38.0)
+                .px(11.0)
                 .gap(10.0)
-                .child(
+                .center_y()
+                .radius(10.0)
+                .hover(t.hover)
+                .child(label(symbol, 16.0, 400.0, t.muted))
+                .child(label(title, 13.5, 400.0, t.ink_soft).grow(1.0))
+                .child(chips);
+            if index == 0 {
+                action = action.on_press_tx(move |s: &mut AppState, tx| {
+                    s.select_studio_project(project_index);
+                    s.new_studio_thread();
+                    tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                });
+            }
+            let offset = s.chooser_magnet.offsets[index];
+            let active = s.chooser_magnet.active[index];
+            actions =
+                actions.child(
+                    el().w_full()
+                        .on_layout(move |s: &mut AppState, bounds| {
+                            s.chooser_magnet.bounds[index] = bounds
+                        })
+                        .child(action.offset(offset[0], offset[1]).offset_motion(
+                            rune::Curve::tween(if active { 0.35 } else { 0.6 }, super::empty::EASE),
+                        )),
+                );
+        }
+        el().w_full()
+            .grow(1.0)
+            .on_pointer_move_local(|s: &mut AppState, p, tx| {
+                if !s.chooser_magnet.pointer_move(p.window_x, p.window_y, false) {
+                    tx.live_only();
+                }
+            })
+            .child(crate::plasma::slot(s, cx, 1.0))
+            .child(
+                col().w_full().h_full().center().child(
                     col()
-                        .w(176.0)
-                        .h(98.0)
-                        .radius(12.0)
-                        .fill(t.folder)
-                        .justify_end()
-                        .padding(14.0)
-                        .child(label(project.name.clone(), 14.0, 600.0, t.accent_ink)),
-                )
-                .child(label(parent.to_owned(), 12.0, 450.0, t.muted))
-                .child(el().h(10.0))
-                .child(
-                    row()
-                        .key("studio-new-thread")
-                        .w_full()
-                        .h(40.0)
-                        .px(11.0)
-                        .gap(10.0)
-                        .center_y()
-                        .radius(12.0)
-                        .hover(t.hover)
-                        .child(label("◯", 16.0, 500.0, t.muted))
-                        .child(label("New thread", 13.5, 500.0, t.ink_soft).grow(1.0))
-                        .child(label("⌘ N", 11.0, 500.0, t.muted))
-                        .on_press_tx(move |s: &mut AppState, tx| {
-                            s.select_studio_project(project_index);
-                            s.new_studio_thread();
-                            tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
-                        }),
+                        .w(256.0)
+                        .items_center()
+                        .child(
+                            super::projects::folder_with_git(&project.name, t, &summary).scale(0.9),
+                        )
+                        .child(el().h(9.6))
+                        .child(label(parent.to_owned(), 12.0, 400.0, t.muted))
+                        .child(el().h(20.0))
+                        .child(actions),
                 ),
-        )
+            )
     } else {
         col()
             .key(format!("studio-rail-{path}"))
@@ -477,7 +546,7 @@ fn studio_row(
         .child(content)
 }
 
-fn parked_body(state: &StudioState, id: &str, t: Palette) -> El {
+fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
         if item.text.is_empty() && item.name.is_empty() {
@@ -493,6 +562,13 @@ fn parked_body(state: &StudioState, id: &str, t: Palette) -> El {
             line = line.padding(14.0).radius(14.0).fill(t.hover);
         }
         transcript = transcript.child(line);
+    }
+    if state.items.is_empty() {
+        transcript = transcript.child(el().w_full().h(580.0).child(crate::codegolf::slot(
+            mark,
+            false,
+            [0.851, 0.475, 0.341, 0.06],
+        )));
     }
     col()
         .key(format!("studio-parked-{id}"))
@@ -525,7 +601,7 @@ fn resting_orb(t: Palette) -> El {
         )
 }
 
-fn focused_body(s: &AppState, name: &str, t: Palette) -> El {
+fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     let dock =
         if let Some(approval) = &s.studio.approval {
             col()
@@ -941,6 +1017,15 @@ fn focused_body(s: &AppState, name: &str, t: Palette) -> El {
     if let Some(error) = &s.studio.error {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
+    let art = if s.studio.items.is_empty() {
+        el().w_full().h(580.0).center().child(crate::codegolf::slot(
+            mark,
+            s.art_focused,
+            [0.851, 0.475, 0.341, 0.06],
+        ))
+    } else {
+        el()
+    };
     col()
         .w_full()
         .grow(1.0)
@@ -952,6 +1037,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette) -> El {
                 .grow(1.0)
                 .shrink()
                 .scroll(ScrollSpec { stick_bottom: true })
+                .child(art)
                 .child(transcript),
         )
         .child(row().w_full().px(16.0).justify_center().child(dock))

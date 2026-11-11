@@ -1,5 +1,4 @@
 mod bridge;
-#[allow(dead_code)]
 #[path = "art/codegolf.rs"]
 mod codegolf;
 mod launcher;
@@ -92,6 +91,12 @@ fn main() {
                 s.page = Page::Overview;
             }),
             ("studio-review", studio_review),
+            ("studio-bare-board", |s| {
+                studio_review(s);
+                s.projects[0].path = "/review/kone".into();
+                s.studio_layout["rows"][0]["projectPath"] = serde_json::json!("/review/kone");
+                s.studio_layout["rows"][0]["panes"] = serde_json::json!([]);
+            }),
             ("studio-solo-review", |s| {
                 studio_review(s);
                 s.studio.composer_open = false;

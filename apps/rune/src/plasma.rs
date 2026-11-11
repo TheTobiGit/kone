@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub struct Plasma {
     device: Option<DeviceKey>,
     pipelines: HashMap<wgpu::TextureFormat, Pipeline>,
+    codegolf: crate::codegolf::CodeGolf,
 }
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
@@ -89,11 +90,18 @@ impl Compositor<AppState> for Plasma {
             self.pipelines.clear();
             self.device = Some(key);
         }
+        self.codegolf.begin_frame(key, f.dt, f.rt.state.art_focused);
         let clear = f.rt.clear_color();
         let time = f.rt.t as f32;
         let (device, queue) = (f.device, f.queue);
         f.ui.prepare(device, queue, &mut f.rt.text.atlas, &f.rt.instances, f.size);
         f.ui.draw_with(f.encoder, f.target, clear, &mut |pass, site| {
+            if site.mark >= crate::codegolf::MARK_BASE
+                && site.mark < crate::codegolf::MARK_BASE + 65536
+            {
+                self.codegolf.draw(device, queue, pass, site);
+                return;
+            }
             if site.mark != 0x504c {
                 return;
             }
