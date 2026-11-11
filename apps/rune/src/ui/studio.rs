@@ -169,7 +169,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             s, &empty, index, true, viewport_w, viewport_h, t,
         ));
     }
-    col()
+    let plane = col()
         .key("studio-plane")
         .w_full()
         .h_full()
@@ -186,7 +186,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 }
             }
         })
-        .child(plane)
+        .child(plane);
+    if s.studio_refusal.is_some() {
+        plane.child(el().pin(None, Some(0.0), Some(34.0), Some(0.0)).center().child(
+            label("A column can’t cross the vertical axis — a row is a project, and a thread is bound to its repo.", 12.5, 400.0, t.muted)
+        ))
+    } else {
+        plane
+    }
 }
 
 fn studio_row(

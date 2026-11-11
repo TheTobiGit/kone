@@ -92,6 +92,13 @@ fn main() {
                 s.page = Page::Overview;
             }),
             ("studio-review", studio_review),
+            ("studio-solo-review", |s| {
+                studio_review(s);
+                s.studio.composer_open = false;
+                if let Some(panes) = s.studio_layout["rows"][0]["panes"].as_array_mut() {
+                    panes.truncate(1);
+                }
+            }),
             ("projects-review", |s| review::populate(s, Page::Projects)),
             ("projects-skeletons", |s| {
                 review::populate(s, Page::Projects);
@@ -340,15 +347,16 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
             return true;
         }
     }
+    if s.page == Page::Studio
+        && event.key == rune::Key::Escape
+        && AppState::studio_key(s, event, tx)
+    {
+        return true;
+    }
     if event.is_command('b') || (s.page == Page::Studio && event.key == rune::Key::Escape) {
         if s.page == Page::Studio {
-            s.page = if s.selected_project.is_some() {
-                Page::Overview
-            } else if s.projects.is_empty() {
-                Page::Empty
-            } else {
-                Page::Projects
-            };
+            s.page = s.studio_under_page;
+            s.studio_fade = Some((std::time::Instant::now(), false));
         } else {
             s.enter_studio();
         }

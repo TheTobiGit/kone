@@ -13,14 +13,31 @@ use crate::state::{AppState, Page};
 use rune::{Cx, El, el};
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
-    let page = match s.page {
+    let under = if s.page == Page::Studio {
+        s.studio_under_page
+    } else {
+        s.page
+    };
+    let page = match under {
         Page::Empty => empty::view(s, cx),
         Page::Projects => projects::view(s, cx),
         Page::Overview => overview::view(s, cx),
         Page::Studio => studio::view(s, cx),
     };
     let t = crate::theme::Palette::new(cx.system_dark());
-    let stage = el().w_full().h_full().child(page);
+    let mut stage = el().w_full().h_full().child(page);
+    if s.page == Page::Studio || s.studio_fade.is_some_and(|(_, opening)| !opening) {
+        let opacity = s.studio_fade.map_or(1.0, |(at, opening)| {
+            let x = (at.elapsed().as_secs_f32() / 0.22).clamp(0.0, 1.0);
+            let eased = x * x * (3.0 - 2.0 * x);
+            if opening { eased } else { 1.0 - eased }
+        });
+        stage = stage.child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .opacity(opacity)
+                .child(studio::view(s, cx)),
+        );
+    }
     let stage = if s.page == Page::Overview {
         if let Some(pills) = pills::view(s, t) {
             stage.child(pills)

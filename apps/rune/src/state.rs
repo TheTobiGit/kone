@@ -95,6 +95,9 @@ pub struct AppState {
     pub studio_layout_ready: bool,
     pub studio_viewport: (f32, f32),
     pub studio_scroll_row: Option<String>,
+    pub studio_under_page: Page,
+    pub studio_fade: Option<(std::time::Instant, bool)>,
+    pub studio_refusal: Option<std::time::Instant>,
 }
 
 impl AppState {
@@ -267,6 +270,21 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        let animating = s
+            .studio_fade
+            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() < 0.22)
+            || s.studio_refusal
+                .is_some_and(|at| at.elapsed().as_secs_f32() < 2.8);
+        if s.studio_fade
+            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= 0.22)
+        {
+            s.studio_fade = None;
+        }
+        if s.studio_refusal
+            .is_some_and(|at| at.elapsed().as_secs_f32() >= 2.8)
+        {
+            s.studio_refusal = None;
+        }
         let recent_sessions = if s.page == Page::Overview {
             &s.project_data.sessions
         } else {
@@ -301,6 +319,7 @@ impl AppState {
         }
         s.sync_project_watches();
         changed
+            || animating
             || start
             || launcher
             || lazy
@@ -352,7 +371,6 @@ impl AppState {
 
     pub fn enter_studio(&mut self) {
         let opening = self.page != Page::Studio;
-        self.page = Page::Studio;
         let saved_paths: Vec<String> = self.studio_layout["rows"]
             .as_array()
             .into_iter()
@@ -375,6 +393,9 @@ impl AppState {
                     .iter()
                     .position(|project| project.path == path)
             });
+            if self.selected_project.is_none() && !self.projects.is_empty() {
+                self.selected_project = Some(0);
+            }
         }
         let Some(path) = self
             .selected_project
@@ -384,8 +405,11 @@ impl AppState {
             return;
         };
         if opening {
+            self.studio_under_page = self.page;
+            self.studio_fade = Some((std::time::Instant::now(), true));
             self.studio_scroll_row = Some(path.clone());
         }
+        self.page = Page::Studio;
         if self.studio.project_path != path {
             self.park_studio_thread();
             self.studio.project_path = path.clone();
@@ -477,6 +501,13 @@ impl AppState {
         }
         if !event.mods.cmd {
             return false;
+        }
+        if event.mods.alt
+            && event.mods.shift
+            && matches!(event.key, rune::Key::Up | rune::Key::Down)
+        {
+            s.studio_refusal = Some(std::time::Instant::now());
+            return true;
         }
         if event.key == rune::Key::Command('n') && !event.mods.shift && !event.mods.alt {
             s.new_studio_thread();
