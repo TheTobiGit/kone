@@ -166,6 +166,7 @@ pub struct StudioState {
     pub turn_started: Option<std::time::SystemTime>,
     pub turn_dismissed: bool,
     pub turn_seen: bool,
+    pub turn_interrupted: bool,
     pub turn_title: String,
     pub pending_send: Option<String>,
     pub start_request: Option<u64>,
@@ -213,6 +214,8 @@ pub struct StudioItem {
     pub kind: String,
     pub text: String,
     pub name: String,
+    pub status: String,
+    pub tasks: Vec<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -849,6 +852,7 @@ impl AppState {
         self.studio.turn_started = Some(std::time::SystemTime::now());
         self.studio.turn_dismissed = false;
         self.studio.turn_seen = false;
+        self.studio.turn_interrupted = false;
         if self.studio.turn_title.is_empty() {
             self.studio.turn_title = input.clone();
         }
@@ -858,6 +862,7 @@ impl AppState {
             kind: "user".into(),
             text: input.clone(),
             name: String::new(),
+            ..Default::default()
         });
         tx.scroll_to_bottom("studio-transcript");
         if self.studio.started {
@@ -1025,6 +1030,7 @@ impl AppState {
                             kind: "user".into(),
                             text: block["text"].as_str().unwrap_or("").to_owned(),
                             name: String::new(),
+                            ..Default::default()
                         });
                     } else {
                         for item in block["items"].as_array().into_iter().flatten() {
@@ -1033,6 +1039,8 @@ impl AppState {
                                 kind: item["kind"].as_str().unwrap_or("").to_owned(),
                                 text: item["text"].as_str().unwrap_or("").to_owned(),
                                 name: item["name"].as_str().unwrap_or("").to_owned(),
+                                status: item["status"].as_str().unwrap_or("").to_owned(),
+                                tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
                             });
                         }
                     }
@@ -1225,6 +1233,15 @@ impl AppState {
                     kind: item["kind"].as_str().unwrap_or("").to_owned(),
                     text: item["text"].as_str().unwrap_or("").to_owned(),
                     name: item["name"].as_str().unwrap_or("").to_owned(),
+                    status: item["status"]
+                        .as_str()
+                        .unwrap_or(if event["type"] == "item.completed" {
+                            "completed"
+                        } else {
+                            "in-progress"
+                        })
+                        .to_owned(),
+                    tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
                 };
                 if let Some(existing) = self.studio.items.iter_mut().find(|i| i.id == id) {
                     *existing = value;
@@ -1275,6 +1292,7 @@ impl AppState {
             }
             "user-input.resolved" => self.studio.question = None,
             "turn.completed" | "turn.aborted" | "session.exited" => {
+                self.studio.turn_interrupted = event["type"] == "turn.aborted";
                 self.studio.busy = false;
                 if self.page == Page::Studio {
                     self.studio.turn_seen = true;

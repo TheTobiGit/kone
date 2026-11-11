@@ -225,6 +225,21 @@ pub fn overview_pills(s: &mut AppState) {
     s.studio.turn_title = "Build the overview".into();
     s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(72));
     s.studio.busy = true;
+    s.studio.items.push(crate::state::StudioItem {
+        id: "plan".into(),
+        kind: "plan_text".into(),
+        status: "completed".into(),
+        text: "- [x] Inspect the source\n- [/] Wire the pill stack\n- [ ] Verify the result".into(),
+        ..Default::default()
+    });
+    s.studio.items.push(crate::state::StudioItem {
+        id: "tool".into(),
+        kind: "tool_call".into(),
+        status: "in-progress".into(),
+        name: "read_file".into(),
+        text: "useAgent.ts".into(),
+        ..Default::default()
+    });
     let settled = crate::state::StudioState {
         thread_id: "settled".into(),
         turn_title: "Review the changes".into(),

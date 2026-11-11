@@ -1122,6 +1122,7 @@ mod tests {
             kind: "assistant_text".into(),
             text: "first response".into(),
             name: String::new(),
+            ..Default::default()
         });
         s.studio_threads.insert(
             "b".into(),
@@ -1134,6 +1135,7 @@ mod tests {
                     kind: "assistant_text".into(),
                     text: "background response".into(),
                     name: String::new(),
+                    ..Default::default()
                 }],
                 ..Default::default()
             },
