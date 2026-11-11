@@ -188,6 +188,15 @@ pub fn populate(s: &mut AppState, page: Page) {
 pub fn overview_greeting(s: &mut AppState, variant: &str) {
     populate(s, Page::Overview);
     let changes = match variant {
+        "cards" => json!([
+            {"path":"src/main.rs", "added":42, "removed":12, "staged":true},
+            {"path":"README.md", "added":8, "removed":3, "modifiedAt":6, "staged":false},
+            {"path":"app.ts", "added":12, "removed":0, "modifiedAt":5, "status":"added", "staged":false},
+            {"path":"empty.css", "added":0, "removed":0, "modifiedAt":4, "status":"untracked", "staged":false},
+            {"path":"old.js", "added":0, "removed":9, "modifiedAt":3, "status":"deleted", "staged":false},
+            {"path":"other.md", "added":4, "removed":1, "modifiedAt":2, "staged":false},
+            {"path":"last.json", "added":2, "removed":0, "modifiedAt":1, "staged":false}
+        ]),
         "dirty" | "fresh-dirty" => json!([
             {"path":"src/main.rs", "added":42, "removed":12, "staged":true},
             {"path":"README.md", "added":8, "removed":3, "staged":false}

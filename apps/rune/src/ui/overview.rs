@@ -1312,19 +1312,17 @@ fn changes_panel(
                 items.len()
             };
             let mut grid = col().gap(14.0).pt(15.0).pb(6.0);
-            for chunk in items[..visible].chunks(cols) {
+            let slots = visible + usize::from(visible < items.len());
+            for start in (0..slots).step_by(cols) {
                 let mut r = row().gap(14.0);
-                for item in chunk {
-                    r = r.child(change_card(item, t));
+                for index in start..(start + cols).min(slots) {
+                    if index < visible {
+                        r = r.child(change_card(items[index], t, elapsed, s));
+                    } else {
+                        r = r.child(change_bundle(items.len() - visible, t, s, is_staged));
+                    }
                 }
                 grid = grid.child(r);
-            }
-            if visible < items.len() {
-                grid = grid.child(
-                    text(format!("+{} more", items.len() - visible))
-                        .font(TextStyle::new(11.0, 400.0))
-                        .color(t.muted),
-                );
             }
             lane = lane.child(grid);
         }
@@ -1333,15 +1331,24 @@ fn changes_panel(
     panel
 }
 
-fn change_card(item: &serde_json::Value, t: Palette) -> El {
+fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState) -> El {
     let path = item["path"].as_str().unwrap_or("");
     let name = path.rsplit('/').next().unwrap_or(path);
     let added = item["added"].as_i64().unwrap_or(0);
     let removed = item["removed"].as_i64().unwrap_or(0);
+    let status = item["status"].as_str().unwrap_or("");
+    let is_new =
+        matches!(status, "added" | "untracked") || item["isNew"].as_bool().unwrap_or(false);
+    let deleted = status == "deleted" || item["deleted"].as_bool().unwrap_or(false);
+    let empty = is_new && added == 0 && removed == 0;
+    let key = format!("card:{path}:{}", item["staged"]);
+    let hovered = s.change_tile_hover.as_deref() == Some(&key);
     let green = rune::color::hex("#059669").unwrap();
     let red = rune::color::hex("#e11d48").unwrap();
     let seed: usize = name.encode_utf16().map(usize::from).sum();
-    let marks: Vec<(i32, Color)> = if added > 0 && removed > 0 {
+    let marks: Vec<(i32, Color)> = if deleted {
+        vec![(40, red), (24, red), (20, t.muted)]
+    } else if added > 0 && removed > 0 {
         vec![(40, t.muted), (24, red), (32, green), (20, t.muted)]
     } else if added > 0 {
         vec![(38, green), (26, green), (20, t.muted)]
@@ -1353,33 +1360,88 @@ fn change_card(item: &serde_json::Value, t: Palette) -> El {
     let mut sketch = col().gap(4.5);
     for (i, (w, c)) in marks.iter().enumerate() {
         sketch = sketch.child(
-            el().size((*w + ((seed + i * 7) % 9) as i32 - 4) as f32, 3.5)
-                .radius(2.0)
-                .fill(*c),
+            el().size(
+                (*w + if deleted {
+                    0
+                } else {
+                    ((seed + i * 7) % 9) as i32 - 4
+                }) as f32,
+                3.5,
+            )
+            .radius(2.0)
+            .fill(*c),
         );
     }
     let mut foot = row().gap(7.0);
     if added > 0 {
         foot = foot.child(
-            text(format!("+{added}"))
+            text(format!("+{}", count_up(added, elapsed, 0.7)))
                 .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
                 .color(green),
         );
     }
     if removed > 0 {
         foot = foot.child(
-            text(format!("−{removed}"))
+            text(format!("−{}", count_up(removed, elapsed, 0.7)))
                 .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
                 .color(red),
         );
     }
-    col()
+    if empty {
+        foot = foot.child(
+            text("empty")
+                .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
+                .color(t.faint),
+        );
+        sketch = row().gap(2.0);
+        for _ in 0..8 {
+            sketch = sketch.child(el().size(3.5, 1.5).fill(t.line_soft));
+        }
+    }
+    let mut footer = row().w_full().justify_between().child(foot);
+    if is_new && !empty {
+        footer = footer.child(
+            text("new")
+                .font(
+                    TextStyle::new(10.0, 400.0)
+                        .family(rune::Family::Mono)
+                        .tracking(0.3),
+                )
+                .color(t.muted),
+        );
+    }
+    let mut card = col()
         .w(158.0)
         .h(178.0)
         .padding(15.0)
         .radius(12.0)
-        .border(1.0, t.line_soft)
-        .fill(t.raised_high)
+        .border(
+            if deleted { 1.5 } else { 1.0 },
+            if deleted {
+                Color::TRANSPARENT
+            } else {
+                t.line_soft
+            },
+        )
+        .fill(if deleted {
+            t.raised_high.alpha(0.45)
+        } else {
+            t.raised_high
+        })
+        .shadow(
+            if hovered { 3.0 } else { 1.0 },
+            if hovered { 8.0 } else { 3.0 },
+            Color::BLACK.alpha(if hovered { 0.05 } else { 0.03 }),
+        )
+        .offset(0.0, if hovered { -6.0 } else { 0.0 })
+        .cursor(Cursor::Pointer)
+        .focusable(true)
+        .focus_ring(2.0, 2.0, t.ink.alpha(0.34))
+        .role("button")
+        .label(name.to_owned())
+        .on_hover_change(move |s: &mut AppState, over, _| {
+            s.change_tile_hover = if over { Some(key.clone()) } else { None };
+        })
         .justify_between()
         .child(
             col()
@@ -1393,11 +1455,149 @@ fn change_card(item: &serde_json::Value, t: Palette) -> El {
                 .child(
                     text(name.to_owned())
                         .font(TextStyle::new(11.0, 400.0).family(rune::Family::Mono))
-                        .color(t.ink)
+                        .color(if deleted { t.muted } else { t.ink })
                         .truncate(),
                 )
-                .child(foot),
-        )
+                .child(footer),
+        );
+    if deleted {
+        for i in 0..24 {
+            let x = 7.0 + i as f32 * 6.0;
+            card = card.child(el().size(3.0, 1.5).fill(red).absolute(x, 0.0));
+            card = card.child(el().size(3.0, 1.5).fill(red).absolute(x, 176.5));
+        }
+        for i in 0..27 {
+            let y = 8.0 + i as f32 * 6.0;
+            card = card.child(el().size(1.5, 3.0).fill(red).absolute(0.0, y));
+            card = card.child(el().size(1.5, 3.0).fill(red).absolute(156.5, y));
+        }
+        card = card.child(
+            el().size((name.chars().count() as f32 * 6.6).min(126.0), 1.0)
+                .fill(t.muted)
+                .absolute(16.0, 132.0),
+        );
+    }
+    card
+}
+
+fn change_bundle(count: usize, t: Palette, s: &AppState, staged: bool) -> El {
+    let key = format!("bundle:{staged}");
+    let hovered = s.change_tile_hover.as_deref() == Some(&key);
+    let green = rune::color::hex("#059669").unwrap();
+    let red = rune::color::hex("#e11d48").unwrap();
+    let cards = [
+        (
+            "TS",
+            "#3178c6",
+            "#ffffff",
+            10.0,
+            4.0,
+            -13.0,
+            [42.0, 30.0, 36.0],
+            [t.faint, green, t.faint],
+        ),
+        (
+            "JS",
+            "#f7df1e",
+            "#1a1a1a",
+            24.0,
+            0.0,
+            -4.0,
+            [40.0, 28.0, 34.0],
+            [t.faint, red, t.faint],
+        ),
+        (
+            "MD",
+            "#64748b",
+            "#ffffff",
+            38.0,
+            0.0,
+            5.0,
+            [44.0, 32.0, 38.0],
+            [green, green, green.alpha(0.6)],
+        ),
+        (
+            "CSS",
+            "#1572b6",
+            "#ffffff",
+            34.0,
+            6.0,
+            14.0,
+            [42.0, 30.0, 36.0],
+            [t.faint, t.faint, t.faint],
+        ),
+    ];
+    let mut inner = el().size(132.0, 138.0);
+    for (i, (badge, bg, fg, x, y, angle, widths, colors)) in cards.into_iter().enumerate() {
+        let mut lines = col().gap(4.0);
+        for j in 0..3 {
+            lines = lines.child(el().size(widths[j], 3.0).radius(2.0).fill(colors[j]));
+        }
+        let theta: f32 = angle * if hovered { 1.7 } else { 1.0 } * std::f32::consts::PI / 180.0;
+        let paper = col()
+            .size(80.0, 100.0)
+            .padding(11.0)
+            .gap(9.0)
+            .radius(10.0)
+            .border(1.0, t.line_soft)
+            .fill(t.raised_high)
+            .shadow(
+                if i == 3 { 2.0 } else { 1.0 },
+                if i == 3 { 6.0 } else { 4.0 },
+                Color::BLACK.alpha(if i == 3 { 0.05 } else { 0.03 }),
+            )
+            .child(
+                el().size(14.0, 14.0)
+                    .radius(4.0)
+                    .fill(rune::color::hex(bg).unwrap())
+                    .center()
+                    .child(
+                        text(badge)
+                            .font(TextStyle::new(if i == 3 { 6.0 } else { 7.0 }, 400.0))
+                            .color(rune::color::hex(fg).unwrap()),
+                    ),
+            )
+            .child(lines)
+            .rotate(theta)
+            .offset(50.0 * theta.sin(), 50.0 * (1.0 - theta.cos()))
+            .absolute(x, y);
+        inner = inner.child(paper);
+    }
+    inner = inner.child(
+        row()
+            .center_y()
+            .gap(5.0)
+            .px(10.0)
+            .h(22.0)
+            .radius(11.0)
+            .fill(t.ink)
+            .shadow(2.0, 6.0, Color::BLACK.alpha(0.16))
+            .child(
+                text(format!("+{count}"))
+                    .font(TextStyle::new(11.0, 400.0).family(rune::Family::Mono))
+                    .color(t.ground),
+            )
+            .child(
+                text("more")
+                    .font(TextStyle::new(10.0, 400.0))
+                    .color(t.ground.alpha(0.78)),
+            )
+            .absolute(
+                (132.0 - (52.0 + count.to_string().len() as f32 * 6.6)) / 2.0,
+                112.0,
+            ),
+    );
+    el().size(158.0, 178.0)
+        .center()
+        .cursor(Cursor::Pointer)
+        .focusable(true)
+        .focus_ring(2.0, 0.0, t.ink.alpha(0.28))
+        .role("button")
+        .label(format!("{count} more"))
+        .on_hover_change(move |s: &mut AppState, over, _| {
+            s.change_tile_hover = if over { Some(key.clone()) } else { None };
+        })
+        .child(inner)
 }
 
 fn count_up(value: i64, elapsed: f32, duration: f32) -> i64 {

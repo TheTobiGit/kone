@@ -173,6 +173,7 @@ fn main() {
             }),
             ("overview-clean", |s| review::overview_greeting(s, "clean")),
             ("overview-dirty", |s| review::overview_greeting(s, "dirty")),
+            ("overview-cards", |s| review::overview_greeting(s, "cards")),
             ("overview-staged", |s| {
                 review::overview_greeting(s, "staged")
             }),
