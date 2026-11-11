@@ -92,6 +92,10 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
+            ("studio-column-head-hover", |s| {
+                studio_column_head(s);
+                s.studio_column_hover = Some("review-one".into());
+            }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);
                 s.studio.handoff_source = Some("claudeAgent".into());

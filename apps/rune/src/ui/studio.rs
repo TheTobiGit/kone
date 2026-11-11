@@ -21,6 +21,22 @@ static CLOSE: Icon = Icon {
     body: r#"<path d="M18 6L6.00081 17.9992M17.9992 18L6 6.00085" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
+static SIDE_CHAT: Icon = Icon {
+    name: "studio-side-chat",
+    view: 24.0,
+    body: r#"<path d="M8 10.5h8M8 14h5.5M17 3.338A9.95 9.95 0 0 0 12 2C6.477 2 2 6.477 2 12c0 1.6.376 3.112 1.043 4.453c.178.356.237.763.134 1.148l-.595 2.226a1.3 1.3 0 0 0 1.591 1.592l2.226-.596a1.63 1.63 0 0 1 1.149.133A9.96 9.96 0 0 0 12 22c5.523 0 10-4.477 10-10c0-1.821-.487-3.53-1.338-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static HANDOFF: Icon = Icon {
+    name: "studio-handoff",
+    view: 24.0,
+    body: r#"<path d="M16.9767 19.5C19.4017 17.8876 21 15.1305 21 12C21 7.02944 16.9706 3 12 3C11.3126 3 10.6432 3.07706 10 3.22302M16.9767 19.5V16M16.9767 19.5H20.5M7 4.51555C4.58803 6.13007 3 8.87958 3 12C3 16.9706 7.02944 21 12 21C12.6874 21 13.3568 20.9229 14 20.777M7 4.51555V8M7 4.51555H3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ARCHIVE: Icon = Icon {
+    name: "studio-archive",
+    view: 24.0,
+    body: r#"<path d="M7 21H17C19.357 21 20.535 21 21.268 20.268C22 19.535 22 18.357 22 16S22 12.465 21.268 11.732C20.535 11 19.357 11 17 11H7C4.643 11 3.465 11 2.732 11.732C2 12.465 2 13.643 2 16S2 19.535 2.732 20.268C3.465 21 4.643 21 7 21ZM4 11C4 9.6 4 8.9 4.273 8.365C4.512 7.895 4.895 7.512 5.365 7.273C5.9 7 6.6 7 8 7H16C17.4 7 18.1 7 18.635 7.273C19.105 7.512 19.488 7.895 19.727 8.365C20 8.9 20 9.6 20 11M6 7C6 5.6 6 4.9 6.273 4.365C6.512 3.895 6.895 3.512 7.365 3.273C7.9 3 8.6 3 10 3H14C15.4 3 16.1 3 16.635 3.273C17.105 3.512 17.488 3.895 17.727 4.365C18 4.9 18 5.6 18 7M16 15L15.7 15.4C15.111 16.185 14.817 16.578 14.394 16.789C13.972 17 13.481 17 12.5 17H11.5C10.519 17 10.028 17 9.606 16.789C9.183 16.578 8.889 16.185 8.3 15.4L8 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static WORKTREE: Icon = Icon {
     name: "studio-worktree",
     view: 10.0,
@@ -325,7 +341,37 @@ fn studio_row(
                 .h(38.0)
                 .center_y()
                 .justify_between()
-                .child(el().w(100.0))
+                .child(
+                    row()
+                        .w(100.0)
+                        .center_y()
+                        .gap(2.0)
+                        .opacity(if show_tools { 1.0 } else { 0.0 })
+                        .child(
+                            el().w(20.0)
+                                .h(20.0)
+                                .center()
+                                .radius(6.0)
+                                .hover(t.hover)
+                                .child(icon(&SIDE_CHAT, 13.0).color(t.muted)),
+                        )
+                        .child(
+                            el().w(20.0)
+                                .h(20.0)
+                                .center()
+                                .radius(6.0)
+                                .hover(t.hover)
+                                .child(icon(&HANDOFF, 13.0).color(t.muted)),
+                        )
+                        .child(
+                            el().w(20.0)
+                                .h(20.0)
+                                .center()
+                                .radius(6.0)
+                                .hover(t.hover)
+                                .child(icon(&ARCHIVE, 13.0).color(t.muted)),
+                        ),
+                )
                 .child(
                     row()
                         .gap(8.0)
