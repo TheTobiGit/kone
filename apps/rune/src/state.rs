@@ -97,6 +97,10 @@ pub struct AppState {
     pub studio_layout_ready: bool,
     pub studio_viewport: (f32, f32),
     pub studio_scroll_row: Option<String>,
+    pub studio_column_hover: Option<String>,
+    pub studio_seam_hover: Option<String>,
+    pub studio_seam_bounds: std::collections::HashMap<String, [f32; 4]>,
+    pub studio_insert_menu: Option<(String, usize, [f32; 4])>,
     pub studio_under_page: Page,
     pub studio_fade: Option<(std::time::Instant, bool)>,
     pub studio_refusal: Option<std::time::Instant>,
@@ -523,11 +527,49 @@ impl AppState {
         }
     }
 
+    /// Center the focused column using the same seam and width geometry as the rail.
+    pub fn center_studio_column(&self, tx: &mut rune::Tx) {
+        let Some(row) = self.studio_layout["rows"].as_array().and_then(|rows| {
+            rows.iter()
+                .find(|row| row["projectPath"] == self.studio.project_path)
+        }) else {
+            return;
+        };
+        let Some(panes) = row["panes"].as_array() else {
+            return;
+        };
+        if panes.len() < 2 {
+            return;
+        }
+        let viewport = self.studio_viewport.0;
+        let mut left = 14.0;
+        for pane in panes {
+            let focused = pane["anchor"]["threadId"] == self.studio.thread_id;
+            let mut width = [840.0_f32, 960.0, 1120.0, 1240.0]
+                [(pane["width"].as_u64().unwrap_or(0) as usize).min(3)]
+            .min(viewport);
+            if focused && pane["zen"].as_bool().unwrap_or(false) {
+                width = viewport;
+            }
+            if focused {
+                tx.scroll_to_x(
+                    format!("studio-rail-{}", self.studio.project_path),
+                    (left + width / 2.0 - viewport / 2.0).max(0.0),
+                );
+                break;
+            }
+            left += width + 14.0;
+        }
+    }
+
     pub fn studio_key(s: &mut Self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
         if s.page != Page::Studio {
             return false;
         }
         if event.key == rune::Key::Escape {
+            if s.studio_insert_menu.take().is_some() {
+                return true;
+            }
             if s.studio.picker_open || s.studio.mode_picker_open || s.studio.effort_picker_open {
                 s.studio.picker_open = false;
                 s.studio.mode_picker_open = false;
@@ -552,18 +594,19 @@ impl AppState {
         }
         if event.key == rune::Key::Command('n') && !event.mods.shift && !event.mods.alt {
             s.new_studio_thread();
-            tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+            s.center_studio_column(tx);
             return true;
         }
         if event.key == rune::Key::Command('r') && event.mods.shift && !event.mods.alt {
             let id = s.studio.thread_id.clone();
             s.cycle_studio_width(&id);
+            s.center_studio_column(tx);
             return true;
         }
         if event.mods.alt && event.key == rune::Key::Enter && !event.mods.shift {
             let id = s.studio.thread_id.clone();
             s.toggle_studio_zen(&id);
-            tx.scroll_into_view(format!("studio-pane-{id}"));
+            s.center_studio_column(tx);
             return true;
         }
         if event.mods.alt
@@ -572,7 +615,7 @@ impl AppState {
         {
             let delta = if event.key == rune::Key::Left { -1 } else { 1 };
             s.move_studio_thread(delta);
-            tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+            s.center_studio_column(tx);
             return true;
         }
         if event.mods.alt
@@ -619,7 +662,7 @@ impl AppState {
             });
             if let Some(id) = next {
                 s.open_studio_thread(id.clone());
-                tx.scroll_into_view(format!("studio-pane-{id}"));
+                s.center_studio_column(tx);
             }
             return true;
         }

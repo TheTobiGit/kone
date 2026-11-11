@@ -194,7 +194,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             if let Some(path) = s.studio_scroll_row.take() {
                 tx.scroll_into_view(format!("studio-row-slot-{path}"));
                 if !s.studio.thread_id.is_empty() {
-                    tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                    s.center_studio_column(tx);
                 }
             }
         })
@@ -224,7 +224,19 @@ fn studio_row(
     let mut rail = row().h_full();
     let count = panes.map_or(0, Vec::len);
     if count == 1 {
-        rail = rail.w_full().justify_center();
+        let pane = &panes.unwrap()[0];
+        let width = [840.0_f32, 960.0, 1120.0, 1240.0]
+            [(pane["width"].as_u64().unwrap_or(0) as usize).min(3)]
+        .min(viewport_w);
+        let width = if pane["zen"].as_bool().unwrap_or(false) {
+            viewport_w
+        } else {
+            width
+        };
+        rail = rail.child(
+            el().w(((viewport_w - width) / 2.0 - 14.0).max(0.0))
+                .h_full(),
+        );
     }
     if let Some(panes) = panes {
         for (i, pane) in panes.iter().enumerate() {
@@ -265,6 +277,8 @@ fn studio_row(
                         .collect::<String>()
                 })
                 .unwrap_or_else(|| "New thread".into());
+            let hover_id = id.clone();
+            let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str());
             let head = row()
                 .w_full()
                 .h(38.0)
@@ -279,12 +293,13 @@ fn studio_row(
                         .child(label(
                             title,
                             13.5,
-                            620.0,
+                            400.0,
                             if focused { t.ink } else { t.muted },
                         )),
                 )
                 .child(
                     row()
+                        .opacity(if show_tools { 1.0 } else { 0.0 })
                         .w(100.0)
                         .justify_end()
                         .center_y()
@@ -306,10 +321,11 @@ fn studio_row(
                                     600.0,
                                     t.muted,
                                 ))
-                                .on_press(move |s: &mut AppState| {
+                                .on_press_tx(move |s: &mut AppState, tx| {
                                     s.select_studio_project(project_index);
                                     s.open_studio_thread(width_id.clone());
                                     s.cycle_studio_width(&width_id);
+                                    s.center_studio_column(tx);
                                 }),
                         )
                         .child(
@@ -326,7 +342,7 @@ fn studio_row(
                                     s.select_studio_project(project_index);
                                     s.open_studio_thread(zen_id.clone());
                                     s.toggle_studio_zen(&zen_id);
-                                    tx.scroll_into_view(format!("studio-pane-{zen_id}"));
+                                    s.center_studio_column(tx);
                                 }),
                         )
                         .child(
@@ -361,16 +377,39 @@ fn studio_row(
                 col().w_full().grow(1.0)
             };
             if i == 0 {
+                let seam_key = format!("{path}-0");
+                let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str());
+                let layout_key = seam_key.clone();
+                let press_key = seam_key.clone();
+                let menu_path = path.clone();
                 rail = rail.child(
                     el().key(format!("studio-seam-{path}-0"))
                         .w(14.0)
-                        .h_full()
+                        .h(28.0)
+                        .self_center()
                         .center()
-                        .child(el().w(5.0).h(18.0).radius(3.0).fill(t.ink.alpha(0.32)))
-                        .on_press_tx(move |s: &mut AppState, tx| {
-                            s.select_studio_project(project_index);
-                            s.insert_studio_thread(0);
-                            tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                        .on_layout(move |s: &mut AppState, bounds| {
+                            s.studio_seam_bounds.insert(layout_key.clone(), bounds);
+                        })
+                        .on_hover_change(move |s: &mut AppState, over, _| {
+                            if over {
+                                s.studio_seam_hover = Some(seam_key.clone());
+                            } else if s.studio_seam_hover.as_deref() == Some(seam_key.as_str()) {
+                                s.studio_seam_hover = None;
+                            }
+                        })
+                        .child(
+                            el().w(5.0)
+                                .h(if hovered { 19.44 } else { 18.0 })
+                                .radius(3.0)
+                                .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
+                        )
+                        .on_press(move |s: &mut AppState| {
+                            s.studio_insert_menu = s
+                                .studio_seam_bounds
+                                .get(&press_key)
+                                .copied()
+                                .map(|b| (menu_path.clone(), 0, b));
                         }),
                 );
             }
@@ -379,36 +418,74 @@ fn studio_row(
                     .key(format!("studio-pane-{id}"))
                     .w(width)
                     .h_full()
+                    .opacity(if focused {
+                        1.0
+                    } else if show_tools {
+                        0.52
+                    } else {
+                        0.34
+                    })
+                    .scale(if focused { 1.0 } else { 0.985 })
                     .pt(24.0)
+                    .on_hover_focus_change(move |s: &mut AppState, over, _| {
+                        if over {
+                            s.studio_column_hover = Some(hover_id.clone());
+                        } else if s.studio_column_hover.as_deref() == Some(hover_id.as_str()) {
+                            s.studio_column_hover = None;
+                        }
+                    })
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.select_studio_project(project_index);
                         s.open_studio_thread(focus_id.clone());
                         tx.scroll_into_view(format!("studio-row-slot-{project_path}"));
-                        tx.scroll_into_view(format!("studio-pane-{focus_id}"));
+                        s.center_studio_column(tx);
                     })
                     .child(head)
                     .child(body),
             );
+            let seam_key = format!("{path}-{}", i + 1);
+            let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str());
+            let layout_key = seam_key.clone();
+            let press_key = seam_key.clone();
+            let menu_path = path.clone();
             rail = rail.child(
                 el().key(format!("studio-seam-{path}-{}", i + 1))
                     .w(14.0)
-                    .h_full()
+                    .h(28.0)
+                    .self_center()
                     .center()
-                    .child(el().w(5.0).h(18.0).radius(3.0).fill(t.ink.alpha(0.32)))
-                    .on_press_tx(move |s: &mut AppState, tx| {
-                        s.select_studio_project(project_index);
-                        s.insert_studio_thread(i + 1);
-                        tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                    .on_layout(move |s: &mut AppState, bounds| {
+                        s.studio_seam_bounds.insert(layout_key.clone(), bounds);
+                    })
+                    .on_hover_change(move |s: &mut AppState, over, _| {
+                        if over {
+                            s.studio_seam_hover = Some(seam_key.clone());
+                        } else if s.studio_seam_hover.as_deref() == Some(seam_key.as_str()) {
+                            s.studio_seam_hover = None;
+                        }
+                    })
+                    .child(
+                        el().w(5.0)
+                            .h(if hovered { 19.44 } else { 18.0 })
+                            .radius(3.0)
+                            .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
+                    )
+                    .on_press(move |s: &mut AppState| {
+                        s.studio_insert_menu = s
+                            .studio_seam_bounds
+                            .get(&press_key)
+                            .copied()
+                            .map(|b| (menu_path.clone(), i + 1, b));
                     }),
             );
         }
         if count > 1 {
-            rail = rail.child(el().w((viewport_w / 2.0 - 420.0).max(0.0)).h_full());
+            rail = rail.child(el().w(viewport_w / 2.0).h_full());
         }
     }
     let mut bar = row().w_full().h(32.0).px(32.0).justify_between().center_y();
     if count > 1 {
-        let mut dashes = row().gap(5.0).center_y();
+        let mut dashes = row().gap(6.0).center_y();
         for pane in panes.into_iter().flatten() {
             if let Some(thread) = pane["anchor"]["threadId"].as_str() {
                 let id = thread.to_owned();
@@ -416,9 +493,9 @@ fn studio_row(
                 dashes = dashes.child(
                     el().key(format!("studio-index-{id}"))
                         .w(if selected_row && id == s.studio.thread_id {
-                            22.0
+                            24.0
                         } else {
-                            14.0
+                            13.0
                         })
                         .h(20.0)
                         .center()
@@ -426,19 +503,24 @@ fn studio_row(
                             if selected_row && id == s.studio.thread_id {
                                 t.ink
                             } else {
-                                t.faint
+                                t.ink.alpha(0.16)
                             },
                         ))
                         .on_press_tx(move |s: &mut AppState, tx| {
                             s.select_studio_project(project_index);
                             s.open_studio_thread(id.clone());
                             tx.scroll_into_view(format!("studio-row-slot-{project_path}"));
-                            tx.scroll_into_view(format!("studio-pane-{id}"));
+                            s.center_studio_column(tx);
                         }),
                 );
             }
         }
-        bar = bar.child(dashes);
+        bar = bar.child(
+            el().pin(Some(17.0), Some(0.0), None, Some(0.0))
+                .h(20.0)
+                .center()
+                .child(dashes),
+        );
     } else {
         bar = bar.child(el().w(24.0));
     }
@@ -490,7 +572,7 @@ fn studio_row(
                 action = action.on_press_tx(move |s: &mut AppState, tx| {
                     s.select_studio_project(project_index);
                     s.new_studio_thread();
-                    tx.scroll_into_view(format!("studio-pane-{}", s.studio.thread_id));
+                    s.center_studio_column(tx);
                 });
             }
             let offset = s.chooser_magnet.offsets[index];
@@ -537,13 +619,62 @@ fn studio_row(
             .scroll_x()
             .child(rail)
     };
-    col()
+    let mut result = col()
         .key(format!("studio-row-slot-{path}"))
         .w_full()
         .h(viewport_h)
         .fill(t.ground)
         .child(bar)
-        .child(content)
+        .child(content);
+    if let Some((menu_path, index, bounds)) = &s.studio_insert_menu
+        && *menu_path == path
+    {
+        let index = *index;
+        let x = if index == 0 {
+            bounds[0] + bounds[2] + 8.0
+        } else {
+            bounds[0] - 192.0
+        };
+        let y = bounds[1] + bounds[3] / 2.0 - 75.0;
+        let mut menu = col().w(184.0).radius(18.0).fill(t.raised).child(
+            el().w_full()
+                .h(38.0)
+                .px(16.0)
+                .center_y()
+                .fill(t.sunken)
+                .child(label("Insert", 13.0, 400.0, t.ink_soft)),
+        );
+        for (row_index, (symbol, title)) in
+            [("◯", "New thread"), ("›_", "Terminal"), ("▤", "Scratchpad")]
+                .into_iter()
+                .enumerate()
+        {
+            let mut action = row()
+                .w_full()
+                .h(32.0)
+                .px(12.0)
+                .gap(8.0)
+                .center_y()
+                .child(label(symbol, 14.0, 400.0, t.muted))
+                .child(label(title, 13.0, 400.0, t.ink_soft).grow(1.0))
+                .child(label("›", 14.0, 400.0, t.muted));
+            if row_index == 0 && !(count == 1 && s.studio.items.is_empty()) {
+                action = action
+                    .hover(t.hover)
+                    .on_press_tx(move |s: &mut AppState, tx| {
+                        s.studio_insert_menu = None;
+                        s.select_studio_project(project_index);
+                        s.insert_studio_thread(index);
+                        s.center_studio_column(tx);
+                    });
+            } else {
+                action = action.opacity(0.38);
+            }
+            menu = menu.child(action);
+        }
+        result = result.child(menu.absolute(x.max(0.0), y.max(0.0)));
+    }
+    result
 }
 
 fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {

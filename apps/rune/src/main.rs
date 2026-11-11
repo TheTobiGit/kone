@@ -91,6 +91,11 @@ fn main() {
                 s.page = Page::Overview;
             }),
             ("studio-review", studio_review),
+            ("studio-three-review", |s| {
+                studio_review(s);
+                s.studio.composer_open = false;
+                s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(serde_json::json!({"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}));
+            }),
             ("studio-bare-board", |s| {
                 studio_review(s);
                 s.projects[0].path = "/review/kone".into();
