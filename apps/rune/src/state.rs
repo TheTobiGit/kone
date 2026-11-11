@@ -83,6 +83,7 @@ pub struct AppState {
     pub search: TextEdit,
     pub composer: TextEdit,
     pub studio: StudioState,
+    pub pill_hover: Option<String>,
     pub studio_threads: std::collections::HashMap<String, StudioState>,
     pub bridge: Option<crate::bridge::Bridge>,
     pub launcher: crate::launcher::LauncherState,
@@ -151,6 +152,10 @@ pub struct StudioState {
     pub history_request: Option<u64>,
     pub started: bool,
     pub busy: bool,
+    pub turn_started: Option<std::time::SystemTime>,
+    pub turn_dismissed: bool,
+    pub turn_seen: bool,
+    pub turn_title: String,
     pub pending_send: Option<String>,
     pub start_request: Option<u64>,
     pub send_request: Option<u64>,
@@ -295,7 +300,13 @@ impl AppState {
             }
         }
         s.sync_project_watches();
-        changed || start || launcher || lazy || icons
+        changed
+            || start
+            || launcher
+            || lazy
+            || icons
+            || (s.page == Page::Overview
+                && (s.studio.busy || s.studio_threads.values().any(|t| t.busy)))
     }
 
     fn park_studio_thread(&mut self) {
@@ -766,6 +777,12 @@ impl AppState {
         }
         self.studio.error = None;
         self.studio.busy = true;
+        self.studio.turn_started = Some(std::time::SystemTime::now());
+        self.studio.turn_dismissed = false;
+        self.studio.turn_seen = false;
+        if self.studio.turn_title.is_empty() {
+            self.studio.turn_title = input.clone();
+        }
         self.composer.clear();
         self.studio.items.push(StudioItem {
             id: format!("user-{}", self.studio.items.len()),
@@ -1188,7 +1205,12 @@ impl AppState {
                 }
             }
             "user-input.resolved" => self.studio.question = None,
-            "turn.completed" | "turn.aborted" | "session.exited" => self.studio.busy = false,
+            "turn.completed" | "turn.aborted" | "session.exited" => {
+                self.studio.busy = false;
+                if self.page == Page::Studio {
+                    self.studio.turn_seen = true;
+                }
+            }
             "session.warning" => self.studio.error = event["message"].as_str().map(str::to_owned),
             _ => {}
         }

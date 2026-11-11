@@ -2,6 +2,7 @@ mod empty;
 mod file_icons;
 mod icon_motion;
 pub(crate) mod overview;
+mod pills;
 mod projects;
 pub(crate) mod start_motion;
 mod studio;
@@ -20,6 +21,15 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     };
     let t = crate::theme::Palette::new(cx.system_dark());
     let stage = el().w_full().h_full().child(page);
+    let stage = if s.page == Page::Overview {
+        if let Some(pills) = pills::view(s, t) {
+            stage.child(pills)
+        } else {
+            stage
+        }
+    } else {
+        stage
+    };
     let stage = if s.launcher.mode.is_some() {
         stage.child(crate::launcher::view(s, cx))
     } else {

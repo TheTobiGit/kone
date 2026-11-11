@@ -218,6 +218,22 @@ pub fn overview_greeting(s: &mut AppState, variant: &str) {
     };
 }
 
+/// Deterministic away-thread examples for parity captures.
+pub fn overview_pills(s: &mut AppState) {
+    populate(s, Page::Overview);
+    s.studio.thread_id = "running".into();
+    s.studio.turn_title = "Build the overview".into();
+    s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(72));
+    s.studio.busy = true;
+    let settled = crate::state::StudioState {
+        thread_id: "settled".into(),
+        turn_title: "Review the changes".into(),
+        turn_started: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(120)),
+        ..Default::default()
+    };
+    s.studio_threads.insert("settled".into(), settled);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

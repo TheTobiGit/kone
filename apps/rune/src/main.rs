@@ -133,6 +133,7 @@ fn main() {
                 });
             }),
             ("overview-review", |s| review::populate(s, Page::Overview)),
+            ("overview-pills", |s| review::overview_pills(s)),
             ("overview-skeletons", |s| {
                 review::populate(s, Page::Overview);
                 s.project_data.sessions.retain(|row| !row.pinned);
