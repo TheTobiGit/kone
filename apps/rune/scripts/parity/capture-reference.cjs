@@ -170,6 +170,11 @@ async function captureStart(page, scene) {
 
 async function captureStudioHead(page, scene) {
   await openStudio(page);
+  if (scene === 'studio-column-head-terminal-live') {
+    await injectTerminalLive(page);
+    await parkPointer(page);
+    return;
+  }
   const meter = {
     'studio-column-head': 40000,
     'studio-column-head-hover': 40000,
@@ -180,24 +185,16 @@ async function captureStudioHead(page, scene) {
     'studio-column-head-meter-open': 40000,
     'studio-column-head-handoff': 40000,
     'studio-column-head-dormant': 40000,
-    'studio-column-head-terminal-live': null,
   }[scene];
   await withThread(page, {
     title: 'Review thread',
     used: meter,
     window: 200000,
-    worktree: scene === 'studio-column-head-handoff' || scene === 'studio-column-head-dormant' || scene.startsWith('studio-column-head-meter') || scene === 'studio-column-head' || scene === 'studio-column-head-hover' || scene === 'studio-column-head-tooltip'
-      ? '/tmp/kone-review-worktree'
-      : undefined,
+    worktree: '/tmp/kone-review-worktree',
     handoff: scene === 'studio-column-head-handoff',
   });
   if (scene === 'studio-column-head-dormant') {
     await injectDormant(page);
-    await parkPointer(page);
-    return;
-  }
-  if (scene === 'studio-column-head-terminal-live') {
-    await injectTerminalLive(page);
     await parkPointer(page);
     return;
   }
