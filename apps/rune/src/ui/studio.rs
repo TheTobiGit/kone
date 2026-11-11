@@ -380,7 +380,7 @@ fn studio_row(
                         .child(provider_mark(state, t))
                         .child(
                             if state.is_some_and(|state| state.worktree_path.is_some()) {
-                                icon(&WORKTREE, 12.0).color(t.muted)
+                                el().w(8.0).child(icon(&WORKTREE, 12.0).color(t.muted))
                             } else {
                                 el().w(0.0)
                             },
