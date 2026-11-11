@@ -115,6 +115,7 @@ pub(crate) fn letter_settle() -> (f32, f32) {
 
 /// A letter `t` seconds into its own (already staggered) enter or exit:
 /// its offset as a fraction of its height, and its opacity.
+#[allow(dead_code)]
 pub(crate) fn letter(t: f32, entering: bool) -> (f32, f32) {
     if entering {
         (spring(t, 1.0, 0.0), spring(t, 0.0, 1.0).clamp(0.0, 1.0))

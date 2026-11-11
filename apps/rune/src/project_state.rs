@@ -137,6 +137,7 @@ pub struct IconHover {
 
 impl IconHover {
     /// Elapsed seconds of the gesture at `key`, or `None` when it is at rest.
+    #[allow(dead_code)]
     pub fn since(&self, key: &str) -> Option<f32> {
         let &(at, len) = self.runs.get(key)?;
         let at = if at == f64::INFINITY { self.clock } else { at };
@@ -145,6 +146,7 @@ impl IconHover {
     }
 
     /// A pointer entered `key`, which plays `len` seconds of gesture.
+    #[allow(dead_code)]
     pub fn enter(&mut self, key: &str, len: f32) {
         if self.since(key).is_some() {
             return;

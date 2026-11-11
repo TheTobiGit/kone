@@ -248,6 +248,7 @@ fn body(kind: usize, t: f32) -> String {
 }
 
 /// Seconds gesture `kind` runs for.
+#[allow(dead_code)]
 pub(crate) fn len(kind: usize) -> f32 {
     LEN[kind]
 }

@@ -24,7 +24,7 @@ static DELETE: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M19.5 5.5L18.8803 15.5251C18.7219 18.0864 18.6428 19.3671 18.0008 20.2879C17.6833 20.7431 17.2747 21.1273 16.8007 21.416C15.8421 22 14.559 22 11.9927 22C9.42312 22 8.1383 22 7.17905 21.4149C6.7048 21.1257 6.296 20.7408 5.97868 20.2848C5.33688 19.3626 5.25945 18.0801 5.10461 15.5152L4.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 5.5H21M16.0557 5.5L15.3731 4.09173C14.9196 3.15626 14.6928 2.68852 14.3017 2.39681C14.215 2.3321 14.1231 2.27454 14.027 2.2247C13.5939 2 13.0741 2 12.0345 2C10.9688 2 10.436 2 9.99568 2.23412C9.8981 2.28601 9.80498 2.3459 9.71729 2.41317C9.32164 2.7167 9.10063 3.20155 8.65861 4.17126L8.05292 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 16.5L9.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 16.5L14.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
-use super::empty::{COLORS_EASE, EASE, SEARCH, actions, rotating_wordmark, settings_button};
+use super::empty::{COLORS_EASE, EASE, SEARCH, actions, settings_button};
 use super::icon_motion;
 use crate::{
     project_state::{ProjectSession, ProjectSort},
@@ -333,14 +333,6 @@ fn profile_chip(s: &AppState, t: Palette) -> Option<El> {
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
     let reduced = cx.is_reduced_motion();
-    // Hover gestures play on the poll clock; reduced motion rests the glyph.
-    let since = |key: &str| {
-        if reduced {
-            None
-        } else {
-            s.project_data.icons.since(key)
-        }
-    };
     let mut trailing = row()
         .center_y()
         .gap(12.0)
@@ -407,12 +399,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     if let Some(chip) = profile_chip(s, t) {
         trailing = trailing.child(chip);
     }
-    let header = row()
-        .w_full()
-        .center_y()
-        .justify_between()
-        .child(rotating_wordmark(t, &s.start_actions))
-        .child(trailing);
+    let header = row().w_full().center_y().justify_end().child(trailing);
     // Electron shows the repository mark while the first status read is pending.
     let loading_summary = serde_json::json!({});
     let mut cells: Vec<El> = s
@@ -441,9 +428,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                           title: &'static str,
                           kind: usize,
                           size: f32,
-                          ink: rune::Color,
-                          key: String| {
-                let elapsed = since(&key);
+                          ink: rune::Color| {
                 el().size(24.0, 24.0)
                     .center()
                     // The source button carries no radius, so its outline is square.
@@ -455,21 +440,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .cursor(rune::Cursor::Pointer)
                     .hover_group()
                     .child(
-                        el().size(size, size)
-                            .center()
-                            .on_hover_change(move |s: &mut AppState, over, _| {
-                                if over {
-                                    s.project_data.icons.enter(&key, icon_motion::len(kind));
-                                }
-                            })
-                            .child(
-                                icon(
-                                    icon_motion::gesture(kind, elapsed),
-                                    size * icon_motion::GLYPH,
-                                )
-                                .color(ink)
-                                .group_color(t.ink),
-                            ),
+                        icon(icon_motion::gesture(kind, None), size * icon_motion::GLYPH)
+                            .color(ink)
+                            .group_color(t.ink),
                     )
             };
             let controls = col()
@@ -496,7 +469,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         },
                         14.0,
                         if pinned { t.ink } else { t.muted },
-                        format!("{path}|pin"),
                     )
                     .on_press(move |s: &mut AppState| s.pin_project(pin_path.clone())),
                 )
@@ -507,7 +479,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         icon_motion::FINDER,
                         15.0,
                         t.muted,
-                        format!("{path}|reveal"),
                     )
                     .on_press(move |s: &mut AppState| s.reveal_project(reveal_path.clone())),
                 )
@@ -518,7 +489,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         icon_motion::CANCEL,
                         14.0,
                         t.muted,
-                        format!("{path}|forget"),
                     )
                     .on_press(move |s: &mut AppState| s.forget_project(forget_path.clone())),
                 );

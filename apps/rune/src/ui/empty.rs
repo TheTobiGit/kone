@@ -67,6 +67,7 @@ fn since(s: &StartActionsState, at: Option<f64>) -> Option<f32> {
     at.map(|at| (s.clock - at) as f32)
 }
 
+#[allow(dead_code)]
 fn fraunces() -> TextStyle {
     TextStyle::new(15.0, REGULAR)
         .lh(17.25)
@@ -75,6 +76,7 @@ fn fraunces() -> TextStyle {
 
 /// `HomeRotatingWordmark`: `make it` and a word that builds the brand up letter
 /// by letter, each letter springing up out of a clip and away above it.
+#[allow(dead_code)]
 pub(super) fn rotating_wordmark(t: Palette, s: &StartActionsState) -> El {
     let elapsed = since(s, s.word_at);
     let (shown, phase) = match (elapsed, s.prev_word) {
