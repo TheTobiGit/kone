@@ -149,11 +149,18 @@ static METER_TRACK: Icon = Icon {
 
 fn meter_arc(percent: usize) -> &'static Icon {
     static ARCS: std::sync::OnceLock<Vec<Icon>> = std::sync::OnceLock::new();
-    &ARCS.get_or_init(|| (0..=100).map(|p| Icon {
-        name: Box::leak(format!("studio-meter-{p}").into_boxed_str()),
-        view: 20.0,
-        body: Box::leak(format!(r#"<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-dasharray="{:.4} 44" transform="rotate(-90 10 10)"/>"#, 44.0 * p as f32 / 100.0).into_boxed_str()),
-    }).collect())[percent.min(100)]
+    &ARCS.get_or_init(|| {
+        (0..=100).map(|p| {
+            let angle = std::f32::consts::TAU * (p.min(99) as f32 / 100.0);
+            let x = 10.0 + 7.0 * angle.sin();
+            let y = 10.0 - 7.0 * angle.cos();
+            Icon {
+                name: Box::leak(format!("studio-meter-{p}").into_boxed_str()),
+                view: 20.0,
+                body: Box::leak(format!(r#"<path d="M10 3 A7 7 0 {} 1 {x:.4} {y:.4}" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/>"#, if p > 50 { 1 } else { 0 }).into_boxed_str()),
+            }
+        }).collect()
+    })[percent.min(100)]
 }
 
 fn context_meter(state: &StudioState, t: Palette) -> El {
@@ -477,7 +484,11 @@ fn studio_row(
                             },
                         )
                         .child(
-                            if state.is_some_and(|state| state.worktree_path.is_some()) {
+                            if state.is_some_and(|state| {
+                                state.worktree_path.is_some()
+                                    && !state.dormant
+                                    && state.terminal_command.is_none()
+                            }) {
                                 el().w(8.0).child(icon(&WORKTREE, 12.0).color(t.muted))
                             } else {
                                 el().w(0.0)
