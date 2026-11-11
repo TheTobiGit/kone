@@ -361,25 +361,21 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             el().w(84.0).h(30.0).center().child(
                 text("Space")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted),
+                    .color(t.muted.alpha(0.4)),
             ),
         )
         .child(
             el().w(84.0).h(30.0).center().child(
                 text("Files")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted),
+                    .color(t.muted.alpha(0.4)),
             ),
         )
         .child(
             el().w(84.0).h(30.0).center().child(
                 text("Git")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(if s.project_data.overview["workingTree"].is_null() {
-                        t.muted.alpha(0.4)
-                    } else {
-                        t.muted
-                    }),
+                    .color(t.muted.alpha(0.4)),
             ),
         );
     let [dx, dy] = s.start_actions.offsets[0];

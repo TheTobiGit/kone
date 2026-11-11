@@ -266,3 +266,10 @@ Both capture commands write `<scene>-<theme>.png` for light and dark at 1292×85
 - Electron-left, Rune-right 2x captures against port 3004: `/workspace/rune-compare/devsync-projects-{light,dark}.png` and `/workspace/rune-compare/devsync-projects-hover-light.png`. The reference server and Rune review fixture use different session rows, identities and times, so those parts of the sheets do not compare equivalent data.
 - Remaining differences: folder shading and text/SVG antialiasing vary slightly; Rune tooltips differ from Chromium's native titles. Existing session fixture differences are visible in these captures. Platform-specific rendering remains unverified.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Dev sync: Overview chrome (devsync-4, 2026-11-11)
+
+- The existing four 84 pt segments and Overview pill match the current reference geometry. Space, Files and Git are inert and dimmed in every project, per the owner preference; the pill remains on Overview because the other surfaces are not ported.
+- Electron-left, Rune-right 2x non-repository captures: `/workspace/rune-compare/devsync-overview-chrome-{light,dark}.png` and `devsync-overview-chrome-hover-{light,dark}.png` (hover over Overview), against port 3004.
+- Differences: Electron displays Space and Files enabled and displays Git enabled in repositories; Rune dims all three. Surrounding non-repository artwork, session identities, and renderer antialiasing also differ. No pill transition to another surface is observable while those tabs are disabled.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
