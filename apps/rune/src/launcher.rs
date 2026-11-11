@@ -121,6 +121,8 @@ pub struct LauncherState {
     /// The card's shown pose (Electron's `shown`), set a frame after it mounts.
     shown: bool,
     frames: u8,
+    mounted_at: Option<f64>,
+    shown_at: Option<f64>,
     /// When the exit began, on the poll clock.
     closing: Option<f64>,
     /// A project to open once the exit finishes.
@@ -174,6 +176,8 @@ impl Default for LauncherState {
             home,
             shown: false,
             frames: 0,
+            mounted_at: None,
+            shown_at: None,
             closing: None,
             after: None,
             path_error: None,
@@ -196,6 +200,8 @@ impl LauncherState {
         self.view = View::Form;
         self.shown = false;
         self.frames = 0;
+        self.mounted_at = None;
+        self.shown_at = None;
         self.closing = None;
         self.after = None;
         self.hover = Hover::None;
@@ -636,6 +642,11 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         return false;
     };
     let mut changed = false;
+    let mounted = *l.mounted_at.get_or_insert(clock);
+    if clock - mounted < 0.24 || l.shown_at.is_some_and(|at| clock - at < 0.42) {
+        tx.wake_after(Duration::ZERO);
+        changed = true;
+    }
     if l.path_error == Some(PENDING) {
         l.path_error = Some(clock);
         changed = true;
@@ -659,7 +670,7 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
     match l.closing {
         Some(PENDING) => {
             l.closing = Some(clock);
-            tx.wake_after(Duration::from_secs_f64(EXIT));
+            tx.wake_after(Duration::ZERO);
             return true;
         }
         Some(at) if clock - at >= EXIT => {
@@ -674,9 +685,9 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
             }
             return true;
         }
-        Some(at) => {
-            tx.wake_after(Duration::from_secs_f64((EXIT - (clock - at)).max(0.0)));
-            return changed;
+        Some(_) => {
+            tx.wake_after(Duration::ZERO);
+            return true;
         }
         None => {}
     }
@@ -685,6 +696,8 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         l.frames = l.frames.saturating_add(1);
         if ready && l.frames >= 2 {
             l.shown = true;
+            l.shown_at = Some(clock);
+            tx.wake_after(Duration::ZERO);
             // A transparent card is inert, which dropped the open's focus request: ask again
             // as it shows, as Electron's `autofocus` lands on mount.
             match (mode, l.view) {
@@ -714,9 +727,6 @@ const REGULAR: f32 = 400.0;
 /// Lands a per-frame value at once: the poll clock already moved it.
 const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 
-fn card_spring() -> Spring {
-    Spring::from_stiffness_damping(300.0, 22.0, 0.9)
-}
 fn morph_spring() -> Spring {
     Spring::from_stiffness_damping(360.0, 34.0, 0.8)
 }
@@ -1179,11 +1189,7 @@ fn progress_view(s: &AppState, t: Palette) -> El {
     col()
         .w_full()
         .key("launcher-progress")
-        .transition(
-            Transition::offset(0.0, 10.0)
-                .combined(Transition::opacity())
-                .combined(Transition::blur(3.0)),
-        )
+        .transition(Transition::offset(0.0, 10.0).combined(Transition::opacity()))
         .child(head)
         .child(track)
         .child(meta)
@@ -1799,7 +1805,31 @@ fn pull_rows(s: &mut AppState, x: f32, y: f32) {
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
     let l = &s.launcher;
-    let shown = l.shown;
+    let bezier = crate::ui::start_motion::bezier;
+    let reduced = cx.is_reduced_motion();
+    let (scrim_opacity, card_opacity, displacement) = if let Some(at) = l.closing {
+        let p = if at == PENDING {
+            0.0
+        } else {
+            ((l.clock - at) / if reduced { 0.001 } else { EXIT }) as f32
+        };
+        let e = bezier([0.4, 0.0, 1.0, 1.0], p);
+        (1.0 - e, 1.0 - e, e)
+    } else {
+        let scrim_p = l.mounted_at.map_or(0.0, |at| {
+            ((l.clock - at) / if reduced { 0.001 } else { 0.24 }) as f32
+        });
+        let p = l.shown_at.map_or(if l.shown { 1.0 } else { 0.0 }, |at| {
+            ((l.clock - at) / if reduced { 0.001 } else { 0.42 }) as f32
+        });
+        let movement = bezier([0.34, 1.3, 0.64, 1.0], p);
+        let opacity = bezier([0.34, 1.3, 0.64, 1.0], p / 0.45).clamp(0.0, 1.0);
+        (
+            bezier([0.22, 1.0, 0.36, 1.0], scrim_p),
+            opacity,
+            1.0 - movement,
+        )
+    };
     let content = match l.view {
         View::Browser => browser(s, t),
         View::More => more_view(s, t),
@@ -1815,17 +1845,12 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .w_full()
         .transition(
             Transition::asymmetric(
-                Transition::offset(0.0, 10.0)
-                    .combined(Transition::opacity())
-                    .combined(Transition::blur(3.0)),
-                Transition::offset(0.0, -10.0)
-                    .combined(Transition::opacity())
-                    .combined(Transition::blur(3.0)),
+                Transition::offset(0.0, 10.0).combined(Transition::opacity()),
+                Transition::offset(0.0, -10.0).combined(Transition::opacity()),
             )
             .springs(rune::SpringPair::new(morph, morph)),
         )
         .child(content);
-    let spring = card_spring();
     // `box-shadow: 0 0 0 1px ink 8%` is a hairline ring outside the card: a 1 pt wider
     // pill of that tint under the opaque card.
     let card = col()
@@ -1841,12 +1866,12 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .mb(-1.0)
         .radius(19.0)
         .fill(t.ink.alpha(0.08))
-        .opacity(if shown { 1.0 } else { 0.0 })
-        .opacity_motion(spring)
-        .offset(0.0, if shown { 0.0 } else { 12.0 })
-        .offset_motion(spring)
-        .scale(if shown { 1.0 } else { 0.96 })
-        .scale_motion(spring)
+        .opacity(card_opacity)
+        .opacity_motion(NOW)
+        .offset(0.0, 12.0 * displacement)
+        .offset_motion(NOW)
+        .scale(1.0 - 0.04 * displacement)
+        .scale_motion(NOW)
         .child(card)
         .modal(true, |s: &mut AppState| cancel(s));
     el().key("launcher-overlay")
@@ -1857,9 +1882,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             el().key("launcher-scrim")
                 .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                 .fill(t.ground.alpha(0.62))
-                .backdrop_blur(4.0)
-                .opacity(if shown { 1.0 } else { 0.0 })
-                .opacity_motion(Curve::tween(0.24, EASE)),
+                .opacity(scrim_opacity)
+                .opacity_motion(NOW),
         )
         .child(
             col()

@@ -234,3 +234,10 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - Electron-left, Rune-right 2x captures: `/workspace/rune-compare/devsync-start-{light,dark}.png` and `/workspace/rune-compare/devsync-start-hover-light.png`, against the reference server on port 3004.
 - Remaining differences: text and SVG antialiasing vary slightly between renderers; the animated plasma's noise and phase differ between captures. Settings remains inert as requested; Rune's tooltip differs from Chromium's native tooltip.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Dev sync: launcher modals (devsync-2, 2026-11-11)
+
+- Removed the scrim backdrop blur and the create/clone content morph blur. The launcher clock samples the shared frame's 240 ms opacity-only scrim, 420 ms card keyframes (including the 45% opacity keyframe), and 240 ms exit; reduced motion uses the source's 1 ms animation duration. Exit still waits 240 ms before unmounting.
+- Electron-left, Rune-right 2x rest captures: `/workspace/rune-compare/devsync-modal-{create,open,clone}-{light,dark}.png`, against port 3004. Motion note: the card rises 12 pt from scale 0.96 with the source overshoot, then exits down on the source ease-in; these stills do not establish frame-by-frame parity. Rune samples on its poll clock rather than Chromium's compositor, and the two can differ by a frame.
+- Remaining visible differences: Rune's caret appears in captures while Playwright hides Chromium's, and Rune's open-browser scrollbar remains visible in the rest capture while Chromium's is hidden. Text/SVG antialiasing and plasma phase vary. The existing browser has no repository metadata from the sidecar, and platform-specific rendering remains unverified.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.

@@ -3,7 +3,7 @@ mod file_icons;
 mod icon_motion;
 mod overview;
 mod projects;
-mod start_motion;
+pub(crate) mod start_motion;
 mod studio;
 
 pub(crate) use empty::tick as start_tick;
