@@ -91,6 +91,7 @@ fn main() {
                 s.page = Page::Overview;
             }),
             ("studio-review", studio_review),
+            ("studio-column-head", studio_column_head),
             ("studio-three-review", |s| {
                 studio_review(s);
                 s.studio.composer_open = false;
@@ -279,6 +280,15 @@ fn studio_review(s: &mut AppState) {
         ..StudioState::default()
     };
     s.studio_threads.insert("review-two".into(), second);
+}
+
+fn studio_column_head(s: &mut AppState) {
+    studio_review(s);
+    s.studio_layout["rows"][0]["panes"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    s.studio.title = "Review thread".into();
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {

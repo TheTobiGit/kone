@@ -153,6 +153,8 @@ impl AppState {
 
 #[derive(Default)]
 pub struct StudioState {
+    pub title: String,
+    pub side_chat: bool,
     pub draft: TextEdit,
     pub thread_open: bool,
     pub project_path: String,
