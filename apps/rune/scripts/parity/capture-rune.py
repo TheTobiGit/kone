@@ -13,6 +13,7 @@ parser.add_argument('outdir', type=Path)
 parser.add_argument('--scenes', required=True, help='comma-separated Rune scene names; empty-brand-hover is supported')
 parser.add_argument('--binary', type=Path, default=ROOT / 'target/debug/kone-rune')
 parser.add_argument('--timeout', type=int, default=180)
+parser.add_argument('--scale', type=int, default=1)
 args = parser.parse_args()
 scenes = args.scenes.split(',')
 if any(not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', s) for s in scenes):
@@ -28,7 +29,7 @@ for scene in scenes:
     for theme in ('light', 'dark'):
         output = args.outdir / f'{scene}-{theme}.png'
         output.unlink(missing_ok=True)
-        command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', '1292x854', '--scale', '1', '--snap', str(output)]
+        command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', '1292x854', '--scale', str(args.scale), '--snap', str(output)]
         with tempfile.TemporaryDirectory() as temp:
             if native_scene.startswith('launcher-'):
                 command += ['--at', '2.0']

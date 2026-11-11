@@ -520,10 +520,33 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let loaded = !overview.is_null();
     let repo = !overview["repository"].is_null() || !tree.is_null();
     let changes = tree["changes"].as_array();
+    // A card mounts again after removal or a project switch, restarting CountUp.
+    {
+        let project = s
+            .selected_project
+            .and_then(|i| s.projects.get(i))
+            .map_or("", |p| p.path.as_str());
+        let mut state = s.card_count_starts.borrow_mut();
+        if state.0 != project {
+            state.0 = project.to_owned();
+            state.1.clear();
+        }
+        state.1.retain(|key, _| {
+            changes.is_some_and(|items| {
+                items.iter().any(|item| {
+                    format!(
+                        "card:{}:{}",
+                        item["path"].as_str().unwrap_or(""),
+                        item["staged"]
+                    ) == *key
+                })
+            })
+        });
+    }
     let count = changes.map_or(0, Vec::len);
     let clean = count == 0;
     let branch = tree["branch"].as_str().unwrap_or("");
-    let body_style = TextStyle::new(30.0, 400.0).lh(38.5).tracking(BODY_TRACKING);
+    let body_style = TextStyle::new(30.0, 400.0).lh(37.5).tracking(BODY_TRACKING);
     // The trigger is an inline-block (`margin: 0 -4px; padding: 1px 5px`) holding "{name} " and
     // the 15 px chevron 3 px after it, so the name sits 1 px in and the sentence resumes 1 px
     // past the chevron.
@@ -549,14 +572,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let plural = |singular, one, many| if singular { one } else { many };
     if !loaded {
     } else if !repo {
+        m.push(" isn't a git repository yet", "muted");
+        m.push(". ", "muted");
         m.push(
-            " isn't a git repository yet. Initialize a repo to track changes, then start your first session", "muted");
+            "Initialize a repo to track changes, then start your first session",
+            "muted",
+        );
     } else if !tree.is_null() && tree["head"].is_null() {
         if clean {
+            m.push(" is a fresh repository", "muted");
+            m.push(". ", "muted");
             m.push(
-                " is a fresh repository. Nothing committed yet — your first changes will show up here", "muted");
+                "Nothing committed yet — your first changes will show up here",
+                "muted",
+            );
         } else {
-            m.push(" is ready for its first commit. ", "muted");
+            m.push(" is ready for its first commit", "muted");
+            m.push(". ", "muted");
             if staged > 0 {
                 m.push(&staged.to_string(), "num");
                 m.push(" of ", "muted");
@@ -573,7 +605,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             );
         }
     } else if clean {
-        m.push(" is ready when you are. ", "muted");
+        m.push(" is ready when you are", "muted");
+        m.push(". ", "muted");
         if ahead > 0 && behind > 0 {
             m.push("Working tree clean — ", "muted");
             m.push(&ahead.to_string(), "num");
@@ -608,19 +641,17 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         m.push(" has ", "muted");
         m.push(&count.to_string(), "num");
         m.push(
-            plural(
-                count == 1,
-                " file with changes. You have ",
-                " files with changes. You have ",
-            ),
+            plural(count == 1, " file with changes", " files with changes"),
             "muted",
         );
+        m.push(". ", "muted");
+        m.push("You have ", "muted");
         if added > 0 || removed > 0 {
             if added > 0 {
                 m.push(&format!("+{added}"), "add");
             }
             if added > 0 && removed > 0 {
-                m.push(" ", "muted");
+                m.push(" ", "muted");
             }
             if removed > 0 {
                 m.push(&format!("−{removed}"), "del");
@@ -1410,6 +1441,13 @@ fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState)
     let deleted = status == "deleted" || item["deleted"].as_bool().unwrap_or(false);
     let empty = is_new && added == 0 && removed == 0;
     let key = format!("card:{path}:{}", item["staged"]);
+    let elapsed = if !s.start_actions.live {
+        elapsed
+    } else {
+        let mut starts = s.card_count_starts.borrow_mut();
+        let start = *starts.1.entry(key.clone()).or_insert(s.start_actions.clock);
+        (s.start_actions.clock - start) as f32
+    };
     let hovered = s.change_tile_hover.as_deref() == Some(&key);
     let green = rune::color::hex("#059669").unwrap();
     let red = rune::color::hex("#e11d48").unwrap();
@@ -1461,8 +1499,8 @@ fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState)
                 .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
                 .color(t.faint),
         );
-        sketch = row().gap(2.0);
-        for _ in 0..8 {
+        sketch = row().gap(3.0);
+        for _ in 0..7 {
             sketch = sketch.child(el().size(3.5, 1.5).fill(t.line_soft));
         }
     }
@@ -1522,7 +1560,11 @@ fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState)
                 .gap(9.0)
                 .child(
                     text(name.to_owned())
-                        .font(TextStyle::new(11.0, 400.0).family(rune::Family::Mono))
+                        .font(
+                            TextStyle::new(11.0, 400.0)
+                                .lh(11.0)
+                                .family(rune::Family::Mono),
+                        )
                         .color(if deleted { t.muted } else { t.ink })
                         .truncate(),
                 )
@@ -1542,7 +1584,7 @@ fn change_card(item: &serde_json::Value, t: Palette, elapsed: f32, s: &AppState)
         card = card.child(
             el().size((name.chars().count() as f32 * 6.6).min(126.0), 1.0)
                 .fill(t.muted)
-                .absolute(16.0, 132.0),
+                .absolute(16.0, 134.0),
         );
     }
     card

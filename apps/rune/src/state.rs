@@ -71,6 +71,7 @@ pub struct AppState {
     pub changes_folded: std::collections::HashSet<String>,
     pub changes_hover: Option<bool>,
     pub change_tile_hover: Option<String>,
+    pub card_count_starts: std::cell::RefCell<(String, std::collections::HashMap<String, f64>)>,
     pub overview_viewport: (f32, f32),
     pub overview_greeting_bounds: [f32; 4],
     pub greeting_motion: std::cell::RefCell<crate::ui::overview::GreetingMotion>,
