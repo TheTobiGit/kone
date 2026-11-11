@@ -69,6 +69,7 @@ pub struct AppState {
     pub changes_folded: std::collections::HashSet<String>,
     pub changes_hover: Option<bool>,
     pub overview_viewport: (f32, f32),
+    pub overview_greeting_bounds: [f32; 4],
     pub cycle_paths: Vec<String>,
     pub cycle_index: usize,
     pub start_actions: StartActionsState,

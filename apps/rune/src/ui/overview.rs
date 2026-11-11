@@ -6,7 +6,10 @@ use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
 };
-use rune::{Color, Cursor, Curve, Cx, Easing, El, Icon, Span, TextStyle, col, el, icon, row, text};
+use rune::{
+    Color, Cursor, Curve, Cx, Easing, El, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row,
+    text,
+};
 
 /// `.line--body { letter-spacing: -0.02em }` resolves against the paragraph's own 16 px, not
 /// the 30 px spans inside it.
@@ -18,7 +21,34 @@ const HEY_TRACKING: f32 = -0.16;
 static PICKER_FOLDER: Icon = Icon {
     name: "picker-folder",
     view: 24.0,
-    body: r#"<path d="M3 7C3 5 4 4 6 4H9L12 7H18C20 7 21 8 21 10V17C21 19 20 20 18 20H6C4 20 3 19 3 17Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7" stroke="currentColor" stroke-linecap="round" fill="none" stroke-width="1.7"/>"#,
+};
+
+static PICKER_PLUS: Icon = Icon {
+    name: "picker-plus",
+    view: 24.0,
+    body: r#"<path d="M12 4V20M20 12H4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.7"/>"#,
+};
+static PICKER_OPEN: Icon = Icon {
+    name: "picker-open",
+    view: 24.0,
+    body: r#"<path d="M2.5 20V8.87695C2.5 7.58945 2.5 6.9457 2.78533 6.47048C2.9541 6.18939 3.18939 5.9541 3.47048 5.78533C3.9457 5.5 4.59449 5.5 5.89206 5.5C6.52339 5.5 6.83906 5.5 7.12612 5.58819C7.31759 5.64702 7.49914 5.73428 7.66469 5.84705C7.91289 6.01611 8.10859 6.26074 8.5 6.75C8.89141 7.23926 9.08711 7.48389 9.33531 7.65295C9.50086 7.76572 9.68241 7.85298 9.87388 7.91181C10.1609 8 10.4742 8 11.1008 8H15C16.4045 8 17.1067 8 17.6111 8.33706C17.8295 8.48298 18.017 8.67048 18.1629 8.88886C18.5 9.39331 18.5 10.0955 18.5 11.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.7"/><path d="M4.42028 14.0144L3.63368 16.0144C2.65618 18.4998 2.16743 19.7425 2.7524 20.6213C3.33737 21.5 4.65337 21.5 7.28537 21.5H15.1903C16.4249 21.5 17.0422 21.5 17.5295 21.1795C18.0169 20.859 18.2702 20.2865 18.7769 19.1415L19.6618 17.1415C20.7866 14.5992 21.349 13.3281 20.7679 12.4141C20.1868 11.5 18.8163 11.5 16.0752 11.5H8.07196C6.78232 11.5 6.1375 11.5 5.63811 11.8439C5.13872 12.1877 4.89924 12.7966 4.42028 14.0144Z" stroke="currentColor" fill="none" stroke-width="1.7"/><path d="M11.5 4.51456C12.4151 3.28409 13.6662 2.55594 15.5125 2.50161C16.1155 2.48386 16.7152 2.61395 17.2682 2.85544C18.5748 3.42601 19.4185 4.15644 20 5.5L21.5 3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.7"/>"#,
+};
+static PICKER_GITHUB: Icon = Icon {
+    name: "picker-github",
+    view: 24.0,
+    body: r#"<path d="M10 20.5675C6.57143 21.7248 3.71429 20.5675 2 17" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.7"/><path d="M10 22V18.7579C10 18.1596 10.1839 17.6396 10.4804 17.1699C10.6838 16.8476 10.5445 16.3904 10.1771 16.2894C7.13394 15.4528 5 14.1077 5 9.64606C5 8.48611 5.38005 7.39556 6.04811 6.4464C6.21437 6.21018 6.29749 6.09208 6.31748 5.9851C6.33746 5.87813 6.30272 5.73852 6.23322 5.45932C5.95038 4.32292 5.96871 3.11619 6.39322 2.02823C6.39322 2.02823 7.27042 1.74242 9.26698 2.98969C9.72282 3.27447 9.95075 3.41686 10.1515 3.44871C10.3522 3.48056 10.6206 3.41384 11.1573 3.28041C11.8913 3.09795 12.6476 3 13.5 3C14.3524 3 15.1087 3.09795 15.8427 3.28041C16.3794 3.41384 16.6478 3.48056 16.8485 3.44871C17.0493 3.41686 17.2772 3.27447 17.733 2.98969C19.7296 1.74242 20.6068 2.02823 20.6068 2.02823C21.0313 3.11619 21.0496 4.32292 20.7668 5.45932C20.6973 5.73852 20.6625 5.87813 20.6825 5.9851C20.7025 6.09207 20.7856 6.21019 20.9519 6.4464C21.6199 7.39556 22 8.48611 22 9.64606C22 14.1077 19.8661 15.4528 16.8229 16.2894C16.4555 16.3904 16.3162 16.8476 16.5196 17.1699C16.8161 17.6396 17 18.1596 17 18.7579V22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.7"/>"#,
+};
+static PICKER_ARROW: Icon = Icon {
+    name: "picker-arrow",
+    view: 24.0,
+    body: r#"<path d="M9.00005 6C9.00005 6 15 10.4189 15 12C15 13.5812 9 18 9 18" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="2"/>"#,
+};
+
+static PICKER_BRANCH: Icon = Icon {
+    name: "picker-branch",
+    view: 24.0,
+    body: r#"<path d="M7 19H13C15.8284 19 17.2426 19 18.1213 18.1213C19 17.2426 19 15.8284 19 13V10M19 10C19.7002 10 21.0085 11.9943 21.5 12.5M19 10C18.2998 10 16.9915 11.9943 16.5 12.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.8"/><path d="M5 7L5 17" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="1.8"/><circle cx="5" cy="5" r="2" stroke="currentColor" fill="none" stroke-width="1.8"/><circle cx="19" cy="5" r="2" stroke="currentColor" fill="none" stroke-width="1.8"/><circle cx="5" cy="19" r="2" stroke="currentColor" fill="none" stroke-width="1.8"/>"#,
 };
 
 static CHEVRON: Icon = Icon {
@@ -630,6 +660,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .offset_motion(Curve::tween(0.2, css_ease)),
         );
     let greeting = col()
+        .on_layout(|s: &mut AppState, bounds| s.overview_greeting_bounds = bounds)
         .gap(2.0)
         .grow(1.0)
         .max_w(620.0)
@@ -673,6 +704,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             )
         });
         let has_projects = !projects.is_empty();
+        let list_height =
+            (projects.len() as f32 * 32.0 + 6.0).min(s.overview_viewport.1.max(1.0) * 0.35);
         for (_, project) in projects {
             let path = project.path.clone();
             let branch = s
@@ -682,6 +715,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .and_then(|v| v["branch"].as_str())
                 .unwrap_or("")
                 .to_owned();
+            let branch_icon = if branch.is_empty() {
+                el().w(0.0)
+            } else {
+                icon(&PICKER_BRANCH, 11.0).color(t.muted)
+            };
             list = list.child(
                 row()
                     .w_full()
@@ -691,17 +729,25 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .center_y()
                     .radius(9.0)
                     .hover(t.hover)
+                    .focus_highlight(t.hover)
+                    .hover_motion(Curve::tween(0.16, css_ease), Curve::tween(0.16, css_ease))
+                    .hover_group()
                     .cursor(Cursor::Pointer)
                     .role("button")
                     .focusable(true)
                     .label(project.name.clone())
-                    .child(icon(&PICKER_FOLDER, 15.0).color(t.muted))
+                    .child(
+                        icon(&PICKER_FOLDER, 15.0)
+                            .color(t.muted)
+                            .group_color(t.ink_soft),
+                    )
                     .child(
                         text(project.name.clone())
                             .font(TextStyle::new(13.0, 400.0))
                             .color(t.ink)
                             .truncate(),
                     )
+                    .child(branch_icon)
                     .child(
                         text(branch)
                             .font(TextStyle::new(10.0, 400.0).mono())
@@ -714,20 +760,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     }),
             );
         }
+        list = list.h(list_height).scroll(ScrollSpec {
+            stick_bottom: false,
+        });
         let mut actions = col().w_full().padding(4.0).radius(18.0).fill(t.raised);
         for (symbol, label, mode) in [
             (
-                "+",
+                &PICKER_PLUS,
                 "Create a new project",
                 crate::launcher::LauncherMode::Create,
             ),
             (
-                "▱",
+                &PICKER_OPEN,
                 "Open from local folder",
                 crate::launcher::LauncherMode::Open,
             ),
             (
-                "◉",
+                &PICKER_GITHUB,
                 "Clone from GitHub",
                 crate::launcher::LauncherMode::Clone,
             ),
@@ -741,16 +790,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     .center_y()
                     .radius(9.0)
                     .hover(t.hover)
+                    .focus_highlight(t.hover)
+                    .hover_motion(Curve::tween(0.16, css_ease), Curve::tween(0.16, css_ease))
+                    .hover_group()
                     .cursor(Cursor::Pointer)
                     .role("button")
                     .focusable(true)
                     .label(label)
+                    .child(icon(symbol, 16.0).color(t.ink_soft).group_color(t.ink))
                     .child(
-                        text(symbol)
-                            .font(TextStyle::new(16.0, 400.0))
-                            .color(t.ink_soft),
+                        el().grow(1.0)
+                            .child(text(label).font(TextStyle::new(12.5, 500.0)).color(t.ink)),
                     )
-                    .child(text(label).font(TextStyle::new(12.5, 400.0)).color(t.ink))
+                    .child(
+                        icon(&PICKER_ARROW, 13.0)
+                            .color(t.muted)
+                            .group_opacity(0.0, 1.0),
+                    )
                     .on_press_tx(move |s: &mut AppState, tx| {
                         if mode == crate::launcher::LauncherMode::Open {
                             crate::launcher::open_folder(s, tx);
@@ -760,35 +816,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     }),
             );
         }
-        actions = actions.child(
-            row()
-                .w_full()
-                .h(30.0)
-                .px(9.0)
-                .gap(9.0)
-                .center_y()
-                .radius(9.0)
-                .hover(t.hover)
-                .cursor(Cursor::Pointer)
-                .role("button")
-                .focusable(true)
-                .label("All projects")
-                .child(
-                    text("←")
-                        .font(TextStyle::new(16.0, 400.0))
-                        .color(t.ink_soft),
-                )
-                .child(
-                    text("All projects")
-                        .font(TextStyle::new(12.5, 400.0))
-                        .color(t.ink),
-                )
-                .on_press(|s: &mut AppState| {
-                    s.overview_switcher_open = false;
-                    s.refresh_project_list();
-                    s.page = Page::Projects;
-                }),
-        );
         let mut menu = col()
             .w(300.0)
             .gap(5.0)
@@ -796,8 +823,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .px(1.0)
             .radius(20.0)
             .fill(band)
-            .border(1.0, t.line)
-            .shadow(0.0, 16.0, t.ink.alpha(0.2));
+            .border(1.0, t.ink.alpha(0.08))
+            .shadow(10.0, 16.0, Color::BLACK.alpha(0.16));
         menu = menu.child(
             row()
                 .w_full()
@@ -892,20 +919,15 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         root
     };
     let root = if let Some(menu) = picker {
-        let menu_top = 100.0
-            + 33.0
-            + 2.0
-            + rune::text::measure(&wrapped, &m.spans, body_style, Some(620.0)).1
-            + 8.0;
+        let [menu_left, menu_y, _, menu_h] = s.overview_greeting_bounds;
+        let menu_top = menu_y + menu_h + 8.0;
         root.child(
             el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                 .on_press(|s: &mut AppState| s.overview_switcher_open = false),
         )
         .child(
-            row()
-                .pin(Some(0.0), Some(menu_top), Some(0.0), None)
-                .justify_center()
-                .child(el().w(896.0).child(menu)),
+            el().pin(Some(menu_left), Some(menu_top), None, None)
+                .child(menu),
         )
     } else {
         root
