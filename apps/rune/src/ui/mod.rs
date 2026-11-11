@@ -1,7 +1,7 @@
 mod empty;
 mod file_icons;
 mod icon_motion;
-mod overview;
+pub(crate) mod overview;
 mod projects;
 pub(crate) mod start_motion;
 mod studio;

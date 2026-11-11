@@ -248,11 +248,42 @@ fn pretty_wrap(text: &str, spans: &[Span], style: TextStyle, max: f32) -> String
     String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
+trait WordRanges {
+    fn split_word_ranges(&self, offset: usize) -> Vec<std::ops::Range<usize>>;
+}
+impl WordRanges for str {
+    fn split_word_ranges(&self, offset: usize) -> Vec<std::ops::Range<usize>> {
+        let mut result = Vec::new();
+        let mut start = None;
+        for (i, ch) in self.char_indices() {
+            if ch.is_whitespace() {
+                if let Some(from) = start.take() {
+                    result.push(offset + from..offset + i);
+                }
+            } else if start.is_none() {
+                start = Some(i);
+            }
+        }
+        if let Some(from) = start {
+            result.push(offset + from..offset + self.len());
+        }
+        result
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct GreetingMotion {
+    project: String,
+    last_elapsed: f32,
+    segments: std::collections::HashMap<String, (f64, usize)>,
+}
+
 /// The greeting's state sentence, assembled as tone-tagged segments like `HomeGreeting.vue`.
 struct Message {
     text: String,
     spans: Vec<Span>,
     ink: Color,
+    segments: Vec<(String, usize, usize)>,
 }
 
 impl Message {
@@ -261,6 +292,7 @@ impl Message {
             text: String::new(),
             spans: Vec::new(),
             ink,
+            segments: Vec::new(),
         }
     }
 
@@ -279,11 +311,14 @@ impl Message {
             });
         }
         self.spans.push(span);
+        self.segments
+            .push((format!("{tone}:{value}"), start, self.text.len()));
     }
 
     /// Blank room `width` points wide, made of no-break spaces so it never wraps away from the
     /// name: whole spaces at the body size, then one sized to the remainder.
     fn gap(&mut self, width: f32) {
+        let segment_count = self.segments.len();
         let at = |size: f32| {
             rune::text::advance(
                 "\u{a0}",
@@ -309,6 +344,7 @@ impl Message {
             self.spans
                 .push(Span::new(start, self.text.len()).size(size));
         }
+        self.segments.truncate(segment_count);
     }
 }
 
@@ -631,9 +667,68 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         [0.22, 1.0, 0.36, 1.0],
         ((elapsed - 0.03) / 0.4).clamp(0.0, 1.0),
     );
+    // Keep content-keyed segments alive across status updates. Newly introduced segments
+    // start immediately; only the first page reveal carries the entrance delay.
+    let clock = s.start_actions.clock;
+    let mut motion = s.greeting_motion.borrow_mut();
+    let initial =
+        motion.project != name || motion.segments.is_empty() || elapsed < motion.last_elapsed;
+    motion.last_elapsed = elapsed;
+    if initial {
+        motion.project = name.to_owned();
+        motion.segments.clear();
+    }
+    let mut occurrences = std::collections::HashMap::<String, usize>::new();
+    let mut active = std::collections::HashSet::new();
+    let mut rank = 0usize;
+    let mut words = Vec::new();
+    for (base, start, end) in &m.segments {
+        let occurrence = occurrences.entry(base.clone()).or_default();
+        let key = format!("{base}#{}", *occurrence);
+        *occurrence += 1;
+        active.insert(key.clone());
+        let ranges: Vec<_> = if base.starts_with("ink:") && *start <= 4 {
+            std::iter::once(*start..*end).collect()
+        } else {
+            m.text[*start..*end].split_word_ranges(*start)
+        };
+        let is_new = !motion.segments.contains_key(&key);
+        let entry = *motion.segments.entry(key).or_insert((
+            if initial {
+                clock - f64::from(elapsed) + 0.03
+            } else {
+                clock
+            },
+            rank,
+        ));
+        for (index, range) in ranges.into_iter().enumerate() {
+            words.push((range, entry.0, entry.1 + index));
+            if is_new {
+                rank += 1;
+            }
+        }
+    }
+    motion.segments.retain(|key, _| active.contains(key));
+    drop(motion);
+    let word_progress = |at: f64, rank: usize| {
+        if cx.is_reduced_motion() || !s.start_actions.live {
+            return 1.0;
+        }
+        super::start_motion::bezier(
+            [0.16, 1.0, 0.3, 1.0],
+            ((clock - at - rank as f64 * 0.035) as f32 / 0.42).clamp(0.0, 1.0),
+        )
+    };
+    let trigger_in = words
+        .first()
+        .map_or(1.0, |(_, at, rank)| word_progress(*at, *rank));
     let css_ease = Easing::cubic(0.25, 0.1, 0.25, 1.0);
     let trigger = el()
         .key("overview-project-trigger")
+        .opacity(trigger_in)
+        .opacity_motion(now)
+        .offset(0.0, 6.0 * (1.0 - trigger_in))
+        .offset_motion(now)
         .absolute(-4.0, 35.0)
         .size(5.0 + name_space_w + 3.0 + 15.0 + 5.0, 39.5)
         .radius(9.0)
@@ -655,27 +750,65 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .offset(0.0, if s.overview_name_hover { 1.0 } else { 0.0 })
                 .offset_motion(Curve::tween(0.2, css_ease)),
         );
+    let settled = words
+        .iter()
+        .all(|(_, at, rank)| word_progress(*at, *rank) >= 1.0);
+    let mut base_spans = m.spans.clone();
+    if !settled {
+        base_spans.push(Span::new(0, wrapped.len()).color(t.ink_soft.alpha(0.0)));
+    }
+    let mut body = el().w(greeting_width).child(
+        text(wrapped.clone())
+            .spans(base_spans)
+            .font(body_style)
+            .w(greeting_width)
+            .color(if settled {
+                t.ink_soft
+            } else {
+                t.ink_soft.alpha(0.0)
+            })
+            .wrap()
+            .pt(0.5),
+    );
+    for (range, at, rank) in words.into_iter().filter(|_| !settled) {
+        let progress = word_progress(at, rank);
+        let mut spans = m.spans.clone();
+        spans.push(Span::new(0, wrapped.len()).color(t.ink_soft.alpha(0.0)));
+        let color = m
+            .spans
+            .iter()
+            .find(|span| span.start as usize <= range.start && span.end as usize >= range.end)
+            .and_then(|span| span.color)
+            .unwrap_or(t.ink_soft);
+        spans.push(Span::new(range.start, range.end).color(color));
+        body = body.child(
+            text(wrapped.clone())
+                .spans(spans)
+                .font(body_style)
+                .w(greeting_width)
+                .color(t.ink_soft)
+                .wrap()
+                .pt(0.5)
+                .absolute(0.0, 0.0)
+                .opacity(progress)
+                .opacity_motion(now)
+                .offset(0.0, 6.0 * (1.0 - progress))
+                .offset_motion(now),
+        );
+    }
     let greeting = col()
         .on_layout(|s: &mut AppState, bounds| s.overview_greeting_bounds = bounds)
         .gap(2.0)
         .grow(1.0)
         .max_w(620.0)
-        .opacity(greet_in)
-        .opacity_motion(now)
-        .offset(0.0, 10.0 * (1.0 - greet_in))
-        .offset_motion(now)
-        .child(hello)
         .child(
-            // Chromium sets these 30 px lines (`line-height: 1.25`) with the trigger's 1 px of
-            // padding raising the first line box: baselines land 39 px then 37 px apart. A
-            // 38.5 px pitch nudged down half a point keeps every line within a point of them.
-            text(wrapped.clone())
-                .spans(m.spans.clone())
-                .font(body_style)
-                .color(t.ink_soft)
-                .wrap()
-                .pt(0.5),
+            hello
+                .opacity(greet_in)
+                .opacity_motion(now)
+                .offset(0.0, 10.0 * (1.0 - greet_in))
+                .offset_motion(now),
         )
+        .child(body)
         .child(trigger);
     let mut picker = None;
     if s.overview_switcher_open {
