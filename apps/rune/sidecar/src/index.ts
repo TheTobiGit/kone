@@ -182,6 +182,12 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     case "projects.overview": {
       const input = z.object({ path: z.string().min(1) }).parse(params);
       const [projectReadme, projectIdentity, projectLogo, projectContributors, repository, workingTree] = await Promise.all([readme(input.path), identity(input.path), logo(input.path), contributors(input.path), detect(input.path), status(input.path)]);
+      if (workingTree) {
+        await Promise.all(workingTree.changes.map(async (change) => {
+          try { Object.assign(change, { modifiedAt: (await stat(path.join(input.path, change.path))).mtimeMs }); }
+          catch { /* Deleted files have no modification time. */ }
+        }));
+      }
       return { readme: projectReadme, identity: projectIdentity, logo: projectLogo, contributors: projectContributors, repository, workingTree };
     }
     case "projects.summary": {

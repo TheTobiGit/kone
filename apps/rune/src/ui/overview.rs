@@ -329,9 +329,27 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         )
         .child(
             el().w(84.0).h(30.0).center().child(
+                text("Space")
+                    .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
+                    .color(t.muted),
+            ),
+        )
+        .child(
+            el().w(84.0).h(30.0).center().child(
+                text("Files")
+                    .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
+                    .color(t.muted),
+            ),
+        )
+        .child(
+            el().w(84.0).h(30.0).center().child(
                 text("Git")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted.alpha(0.4)),
+                    .color(if s.project_data.overview["workingTree"].is_null() {
+                        t.muted.alpha(0.4)
+                    } else {
+                        t.muted
+                    }),
             ),
         );
     let [dx, dy] = s.start_actions.offsets[0];
@@ -810,88 +828,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         }
         picker = Some(menu.child(actions));
     }
-    let mut changes_panel = col().w_full().gap(20.0);
-    if loaded {
-        let label = if !repo {
-            "Not a git repository"
-        } else if clean {
-            "Working tree clean"
-        } else {
-            "Changes"
-        };
-        let caption = if !repo {
-            "NOT TRACKED"
-        } else if clean {
-            "ALL CLEAR"
-        } else {
-            "WORKING TREE"
-        };
-        changes_panel = changes_panel.child(
-            row()
-                .w_full()
-                .justify_between()
-                .center_y()
-                .child(text(label).font(TextStyle::new(12.0, 500.0)).color(t.muted))
-                .child(
-                    text(caption)
-                        .font(
-                            TextStyle::new(10.0, 500.0)
-                                .family(rune::Family::Mono)
-                                .tracking(1.2),
-                        )
-                        .color(t.faint),
-                ),
-        );
-        if !repo || clean {
-            let paper = el()
-                .size(76.0, 92.0)
-                .radius(12.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .shadow(0.0, 3.0, t.line)
-                .center()
-                .child(el().size(14.0, 6.0).radius(3.0).fill(t.hover));
-            changes_panel = changes_panel.child(
-                col()
-                    .w_full()
-                    .h(230.0)
-                    .center()
-                    .gap(24.0)
-                    .child(paper)
-                    .child(
-                        text(if repo {
-                            "Working tree clean"
-                        } else {
-                            "Not tracked yet"
-                        })
-                        .font(TextStyle::new(14.0, 400.0))
-                        .color(t.ink_soft),
-                    ),
-            );
-        } else if let Some(changes) = changes {
-            let mut cards = row().gap(12.0);
-            for change in changes.iter().take(4) {
-                let path = change["path"].as_str().unwrap_or("");
-                cards = cards.child(
-                    col()
-                        .w(150.0)
-                        .h(116.0)
-                        .padding(14.0)
-                        .gap(12.0)
-                        .radius(12.0)
-                        .border(1.0, t.line)
-                        .fill(t.raised_high)
-                        .child(
-                            text(path.to_owned())
-                                .font(TextStyle::new(12.0, 500.0))
-                                .color(t.ink)
-                                .truncate(),
-                        ),
-                );
-            }
-            changes_panel = changes_panel.child(cards);
-        }
-    }
+    let changes_panel = changes_panel(s, tree, loaded, repo, t, content_width, elapsed);
     let mut dock = row().gap(40.0).center_y();
     for (i, path) in s.cycle_paths.iter().enumerate() {
         if let Some(project) = s.projects.iter().find(|p| &p.path == path) {
@@ -978,4 +915,329 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         root.child(dock)
     }
+}
+
+fn changes_panel(
+    s: &AppState,
+    tree: &serde_json::Value,
+    loaded: bool,
+    repo: bool,
+    t: Palette,
+    width: f32,
+    elapsed: f32,
+) -> El {
+    let mut panel = col().w_full();
+    if !loaded {
+        return panel;
+    }
+    let mut changes: Vec<_> = tree["changes"].as_array().into_iter().flatten().collect();
+    changes.sort_by(|a, b| {
+        let time = |v: &serde_json::Value| v["modifiedAt"].as_f64().unwrap_or(f64::NEG_INFINITY);
+        time(b).total_cmp(&time(a)).then_with(|| {
+            a["path"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["path"].as_str().unwrap_or(""))
+        })
+    });
+    if changes.is_empty() {
+        let label = if repo {
+            "Working tree clean"
+        } else {
+            "Not a git repository"
+        };
+        let caption = if repo { "UP TO DATE" } else { "NOT TRACKED" };
+        let paper = |angle: f32| {
+            el().size(76.0, 92.0)
+                .radius(12.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high)
+                .rotate(angle)
+                .shadow(
+                    0.0,
+                    4.0,
+                    Color::BLACK.alpha(if t.dark { 0.08 } else { 0.04 }),
+                )
+        };
+        return panel
+            .gap(14.0)
+            .child(
+                row()
+                    .w_full()
+                    .justify_between()
+                    .center_y()
+                    .child(text(label).font(TextStyle::new(12.5, 400.0)).color(t.muted))
+                    .child(
+                        text(caption)
+                            .font(
+                                TextStyle::new(11.0, 400.0)
+                                    .family(rune::Family::Mono)
+                                    .tracking(1.5),
+                            )
+                            .color(t.faint),
+                    ),
+            )
+            .child(
+                col()
+                    .w_full()
+                    .h(236.0)
+                    .center()
+                    .gap(20.0)
+                    .child(
+                        row()
+                            .center_y()
+                            .child(paper(-0.157))
+                            .child(paper(0.0).offset(-32.0, -5.0))
+                            .child(paper(0.157).offset(-64.0, 0.0))
+                            .w(180.0),
+                    )
+                    .child(
+                        text(if repo {
+                            "No changes"
+                        } else {
+                            "Not tracked yet"
+                        })
+                        .font(TextStyle::new(13.5, 400.0))
+                        .color(t.ink_soft),
+                    ),
+            );
+    }
+    let staged: Vec<_> = changes
+        .iter()
+        .copied()
+        .filter(|v| v["staged"].as_bool().unwrap_or(false))
+        .collect();
+    let changed: Vec<_> = changes
+        .iter()
+        .copied()
+        .filter(|v| !v["staged"].as_bool().unwrap_or(false))
+        .collect();
+    let both = !staged.is_empty() && !changed.is_empty();
+    panel = panel.gap(30.0);
+    for (is_staged, items) in [(true, &staged), (false, &changed)] {
+        if items.is_empty() {
+            continue;
+        }
+        let path = s
+            .selected_project
+            .and_then(|i| s.projects.get(i))
+            .map(|p| p.path.clone())
+            .unwrap_or_default();
+        let key = format!("{}:{}", path, is_staged);
+        let open = !s.changes_folded.contains(&key);
+        let hover = s.changes_hover == Some(is_staged);
+        let title = if is_staged { "Staged" } else { "Changed" };
+        let toggle = row()
+            .center_y()
+            .gap(7.0)
+            .padding(2.0)
+            .radius(7.0)
+            .cursor(Cursor::Pointer)
+            .focusable(true)
+            .focus_ring(2.0, 0.0, t.ink.alpha(0.55))
+            .role("button")
+            .label(format!("Toggle {title}"))
+            .on_press(move |s: &mut AppState| {
+                s.toggle_changes(key.clone());
+            })
+            .child(
+                text(if open { "⌄" } else { "›" })
+                    .font(TextStyle::new(14.0, 400.0))
+                    .color(t.faint),
+            )
+            .child(
+                text(title)
+                    .font(TextStyle::new(12.0, 400.0).tracking(0.2))
+                    .color(t.ink_soft),
+            )
+            .child(
+                text(items.len().to_string())
+                    .font(TextStyle::new(11.0, 400.0).family(rune::Family::Mono))
+                    .color(t.muted),
+            );
+        let mut lead = row().center_y().gap(10.0).child(toggle);
+        if !is_staged {
+            lead = lead.child(
+                text("View changes")
+                    .font(TextStyle::new(11.0, 400.0))
+                    .color(t.muted),
+            );
+        }
+        let mut tail = row().center_y().gap(14.0);
+        if hover {
+            tail = tail.child(
+                text(if is_staged {
+                    "−  Unstage all"
+                } else {
+                    "+  Stage all     ↶  Discard"
+                })
+                .font(TextStyle::new(11.0, 400.0))
+                .color(t.muted),
+            );
+        }
+        if is_staged {
+            tail = tail.child(
+                el().radius(8.0).fill(t.ink).px(11.0).py(7.0).child(
+                    text("⊙  Commit")
+                        .font(TextStyle::new(11.0, 400.0))
+                        .color(t.ground),
+                ),
+            );
+        } else {
+            let added: i64 = changes
+                .iter()
+                .map(|c| c["added"].as_i64().unwrap_or(0))
+                .sum();
+            let removed: i64 = changes
+                .iter()
+                .map(|c| c["removed"].as_i64().unwrap_or(0))
+                .sum();
+            let mut stat = row().gap(8.0).center_y();
+            if added > 0 {
+                stat = stat.child(
+                    text(format!("+{}", count_up(added, elapsed, 1.1)))
+                        .font(TextStyle::new(12.0, 400.0).family(rune::Family::Mono))
+                        .color(rune::color::hex("#059669").unwrap()),
+                );
+            }
+            if removed > 0 {
+                stat = stat.child(
+                    text(format!("−{}", count_up(removed, elapsed, 1.1)))
+                        .font(TextStyle::new(12.0, 400.0).family(rune::Family::Mono))
+                        .color(rune::color::hex("#e11d48").unwrap()),
+                );
+            }
+            let mut dots = row().gap(3.0);
+            for c in changes.iter().take(24) {
+                let a = c["added"].as_i64().unwrap_or(0);
+                let d = c["removed"].as_i64().unwrap_or(0);
+                let color = if c["status"] == "deleted" || d > a {
+                    rune::color::hex("#e11d48").unwrap()
+                } else if a > 0 {
+                    rune::color::hex("#059669").unwrap()
+                } else {
+                    t.faint
+                };
+                dots = dots.child(el().size(7.0, 7.0).radius(2.0).fill(color));
+            }
+            tail = tail.child(stat).child(dots);
+        }
+        let head = row()
+            .w_full()
+            .justify_between()
+            .center_y()
+            .px(2.0)
+            .child(lead)
+            .child(tail);
+        let mut lane = col()
+            .w_full()
+            .on_hover_change(move |s: &mut AppState, over, _| {
+                s.changes_hover = if over { Some(is_staged) } else { None };
+            })
+            .child(head);
+        if open {
+            let cols = ((width + 14.0) / 172.0).floor().max(1.0) as usize;
+            let cap = cols * if both { 1 } else { 2 };
+            let visible = if items.len() > cap {
+                cap.saturating_sub(1)
+            } else {
+                items.len()
+            };
+            let mut grid = col().gap(14.0).pt(15.0).pb(6.0);
+            for chunk in items[..visible].chunks(cols) {
+                let mut r = row().gap(14.0);
+                for item in chunk {
+                    r = r.child(change_card(item, t));
+                }
+                grid = grid.child(r);
+            }
+            if visible < items.len() {
+                grid = grid.child(
+                    text(format!("+{} more", items.len() - visible))
+                        .font(TextStyle::new(11.0, 400.0))
+                        .color(t.muted),
+                );
+            }
+            lane = lane.child(grid);
+        }
+        panel = panel.child(lane);
+    }
+    panel
+}
+
+fn change_card(item: &serde_json::Value, t: Palette) -> El {
+    let path = item["path"].as_str().unwrap_or("");
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let added = item["added"].as_i64().unwrap_or(0);
+    let removed = item["removed"].as_i64().unwrap_or(0);
+    let green = rune::color::hex("#059669").unwrap();
+    let red = rune::color::hex("#e11d48").unwrap();
+    let seed: usize = name.encode_utf16().map(usize::from).sum();
+    let marks: Vec<(i32, Color)> = if added > 0 && removed > 0 {
+        vec![(40, t.muted), (24, red), (32, green), (20, t.muted)]
+    } else if added > 0 {
+        vec![(38, green), (26, green), (20, t.muted)]
+    } else if removed > 0 {
+        vec![(38, red), (22, red), (18, t.muted)]
+    } else {
+        vec![(40, t.muted), (24, t.muted)]
+    };
+    let mut sketch = col().gap(4.5);
+    for (i, (w, c)) in marks.iter().enumerate() {
+        sketch = sketch.child(
+            el().size((*w + ((seed + i * 7) % 9) as i32 - 4) as f32, 3.5)
+                .radius(2.0)
+                .fill(*c),
+        );
+    }
+    let mut foot = row().gap(7.0);
+    if added > 0 {
+        foot = foot.child(
+            text(format!("+{added}"))
+                .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
+                .color(green),
+        );
+    }
+    if removed > 0 {
+        foot = foot.child(
+            text(format!("−{removed}"))
+                .font(TextStyle::new(10.5, 400.0).family(rune::Family::Mono))
+                .color(red),
+        );
+    }
+    col()
+        .w(158.0)
+        .h(178.0)
+        .padding(15.0)
+        .radius(12.0)
+        .border(1.0, t.line_soft)
+        .fill(t.raised_high)
+        .justify_between()
+        .child(
+            col()
+                .gap(14.0)
+                .child(icon(super::file_icons::for_path(name), 18.0))
+                .child(sketch),
+        )
+        .child(
+            col()
+                .gap(9.0)
+                .child(
+                    text(name.to_owned())
+                        .font(TextStyle::new(11.0, 400.0).family(rune::Family::Mono))
+                        .color(t.ink)
+                        .truncate(),
+                )
+                .child(foot),
+        )
+}
+
+fn count_up(value: i64, elapsed: f32, duration: f32) -> i64 {
+    let x = (elapsed / duration).clamp(0.0, 1.0);
+    let eased = if x >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2.0_f32.powf(-10.0 * x)
+    };
+    (value as f32 * eased).round() as i64
 }

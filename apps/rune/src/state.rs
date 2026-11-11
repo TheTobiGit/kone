@@ -66,6 +66,8 @@ pub struct AppState {
     pub overview_switcher_open: bool,
     pub overview_name_hover: bool,
     pub overview_folder_hover: bool,
+    pub changes_folded: std::collections::HashSet<String>,
+    pub changes_hover: Option<bool>,
     pub overview_viewport: (f32, f32),
     pub cycle_paths: Vec<String>,
     pub cycle_index: usize,
@@ -91,6 +93,33 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn changes_preferences_path() -> std::path::PathBuf {
+        std::env::var_os("KONE_RUNE_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("Library/Application Support/kone-rune")
+            })
+            .join("changes-folded.json")
+    }
+
+    pub fn toggle_changes(&mut self, key: String) {
+        if !self.changes_folded.remove(&key) {
+            self.changes_folded.insert(key);
+        }
+        if self.bridge.is_some() {
+            let path = Self::changes_preferences_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(data) = serde_json::to_vec(&self.changes_folded) {
+                let _ = std::fs::write(path, data);
+            }
+        }
+    }
+
     pub fn example_project(&mut self) {
         if self.projects.is_empty() {
             self.projects.push(Project {
@@ -201,6 +230,9 @@ impl AppState {
 
     pub fn setup(s: &mut Self, wake: rune::Waker) {
         s.start_actions.live = true;
+        if let Ok(data) = std::fs::read(Self::changes_preferences_path()) {
+            s.changes_folded = serde_json::from_slice(&data).unwrap_or_default();
+        }
         let home = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
