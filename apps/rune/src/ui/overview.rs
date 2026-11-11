@@ -1,7 +1,7 @@
 use super::empty::BACK;
 
 use super::empty::StartPointer;
-use super::projects::{folder_with_git, sessions};
+use super::projects::{folder_with_git, folder_with_git_hover, sessions};
 use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
@@ -26,6 +26,111 @@ static CHEVRON: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
+
+static FOLDER_BRANCH: Icon = Icon {
+    name: "overview-folder-branch",
+    view: 24.0,
+    body: r#"<circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="6" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 15V3m12 6a9 9 0 0 1-9 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#,
+};
+static FOLDER_FINDER: Icon = Icon {
+    name: "overview-folder-finder",
+    view: 24.0,
+    body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12ZM12.99 2.5C12.12 3.79 10.52 7.71 10.07 11.58C9.93 12.8 10 13.5 11.9 13.5C13.1 13.5 12.9 13.8 12.92 14.57C12.87 16.12 12.94 19.05 14 21.5M7 8v2m10-2v2M7 16.5c3.5 2 6.5 2 10 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+fn overview_folder(
+    s: &AppState,
+    name: &str,
+    tree: &serde_json::Value,
+    repo: bool,
+    t: Palette,
+    inline: bool,
+    elapsed: f32,
+) -> El {
+    let over = s.overview_folder_hover;
+    let scale = if inline { 0.95 } else { 1.15 };
+    let size = if inline { 14.0 } else { 15.0 };
+    let path = s
+        .selected_project
+        .and_then(|i| s.projects.get(i))
+        .map(|p| p.path.clone())
+        .unwrap_or_default();
+    let action = |label: &'static str, glyph: &'static Icon| {
+        row()
+            .center_y()
+            .gap(7.0)
+            .cursor(Cursor::Pointer)
+            .hover_group()
+            .child(icon(glyph, size).color(t.muted).group_color(t.ink))
+            .child(
+                text(label)
+                    .font(TextStyle::new(12.5, 400.0).tracking(-0.125))
+                    .color(t.muted)
+                    .group_color(t.ink),
+            )
+    };
+    let finder = action("Open in Finder", &FOLDER_FINDER)
+        .role("button")
+        .label("Reveal in Finder")
+        .focusable(over)
+        .on_press(move |s: &mut AppState| s.reveal_project(path.clone()));
+    let actions = if inline {
+        let mut a = row().gap(14.0).center_y();
+        if repo {
+            a = a.child(action("Switch branch", &FOLDER_BRANCH));
+        }
+        a.child(finder)
+    } else {
+        let mut a = col().gap(9.0);
+        if repo {
+            a = a.child(action("Switch branch", &FOLDER_BRANCH));
+        }
+        a.child(finder)
+    }
+    .opacity(if over { 1.0 } else { 0.0 })
+    .opacity_motion(Curve::tween(0.2, Easing::cubic(0.25, 0.1, 0.25, 1.0)));
+    let tile = el()
+        .size(200.0 * scale, 116.0 * scale)
+        .cursor(Cursor::Pointer)
+        .child(
+            folder_with_git_hover(name, t, tree, over)
+                .origin(0.0, 0.0)
+                .scale(scale)
+                .offset(0.0, if over { -3.0 } else { 0.0 })
+                .offset_motion(Curve::tween(0.35, Easing::cubic(0.22, 1.0, 0.36, 1.0))),
+        );
+    let progress = if inline {
+        super::start_motion::bezier(
+            [0.22, 1.0, 0.36, 1.0],
+            ((elapsed - 0.12) / 0.4).clamp(0.0, 1.0),
+        )
+    } else {
+        let x = (elapsed - 0.33).max(0.0);
+        let d = 24.0_f32 / 1.8;
+        let w = (260.0_f32 / 0.9 - d * d).sqrt();
+        if elapsed < 0.33 {
+            0.0
+        } else {
+            1.0 - (-d * x).exp() * ((w * x).cos() + d / w * (w * x).sin())
+        }
+    };
+    let mut content = col()
+        .key("overview-folder")
+        .gap(if inline { 10.0 } else { 24.0 })
+        .on_hover_change(|s: &mut AppState, over, _| s.overview_folder_hover = over)
+        .opacity(progress.clamp(0.0, 1.0))
+        .offset(0.0, (if inline { 10.0 } else { 44.0 }) * (1.0 - progress))
+        .scale((if inline { 0.97 } else { 0.94 }) + (if inline { 0.03 } else { 0.06 }) * progress);
+    if inline {
+        if s.overview_viewport.0 > 860.0 {
+            content = content.items_end();
+        }
+        content = content.child(tile).child(actions);
+    } else {
+        content = content.items_center().child(actions).child(tile);
+    }
+    content
+}
 
 /// `text-wrap: pretty` as Chromium applies it to the greeting. When the greedy wrap at `max`
 /// would leave the last word alone on the last line, the breaks are chosen again, Knuth–Plass
@@ -436,7 +541,18 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             }
         }
     }
-    let wrapped = pretty_wrap(&m.text, &m.spans, body_style, 620.0);
+    let viewport_width = if s.overview_viewport.0 > 0.0 {
+        s.overview_viewport.0
+    } else {
+        1280.0
+    };
+    let content_width = (viewport_width - 128.0).clamp(0.0, 896.0);
+    let greeting_width = if viewport_width > 860.0 && viewport_width <= 1440.0 {
+        (content_width - 222.0).clamp(0.0, 620.0)
+    } else {
+        content_width.min(620.0)
+    };
+    let wrapped = pretty_wrap(&m.text, &m.spans, body_style, greeting_width);
     let mut hello = row().center_y().gap(10.0).child(
         text("Hey,")
             .font(TextStyle::new(30.0, 400.0).lh(33.0).tracking(HEY_TRACKING))
@@ -797,7 +913,24 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .fill(t.ground)
         .center()
         .child(dock);
+    let width = viewport_width;
+    let inline = width <= 1440.0;
+    let narrow = width <= 860.0;
+    let folder = overview_folder(s, name, tree, repo, t, inline, elapsed);
+    let header = if narrow {
+        col().w_full().gap(20.0).child(greeting).child(folder)
+    } else if inline {
+        row()
+            .w_full()
+            .justify_between()
+            .gap(32.0)
+            .child(greeting)
+            .child(folder)
+    } else {
+        row().w_full().child(greeting)
+    };
     let root = col()
+        .on_layout(|s: &mut AppState, [_, _, w, h]| s.overview_viewport = (w, h))
         .w_full()
         .h_full()
         .fill(t.ground)
@@ -806,20 +939,21 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .child(
             row().w_full().justify_center().pt(44.0).px(64.0).child(
                 col()
-                    .w(896.0)
+                    .w(content_width)
                     .gap(44.0)
-                    .child(
-                        row()
-                            .w_full()
-                            .justify_between()
-                            .gap(32.0)
-                            .child(greeting)
-                            .child(folder_with_git(name, t, tree)),
-                    )
+                    .child(header)
                     .child(changes_panel)
                     .child(sessions(s, &s.project_data.sessions, t, false)),
             ),
         );
+    let root = if !inline {
+        root.child(
+            el().pin(Some(40.0), None, None, Some(48.0))
+                .child(overview_folder(s, name, tree, repo, t, false, elapsed)),
+        )
+    } else {
+        root
+    };
     let root = if let Some(menu) = picker {
         let menu_top = 100.0
             + 33.0

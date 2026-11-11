@@ -95,7 +95,12 @@ pub(super) fn folder_with_git(name: &str, t: Palette, tree: &serde_json::Value) 
     folder_with_git_hover(name, t, tree, false)
 }
 
-fn folder_with_git_hover(name: &str, t: Palette, tree: &serde_json::Value, active: bool) -> El {
+pub(super) fn folder_with_git_hover(
+    name: &str,
+    t: Palette,
+    tree: &serde_json::Value,
+    active: bool,
+) -> El {
     let (sheet_top, sheet_bottom, pocket_top, pocket_middle, pocket_bottom, shadow) = if t.dark {
         (
             mix_srgb(t.ground, t.ink, 0.068),

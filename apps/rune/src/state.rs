@@ -65,6 +65,8 @@ pub struct AppState {
     pub profile_hover: bool,
     pub overview_switcher_open: bool,
     pub overview_name_hover: bool,
+    pub overview_folder_hover: bool,
+    pub overview_viewport: (f32, f32),
     pub cycle_paths: Vec<String>,
     pub cycle_index: usize,
     pub start_actions: StartActionsState,
