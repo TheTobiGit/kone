@@ -37,7 +37,6 @@ static ARCHIVE: Icon = Icon {
     body: r#"<path d="M7 21H17C19.357 21 20.535 21 21.268 20.268C22 19.535 22 18.357 22 16S22 12.465 21.268 11.732C20.535 11 19.357 11 17 11H7C4.643 11 3.465 11 2.732 11.732C2 12.465 2 13.643 2 16S2 19.535 2.732 20.268C3.465 21 4.643 21 7 21ZM4 11C4 9.6 4 8.9 4.273 8.365C4.512 7.895 4.895 7.512 5.365 7.273C5.9 7 6.6 7 8 7H16C17.4 7 18.1 7 18.635 7.273C19.105 7.512 19.488 7.895 19.727 8.365C20 8.9 20 9.6 20 11M6 7C6 5.6 6 4.9 6.273 4.365C6.512 3.895 6.895 3.512 7.365 3.273C7.9 3 8.6 3 10 3H14C15.4 3 16.1 3 16.635 3.273C17.105 3.512 17.488 3.895 17.727 4.365C18 4.9 18 5.6 18 7M16 15L15.7 15.4C15.111 16.185 14.817 16.578 14.394 16.789C13.972 17 13.481 17 12.5 17H11.5C10.519 17 10.028 17 9.606 16.789C9.183 16.578 8.889 16.185 8.3 15.4L8 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-#[allow(dead_code)]
 static REFRESH: Icon = Icon {
     name: "studio-refresh",
     view: 24.0,
@@ -130,7 +129,7 @@ fn fork_tool(
         });
     if shown {
         button = button.child(
-            el().pin(Some(-29.0), None, None, Some(-80.0))
+            el().pin(Some(-80.0), None, Some(26.0), None)
                 .px(7.0)
                 .h(20.0)
                 .center()
@@ -140,6 +139,77 @@ fn fork_tool(
         );
     }
     button
+}
+
+static METER_TRACK: Icon = Icon {
+    name: "studio-meter-track",
+    view: 20.0,
+    body: r#"<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2.25"/>"#,
+};
+
+fn meter_arc(percent: usize) -> &'static Icon {
+    static ARCS: std::sync::OnceLock<Vec<Icon>> = std::sync::OnceLock::new();
+    &ARCS.get_or_init(|| (0..=100).map(|p| Icon {
+        name: Box::leak(format!("studio-meter-{p}").into_boxed_str()),
+        view: 20.0,
+        body: Box::leak(format!(r#"<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-dasharray="{:.4} 44" transform="rotate(-90 10 10)"/>"#, 44.0 * p as f32 / 100.0).into_boxed_str()),
+    }).collect())[percent.min(100)]
+}
+
+fn context_meter(state: &StudioState, t: Palette) -> El {
+    let Some((used, window)) = state.context_usage.filter(|(_, window)| *window > 0) else {
+        return el().w(0.0);
+    };
+    let percent = ((used as f64 / window as f64 * 100.0).round() as usize).min(100);
+    let color = if percent >= 90 {
+        rune::Color::from_oklab([0.6, 0.16, 0.08, 1.0])
+    } else if percent >= 70 {
+        t.accent
+    } else {
+        crate::theme::mix_srgb(t.accent, t.muted, 0.52)
+    };
+    let mut meter = el()
+        .w(15.0)
+        .h(15.0)
+        .center()
+        .child(icon(&METER_TRACK, 15.0).color(t.muted.alpha(0.22)))
+        .child(
+            icon(meter_arc(percent), 15.0)
+                .color(color)
+                .pin(Some(0.0), None, None, Some(0.0)),
+        )
+        .on_press(|s: &mut AppState| s.studio.context_open = !s.studio.context_open);
+    if state.context_open {
+        let data_row = |name: &str, value: String| {
+            row()
+                .w_full()
+                .justify_between()
+                .child(label(name, 11.0, 400.0, t.muted))
+                .child(label(value, 11.0, 400.0, t.ink))
+        };
+        let card = col()
+            .w(260.0)
+            .px(12.0)
+            .py(12.0)
+            .gap(8.0)
+            .radius(10.0)
+            .fill(t.ground)
+            .child(label("Context window", 12.0, 600.0, t.ink))
+            .child(data_row("Used", format!("{percent}% · {}k", used / 1000)))
+            .child(data_row(
+                "Remaining",
+                format!("{}k", window.saturating_sub(used) / 1000),
+            ))
+            .child(data_row("Window", format!("{}k", window / 1000)))
+            .child(label(
+                format!("Auto-compacts at ~{}k", window / 1000),
+                11.0,
+                400.0,
+                t.muted,
+            ));
+        meter = meter.child(card.pin(None, Some(0.0), None, Some(23.0)));
+    }
+    meter
 }
 
 fn title_of(state: &StudioState) -> String {
@@ -399,7 +469,13 @@ fn studio_row(
                     row()
                         .gap(8.0)
                         .center_y()
-                        .child(provider_mark(state, t))
+                        .child(
+                            if state.is_some_and(|s| s.dormant || s.terminal_command.is_some()) {
+                                icon(&SIDE_CHAT, 15.0).color(t.muted)
+                            } else {
+                                provider_mark(state, t)
+                            },
+                        )
                         .child(
                             if state.is_some_and(|state| state.worktree_path.is_some()) {
                                 el().w(8.0).child(icon(&WORKTREE, 12.0).color(t.muted))
@@ -407,7 +483,30 @@ fn studio_row(
                                 el().w(0.0)
                             },
                         )
-                        .child(column_title(state, focused, t)),
+                        .child(if state.is_some_and(|s| s.dormant) {
+                            label("New thread", 13.5, 620.0, t.ink)
+                        } else if state.is_some_and(|s| s.terminal_command.is_some()) {
+                            label("Terminal", 13.5, 620.0, t.ink)
+                        } else {
+                            column_title(state, focused, t)
+                        })
+                        .child(
+                            if let Some(command) = state.and_then(|s| s.terminal_command.as_ref()) {
+                                row()
+                                    .center_y()
+                                    .gap(5.0)
+                                    .px(8.0)
+                                    .h(18.0)
+                                    .radius(999.0)
+                                    .fill(t.ink.alpha(0.05))
+                                    .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
+                                    .child(label(command.clone(), 10.0, 620.0, t.muted))
+                            } else if let Some(state) = state {
+                                context_meter(state, t)
+                            } else {
+                                el().w(0.0)
+                            },
+                        ),
                 )
                 .child(
                     row()
@@ -445,6 +544,16 @@ fn studio_row(
                                     s.center_studio_column(tx);
                                 }),
                         )
+                        .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                            el().w(20.0)
+                                .h(20.0)
+                                .center()
+                                .radius(6.0)
+                                .hover(t.hover)
+                                .child(icon(&REFRESH, 13.0).color(t.muted))
+                        } else {
+                            el().w(0.0)
+                        })
                         .child(
                             el().key(format!("studio-zen-{id}"))
                                 .w(20.0)
@@ -476,7 +585,14 @@ fn studio_row(
                                 }),
                         ),
                 );
-            let body = if focused {
+            let body = if state.is_some_and(|s| s.dormant) {
+                col()
+                    .w_full()
+                    .grow(1.0)
+                    .items_center()
+                    .pt(40.0)
+                    .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
+            } else if focused {
                 focused_body(
                     s,
                     &project.name,

@@ -101,6 +101,31 @@ fn main() {
                 s.studio_column_hover = Some("review-one".into());
                 s.studio.head_tooltip = Some("Hand off to another provider".into());
             }),
+            ("studio-column-head-meter-calm", |s| {
+                studio_column_head(s);
+                s.studio.context_usage = Some((40_000, 200_000));
+            }),
+            ("studio-column-head-meter-warm", |s| {
+                studio_column_head(s);
+                s.studio.context_usage = Some((150_000, 200_000));
+            }),
+            ("studio-column-head-meter-full", |s| {
+                studio_column_head(s);
+                s.studio.context_usage = Some((190_000, 200_000));
+            }),
+            ("studio-column-head-meter-open", |s| {
+                studio_column_head(s);
+                s.studio.context_usage = Some((40_000, 200_000));
+                s.studio.context_open = true;
+            }),
+            ("studio-column-head-dormant", |s| {
+                studio_column_head(s);
+                s.studio.dormant = true;
+            }),
+            ("studio-column-head-terminal-live", |s| {
+                studio_column_head(s);
+                s.studio.terminal_command = Some("npm run dev".into());
+            }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);
                 s.studio.handoff_source = Some("claudeAgent".into());
