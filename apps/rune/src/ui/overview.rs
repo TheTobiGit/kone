@@ -1,7 +1,7 @@
 use super::empty::BACK;
 
 use super::empty::StartPointer;
-use super::projects::{folder_with_git, folder_with_git_hover, sessions};
+use super::projects::{folder_with_git, folder_with_git_hover, session_head, sessions};
 use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
@@ -413,21 +413,29 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             el().w(84.0).h(30.0).center().child(
                 text("Space")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted.alpha(0.4)),
+                    .color(t.muted),
             ),
         )
         .child(
             el().w(84.0).h(30.0).center().child(
                 text("Files")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted.alpha(0.4)),
+                    .color(t.muted),
             ),
         )
         .child(
             el().w(84.0).h(30.0).center().child(
                 text("Git")
                     .font(TextStyle::new(12.5, 400.0).tracking(-0.1))
-                    .color(t.muted.alpha(0.4)),
+                    .color(
+                        if !s.project_data.overview["repository"].is_null()
+                            || !s.project_data.overview["workingTree"].is_null()
+                        {
+                            t.muted
+                        } else {
+                            t.muted.alpha(0.4)
+                        },
+                    ),
             ),
         );
     let [dx, dy] = s.start_actions.offsets[0];
@@ -1047,14 +1055,58 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .apply_start_pointer(cx.is_reduced_motion())
         .child(top)
         .child(
-            row().w_full().justify_center().pt(44.0).px(64.0).child(
-                col()
-                    .w(content_width)
-                    .gap(44.0)
-                    .child(header)
-                    .child(changes_panel)
-                    .child(sessions(s, &s.project_data.sessions, t, false)),
-            ),
+            row()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .justify_center()
+                .pt(44.0)
+                .px(64.0)
+                .child({
+                    s.project_data.lazy.reduced.set(cx.is_reduced_motion());
+                    let scroll = s.project_data.lazy.scroll.clone();
+                    let offset = scroll.get().0;
+                    let pinned_count = s.project_data.sessions.iter().filter(|v| v.pinned).count();
+                    let has_recent = s.project_data.sessions.iter().any(|v| !v.pinned);
+                    let boundary = 34.0
+                        + pinned_count as f32 * 40.0
+                        + pinned_count.saturating_sub(1) as f32 * 22.0
+                        + 40.0;
+                    let mut viewport = el().w_full().grow(1.0).min_h(0.0).child(
+                        col()
+                            .key("overview-sessions")
+                            .w_full()
+                            .h_full()
+                            .scroll(ScrollSpec {
+                                stick_bottom: false,
+                            })
+                            .on_scroll_offset(move |at| scroll.set((at.offset[1], at.max[1])))
+                            .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
+                            .child(sessions(s, &s.project_data.sessions, t, false).pb(24.0)),
+                    );
+                    if offset > 0.0 && !s.project_data.sessions.is_empty() {
+                        let pinned = pinned_count > 0 && (!has_recent || offset < boundary);
+                        let push = if pinned && has_recent {
+                            (boundary - offset - 34.0).min(0.0)
+                        } else {
+                            0.0
+                        };
+                        viewport = viewport.child(
+                            el().pin(Some(0.0), Some(push), Some(0.0), None)
+                                .h(34.0)
+                                .fill(t.ground)
+                                .clip_fade_linear(0.0, 0.0, 0.0, 12.0)
+                                .child(session_head(s, t, pinned, pinned || pinned_count == 0)),
+                        );
+                    }
+                    col()
+                        .w(content_width)
+                        .h_full()
+                        .gap(44.0)
+                        .child(header)
+                        .child(changes_panel)
+                        .child(viewport)
+                }),
         );
     let root = if !inline {
         root.child(

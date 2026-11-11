@@ -133,6 +133,12 @@ fn main() {
                 });
             }),
             ("overview-review", |s| review::populate(s, Page::Overview)),
+            ("overview-skeletons", |s| {
+                review::populate(s, Page::Overview);
+                s.project_data.sessions.retain(|row| !row.pinned);
+                s.project_data.lazy.ready = 0;
+                s.project_data.lazy.reveal = Some(0.0);
+            }),
             ("overview-loading", |s| {
                 review::overview_greeting(s, "loading")
             }),

@@ -827,10 +827,66 @@ fn skeleton(ri: usize, t: Palette, elapsed: f64, opacity: f32, reduced: bool) ->
         .pr(14.0)
 }
 
+pub(super) fn session_head(s: &AppState, t: Palette, pinned: bool, first: bool) -> El {
+    let label = if pinned { "PINNED" } else { "RECENT" };
+    let tint = if pinned { t.warn } else { t.faint };
+    let mut head = row().w_full().center_y().justify_between().child(
+        row()
+            .center_y()
+            .gap(7.0)
+            .child(icon(if pinned { &PROJECT_PIN } else { &CLOCK }, 11.0).color(tint))
+            .child(
+                text(label)
+                    .font(
+                        TextStyle::new(10.0, 400.0)
+                            .family(Family::Mono)
+                            .tracking(1.4),
+                    )
+                    .color(tint),
+            ),
+    );
+    if first {
+        let mut toggle = row()
+            .center_y()
+            .gap(2.0)
+            .padding(2.0)
+            .radius(8.0)
+            .fill(t.hover);
+        for (label, cost) in [("Tokens", false), ("Cost", true)] {
+            let selected = s.project_data.metric_cost == cost;
+            let mut button = el().px(7.0).py(2.0).radius(6.0);
+            if selected {
+                button = button.fill(t.ground).box_shadow(Shadow {
+                    y: 1.0,
+                    blur: 2.0,
+                    color: rune::color::Color::BLACK.alpha(0.08),
+                    ..Shadow::default()
+                });
+            }
+            toggle = toggle.child(
+                button
+                    .child(
+                        text(label)
+                            .font(
+                                TextStyle::new(10.0, 400.0)
+                                    .family(Family::Mono)
+                                    .lh(14.0)
+                                    .tracking(0.4),
+                            )
+                            .color(if selected { t.ink } else { t.muted }),
+                    )
+                    .on_press(move |s: &mut AppState| s.project_data.metric_cost = cost),
+            );
+        }
+        head = head.child(toggle);
+    }
+    head
+}
+
 pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, home: bool) -> El {
     let mut list = col().w_full().gap(40.0);
     let mut first = true;
-    for (pinned, label) in [(true, "PINNED"), (false, "RECENT")] {
+    for pinned in [true, false] {
         let group: Vec<_> = sessions
             .iter()
             .filter(|session| session.pinned == pinned)
@@ -838,59 +894,14 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
         if group.is_empty() {
             continue;
         }
-        let tint = if pinned { t.warn } else { t.faint };
-        let mut head = row().w_full().center_y().justify_between().child(
-            row()
-                .center_y()
-                .gap(7.0)
-                .child(icon(if pinned { &PROJECT_PIN } else { &CLOCK }, 11.0).color(tint))
-                .child(
-                    text(label)
-                        .font(
-                            TextStyle::new(10.0, 400.0)
-                                .family(Family::Mono)
-                                .tracking(1.4),
-                        )
-                        .color(tint),
-                ),
-        );
-        if first {
-            let mut toggle = row()
-                .center_y()
-                .gap(2.0)
-                .padding(2.0)
-                .radius(8.0)
-                .fill(t.hover);
-            for (label, cost) in [("Tokens", false), ("Cost", true)] {
-                let selected = s.project_data.metric_cost == cost;
-                let mut button = el().px(7.0).py(2.0).radius(6.0);
-                if selected {
-                    button = button.fill(t.ground).shadow(1.0, 2.0, t.ink.alpha(0.08));
-                }
-                toggle = toggle.child(
-                    button
-                        .child(
-                            text(label)
-                                .font(
-                                    TextStyle::new(10.0, 400.0)
-                                        .family(Family::Mono)
-                                        .lh(14.0)
-                                        .tracking(0.4),
-                                )
-                                .color(if selected { t.ink } else { t.muted }),
-                        )
-                        .on_press(move |s: &mut AppState| s.project_data.metric_cost = cost),
-                );
-            }
-            head = head.child(toggle);
-            first = false;
-        }
+        let head = session_head(s, t, pinned, first);
+        first = false;
         let mut rows = col().w_full().gap(22.0);
         for (ri, session) in group.into_iter().enumerate() {
-            if home && !pinned && ri >= s.project_data.lazy.limit {
+            if !pinned && ri >= s.project_data.lazy.limit {
                 break;
             }
-            let masked = home && !pinned && ri >= s.project_data.lazy.ready;
+            let masked = !pinned && ri >= s.project_data.lazy.ready;
             let loading = masked
                 && s.project_data
                     .lazy

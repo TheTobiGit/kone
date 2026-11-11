@@ -77,6 +77,7 @@ pub struct LazySessions {
     pub reveal: Option<f64>,
     pub scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     pub reduced: std::cell::Cell<bool>,
+    last_scroll: (f32, f32),
 }
 impl Default for LazySessions {
     fn default() -> Self {
@@ -88,6 +89,7 @@ impl Default for LazySessions {
             reveal: None,
             scroll: std::rc::Rc::new(std::cell::Cell::new((0.0, -1.0))),
             reduced: std::cell::Cell::new(false),
+            last_scroll: (0.0, -1.0),
         }
     }
 }
@@ -111,6 +113,9 @@ impl LazySessions {
             tx.wake_after(std::time::Duration::from_millis(30));
         }
         let (offset, max) = self.scroll.get();
+        let scrolled = self.last_scroll.0 != offset;
+        self.last_scroll = (offset, max);
+        tx.wake_after(std::time::Duration::from_millis(30));
         if self.limit < count && max >= 0.0 && max - offset <= 240.0 {
             self.limit = (self.limit + 8).min(count);
             if offset > 0.0 || clock - opened >= 0.75 {
@@ -121,7 +126,7 @@ impl LazySessions {
             tx.wake_after(std::time::Duration::ZERO);
             return true;
         }
-        false
+        scrolled
     }
 }
 
@@ -267,6 +272,7 @@ impl AppState {
                 .as_millis() as i64;
         }
         self.page = Page::Overview;
+        self.project_data.lazy = Default::default();
         self.project_data.menu_path = None;
         self.project_data
             .pending

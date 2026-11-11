@@ -262,13 +262,13 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
-        let recent_count = s
-            .project_data
-            .home_sessions
-            .iter()
-            .filter(|row| !row.pinned)
-            .count();
-        let lazy = if s.page == Page::Projects {
+        let recent_sessions = if s.page == Page::Overview {
+            &s.project_data.sessions
+        } else {
+            &s.project_data.home_sessions
+        };
+        let recent_count = recent_sessions.iter().filter(|row| !row.pinned).count();
+        let lazy = if matches!(s.page, Page::Projects | Page::Overview) {
             s.project_data.lazy.tick(recent_count, clock, tx)
         } else {
             s.project_data.lazy = Default::default();
