@@ -336,3 +336,10 @@ Both capture commands write `<scene>-<theme>.png` for light and dark at 1292×85
 - Settled Electron-left, Rune-right 2x captures: `/workspace/rune-compare/overview-fix-1-{light,dark}.png`. The greeting wraps like this fixture, but the staged card is still about 10 CSS px too high in Rune. The browser folder uses a different repository fixture.
 - Remaining: departing greeting segments still vanish; some adjacent segments still differ from Vue. The lane shift remains, as do exact deleted borders/strikethrough, empty dash, bundle placement and rotation, full file-icon coverage, card hover motion, and individually staggered page entrances. Count clocks do not restart on lane fold/reopen. Motion was not captured at several timestamps or frame-compared. This is not a 1:1 sign-off.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Overview sessions follow-up (overview-fix-2, 2026-11-11) — INCOMPLETE
+
+- Replaced the whole-session entrance with separately animated section headers and staggered rows, using the source 300 ms curve, 14 pt row rise, 0.985 starting scale and 30 ms stagger. Lazy rows enter settled and reduced motion skips the travel.
+- Electron-left/Rune-right 2x settled comparisons: `/workspace/rune-compare/overview-fix-2-{light,dark}.png`. The reference and Rune use different session data and identities.
+- Remaining: this does not finish the requested piece. Row action and identity crossfades, magnet motion, delete-hold progress, metric swap, exact shimmer, and measured sticky handoff remain as described under overview-7. Entrance timing has not been frame-compared; its handling of late data and reduced motion may differ. The surrounding overview also differs. No motion timestamps were captured.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.

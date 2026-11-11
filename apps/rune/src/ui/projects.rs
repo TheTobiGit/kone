@@ -651,7 +651,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         })
                         .on_scroll_offset(move |at| session_scroll.set((at.offset[1], at.max[1])))
                         .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
-                        .child(sessions(s, &s.project_data.home_sessions, t, true).pb(24.0)),
+                        .child(sessions(s, &s.project_data.home_sessions, t, true, None).pb(24.0)),
                 ),
         )
 }
@@ -883,9 +883,16 @@ pub(super) fn session_head(s: &AppState, t: Palette, pinned: bool, first: bool) 
     head
 }
 
-pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, home: bool) -> El {
+pub(super) fn sessions(
+    s: &AppState,
+    sessions: &[ProjectSession],
+    t: Palette,
+    home: bool,
+    entrance: Option<f32>,
+) -> El {
     let mut list = col().w_full().gap(40.0);
     let mut first = true;
+    let mut row_index = 0usize;
     for pinned in [true, false] {
         let group: Vec<_> = sessions
             .iter()
@@ -894,13 +901,37 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
         if group.is_empty() {
             continue;
         }
-        let head = session_head(s, t, pinned, first);
+        let head_progress = entrance.map_or(1.0, |elapsed| {
+            if s.project_data.lazy.reduced.get() {
+                1.0
+            } else {
+                super::start_motion::bezier(
+                    [0.22, 1.0, 0.36, 1.0],
+                    ((elapsed - 0.23) / 0.3).clamp(0.0, 1.0),
+                )
+            }
+        });
+        let head = session_head(s, t, pinned, first)
+            .opacity(head_progress)
+            .offset(0.0, 9.0 * (1.0 - head_progress));
         first = false;
         let mut rows = col().w_full().gap(22.0);
         for (ri, session) in group.into_iter().enumerate() {
             if !pinned && ri >= s.project_data.lazy.limit {
                 break;
             }
+            let entrance_progress = entrance.map_or(1.0, |elapsed| {
+                if s.project_data.lazy.reduced.get() || (!pinned && ri >= 8) {
+                    1.0
+                } else {
+                    let delay = 0.28 + (row_index as f32 * 0.03).min(0.36);
+                    super::start_motion::bezier(
+                        [0.22, 1.0, 0.36, 1.0],
+                        ((elapsed - delay) / 0.3).clamp(0.0, 1.0),
+                    )
+                }
+            });
+            row_index += 1;
             let masked = !pinned && ri >= s.project_data.lazy.ready;
             let loading = masked
                 && s.project_data
@@ -1111,6 +1142,8 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
             let hover_id = id.clone();
             let content = row()
                 .w_full()
+                .opacity(entrance_progress)
+                .offset(0.0, 14.0 * (1.0 - entrance_progress))
                 .pr(14.0)
                 .gap(14.0)
                 .center_y()
@@ -1123,7 +1156,11 @@ pub(super) fn sessions(s: &AppState, sessions: &[ProjectSession], t: Palette, ho
                 .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
                 .focusable(!masked)
                 .cursor(Cursor::Pointer)
-                .scale(if hovered && !loading { 1.009 } else { 1.0 })
+                .scale(if hovered && !loading {
+                    1.009
+                } else {
+                    0.985 + 0.015 * entrance_progress
+                })
                 .origin(0.0, 0.5)
                 .scale_motion(Curve::tween(0.34, EASE))
                 .child(identity_lead(
