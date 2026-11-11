@@ -185,3 +185,17 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - Side-by-sides at 2x (Electron left): `/workspace/rune-compare/overview-chrome-{light,dark}.png` and `overview-chrome-{back,nav,profile}-{light,dark}.png`. The fixture uses the same non-repository project on each side; the rest of the Overview has not been ported in this pass.
 - Remaining differences: Rune's profile model resolves only the system initial, not a user-supplied profile image; its profile action is inert while the profile surface is out of scope. The selected mark stays on Overview because Git is disabled, so its slide cannot be exercised. Back color changes are not separately timed to Electron's 0.18/0.25 s transitions; entrance and magnet motion have not been frame-compared. Rune and Chromium tooltips and text rasterization differ. The out-of-scope Overview body visibly differs in these full-screen sheets.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 37 native tests passed using `LIBRARY_PATH=/tmp/kone-rune-libs` for Linux linking.
+
+## Overview greeting (overview-2, 2026-11-11)
+
+- Copy matches `HomeGreeting.vue` word for word in all 12 states (loading, nonrepo, fresh, fresh-dirty, fresh-unstaged, clean, dirty, staged, dirty-no-stat, ahead, behind, diverged). Each has a fixture scene, `overview-<state>`.
+- Letter-spacing resolves against the paragraph's 16 px, not the 30 px spans: −0.16 px on the "Hey," row and −0.32 px on the sentence (`HEY_TRACKING`, `BODY_TRACKING`). Text is Geist 400 at 30 px, and figures are mono 26/700.
+- Project-name trigger: the Hugeicons `ArrowDown01Icon` drawn at 15 px with a 2.2 stroke, 3 px after "{name} ". The name sits 1 px in, and the sentence resumes 1 px past the chevron, using sized no-break spaces (`Message::gap`). On hover, the 6% ink pill fades in over 0.18 s, and the chevron turns ink and drops 1 px over 0.2 s ease.
+- Lines: a 38.5 px pitch with a 0.5 pt top inset keeps each baseline within 1 pt of Chromium's (which lands 39 px, then 37 px apart, because the trigger's padding raises line 1).
+- `text-wrap: pretty`: when the greedy wrap would leave a single word on the last line, `pretty_wrap` re-breaks the text Knuth–Plass style. It keeps the same line count, puts at least 2 words on the last line, and minimises squared slack. This reproduces Chromium's nonrepo breaks.
+- Captures: `node /workspace/parity-scratch/pw/greeting-states2.mjs light|dark x` (Electron, which waits 1.6 s per state for the blur-in), `greeting-run.mjs <theme> <out> dirty hover`, and Rune `--scene overview-<state> --size 1292x854` (crop 12,16 → 2560x1680). Side-by-sides are `/workspace/rune-compare/overview-greeting-<state>-<theme>.png`, the sheets are `overview-greeting-states-<theme>.png`, and the dirty pair is `overview-greeting-<theme>.png`. Ink bounds match within 1 px in every state, both themes, hover included.
+- Remaining differences:
+  - Rune doesn't have Electron's per-segment blur and stagger reveal (360 ms opacity and blur, 22 ms per segment). Only the greet-rise is ported, because Rune can't blur individual spans.
+  - Figures use Geist Mono. Electron's `ui-monospace` resolves per platform (SF Mono on macOS).
+  - The hover pill's colour is within 1–2/255 of Electron's `color-mix`.
+  - The Overview area below the greeting is out of this piece's scope. In these captures Electron shows "Not a git repository" there because its props are forced.

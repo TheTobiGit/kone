@@ -21,41 +21,90 @@ static CHEVRON: Icon = Icon {
     body: r#"<path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-/// `text-wrap: pretty` as Chromium applies it to the greeting: when the greedy wrap at `max`
-/// leaves the last word alone on the last line, the measure narrows until it doesn't, keeping
-/// the line count, so the lines break where Chromium's do.
-fn pretty_width(text: &str, spans: &[Span], style: TextStyle, max: f32) -> f32 {
-    let height = |value: &str, width: f32| {
-        let cut: Vec<Span> = spans
+/// `text-wrap: pretty` as Chromium applies it to the greeting. When the greedy wrap at `max`
+/// would leave the last word alone on the last line, the breaks are chosen again, Knuth–Plass
+/// style: the same number of lines, at least two words on the last, and the least squared
+/// slack on the others. The chosen breaks come back as newlines in place of their spaces, so
+/// the span offsets still hold.
+fn pretty_wrap(text: &str, spans: &[Span], style: TextStyle, max: f32) -> String {
+    let slice = |from: usize, to: usize| -> Vec<Span> {
+        spans
             .iter()
-            .filter(|span| (span.start as usize) < value.len())
+            .filter(|span| (span.end as usize) > from && (span.start as usize) < to)
             .map(|span| {
                 let mut span = span.clone();
-                span.end = span.end.min(value.len() as u32);
+                span.start = (span.start as usize).max(from) as u32 - from as u32;
+                span.end = (span.end as usize).min(to) as u32 - from as u32;
                 span
             })
-            .collect();
-        rune::text::measure(value, &cut, style, Some(width)).1
+            .collect()
     };
+    let height = |to: usize| rune::text::measure(&text[..to], &slice(0, to), style, Some(max)).1;
     let Some(last) = text.trim_end().rfind(' ') else {
-        return max;
+        return text.to_owned();
     };
-    let head = &text[..last];
-    let full = height(text, max);
-    if height(head, max) >= full {
-        return max;
+    let full = height(text.len());
+    if height(last) >= full {
+        return text.to_owned();
     }
-    let mut width = max.floor();
-    while width > max * 0.5 {
-        width -= 1.0;
-        if height(text, width) > full {
-            break;
+    let lines = (full / style.line_height).round() as usize;
+    // Word boundaries: the spaces a line may break at.
+    let breaks: Vec<usize> = text.match_indices(' ').map(|(at, _)| at).collect();
+    let words = breaks.len() + 1;
+    let start = |word: usize| if word == 0 { 0 } else { breaks[word - 1] + 1 };
+    let end = |word: usize| {
+        if word == words - 1 {
+            text.len()
+        } else {
+            breaks[word]
         }
-        if height(head, width) >= full {
-            return width;
+    };
+    let width = |first: usize, last: usize| {
+        let (from, to) = (start(first), end(last));
+        rune::text::content_widths(&text[from..to], &slice(from, to), style).1
+    };
+    // best[k][w]: least cost to set words 0..w on k lines.
+    let mut best = vec![vec![(f32::INFINITY, 0usize); words + 1]; lines + 1];
+    best[0][0] = (0.0, 0);
+    for k in 1..lines {
+        for w in 1..words {
+            for from in 0..w {
+                let prev = best[k - 1][from].0;
+                if !prev.is_finite() {
+                    continue;
+                }
+                let line = width(from, w - 1);
+                if line > max {
+                    continue;
+                }
+                let cost = prev + (max - line).powi(2);
+                if cost < best[k][w].0 {
+                    best[k][w] = (cost, from);
+                }
+            }
         }
     }
-    max
+    let mut pick = (f32::INFINITY, 0usize);
+    for (from, &(prev, _)) in best[lines - 1]
+        .iter()
+        .enumerate()
+        .take(words.saturating_sub(1))
+    {
+        if prev.is_finite() && width(from, words - 1) <= max && prev < pick.0 {
+            pick = (prev, from);
+        }
+    }
+    if !pick.0.is_finite() {
+        return text.to_owned();
+    }
+    let mut out = text.as_bytes().to_vec();
+    let (mut k, mut from) = (lines - 1, pick.1);
+    while k > 0 {
+        out[breaks[from - 1]] = b'\n';
+        from = best[k][from].1;
+        k -= 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
 /// The greeting's state sentence, assembled as tone-tagged segments like `HomeGreeting.vue`.
@@ -95,7 +144,10 @@ impl Message {
     /// name: whole spaces at the body size, then one sized to the remainder.
     fn gap(&mut self, width: f32) {
         let at = |size: f32| {
-            rune::text::advance("\u{a0}", TextStyle::new(size, 400.0).tracking(BODY_TRACKING))
+            rune::text::advance(
+                "\u{a0}",
+                TextStyle::new(size, 400.0).tracking(BODY_TRACKING),
+            )
         };
         let full = at(30.0);
         let (lo, hi) = (at(10.0), full);
@@ -113,7 +165,8 @@ impl Message {
             let size = 10.0 + (rest - lo) / slope;
             let start = self.text.len();
             self.text.push('\u{a0}');
-            self.spans.push(Span::new(start, self.text.len()).size(size));
+            self.spans
+                .push(Span::new(start, self.text.len()).size(size));
         }
     }
 }
@@ -300,7 +353,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                     " staged — commit when you're ready"
                 } else {
                     " to stage for your first commit"
-                }, "muted");
+                },
+                "muted",
+            );
         }
     } else if clean {
         m.push(" is ready when you are. ", "muted");
@@ -314,12 +369,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             m.push("Working tree clean — you're ", "muted");
             m.push(&ahead.to_string(), "num");
             m.push(
-                plural(ahead == 1, " commit ahead", " commits ahead"), "muted");
+                plural(ahead == 1, " commit ahead", " commits ahead"),
+                "muted",
+            );
         } else if behind > 0 {
             m.push("Working tree clean — ", "muted");
             m.push(&behind.to_string(), "num");
             m.push(
-                plural(behind == 1, " commit behind", " commits behind"), "muted");
+                plural(behind == 1, " commit behind", " commits behind"),
+                "muted",
+            );
         } else {
             m.push("No changes — everything's committed", "muted");
         }
@@ -338,7 +397,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 count == 1,
                 " file with changes. You have ",
                 " files with changes. You have ",
-            ), "muted");
+            ),
+            "muted",
+        );
         if added > 0 || removed > 0 {
             if added > 0 {
                 m.push(&format!("+{added}"), "add");
@@ -353,7 +414,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         } else {
             m.push(&count.to_string(), "num");
             m.push(
-                plural(count == 1, " uncommitted change", " uncommitted changes"), "muted");
+                plural(count == 1, " uncommitted change", " uncommitted changes"),
+                "muted",
+            );
         }
         if count > 0 {
             if staged == count {
@@ -367,7 +430,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             }
         }
     }
-    let wrap_w = pretty_width(&m.text, &m.spans, body_style, 620.0);
+    let wrapped = pretty_wrap(&m.text, &m.spans, body_style, 620.0);
     let mut hello = row().center_y().gap(10.0).child(
         text("Hey,")
             .font(TextStyle::new(30.0, 400.0).lh(33.0).tracking(HEY_TRACKING))
@@ -439,8 +502,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             // Chromium sets these 30 px lines (`line-height: 1.25`) with the trigger's 1 px of
             // padding raising the first line box: baselines land 39 px then 37 px apart. A
             // 38.5 px pitch nudged down half a point keeps every line within a point of them.
-            text(m.text)
-                .max_w(wrap_w)
+            text(wrapped)
                 .spans(m.spans)
                 .font(body_style)
                 .color(t.ink_soft)
