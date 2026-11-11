@@ -21,6 +21,12 @@ static CLOSE: Icon = Icon {
     body: r#"<path d="M18 6L6.00081 17.9992M17.9992 18L6 6.00085" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
+static WORKTREE: Icon = Icon {
+    name: "studio-worktree",
+    view: 10.0,
+    body: r#"<path d="M8.854 7.146a.5.5 0 0 0-.707.707l.146.146H5.75a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 .75-.75h2.543l-.146.146a.5.5 0 0 0 .708.707l1-1a.5.5 0 0 0 0-.707l-1-1a.5.5 0 0 0-.707.707l.146.146H5.751c-.965 0-1.75.785-1.75 1.75v1.25H.5a.5.5 0 0 0 0 1H4v1.25c0 .965.785 1.75 1.75 1.75h2.543l-.146.146a.5.5 0 0 0 .708.707l1-1a.5.5 0 0 0 0-.707l-1-1z" fill="currentColor"/>"#,
+};
+
 static STUDIO_PROVIDER_CODEX: Icon = Icon {
     name: "studio-provider-codex",
     view: 24.0,
@@ -67,7 +73,19 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
         .and_then(|s| s.providers.get(s.provider_index))
         .map(|p| p.id.as_str())
         .unwrap_or("codex");
-    brand_mark(provider, t)
+    let mut marks = row().center_y().gap(4.0);
+    if let Some(state) = state {
+        if let Some(source) = &state.handoff_source {
+            marks = marks
+                .child(brand_mark(source, t).opacity(0.55))
+                .child(label("→", 10.0, 400.0, t.muted).opacity(0.8));
+        } else {
+            for past in &state.past_providers {
+                marks = marks.child(brand_mark(past, t).opacity(0.45));
+            }
+        }
+    }
+    marks.child(brand_mark(provider, t))
 }
 
 fn title_of(state: &StudioState) -> String {
@@ -313,6 +331,13 @@ fn studio_row(
                         .gap(8.0)
                         .center_y()
                         .child(provider_mark(state, t))
+                        .child(
+                            if state.is_some_and(|state| state.worktree_path.is_some()) {
+                                icon(&WORKTREE, 12.0).color(t.muted)
+                            } else {
+                                el().w(0.0)
+                            },
+                        )
                         .child(column_title(state, focused, t)),
                 )
                 .child(

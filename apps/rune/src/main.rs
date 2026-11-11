@@ -92,6 +92,10 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
+            ("studio-column-head-handoff", |s| {
+                studio_column_head(s);
+                s.studio.handoff_source = Some("claudeAgent".into());
+            }),
             ("studio-three-review", |s| {
                 studio_review(s);
                 s.studio.composer_open = false;
@@ -289,6 +293,7 @@ fn studio_column_head(s: &mut AppState) {
         .unwrap()
         .truncate(1);
     s.studio.title = "Review thread".into();
+    s.studio.worktree_path = Some("/demo/worktree".into());
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
