@@ -941,6 +941,11 @@ pub(super) fn sessions(
             let id = session.id.clone();
             let path = session.project_path.clone();
             let hovered = s.project_data.hovered_session.as_deref() == Some(id.as_str());
+            let hover_progress = if s.project_data.lazy.reduced.get() {
+                f32::from(hovered)
+            } else {
+                s.project_data.session_hover_progress(&id)
+            };
             let mut metadata = row().gap(10.0).center_y();
             let mono = TextStyle::new(11.0, 400.0).family(Family::Mono);
             metadata = metadata.child(
@@ -989,7 +994,7 @@ pub(super) fn sessions(
             }
             metadata = metadata.child(text(time_ago(session.updated_at)).font(mono).color(t.muted));
             let mut trail = row().w(86.0).h(40.0).center_y().justify_end();
-            if hovered {
+            {
                 let action_font = TextStyle::new(11.0, 400.0).lh(11.0).tracking(-0.11);
                 let mut actions = row().center_y().gap(4.0);
                 for (label, aria, action, glyph) in [
@@ -1094,8 +1099,14 @@ pub(super) fn sessions(
                             rune::Phase::Move => {}
                         }),
                 );
-                trail = trail.child(actions);
-            } else {
+                trail = trail.child(
+                    actions
+                        .opacity(hover_progress)
+                        .offset(6.0 * (1.0 - hover_progress), 0.0)
+                        .absolute(0.0, 0.0),
+                );
+            }
+            {
                 let cost = session_cost(session);
                 let value = if s.project_data.metric_cost && cost > 0.0 {
                     Some(if cost < 0.01 {
@@ -1111,6 +1122,7 @@ pub(super) fn sessions(
                 if let Some(value) = value {
                     trail = trail.child(
                         col()
+                            .opacity(1.0 - hover_progress)
                             .items_end()
                             .child(
                                 text(value)
@@ -1168,7 +1180,7 @@ pub(super) fn sessions(
                     session.avatar.as_deref(),
                     &session.provider,
                     t,
-                    hovered,
+                    hover_progress,
                 ))
                 .child(
                     col()
@@ -1190,6 +1202,7 @@ pub(super) fn sessions(
                 )
                 .child(trail)
                 .on_hover_focus_change(move |s: &mut AppState, over, _| {
+                    s.project_data.set_session_hover(&hover_id, over);
                     if over {
                         s.project_data.hovered_session = Some(hover_id.clone());
                     } else if s.project_data.hovered_session.as_deref() == Some(hover_id.as_str()) {
@@ -1225,7 +1238,13 @@ pub(super) fn sessions(
                 content
             });
         }
-        list = list.child(col().w_full().gap(14.0).child(head).child(rows));
+        let recent_y = s.project_data.session_recent_y.clone();
+        let group = col().w_full().gap(14.0).child(head).child(rows);
+        list = list.child(if !pinned && !home {
+            group.on_layout(move |_: &mut AppState, bounds| recent_y.set(bounds[1]))
+        } else {
+            group
+        });
     }
     list
 }
@@ -1259,7 +1278,7 @@ pub(super) fn identity_lead(
     avatar: Option<&str>,
     brand: &str,
     t: Palette,
-    hovered: bool,
+    hover_progress: f32,
 ) -> El {
     use std::sync::{Arc, OnceLock};
     static IMAGES: OnceLock<rune::ImageCache> = OnceLock::new();
@@ -1292,11 +1311,13 @@ pub(super) fn identity_lead(
         "opencode" => (&PROVIDER_OPENCODE, t.ink),
         _ => (&PROVIDER_DOT, t.ink),
     };
-    let (width, badge_size, badge_x, badge_y, icon_size, badge_color) = if hovered {
-        (78.0, 36.0, 42.0, 0.0, 20.0, mix_srgb(t.ground, t.ink, 0.06))
-    } else {
-        (36.0, 21.8, 20.1, 20.1, 12.7, t.ground)
-    };
+    let p = hover_progress;
+    let width = 36.0 + 42.0 * p;
+    let badge_size = 18.72 + 17.28 * p;
+    let badge_x = 19.64 + (42.0 - 19.64) * p;
+    let badge_y = 19.64 * (1.0 - p);
+    let icon_size = 12.69 + 7.31 * p;
+    let badge_color = mix_srgb(t.ground, t.ink, 0.06 * p);
     el().size(width, 36.0)
         .child(
             el().size(36.0, 36.0)

@@ -61,10 +61,30 @@ pub struct ProjectState {
     pub icons: IconHover,
     pub metric_cost: bool,
     pub hovered_session: Option<String>,
+    pub session_hover_motion: HashMap<String, (f64, f32, bool)>,
+    pub session_recent_y: std::rc::Rc<std::cell::Cell<f32>>,
+    pub session_view_y: std::rc::Rc<std::cell::Cell<f32>>,
     pub hovered_project: Option<String>,
     pub pressed_project: Option<String>,
     pub delete_hold: Option<std::time::Instant>,
     pending: HashMap<u64, Pending>,
+}
+
+impl ProjectState {
+    pub fn session_hover_progress(&self, id: &str) -> f32 {
+        let Some(&(start, from, target)) = self.session_hover_motion.get(id) else {
+            return 0.0;
+        };
+        let p = ((self.lazy.clock - start) / 0.34).clamp(0.0, 1.0) as f32;
+        let eased = crate::ui::start_motion::bezier([0.22, 1.0, 0.36, 1.0], p);
+        from + (f32::from(target) - from) * eased
+    }
+
+    pub fn set_session_hover(&mut self, id: &str, target: bool) {
+        let from = self.session_hover_progress(id);
+        self.session_hover_motion
+            .insert(id.to_owned(), (self.lazy.clock, from, target));
+    }
 }
 
 /// The recent list mounts eight rows at a time; its scroll watcher is read on

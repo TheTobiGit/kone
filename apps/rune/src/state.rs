@@ -311,6 +311,14 @@ impl AppState {
             s.project_data.icons = Default::default();
             false
         };
+        let session_motion = s
+            .project_data
+            .session_hover_motion
+            .values()
+            .any(|(at, _, _)| clock - at < 0.34);
+        if session_motion {
+            tx.wake_after(std::time::Duration::ZERO);
+        }
         let start = crate::ui::start_tick(s, clock, tx);
         let launcher = crate::launcher::tick(s, clock, tx);
         let mut messages = Vec::new();
@@ -328,6 +336,7 @@ impl AppState {
         s.sync_project_watches();
         changed
             || animating
+            || session_motion
             || start
             || launcher
             || lazy
