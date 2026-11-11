@@ -184,6 +184,31 @@ pub fn populate(s: &mut AppState, page: Page) {
     });
 }
 
+/// Deterministic greeting states for visual review.
+pub fn overview_greeting(s: &mut AppState, variant: &str) {
+    populate(s, Page::Overview);
+    let changes = match variant {
+        "dirty" | "fresh-dirty" => json!([
+            {"path":"src/main.rs", "added":42, "removed":12, "staged":true},
+            {"path":"README.md", "added":8, "removed":3, "staged":false}
+        ]),
+        "fresh-unstaged" => json!([{ "path":"README.md", "staged":false }]),
+        "staged" => json!([{"path":"README.md", "added":3, "removed":0, "staged":true}]),
+        "dirty-no-stat" => json!([{"path":"image.png", "staged":false}]),
+        _ => json!([]),
+    };
+    s.project_data.overview = match variant {
+        "loading" => Value::Null,
+        "nonrepo" => json!({"workingTree":null, "repository":null}),
+        _ => json!({"repository":{}, "workingTree":{
+            "head": if variant.starts_with("fresh") { Value::Null } else { json!("abc123") },
+            "branch":"main", "changes":changes,
+            "ahead": if variant == "ahead" || variant == "diverged" { 2 } else { 0 },
+            "behind": if variant == "behind" || variant == "diverged" { 1 } else { 0 }
+        }}),
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

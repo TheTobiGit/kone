@@ -133,6 +133,34 @@ fn main() {
                 });
             }),
             ("overview-review", |s| review::populate(s, Page::Overview)),
+            ("overview-loading", |s| {
+                review::overview_greeting(s, "loading")
+            }),
+            ("overview-nonrepo", |s| {
+                review::overview_greeting(s, "nonrepo")
+            }),
+            ("overview-fresh", |s| review::overview_greeting(s, "fresh")),
+            ("overview-fresh-dirty", |s| {
+                review::overview_greeting(s, "fresh-dirty")
+            }),
+            ("overview-fresh-unstaged", |s| {
+                review::overview_greeting(s, "fresh-unstaged")
+            }),
+            ("overview-clean", |s| review::overview_greeting(s, "clean")),
+            ("overview-dirty", |s| review::overview_greeting(s, "dirty")),
+            ("overview-staged", |s| {
+                review::overview_greeting(s, "staged")
+            }),
+            ("overview-dirty-no-stat", |s| {
+                review::overview_greeting(s, "dirty-no-stat")
+            }),
+            ("overview-ahead", |s| review::overview_greeting(s, "ahead")),
+            ("overview-behind", |s| {
+                review::overview_greeting(s, "behind")
+            }),
+            ("overview-diverged", |s| {
+                review::overview_greeting(s, "diverged")
+            }),
             ("studio", |s| {
                 s.example_project();
                 s.page = Page::Studio;

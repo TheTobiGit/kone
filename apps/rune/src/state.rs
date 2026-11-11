@@ -63,6 +63,7 @@ pub struct AppState {
     pub art_focused: bool,
     pub profile: Profile,
     pub profile_hover: bool,
+    pub overview_switcher_open: bool,
     pub start_actions: StartActionsState,
     pub project_data: crate::project_state::ProjectState,
     pub page: Page,

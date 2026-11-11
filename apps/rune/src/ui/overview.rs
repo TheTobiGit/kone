@@ -6,7 +6,7 @@ use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
 };
-use rune::{Cursor, Curve, Cx, Easing, El, TextStyle, col, el, icon, row, text};
+use rune::{Cursor, Curve, Cx, Easing, El, Span, TextStyle, col, el, icon, row, text};
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
@@ -140,50 +140,249 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let overview = &s.project_data.overview;
     let tree = &overview["workingTree"];
     let loaded = !overview.is_null();
-    let repo = !tree.is_null();
+    let repo = !overview["repository"].is_null() || !tree.is_null();
     let changes = tree["changes"].as_array();
     let count = changes.map_or(0, Vec::len);
-    let clean = tree["clean"].as_bool().unwrap_or(count == 0);
+    let clean = count == 0;
     let branch = tree["branch"].as_str().unwrap_or("");
-    let message = if !loaded {
-        name.to_owned()
-    } else if !repo {
-        format!(
-            "{name} isn't a git repository yet. Initialize a repo to track changes, then start your first session"
-        )
-    } else if tree["head"].is_null() {
-        format!(
-            "{name} is a fresh repository. Nothing committed yet — your first changes will show up here"
-        )
-    } else if clean {
-        format!(
-            "{name} is ready when you are. No changes — everything's committed{}",
-            if branch.is_empty() {
-                String::new()
-            } else {
-                format!(" on {branch}")
-            }
-        )
-    } else {
-        format!(
-            "{name} has {count} {} with changes",
-            if count == 1 { "file" } else { "files" }
-        )
+    let mut message = String::new();
+    let mut spans = Vec::new();
+    let mut push = |value: &str, tone: &str| {
+        let start = message.len();
+        message.push_str(value);
+        let mut span = Span::new(start, message.len());
+        if tone == "ink" {
+            span = span.color(t.ink);
+        }
+        if tone == "num" || tone == "add" || tone == "del" {
+            span = span.mono().size(26.0).weight(700.0).color(match tone {
+                "add" => rune::color::hex("#059669").unwrap(),
+                "del" => rune::color::hex("#e11d48").unwrap(),
+                _ => t.ink,
+            });
+        }
+        spans.push(span);
     };
-    let greeting = col()
+    push(name, "ink");
+    push(" ⌄", "muted");
+    let staged = changes.map_or(0, |c| {
+        c.iter()
+            .filter(|v| v["staged"].as_bool().unwrap_or(false))
+            .count()
+    });
+    let added: i64 = changes.map_or(0, |c| {
+        c.iter().map(|v| v["added"].as_i64().unwrap_or(0)).sum()
+    });
+    let removed: i64 = changes.map_or(0, |c| {
+        c.iter().map(|v| v["removed"].as_i64().unwrap_or(0)).sum()
+    });
+    let ahead = tree["ahead"].as_i64().unwrap_or(0);
+    let behind = tree["behind"].as_i64().unwrap_or(0);
+    let plural = |singular, one, many| if singular { one } else { many };
+    if !loaded {
+    } else if !repo {
+        push(
+            " isn't a git repository yet. Initialize a repo to track changes, then start your first session",
+            "muted",
+        );
+    } else if !tree.is_null() && tree["head"].is_null() {
+        if clean {
+            push(
+                " is a fresh repository. Nothing committed yet — your first changes will show up here",
+                "muted",
+            );
+        } else {
+            push(" is ready for its first commit. ", "muted");
+            if staged > 0 {
+                push(&staged.to_string(), "num");
+                push(" of ", "muted");
+            }
+            push(&count.to_string(), "num");
+            push(plural(count == 1, " file", " files"), "muted");
+            push(
+                if staged > 0 {
+                    " staged — commit when you're ready"
+                } else {
+                    " to stage for your first commit"
+                },
+                "muted",
+            );
+        }
+    } else if clean {
+        push(" is ready when you are. ", "muted");
+        if ahead > 0 && behind > 0 {
+            push("Working tree clean — ", "muted");
+            push(&ahead.to_string(), "num");
+            push(" ahead, ", "muted");
+            push(&behind.to_string(), "num");
+            push(" behind", "muted");
+        } else if ahead > 0 {
+            push("Working tree clean — you're ", "muted");
+            push(&ahead.to_string(), "num");
+            push(
+                plural(ahead == 1, " commit ahead", " commits ahead"),
+                "muted",
+            );
+        } else if behind > 0 {
+            push("Working tree clean — ", "muted");
+            push(&behind.to_string(), "num");
+            push(
+                plural(behind == 1, " commit behind", " commits behind"),
+                "muted",
+            );
+        } else {
+            push("No changes — everything's committed", "muted");
+        }
+        if !branch.is_empty() {
+            push(" on ", "muted");
+            push(branch, "num");
+        }
+        if behind > 0 && ahead == 0 {
+            push(", pull when you're ready", "muted");
+        }
+    } else {
+        push(" has ", "muted");
+        push(&count.to_string(), "num");
+        push(
+            plural(
+                count == 1,
+                " file with changes. You have ",
+                " files with changes. You have ",
+            ),
+            "muted",
+        );
+        if added > 0 || removed > 0 {
+            if added > 0 {
+                push(&format!("+{added}"), "add");
+            }
+            if added > 0 && removed > 0 {
+                push(" ", "muted");
+            }
+            if removed > 0 {
+                push(&format!("−{removed}"), "del");
+            }
+            push(" uncommitted", "muted");
+        } else {
+            push(&count.to_string(), "num");
+            push(
+                plural(count == 1, " uncommitted change", " uncommitted changes"),
+                "muted",
+            );
+        }
+        if count > 0 {
+            if staged == count {
+                push(", all staged", "muted");
+            } else if staged > 0 {
+                push(", ", "muted");
+                push(&staged.to_string(), "num");
+                push(" staged", "muted");
+            } else {
+                push(" — nothing staged yet", "muted");
+            }
+        }
+    }
+    let mut hello = row().center_y().gap(10.0).child(
+        text("Hey,")
+            .font(TextStyle::new(30.0, 400.0).lh(33.0))
+            .color(t.ink_soft),
+    );
+    if let Some(profile) = &s.profile.name {
+        hello = hello
+            .child(
+                el().size(30.0, 30.0)
+                    .radius(15.0)
+                    .fill(t.ink)
+                    .center()
+                    .child(
+                        text(s.profile.initial.clone())
+                            .font(TextStyle::new(14.0, 400.0))
+                            .color(t.ground),
+                    ),
+            )
+            .child(
+                text(profile.clone())
+                    .font(TextStyle::new(30.0, 400.0))
+                    .color(t.ink),
+            );
+    } else {
+        hello = hello.child(text("there").font(TextStyle::new(30.0, 400.0)).color(t.ink));
+    }
+    let greet_in = super::start_motion::bezier(
+        [0.22, 1.0, 0.36, 1.0],
+        ((elapsed - 0.03) / 0.4).clamp(0.0, 1.0),
+    );
+    let trigger_width = (name.chars().count() as f32 * 16.0 + 25.0).max(45.0);
+    let trigger = el()
+        .key("overview-project-trigger")
+        .absolute(-4.0, 33.0)
+        .size(trigger_width, 39.0)
+        .radius(9.0)
+        .hover(t.ink.alpha(0.06))
+        .hover_motion(
+            Curve::tween(0.18, Easing::cubic(0.25, 0.1, 0.25, 1.0)),
+            Curve::tween(0.18, Easing::cubic(0.25, 0.1, 0.25, 1.0)),
+        )
+        .role("button")
+        .label(format!("Switch project — {name}"))
+        .focusable(true)
+        .focus_ring(2.0, 1.0, t.ink.alpha(0.26))
+        .cursor(Cursor::Pointer)
+        .on_press(|s: &mut AppState| s.overview_switcher_open = !s.overview_switcher_open);
+    let mut greeting = col()
         .gap(2.0)
         .grow(1.0)
-        .child(
-            text("Hey, there")
-                .font(TextStyle::new(30.0, 500.0))
-                .color(t.ink_soft),
-        )
+        .max_w(620.0)
+        .opacity(greet_in)
+        .opacity_motion(now)
+        .offset(0.0, 10.0 * (1.0 - greet_in))
+        .offset_motion(now)
+        .child(hello)
         .child(
             text(message)
-                .font(TextStyle::new(30.0, 500.0))
+                .spans(spans)
+                .font(TextStyle::new(30.0, 400.0).lh(37.5).tracking(-0.6))
                 .color(t.ink_soft)
                 .wrap(),
-        );
+        )
+        .child(trigger);
+    if s.overview_switcher_open {
+        let mut menu = col()
+            .absolute(0.0, 75.0)
+            .w(300.0)
+            .padding(12.0)
+            .gap(4.0)
+            .radius(14.0)
+            .fill(t.raised_high)
+            .border(1.0, t.line);
+        for (index, project) in s.projects.iter().enumerate() {
+            if Some(index) == s.selected_project {
+                continue;
+            }
+            let path = project.path.clone();
+            menu = menu.child(
+                el().w_full()
+                    .h(38.0)
+                    .px(10.0)
+                    .center_y()
+                    .radius(8.0)
+                    .hover(t.hover)
+                    .cursor(Cursor::Pointer)
+                    .role("button")
+                    .focusable(true)
+                    .label(project.name.clone())
+                    .child(
+                        text(project.name.clone())
+                            .font(TextStyle::new(14.0, 400.0))
+                            .color(t.ink),
+                    )
+                    .on_press(move |s: &mut AppState| {
+                        s.overview_switcher_open = false;
+                        s.open_project(path.clone());
+                    }),
+            );
+        }
+        greeting = greeting.child(menu);
+    }
     let mut changes_panel = col().w_full().gap(20.0);
     if loaded {
         let label = if !repo {
