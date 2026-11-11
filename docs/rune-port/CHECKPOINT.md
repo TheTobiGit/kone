@@ -227,3 +227,10 @@ Work is on `feat/rune-port`; visual parity is **not yet complete**. Captures bel
 - Captures: `/workspace/rune-compare/overview-switcher-fix-{light,dark}.png` and `/workspace/rune-compare/overview-switcher-fix-hover-light.png` (Electron left, Rune right, 2x).
 - Remaining differences: the picker still lacks UiModalShell's 420ms CSS-keyframe entrance and delayed exit. Rune's shadow API cannot express the CSS negative spread and the resulting shadow is visibly stronger. Native window inset and surrounding Overview differences remain; scrollbar appearance and long-list interaction have not been visually verified.
 - Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 37 native tests passed using `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+## Dev sync: start screen (devsync-1, 2026-11-11)
+
+- Removed the empty home's rotating wordmark; Settings remains in the top-right. The shared start actions now use the current Hugeicons paths at 18 pt and 1.7 stroke, with no hover icon gestures. Magnet, loading, entrance, and action behavior are retained. The populated home's existing wordmark is outside this piece.
+- Electron-left, Rune-right 2x captures: `/workspace/rune-compare/devsync-start-{light,dark}.png` and `/workspace/rune-compare/devsync-start-hover-light.png`, against the reference server on port 3004.
+- Remaining differences: text and SVG antialiasing vary slightly between renderers; the animated plasma's noise and phase differ between captures. Settings remains inert as requested; Rune's tooltip differs from Chromium's native tooltip.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 35 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.

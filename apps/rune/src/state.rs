@@ -1359,8 +1359,6 @@ pub(crate) struct StartActionsState {
     pub(crate) active: [bool; 3],
     /// The poll's frame clock (seconds) the times below are on.
     pub(crate) clock: f64,
-    /// When each action glyph's hover gesture began.
-    pub(crate) started: [Option<f64>; 3],
     /// A running app (not a `--scene` snapshot), whose start screen enters.
     pub(crate) live: bool,
     /// When the start screen mounted, for its entrance.
@@ -1380,7 +1378,6 @@ impl StartActionsState {
         self.bounds = [[0.0; 4]; 3];
         self.offsets = [[0.0; 2]; 3];
         self.active = [false; 3];
-        self.started = [None; 3];
         true
     }
 
@@ -1418,14 +1415,12 @@ mod start_actions_tests {
         state.bounds[0] = [10.0, 20.0, 100.0, 40.0];
         state.offsets[0] = [3.0, 2.0];
         state.active[0] = true;
-        state.started[0] = Some(1.0);
         assert!(!state.reset_for_page(Page::Empty));
         assert_eq!(state.bounds[0], [10.0, 20.0, 100.0, 40.0]);
         assert!(state.reset_for_page(Page::Projects));
         assert_eq!(state.bounds, [[0.0; 4]; 3]);
         assert_eq!(state.offsets, [[0.0; 2]; 3]);
         assert_eq!(state.active, [false; 3]);
-        assert_eq!(state.started, [None; 3]);
         assert!(!state.pointer_move(60.0, 40.0, false));
     }
 
