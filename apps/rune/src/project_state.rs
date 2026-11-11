@@ -60,13 +60,14 @@ pub struct ProjectState {
     pub lazy: LazySessions,
     pub icons: IconHover,
     pub metric_cost: bool,
+    pub metric_swap: Option<(f64, bool)>,
     pub hovered_session: Option<String>,
     pub session_hover_motion: HashMap<String, (f64, f32, bool)>,
-    pub session_recent_y: std::rc::Rc<std::cell::Cell<f32>>,
-    pub session_view_y: std::rc::Rc<std::cell::Cell<f32>>,
+    pub session_action_bounds: HashMap<(String, usize), [f32; 4]>,
+    pub session_pointer: Option<[f32; 2]>,
     pub hovered_project: Option<String>,
     pub pressed_project: Option<String>,
-    pub delete_hold: Option<std::time::Instant>,
+    pub delete_hold: Option<(std::time::Instant, String, String)>,
     pending: HashMap<u64, Pending>,
 }
 
@@ -84,6 +85,25 @@ impl ProjectState {
         let from = self.session_hover_progress(id);
         self.session_hover_motion
             .insert(id.to_owned(), (self.lazy.clock, from, target));
+    }
+}
+
+#[cfg(test)]
+mod session_motion_tests {
+    use super::ProjectState;
+
+    #[test]
+    fn reversing_hover_continues_from_the_current_position() {
+        let mut state = ProjectState::default();
+        state.set_session_hover("one", true);
+        state.lazy.clock = 0.12;
+        let before = state.session_hover_progress("one");
+        assert!(before > 0.0 && before < 1.0);
+        state.set_session_hover("one", false);
+        assert!((state.session_hover_progress("one") - before).abs() < 0.001);
+        state.lazy.clock = 0.46;
+        assert!(state.session_hover_progress("one").abs() < 0.001);
+        assert_eq!(state.session_hover_progress("other"), 0.0);
     }
 }
 

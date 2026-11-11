@@ -875,12 +875,39 @@ pub(super) fn session_head(s: &AppState, t: Palette, pinned: bool, first: bool) 
                             )
                             .color(if selected { t.ink } else { t.muted }),
                     )
-                    .on_press(move |s: &mut AppState| s.project_data.metric_cost = cost),
+                    .on_press(move |s: &mut AppState| {
+                        if s.project_data.metric_cost != cost {
+                            s.project_data.metric_swap =
+                                Some((s.project_data.lazy.clock, s.project_data.metric_cost));
+                            s.project_data.metric_cost = cost;
+                        }
+                    }),
             );
         }
         head = head.child(toggle);
     }
     head
+}
+
+fn session_magnet(s: &AppState, id: &str, index: usize) -> ([f32; 2], bool) {
+    let Some([x, y]) = s.project_data.session_pointer else {
+        return ([0.0, 0.0], false);
+    };
+    let Some(&[left, top, width, height]) = s
+        .project_data
+        .session_action_bounds
+        .get(&(id.to_owned(), index))
+    else {
+        return ([0.0, 0.0], false);
+    };
+    let dx = x - left - width / 2.0;
+    let dy = y - top - height / 2.0;
+    let active = dx.abs() < width / 2.0 + 12.0 && dy.abs() < height / 2.0 + 12.0;
+    if active {
+        ([dx / 9.0, dy / 9.0], true)
+    } else {
+        ([0.0, 0.0], false)
+    }
 }
 
 pub(super) fn sessions(
@@ -994,10 +1021,11 @@ pub(super) fn sessions(
             }
             metadata = metadata.child(text(time_ago(session.updated_at)).font(mono).color(t.muted));
             let mut trail = row().w(86.0).h(40.0).center_y().justify_end();
+            let mut action_overlay = None;
             {
                 let action_font = TextStyle::new(11.0, 400.0).lh(11.0).tracking(-0.11);
                 let mut actions = row().center_y().gap(4.0);
-                for (label, aria, action, glyph) in [
+                for (index, (label, aria, action, glyph)) in [
                     (
                         if session.pinned { "Unpin" } else { "Pin" },
                         if session.pinned {
@@ -1013,7 +1041,10 @@ pub(super) fn sessions(
                         },
                     ),
                     ("Archive", "Archive conversation", "archive", &ROW_ARCHIVE),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     let action_id = id.clone();
                     let action_path = path.clone();
                     let pinned = session.pinned;
@@ -1022,99 +1053,183 @@ pub(super) fn sessions(
                     } else {
                         t.muted
                     };
+                    let bounds_id = id.clone();
+                    let (offset, active) = session_magnet(s, &id, index);
                     actions = actions.child(
-                        el().px(6.0)
-                            .py(3.0)
-                            .radius(7.0)
-                            .role("button")
-                            .label(aria)
-                            .focusable(true)
-                            .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
-                            .hover_group_focus()
-                            .cursor(Cursor::Pointer)
-                            .child(
-                                row()
-                                    .center_y()
-                                    .gap(5.0)
-                                    .child(icon(glyph, 12.0).color(ink).group_color(t.ink))
-                                    .child(
-                                        text(label).font(action_font).color(ink).group_color(t.ink),
-                                    ),
-                            )
-                            .on_press(move |s: &mut AppState| {
-                                s.session_action(
-                                    action_path.clone(),
-                                    action_id.clone(),
-                                    action,
-                                    pinned,
-                                )
-                            }),
+                        el().on_layout(move |s: &mut AppState, bounds| {
+                            s.project_data
+                                .session_action_bounds
+                                .insert((bounds_id.clone(), index), bounds);
+                        })
+                        .child(
+                            el().offset(offset[0], offset[1])
+                                .offset_motion(Curve::tween(if active { 0.35 } else { 0.6 }, EASE))
+                                .child(
+                                    el().px(6.0)
+                                        .py(3.0)
+                                        .radius(7.0)
+                                        .role("button")
+                                        .label(aria)
+                                        .focusable(true)
+                                        .focus_ring(2.0, 0.0, t.ink.alpha(0.3))
+                                        .hover_group_focus()
+                                        .cursor(Cursor::Pointer)
+                                        .child(
+                                            row()
+                                                .center_y()
+                                                .gap(5.0)
+                                                .child(
+                                                    icon(glyph, 12.0).color(ink).group_color(t.ink),
+                                                )
+                                                .child(
+                                                    text(label)
+                                                        .font(action_font)
+                                                        .color(ink)
+                                                        .group_color(t.ink),
+                                                ),
+                                        )
+                                        .on_press(move |s: &mut AppState| {
+                                            s.session_action(
+                                                action_path.clone(),
+                                                action_id.clone(),
+                                                action,
+                                                pinned,
+                                            )
+                                        }),
+                                ),
+                        ),
                     );
                 }
                 let delete_id = id.clone();
                 let delete_path = path.clone();
+                let holding = s
+                    .project_data
+                    .delete_hold
+                    .as_ref()
+                    .filter(|(_, _, held_id)| held_id == &id);
+                let hold_progress = holding.map_or(0.0, |(at, _, _)| {
+                    (at.elapsed().as_secs_f32() / 0.85).min(1.0)
+                });
+                let danger = rune::color::hex("#e11d48").unwrap();
+                let bounds_id = id.clone();
+                let (offset, active) = session_magnet(s, &id, 2);
                 actions = actions.child(
-                    el().px(6.0)
-                        .py(3.0)
-                        .radius(7.0)
-                        .role("button")
-                        .label("Hold to delete conversation")
-                        .hover_group()
-                        .cursor(Cursor::Pointer)
-                        .child(
-                            row()
-                                .center_y()
-                                .gap(5.0)
-                                .child(icon(&DELETE, 12.0).color(t.muted).group_color(t.ink))
-                                .child(
-                                    text("Delete")
-                                        .font(action_font)
-                                        .color(t.muted)
-                                        .group_color(t.ink),
-                                ),
-                        )
-                        .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
-                            rune::Phase::Down => {
-                                s.project_data.delete_hold = Some(std::time::Instant::now())
-                            }
-                            rune::Phase::Up => {
-                                let held = s.project_data.delete_hold.take().is_some_and(|start| {
-                                    start.elapsed() >= std::time::Duration::from_millis(850)
-                                });
-                                if held
-                                    && !drag.cancelled()
-                                    && drag.x >= 0.0
-                                    && drag.y >= 0.0
-                                    && drag.x <= drag.w
-                                    && drag.y <= drag.h
-                                {
-                                    s.session_action(
-                                        delete_path.clone(),
-                                        delete_id.clone(),
-                                        "delete",
-                                        false,
-                                    );
-                                }
-                            }
-                            rune::Phase::Move => {}
-                        }),
+                    el().on_layout(move |s: &mut AppState, bounds| {
+                        s.project_data
+                            .session_action_bounds
+                            .insert((bounds_id.clone(), 2), bounds);
+                    })
+                    .child(
+                        el().offset(offset[0], offset[1])
+                            .offset_motion(Curve::tween(if active { 0.35 } else { 0.6 }, EASE))
+                            .child(
+                                el().px(6.0)
+                                    .py(3.0)
+                                    .radius(7.0)
+                                    .role("button")
+                                    .label("Hold to delete conversation")
+                                    .hover_group()
+                                    .cursor(Cursor::Pointer)
+                                    .scale(if holding.is_some() { 0.97 } else { 1.0 })
+                                    .scale_motion(Curve::tween(0.12, COLORS_EASE))
+                                    .child(
+                                        el().w_frac(hold_progress)
+                                            .h_full()
+                                            .fill(danger.alpha(0.15))
+                                            .absolute(0.0, 0.0),
+                                    )
+                                    .child(
+                                        row()
+                                            .center_y()
+                                            .gap(5.0)
+                                            .child(
+                                                icon(&DELETE, 12.0)
+                                                    .color(if holding.is_some() {
+                                                        danger
+                                                    } else {
+                                                        t.muted
+                                                    })
+                                                    .group_color(danger),
+                                            )
+                                            .child(
+                                                text("Delete")
+                                                    .font(action_font)
+                                                    .color(if holding.is_some() {
+                                                        danger
+                                                    } else {
+                                                        t.muted
+                                                    })
+                                                    .group_color(danger),
+                                            ),
+                                    )
+                                    .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
+                                        rune::Phase::Down => {
+                                            s.project_data.delete_hold = Some((
+                                                std::time::Instant::now(),
+                                                delete_path.clone(),
+                                                delete_id.clone(),
+                                            ))
+                                        }
+                                        rune::Phase::Up => {
+                                            s.project_data.delete_hold = None;
+                                        }
+                                        rune::Phase::Move => {
+                                            if drag.x < 0.0
+                                                || drag.y < 0.0
+                                                || drag.x > drag.w
+                                                || drag.y > drag.h
+                                            {
+                                                s.project_data.delete_hold = None;
+                                            }
+                                        }
+                                    }),
+                            ),
+                    ),
                 );
-                trail = trail.child(
-                    actions
-                        .opacity(hover_progress)
-                        .offset(6.0 * (1.0 - hover_progress), 0.0)
-                        .absolute(0.0, 0.0),
-                );
+                if hovered || hover_progress > 0.0 {
+                    action_overlay = Some(
+                        actions
+                            .w(190.0)
+                            .justify_end()
+                            .opacity(hover_progress)
+                            .opacity_motion(Curve::tween(0.0, EASE))
+                            .offset(6.0 * (1.0 - hover_progress), 0.0)
+                            .offset_motion(Curve::tween(0.0, EASE))
+                            .pin(None, Some(0.0), Some(0.0), Some(0.0)),
+                    );
+                }
             }
             {
+                let (metric_cost, swap_opacity, swap_y) = if !s.project_data.lazy.reduced.get() {
+                    if let Some((at, old)) = s.project_data.metric_swap {
+                        let elapsed = (s.project_data.lazy.clock - at).max(0.0) as f32;
+                        if elapsed < 0.18 {
+                            let p =
+                                super::start_motion::bezier([0.22, 1.0, 0.36, 1.0], elapsed / 0.18);
+                            (old, 1.0 - p, -3.0 * p)
+                        } else if elapsed < 0.36 {
+                            let p = super::start_motion::bezier(
+                                [0.22, 1.0, 0.36, 1.0],
+                                (elapsed - 0.18) / 0.18,
+                            );
+                            (s.project_data.metric_cost, p, 3.0 * (1.0 - p))
+                        } else {
+                            (s.project_data.metric_cost, 1.0, 0.0)
+                        }
+                    } else {
+                        (s.project_data.metric_cost, 1.0, 0.0)
+                    }
+                } else {
+                    (s.project_data.metric_cost, 1.0, 0.0)
+                };
                 let cost = session_cost(session);
-                let value = if s.project_data.metric_cost && cost > 0.0 {
+                let value = if metric_cost && cost > 0.0 {
                     Some(if cost < 0.01 {
                         "<$0.01".to_owned()
                     } else {
                         format!("${cost:.2}")
                     })
-                } else if !s.project_data.metric_cost && session.tokens > 0 {
+                } else if !metric_cost && session.tokens > 0 {
                     Some(token_count(session.tokens))
                 } else {
                     None
@@ -1122,7 +1237,10 @@ pub(super) fn sessions(
                 if let Some(value) = value {
                     trail = trail.child(
                         col()
-                            .opacity(1.0 - hover_progress)
+                            .opacity((1.0 - hover_progress) * swap_opacity)
+                            .opacity_motion(Curve::tween(0.0, EASE))
+                            .offset(0.0, swap_y)
+                            .offset_motion(Curve::tween(0.0, EASE))
                             .items_end()
                             .child(
                                 text(value)
@@ -1135,21 +1253,20 @@ pub(super) fn sessions(
                                     .color(t.ink),
                             )
                             .child(
-                                text(if s.project_data.metric_cost {
-                                    "USD"
-                                } else {
-                                    "TOKENS"
-                                })
-                                .font(
-                                    TextStyle::new(9.0, 400.0)
-                                        .family(Family::Mono)
-                                        .lh(12.0)
-                                        .tracking(0.9),
-                                )
-                                .color(t.faint),
+                                text(if metric_cost { "USD" } else { "TOKENS" })
+                                    .font(
+                                        TextStyle::new(9.0, 400.0)
+                                            .family(Family::Mono)
+                                            .lh(12.0)
+                                            .tracking(0.9),
+                                    )
+                                    .color(t.faint),
                             ),
                     );
                 }
+            }
+            if let Some(actions) = action_overlay {
+                trail = trail.child(actions);
             }
             let hover_id = id.clone();
             let content = row()
@@ -1201,7 +1318,13 @@ pub(super) fn sessions(
                         .child(metadata),
                 )
                 .child(trail)
+                .on_pointer_move_local(|s: &mut AppState, p, _| {
+                    s.project_data.session_pointer = Some([p.window_x, p.window_y]);
+                })
                 .on_hover_focus_change(move |s: &mut AppState, over, _| {
+                    if !over {
+                        s.project_data.session_pointer = None;
+                    }
                     s.project_data.set_session_hover(&hover_id, over);
                     if over {
                         s.project_data.hovered_session = Some(hover_id.clone());
@@ -1238,13 +1361,17 @@ pub(super) fn sessions(
                 content
             });
         }
-        let recent_y = s.project_data.session_recent_y.clone();
-        let group = col().w_full().gap(14.0).child(head).child(rows);
-        list = list.child(if !pinned && !home {
-            group.on_layout(move |_: &mut AppState, bounds| recent_y.set(bounds[1]))
+        let band = if home {
+            el().w_full().pb(14.0).child(head)
         } else {
-            group
-        });
+            el().w_full()
+                .pb(14.0)
+                .fill(t.ground)
+                .clip_fade_linear(0.0, 0.0, 0.0, 12.0)
+                .sticky_top(0.0)
+                .child(head)
+        };
+        list = list.child(col().w_full().child(band).child(rows));
     }
     list
 }
@@ -1329,6 +1456,11 @@ pub(super) fn identity_lead(
             el().size(badge_size, badge_size)
                 .radius(badge_size / 2.0)
                 .fill(badge_color)
+                .box_shadow(Shadow {
+                    spread: 3.0 * (0.52 + 0.48 * p) * (1.0 - p),
+                    color: t.ground,
+                    ..Shadow::default()
+                })
                 .center()
                 .absolute(badge_x, badge_y)
                 .child(icon(mark, icon_size).color(color)),

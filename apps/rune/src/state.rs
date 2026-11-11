@@ -311,6 +311,25 @@ impl AppState {
             s.project_data.icons = Default::default();
             false
         };
+        let holding = s.project_data.delete_hold.is_some();
+        if s.project_data
+            .delete_hold
+            .as_ref()
+            .is_some_and(|(at, _, _)| at.elapsed().as_secs_f32() >= 0.85)
+        {
+            if let Some((_, path, id)) = s.project_data.delete_hold.take() {
+                s.session_action(path, id, "delete", false);
+            }
+        } else if holding {
+            tx.wake_after(std::time::Duration::ZERO);
+        }
+        let metric_motion = s
+            .project_data
+            .metric_swap
+            .is_some_and(|(at, _)| clock - at < 0.36);
+        if metric_motion {
+            tx.wake_after(std::time::Duration::ZERO);
+        }
         let session_motion = s
             .project_data
             .session_hover_motion
@@ -337,6 +356,8 @@ impl AppState {
         changed
             || animating
             || session_motion
+            || metric_motion
+            || holding
             || start
             || launcher
             || lazy

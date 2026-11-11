@@ -1,7 +1,7 @@
 use super::empty::BACK;
 
 use super::empty::StartPointer;
-use super::projects::{folder_with_git, folder_with_git_hover, session_head, sessions};
+use super::projects::{folder_with_git, folder_with_git_hover, sessions};
 use crate::{
     state::{AppState, Page},
     theme::{Palette, mix_srgb},
@@ -1105,48 +1105,21 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child({
                     s.project_data.lazy.reduced.set(cx.is_reduced_motion());
                     let scroll = s.project_data.lazy.scroll.clone();
-                    let offset = scroll.get().0;
-                    let pinned_count = s.project_data.sessions.iter().filter(|v| v.pinned).count();
-                    let has_recent = s.project_data.sessions.iter().any(|v| !v.pinned);
-                    let boundary = s.project_data.session_recent_y.get()
-                        - s.project_data.session_view_y.get()
-                        + offset;
-                    let view_y = s.project_data.session_view_y.clone();
-                    let mut viewport = el()
-                        .w_full()
-                        .grow(1.0)
-                        .min_h(0.0)
-                        .on_layout(move |_: &mut AppState, bounds| view_y.set(bounds[1]))
-                        .child(
-                            col()
-                                .key("overview-sessions")
-                                .w_full()
-                                .h_full()
-                                .scroll(ScrollSpec {
-                                    stick_bottom: false,
-                                })
-                                .on_scroll_offset(move |at| scroll.set((at.offset[1], at.max[1])))
-                                .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
-                                .child(
-                                    sessions(s, &s.project_data.sessions, t, false, Some(elapsed))
-                                        .pb(24.0),
-                                ),
-                        );
-                    if offset > 0.0 && !s.project_data.sessions.is_empty() {
-                        let pinned = pinned_count > 0 && (!has_recent || offset < boundary);
-                        let push = if pinned && has_recent {
-                            (boundary - offset - 34.0).min(0.0)
-                        } else {
-                            0.0
-                        };
-                        viewport = viewport.child(
-                            el().pin(Some(0.0), Some(push), Some(0.0), None)
-                                .h(34.0)
-                                .fill(t.ground)
-                                .clip_fade_linear(0.0, 0.0, 0.0, 12.0)
-                                .child(session_head(s, t, pinned, pinned || pinned_count == 0)),
-                        );
-                    }
+                    let viewport = el().w_full().grow(1.0).min_h(0.0).child(
+                        col()
+                            .key("overview-sessions")
+                            .w_full()
+                            .h_full()
+                            .scroll(ScrollSpec {
+                                stick_bottom: false,
+                            })
+                            .on_scroll_offset(move |at| scroll.set((at.offset[1], at.max[1])))
+                            .clip_fade_linear(0.0, 0.0, 0.0, 44.0)
+                            .child(
+                                sessions(s, &s.project_data.sessions, t, false, Some(elapsed))
+                                    .pb(24.0),
+                            ),
+                    );
                     col()
                         .w(content_width)
                         .h_full()
