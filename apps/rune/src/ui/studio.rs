@@ -190,7 +190,7 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
             icon(meter_arc(percent), 15.0)
                 .opacity(if percent == 0 { 0.0 } else { 1.0 })
                 .color(color)
-                .pin(Some(0.0), None, None, Some(0.0)),
+                .absolute(0.0, 0.0),
         )
         .on_press(|s: &mut AppState| s.studio.context_open = !s.studio.context_open);
     if state.context_open {
@@ -198,30 +198,50 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
             row()
                 .w_full()
                 .justify_between()
-                .child(label(name, 11.0, 400.0, t.muted))
-                .child(label(value, 11.0, 400.0, t.ink))
+                .child(label(name, 11.0, 400.0, t.muted).font(TextStyle::new(11.0, 400.0).mono()))
+                .child(label(value, 11.0, 400.0, t.ink).font(TextStyle::new(11.0, 400.0).mono()))
         };
         let card = col()
             .w(260.0)
-            .px(12.0)
-            .py(12.0)
-            .gap(8.0)
-            .radius(10.0)
+            .radius(20.0)
+            .border(1.0, t.line)
             .fill(t.ground)
-            .child(label("Context window", 12.0, 600.0, t.ink))
-            .child(data_row("Used", format!("{percent}% · {}k", used / 1000)))
-            .child(data_row(
-                "Remaining",
-                format!("{}k", window.saturating_sub(used) / 1000),
-            ))
-            .child(data_row("Window", format!("{}k", window / 1000)))
-            .child(label(
-                format!("Auto-compacts at ~{}k", window / 1000),
-                11.0,
-                400.0,
-                t.muted,
-            ));
-        meter = meter.child(card.pin(None, Some(0.0), None, Some(23.0)));
+            .shadow(10.0, 28.0, rune::Color::BLACK.alpha(0.18))
+            .child(
+                row()
+                    .w_full()
+                    .h(36.0)
+                    .px(13.0)
+                    .center_y()
+                    .justify_between()
+                    .child(label("Context window", 12.5, 600.0, t.ink_soft))
+                    .child(
+                        el().child(label("Cancel", 13.0, 600.0, t.muted))
+                            .on_press(|s: &mut AppState| s.studio.context_open = false),
+                    ),
+            )
+            .child(
+                col()
+                    .w_full()
+                    .padding(12.0)
+                    .gap(3.0)
+                    .radius(18.0)
+                    .fill(t.raised)
+                    .child(data_row("Used", format!("{percent}% · {}k", used / 1000)))
+                    .child(data_row(
+                        "Remaining",
+                        format!("{}k", window.saturating_sub(used) / 1000),
+                    ))
+                    .child(data_row("Window", format!("{}k", window / 1000)))
+                    .child(el().w_full().h(1.0).fill(t.line).my(5.0))
+                    .child(label(
+                        format!("Auto-compacts at ~{}k.", window / 1000),
+                        11.0,
+                        400.0,
+                        t.muted,
+                    )),
+            );
+        meter = meter.child(card.absolute(-245.0, 23.0));
     }
     meter
 }
@@ -942,7 +962,7 @@ fn studio_row(
 fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
-        if item.text.is_empty() && item.name.is_empty() {
+        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
         let value = if item.kind == "tool_call" {
@@ -1382,7 +1402,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         };
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &s.studio.items {
-        if item.text.is_empty() && item.name.is_empty() {
+        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
         let value = if item.kind == "tool_call" {
@@ -1410,7 +1430,26 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     if let Some(error) = &s.studio.error {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
-    let art = if s.studio.items.is_empty() {
+    let art = if let Some(item) = s.studio.items.iter().find(|item| item.kind == "connected") {
+        el().w_full().h(580.0).center().child(
+            col()
+                .items_center()
+                .gap(12.0)
+                .child(label("Today", 11.0, 400.0, t.muted))
+                .child(
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .child(el().w(15.0).h(15.0).radius(7.5).fill(t.accent))
+                        .child(label(
+                            format!("{} connected", item.text),
+                            12.0,
+                            400.0,
+                            t.muted,
+                        )),
+                ),
+        )
+    } else if s.studio.items.is_empty() {
         el().w_full().h(580.0).center().child(crate::codegolf::slot(
             mark,
             s.art_focused,

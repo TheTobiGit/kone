@@ -121,6 +121,7 @@ fn main() {
             ("studio-column-head-dormant", |s| {
                 studio_column_head(s);
                 s.studio.dormant = true;
+                s.studio.context_usage = None;
             }),
             ("studio-column-head-terminal-live", |s| {
                 studio_column_head(s);
@@ -326,6 +327,14 @@ fn studio_column_head(s: &mut AppState) {
         .as_array_mut()
         .unwrap()
         .truncate(1);
+    s.studio.composer_open = false;
+    s.studio.context_usage = Some((40_000, 200_000));
+    s.studio.providers[0].id = "gpt".into();
+    s.studio.items.push(state::StudioItem {
+        kind: "connected".into(),
+        text: "Clay".into(),
+        ..Default::default()
+    });
     s.studio.title = "Review thread".into();
     s.studio.worktree_path = Some("/demo/worktree".into());
 }
