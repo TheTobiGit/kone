@@ -37,6 +37,12 @@ static ARCHIVE: Icon = Icon {
     body: r#"<path d="M7 21H17C19.357 21 20.535 21 21.268 20.268C22 19.535 22 18.357 22 16S22 12.465 21.268 11.732C20.535 11 19.357 11 17 11H7C4.643 11 3.465 11 2.732 11.732C2 12.465 2 13.643 2 16S2 19.535 2.732 20.268C3.465 21 4.643 21 7 21ZM4 11C4 9.6 4 8.9 4.273 8.365C4.512 7.895 4.895 7.512 5.365 7.273C5.9 7 6.6 7 8 7H16C17.4 7 18.1 7 18.635 7.273C19.105 7.512 19.488 7.895 19.727 8.365C20 8.9 20 9.6 20 11M6 7C6 5.6 6 4.9 6.273 4.365C6.512 3.895 6.895 3.512 7.365 3.273C7.9 3 8.6 3 10 3H14C15.4 3 16.1 3 16.635 3.273C17.105 3.512 17.488 3.895 17.727 4.365C18 4.9 18 5.6 18 7M16 15L15.7 15.4C15.111 16.185 14.817 16.578 14.394 16.789C13.972 17 13.481 17 12.5 17H11.5C10.519 17 10.028 17 9.606 16.789C9.183 16.578 8.889 16.185 8.3 15.4L8 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+static TERMINAL: Icon = Icon {
+    name: "studio-terminal",
+    view: 24.0,
+    body: r#"<path d="M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5M11.5 12.5H15.5M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static REFRESH: Icon = Icon {
     name: "studio-refresh",
     view: 24.0,
@@ -135,7 +141,7 @@ fn fork_tool(
         });
     if shown {
         button = button.child(
-            el().pin(Some(-80.0), None, Some(26.0), None)
+            el().absolute(0.0, 22.0)
                 .px(7.0)
                 .h(20.0)
                 .center()
@@ -274,9 +280,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
     } else {
         t.ink
     };
-    let mut style = TextStyle::new(13.5, if side_chat { 560.0 } else { 620.0 })
-        .lh(16.2)
-        .tracking(-0.2025);
+    let mut style = TextStyle::new(13.5, 400.0).lh(16.2).tracking(-0.2025);
     if side_chat {
         style = style.italic();
     }
@@ -483,7 +487,7 @@ fn studio_row(
             });
             let side_chat = state.is_some_and(|s| s.side_chat);
             let head = row()
-                .offset(0.0, -17.0)
+                .offset(0.0, -9.0)
                 .w_full()
                 .h(38.0)
                 .center_y()
@@ -514,13 +518,13 @@ fn studio_row(
                     row()
                         .gap(8.0)
                         .center_y()
-                        .child(
-                            if state.is_some_and(|s| s.dormant || s.terminal_command.is_some()) {
-                                icon(&SIDE_CHAT, 15.0).color(t.muted)
-                            } else {
-                                provider_mark(state, t)
-                            },
-                        )
+                        .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                            icon(&TERMINAL, 15.0).color(t.muted)
+                        } else if state.is_some_and(|s| s.dormant) {
+                            icon(&SIDE_CHAT, 15.0).color(t.muted)
+                        } else {
+                            provider_mark(state, t)
+                        })
                         .child(
                             if state.is_some_and(|state| {
                                 state.worktree_path.is_some()
@@ -533,9 +537,9 @@ fn studio_row(
                             },
                         )
                         .child(if state.is_some_and(|s| s.dormant) {
-                            label("New thread", 13.5, 620.0, t.ink)
+                            label("New thread", 13.5, 400.0, t.ink)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
-                            label("Terminal", 13.5, 620.0, t.ink)
+                            label("Terminal", 13.5, 400.0, t.ink)
                         } else {
                             column_title(state, focused, t)
                         })
@@ -641,6 +645,8 @@ fn studio_row(
                     .items_center()
                     .pt(40.0)
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
+            } else if state.is_some_and(|s| s.terminal_command.is_some()) {
+                col().w_full().grow(1.0)
             } else if focused {
                 focused_body(
                     s,
@@ -682,6 +688,7 @@ fn studio_row(
                         })
                         .child(
                             el().w(5.0)
+                                .offset(0.0, -17.0)
                                 .h(if hovered { 19.44 } else { 18.0 })
                                 .radius(3.0)
                                 .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -748,6 +755,7 @@ fn studio_row(
                     })
                     .child(
                         el().w(5.0)
+                            .offset(0.0, -17.0)
                             .h(if hovered { 19.44 } else { 18.0 })
                             .radius(3.0)
                             .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -1431,7 +1439,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
     let art = if let Some(item) = s.studio.items.iter().find(|item| item.kind == "connected") {
-        el().w_full().h(580.0).center().child(
+        el().w_full().h(560.0).center().child(
             col()
                 .items_center()
                 .gap(12.0)
@@ -1447,7 +1455,26 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             400.0,
                             t.muted,
                         )),
-                ),
+                )
+                .child(if let Some(source) = &s.studio.handoff_source {
+                    row()
+                        .center_y()
+                        .gap(5.0)
+                        .child(label("Handed from", 12.0, 400.0, t.muted))
+                        .child(brand_mark(source, t))
+                        .child(label(
+                            if source == "claudeAgent" {
+                                "Claude"
+                            } else {
+                                source
+                            },
+                            12.0,
+                            400.0,
+                            t.ink_soft,
+                        ))
+                } else {
+                    el().h(0.0)
+                }),
         )
     } else if s.studio.items.is_empty() {
         el().w_full().h(580.0).center().child(crate::codegolf::slot(
