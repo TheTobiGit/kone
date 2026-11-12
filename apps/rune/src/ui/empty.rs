@@ -257,31 +257,26 @@ fn start_actions(
         .child(wrap(2, clone))
 }
 
-/// Entrance progress of the start options (`opacity 0, y 8` over 0.5 s) and of
-/// the floor plasma (fade over 1.4 s after 0.2 s, `easeOut`).
-fn entrance(s: &StartActionsState, reduced: bool) -> (f32, f32) {
+/// Entrance progress of the start options (`opacity 0, y 8` over 0.5 s).
+fn entrance(s: &StartActionsState, reduced: bool) -> f32 {
     match since(s, s.mounted) {
-        _ if reduced => (1.0, 1.0),
-        Some(e) => (
-            motion::bezier([0.22, 1.0, 0.36, 1.0], e / 0.5),
-            motion::bezier([0.0, 0.0, 0.58, 1.0], (e - 0.2) / 1.4),
-        ),
-        None if s.live => (0.0, 0.0),
-        None => (1.0, 1.0),
+        _ if reduced => 1.0,
+        Some(e) => motion::bezier([0.22, 1.0, 0.36, 1.0], e / 0.5),
+        None if s.live => 0.0,
+        None => 1.0,
     }
 }
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
     let reduced = cx.is_reduced_motion();
-    let (rise, glow) = entrance(&s.start_actions, reduced);
+    let rise = entrance(&s.start_actions, reduced);
     col()
         .key("empty-root")
         .apply_start_pointer(reduced)
         .w_full()
         .h_full()
         .fill(t.ground)
-        .child(crate::plasma::slot(s, cx, glow))
         .child(
             col()
                 .w_full()
