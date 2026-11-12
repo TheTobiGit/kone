@@ -396,3 +396,17 @@ Added deterministic meter, dormant, terminal-live and tooltip scenes and initial
 
 - Context events retain input, output, total and automatic-compaction status. The meter card conditionally shows those rows, omits remaining when the window is full, and formats small counts and percentages like Electron. The full arc is a complete circle and colour thresholds use the unrounded percentage.
 - Remaining differences from the preceding studio-4 entries still apply: title info, fork/archive actions and live handoff/worktree data are not connected; tooltips, keyboard access, popover dismissal and animation, dormant state and terminal behavior are not at parity. The card does not yet offer Compact or restore usage from history. This is a partial follow-up, not a 1:1 sign-off.
+
+### Studio column head restoration and archive follow-up (studio-4g, 2026-11-12)
+
+- Restored threads now recover their title, worktree path, side-chat flag and saved context-window snapshot, including zero usage. The archive button calls the existing history service, refuses busy threads, and closes the pane only after a successful response.
+- Refreshed `/workspace/rune-compare/studio-column-head-{light,dark}.png` and `studio-column-head-hover-{light,dark}.png` from fresh 2x Electron and Rune captures. Meter sheets `studio-column-head-meter-{calm,warm,full,open}-{light,dark}.png` use 2x Rune captures but the available Electron references were 1x and were enlarged; they are not pixel-exact comparisons.
+- Remaining: title info panel, side-chat and handoff creation, live handoff/changed-hands state, tooltip timing and keyboard access, meter outside dismissal and compact action, dormant reference and live terminal process data remain unimplemented or unverified. Connected identity still differs, as do the previously recorded typography, positioning and meter-card details. Archive refusal is shown as a thread error rather than the reference row notice. These captures do not establish 1:1 parity.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and native tests using `LIBRARY_PATH=/tmp/kone-rune-libs`.
+
+### Studio column head saved fork metadata (studio-4h, 2026-11-12)
+
+- Restored fork metadata now identifies side chats and restores the source provider for handoff/branch marks. A regression test covers handoff and side-chat restoration.
+- Refreshed Electron-left/Rune-right 2x captures: `/workspace/rune-compare/studio-column-head-{light,dark}.png`, `studio-column-head-hover-{light,dark}.png`, and `studio-column-head-meter-{calm,warm,full,open}-{light,dark}.png`. The Electron and Rune thread identities and body fixture still differ.
+- Remaining: the preceding studio-4g interaction and parity gaps remain, including title info, fork creation, live changed-hands data, tooltip timing/keyboard access, meter outside dismissal and compact action, dormant reference, and live terminal data. Branch origins currently use the handoff presentation. These captures do not establish 1:1 parity.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 40 native tests with `LIBRARY_PATH=/tmp/kone-rune-libs`.

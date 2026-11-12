@@ -1080,7 +1080,15 @@ impl AppState {
                 self.studio.restore_model = result["model"].as_str().map(str::to_owned);
                 self.studio.title = result["title"].as_str().unwrap_or("").to_owned();
                 self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
-                self.studio.side_chat = result["relationshipToParent"] == "side_chat";
+                let fork = &result["forkContext"];
+                let kind = fork["forkKind"].as_str();
+                self.studio.side_chat = result["relationshipToParent"] == "side_chat"
+                    || (fork.is_object() && !matches!(kind, Some("edit" | "handoff")));
+                self.studio.handoff_source = if matches!(kind, Some("handoff" | "branch")) {
+                    fork["sourceProvider"].as_str().map(str::to_owned)
+                } else {
+                    None
+                };
                 self.studio.context_usage = result["contextUsed"]
                     .as_u64()
                     .zip(result["contextWindow"].as_u64());
@@ -1403,6 +1411,23 @@ mod tests {
         assert!(s.studio.side_chat);
         assert_eq!(s.studio.context_usage, Some((0, 200000)));
         assert!(s.studio.context_auto_compact);
+    }
+
+    #[test]
+    fn restored_handoff_and_side_chat_use_fork_context() {
+        let mut s = AppState::default();
+        s.studio.history_request = Some(1);
+        s.studio_message(json!({"id":1,"result":{"forkContext":{
+            "forkKind":"handoff", "sourceProvider":"claudeAgent"
+        },"blocks":[]}}));
+        assert_eq!(s.studio.handoff_source.as_deref(), Some("claudeAgent"));
+        assert!(!s.studio.side_chat);
+        s.studio.history_request = Some(2);
+        s.studio_message(json!({"id":2,"result":{"forkContext":{
+            "forkKind":"side_chat", "sourceProvider":"codex"
+        },"blocks":[]}}));
+        assert!(s.studio.side_chat);
+        assert_eq!(s.studio.handoff_source, None);
     }
 
     #[test]
