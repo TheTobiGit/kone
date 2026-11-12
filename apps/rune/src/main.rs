@@ -398,6 +398,9 @@ fn studio_column_head(s: &mut AppState) {
 /// Conversation captures share the exact block text used by the Electron fixture.
 fn studio_conversation(s: &mut AppState, scene: &str) {
     studio_column_head(s);
+    // The reference captures park the pointer inside the column, so its head
+    // tools show.
+    s.studio_column_hover = Some(s.studio.thread_id.clone());
     s.projects[0].path = "/review/kone".into();
     s.studio_layout["rows"][0]["projectPath"] = serde_json::json!("/review/kone");
     s.studio.project_path = "/review/kone".into();
@@ -452,6 +455,26 @@ fn studio_conversation(s: &mut AppState, scene: &str) {
             }
         }
     }
+    // Anchors match the Electron captures' scroll offsets (see
+    // /tmp/studio5-measure.json); the user bubble carries its 10pt top padding,
+    // so its anchor sits 10pt higher than the text's measured position.
+    s.studio.conversation_scroll = match scene {
+        "scrolled" => Some(("studio-speaker-2".into(), 20.25)),
+        "compaction" => Some(("md-h-release-checklist".into(), 160.0)),
+        "marks" => Some(("studio-user-text-2".into(), 150.17)),
+        "code" => Some(("md-h-example-implementation".into(), 35.0)),
+        _ => None,
+    };
+    s.studio.conversation_scroll_deadline = None;
+    // The reference capture parks the pointer at the folder button (rest
+    // position, ~336,213 logical) right before shooting; the code block under
+    // it races the 0.2s Copy fade-out, so only those scenes show a Copy button
+    // — on the second block (0-based) in each.
+    s.studio.fixture_cb_copy = if matches!(scene, "scrolled" | "code") {
+        Some(1)
+    } else {
+        None
+    };
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {

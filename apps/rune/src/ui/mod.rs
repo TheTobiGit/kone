@@ -54,6 +54,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         stage
     };
     let clear = std::env::var("KONE_FRAME").as_deref() == Ok("clear");
+    let flat = std::env::var("KONE_FRAME").as_deref() == Ok("flat");
     let tint = if clear {
         rune::Color::TRANSPARENT
     } else if t.dark {
@@ -62,6 +63,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         t.sunken.alpha(0.35)
     };
     let mut frame = el().w_full().h_full();
+    if flat {
+        // Capture parity: the page fills the window like the browser capture
+        // does, with no drawn card frame.
+        return frame.fill(t.ground).window_drag().child(stage);
+    }
     if !clear {
         frame = frame.system_material(rune::SystemMaterial::Popover);
     }

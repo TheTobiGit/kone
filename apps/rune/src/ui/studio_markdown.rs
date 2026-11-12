@@ -26,8 +26,8 @@ fn inline(source: &str, t: Palette) -> El {
             spans.push(
                 Span::new(start, output.len())
                     .mono()
-                    .size(12.0)
-                    .bg(t.hover, 4.5),
+                    .size(11.97)
+                    .bg(t.hover, 4.55),
             );
             rest = &after[end + 1..];
             continue;
@@ -57,7 +57,7 @@ fn inline(source: &str, t: Palette) -> El {
             spans.push(
                 Span::new(start, output.len())
                     .color(t.accent)
-                    .underline(t.accent),
+                    .underline(t.accent.alpha(0.4)),
             );
             rest = &after[end + 2 + close + 1..];
             continue;
@@ -67,7 +67,7 @@ fn inline(source: &str, t: Palette) -> El {
         rest = &rest[ch.len_utf8()..];
     }
     let mut rendered = text(output)
-        .font(body_style(14.0, 23.0))
+        .font(body_style(14.0, 22.96))
         .color(t.ink)
         .spans(spans)
         .wrap()
@@ -81,8 +81,11 @@ fn inline(source: &str, t: Palette) -> El {
     rendered
 }
 
-// Colours from Shiki's light-plus and dark-plus themes. Keep punctuation in
-// the theme's foreground; classify identifiers using their immediate context.
+// Colours from Shiki's light-plus and dark-plus themes, as pixel-sampled from
+// the reference captures: storage keywords are blue, control flow purple, types
+// green, and identifiers their plain foreground navy (the light theme has no
+// special colour for const-declared names). Keep punctuation in the theme's
+// foreground; classify identifiers using their immediate context.
 fn syntax_spans(line: &str, dark: bool) -> Vec<Span> {
     let mut spans = Vec::new();
     let bytes = line.as_bytes();
@@ -126,9 +129,9 @@ fn syntax_spans(line: &str, dark: bool) -> Vec<Span> {
             }
             let word = &line[start..i];
             let next = line[i..].trim_start();
-            let color = if matches!(word, "const" | "let" | "var" | "function") {
+            let color = if matches!(word, "const" | "let" | "var" | "function" | "type") {
                 if dark { "#569CD6" } else { "#0000FF" }
-            } else if matches!(word, "export" | "return" | "if" | "else" | "type") {
+            } else if matches!(word, "export" | "return" | "if" | "else") {
                 if dark { "#C586C0" } else { "#AF00DB" }
             } else if matches!(word, "number" | "boolean" | "void" | "string")
                 || word.chars().next().is_some_and(char::is_uppercase)
@@ -136,8 +139,6 @@ fn syntax_spans(line: &str, dark: bool) -> Vec<Span> {
                 if dark { "#4EC9B0" } else { "#267F99" }
             } else if next.starts_with('(') || previous == "function" {
                 if dark { "#DCDCAA" } else { "#795E26" }
-            } else if matches!(previous, "const" | "let" | "var") {
-                if dark { "#4FC1FF" } else { "#0070C1" }
             } else if dark {
                 "#9CDCFE"
             } else {
@@ -152,16 +153,19 @@ fn syntax_spans(line: &str, dark: bool) -> Vec<Span> {
     spans
 }
 
-fn code_block(language: &str, source: &str, t: Palette) -> El {
+fn code_block(language: &str, source: &str, t: Palette, force_copy: bool) -> El {
     let name = match language.trim() {
         "ts" | "typescript" => "typescript",
         "js" | "javascript" => "javascript",
         "" => "code",
         other => other,
     };
-    let copied = source.trim_end_matches('\n').to_owned();
+    // The copy payload strips one trailing newline (`CodeBlock.vue`'s
+    // `code.replace(/\n$/,"")`) while the render keeps the trailing empty line
+    // box the reference draws.
+    let copied = source.strip_suffix('\n').unwrap_or(source).to_owned();
     let mut content = col();
-    for line in copied.split('\n') {
+    for line in source.split('\n') {
         let spans = syntax_spans(line, t.dark);
         content = content.child(
             text(if line.is_empty() { " " } else { line }.to_owned())
@@ -170,30 +174,35 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
                 .spans(spans),
         );
     }
+    let mut label_style = TextStyle::new(11.0, 400.0).mono().lh(18.04);
+    label_style.tracking = 0.22;
+    // `.cb:hover .cb__copy`: the whole figure is the hover group; the Copy
+    // button rests hidden and shows on hover — unless the fixture pins it
+    // visible (the reference pointer parks over one block per scene).
     col()
         .w_full()
         .clip_rounded(13.0)
-        .hover_group_focus()
+        .hover_group()
         .fill(mix_srgb(t.raised, t.ink, 0.03))
         .child(
             row()
                 .w_full()
-                .h(33.0)
+                .h(37.0)
                 .pl(14.0)
                 .pr(10.0)
                 .center_y()
-                .child(
-                    text(name.to_owned())
-                        .font(TextStyle::new(11.0, 400.0).mono())
-                        .color(t.muted),
-                )
+                .child(text(name.to_owned()).font(label_style).color(t.muted))
                 .child(el().grow(1.0))
                 .child(
                     row()
                         .center_y()
                         .gap(4.0)
-                        .group_opacity(0.0, 1.0)
-                        .child(icon(&super::studio::FOOTER_COPY01, 14.0).color(t.muted))
+                        .px(7.0)
+                        .py(3.0)
+                        .radius(7.0)
+                        .hover(t.hover)
+                        .group_opacity(if force_copy { 1.0 } else { 0.0 }, 1.0)
+                        .child(icon(&super::studio::FOOTER_COPY01, 13.0).color(t.muted))
                         .child(
                             text("Copy")
                                 .font(TextStyle::new(11.0, 400.0).mono())
@@ -206,19 +215,44 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
             el().w_full()
                 .clip_rounded(0.0)
                 .scroll_x()
-                .pb(33.0)
+                .pb(13.0)
                 .child(content.px(14.0)),
         )
 }
 
-pub(super) fn render(source: &str, t: Palette) -> El {
-    let mut result = col().w_full();
+fn slug(heading: &str) -> String {
+    let mut out = String::new();
+    for ch in heading.to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+        } else if (ch == ' ' || ch == '-') && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+/// One Markdown block: heading, paragraph, bullet list or fenced code block.
+enum Block {
+    Heading(String),
+    Paragraph(String),
+    List(Vec<String>),
+    Code { language: String, source: String },
+}
+
+/// `global_copy`: the 0-based index of the code block whose Copy button the
+/// fixture pins visible, in the thread-wide count; `None` hides all of them at
+/// rest (live threads show Copy under the pointer via the hover group).
+pub(super) fn render(source: &str, t: Palette, cb_base: usize, global_copy: Option<usize>) -> El {
+    let force = |local_index: usize| Some(cb_base + local_index) == global_copy;
+    let mut blocks: Vec<Block> = Vec::new();
     let mut lines = source.lines().peekable();
     while let Some(line) = lines.next() {
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(lang) = line.strip_prefix("```") {
+        if line.starts_with("```") {
+            let language = line.strip_prefix("```").unwrap_or_default().to_owned();
             let mut code = String::new();
             for next in lines.by_ref() {
                 if next.starts_with("```") {
@@ -227,29 +261,19 @@ pub(super) fn render(source: &str, t: Palette) -> El {
                 code.push_str(next);
                 code.push('\n');
             }
-            result = result.child(code_block(lang, &code, t).mb(12.0));
+            blocks.push(Block::Code {
+                language,
+                source: code,
+            });
         } else if let Some(heading) = line.strip_prefix("## ") {
-            result = result.child(
-                text(heading.to_owned())
-                    .font(TextStyle::new(16.0, 600.0))
-                    .color(t.ink)
-                    .wrap()
-                    .w_full()
-                    .mb(8.0),
-            );
+            blocks.push(Block::Heading(heading.to_owned()));
         } else if let Some(item) = line.strip_prefix("- ") {
-            result = result.child(
-                row()
-                    .w_full()
-                    .pl(10.0)
-                    .gap(12.0)
-                    .child(text("•").font(body_style(14.0, 23.0)).color(t.muted))
-                    .child(inline(item, t).grow(1.0))
-                    .mb(10.0),
-            );
-            if lines.peek().is_none_or(|line| !line.starts_with("- ")) {
-                result = result.child(el().h(8.0));
+            let mut items = vec![item.to_owned()];
+            while let Some(item) = lines.peek().and_then(|next| next.strip_prefix("- ")) {
+                items.push(item.to_owned());
+                lines.next();
             }
+            blocks.push(Block::List(items));
         } else {
             let mut paragraph = line.to_owned();
             while let Some(next) = lines.peek() {
@@ -263,8 +287,76 @@ pub(super) fn render(source: &str, t: Palette) -> El {
                 paragraph.push(' ');
                 paragraph.push_str(lines.next().unwrap());
             }
-            result = result.child(inline(&paragraph, t).mb(12.0));
+            blocks.push(Block::Paragraph(paragraph));
+        }
+    }
+    let last = blocks.len().saturating_sub(1);
+    let mut result = col().w_full();
+    let mut code_index = 0usize;
+    for (index, block) in blocks.iter().enumerate() {
+        // `.md > :last-child` carries no bottom margin.
+        if index == last {
+            match block {
+                Block::Heading(heading) => result = result.child(heading_el(heading, t, 0.0, 0.0)),
+                Block::Paragraph(paragraph) => result = result.child(inline(paragraph, t)),
+                Block::List(items) => result = result.child(list_el(items, t, 0.0)),
+                Block::Code { language, source } => {
+                    let forced = force(code_index);
+                    code_index += 1;
+                    result = result.child(code_block(language, source, t, forced))
+                }
+            }
+            continue;
+        }
+        match block {
+            Block::Heading(heading) => {
+                result = result.child(heading_el(
+                    heading,
+                    t,
+                    if index == 0 { 0.0 } else { 18.0 },
+                    8.0,
+                ))
+            }
+            Block::Paragraph(paragraph) => result = result.child(inline(paragraph, t).mb(12.0)),
+            Block::List(items) => result = result.child(list_el(items, t, 12.0)),
+            Block::Code { language, source } => {
+                let forced = force(code_index);
+                code_index += 1;
+                result = result.child(code_block(language, source, t, forced).mb(4.0))
+            }
         }
     }
     result
+}
+
+fn heading_el(heading: &str, t: Palette, mt: f32, mb: f32) -> El {
+    let mut style = TextStyle::new(16.0, 640.0).lh(21.12);
+    style.tracking = -0.192;
+    text(heading.to_owned())
+        .key(format!("md-h-{}", slug(heading)))
+        .font(style)
+        .color(t.ink)
+        .wrap()
+        .w_full()
+        .mt(mt)
+        .mb(mb)
+}
+
+fn list_el(items: &[String], t: Palette, mb: f32) -> El {
+    // `ul` has no padding; each `li` wraps a `p` whose 12px bottom margin
+    // collapses with the li's 4px, so the pitch is lh + 12 and the first li
+    // sits at the ul's top. The 5pt disc marker's left edge lands at 7.5 with
+    // its centre on the first line's midline; text at 27.
+    let mut list = col().w_full().gap(12.0);
+    for item in items {
+        list = list.child(
+            row()
+                .w_full()
+                .pl(7.5)
+                .gap(14.5)
+                .child(el().w(5.0).h(5.0).corners([2.5; 4]).fill(t.muted).mt(8.98))
+                .child(inline(item, t).grow(1.0)),
+        );
+    }
+    list.mb(mb)
 }

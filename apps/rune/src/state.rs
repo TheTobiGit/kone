@@ -155,6 +155,16 @@ impl AppState {
 pub struct StudioState {
     /// Initial positioning for deterministic conversation comparison captures.
     pub conversation_fixture: Option<String>,
+    /// Fixture-only scroll anchor (element key, top offset below the viewport
+    /// top): `poll` issues it for the first second of the scene clock, then
+    /// releases so the capture frame draws settled.
+    pub conversation_scroll: Option<(String, f32)>,
+    /// Virtual-clock deadline for the fixture scroll anchor, set on first poll.
+    pub conversation_scroll_deadline: Option<f64>,
+    /// Fixture-only forced Copy visibility: 0-based global code-block index.
+    /// The reference captures park the pointer over one block, so its Copy
+    /// button is frozen visible there (see the per-scene setup in `main`).
+    pub fixture_cb_copy: Option<usize>,
     pub title: String,
     pub connected_identity: Option<StudioIdentity>,
     pub side_chat: bool,
@@ -501,6 +511,19 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        if let Some((key, at)) = s.studio.conversation_scroll.clone() {
+            let deadline = *s
+                .studio
+                .conversation_scroll_deadline
+                .get_or_insert(clock + 1.0);
+            if clock < deadline {
+                tx.scroll_key_to(key, at);
+                tx.wake_after(std::time::Duration::ZERO);
+            } else {
+                s.studio.conversation_scroll = None;
+                s.studio.conversation_scroll_deadline = None;
+            }
+        }
         let title_blurred = s.studio.title_editing && !s.studio.title_draft.focused;
         if title_blurred {
             s.commit_studio_title();
