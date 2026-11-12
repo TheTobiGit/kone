@@ -1,4 +1,4 @@
-use rune::{Cx, El, Icon, ScrollSpec, TextStyle, col, el, icon, row, text, text_input};
+use rune::{Cx, El, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row, text, text_input};
 
 use crate::{
     state::{AppState, StudioState},
@@ -2854,16 +2854,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 } else {
                     "Read"
                 };
-                let path = item.text.as_str();
-                let (directory, filename) = path.rsplit_once('/').unwrap_or(("", path));
-                let short_name = if command {
-                    filename.to_owned()
-                } else if filename.chars().count() > 9 {
-                    format!("{}…", filename.chars().take(9).collect::<String>())
-                } else {
-                    filename.to_owned()
-                };
-                let short_path = format!("{directory}{short_name}");
+                let path = item.text.as_str().trim_end_matches('/');
                 let step_icon = if command {
                     &ACTIVITY_COMMAND
                 } else if item.name == "edit_file" {
@@ -2877,6 +2868,36 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     rune::color::hex("#8b5cf6").unwrap()
                 } else {
                     rune::color::hex("#4f9bea").unwrap()
+                };
+                let label_target = if command {
+                    text(path.to_owned())
+                        .font(TextStyle::new(11.5, 400.0).mono())
+                        .min_w(155.0)
+                        .color(t.muted)
+                } else {
+                    let dir_len = path.rfind('/').map_or(0, |slash| slash + 1);
+                    let mut chip_text = text(path.to_owned())
+                        .font(TextStyle::new(12.5, 400.0).mono().lh(18.75))
+                        .color(t.ink)
+                        .truncate()
+                        .shrink()
+                        .min_w(0.0);
+                    if dir_len > 0 {
+                        chip_text = chip_text.spans([Span::new(0, dir_len).color(t.muted)]);
+                    }
+                    el().pl(5.0)
+                        .pr(6.0)
+                        .py(1.0)
+                        .radius(6.0)
+                        .fill(t.hover)
+                        .max_w(256.0)
+                        .child(
+                            row()
+                                .center_y()
+                                .gap(4.0)
+                                .child(icon(super::file_icons::for_path(path), 13.0))
+                                .child(chip_text),
+                        )
                 };
                 let mut activity_row = row()
                     .key(format!("activity-row-{}", item.id))
@@ -2915,46 +2936,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             )),
                     )
                     .child(
-                        text(verb)
-                            .font(TextStyle::new(13.0, 400.0))
-                            .color(t.ink_soft),
-                    );
-                if command {
-                    activity_row = activity_row.child(
-                        text(short_path)
-                            .font(TextStyle::new(11.5, 400.0).mono())
-                            .min_w(155.0)
-                            .color(t.muted),
-                    );
-                } else if item.name == "edit_file" && s.studio.busy {
-                    activity_row = activity_row.child(el());
-                } else {
-                    activity_row = activity_row.child(
-                        el().px(3.0)
-                            .py(1.0)
-                            .radius(3.0)
-                            .fill(t.hover)
-                            .max_w(256.0)
+                        row()
+                            .center_y()
+                            .gap(5.0)
+                            .grow(1.0)
+                            .min_w(0.0)
                             .child(
-                                row()
-                                    .center_y()
-                                    .gap(3.0)
-                                    .child(icon(super::file_icons::for_path(path), 13.0))
-                                    .child(
-                                        text(directory)
-                                            .font(TextStyle::new(12.5, 400.0).mono())
-                                            .color(t.muted),
-                                    )
-                                    .child(
-                                        text(short_name)
-                                            .font(TextStyle::new(11.5, 500.0).mono())
-                                            .color(t.ink_soft),
-                                    ),
-                            ),
+                                text(verb)
+                                    .font(TextStyle::new(13.0, 400.0))
+                                    .color(t.ink_soft),
+                            )
+                            .child(label_target),
                     );
-                }
                 activity_row = activity_row
-                    .child(el().grow(1.0))
                     .child(if item.name == "edit_file" && !s.studio.busy {
                         row()
                             .gap(3.0)
