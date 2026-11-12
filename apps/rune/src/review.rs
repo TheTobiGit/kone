@@ -18,6 +18,21 @@ pub fn fixture_avatar() -> String {
         .to_owned()
 }
 
+/// Avatar art used by the deterministic Studio conversation fixtures. The
+/// reference screenshots use generated guest faces, so select matching guest
+/// palette variants without affecting live identities.
+pub fn conversation_avatar(name: &str) -> String {
+    let identities: Value = serde_json::from_str(IDENTITIES).expect("valid review identities");
+    let id = match name {
+        "Linen" | "Verge" => "all-mock-1",
+        "Cairn" | "Clay" => "mock-3",
+        "Rowan" | "Ash" | "Arbor" | "Indigo" => "mock-2",
+        "Granite" => "mock-6",
+        _ => "mock-3",
+    };
+    identities[id]["svg"].as_str().unwrap_or("").to_owned()
+}
+
 const KONE: &str = "/review/kone";
 const NOVA: &str = "/review/nova";
 const ATLAS: &str = "/review/atlas";

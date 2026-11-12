@@ -206,6 +206,23 @@ fn avatar_at(identity: &crate::state::StudioIdentity, size: f32, t: Palette) -> 
         .pixels_fit(image.pixels(), rune::SurfaceFit::Fill)
 }
 
+fn conversation_fixture_speaker(scene: &str, dark: bool, turn: usize) -> Option<&'static str> {
+    let speaker = match (scene, dark, turn) {
+        ("mid", false, _) => "Linen",
+        ("mid", true, _) => "Cairn",
+        ("scrolled", false, _) => "Rowan",
+        ("scrolled", true, _) => "Granite",
+        ("compaction", false, _) => "Clay",
+        ("compaction", true, _) => "Ash",
+        ("marks", false, _) => "Arbor",
+        ("marks", true, _) => "Linen",
+        ("code", false, _) => "Verge",
+        ("code", true, _) => "Indigo",
+        _ => return None,
+    };
+    Some(speaker)
+}
+
 fn fork_tool(
     glyph: &'static Icon,
     tip: &'static str,
@@ -2228,146 +2245,160 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
-        let line =
-            match item.kind.as_str() {
-                "user" => {
-                    user_count += 1;
-                    let rail = t.ink.alpha(0.12);
-                    let connector_shadow = rune::color::hex("#000000").unwrap().alpha(0.35);
-                    // The connector runs from the bubble's left edge at its
-                    // midline, corners down 12pt at the avatar column, and stops
-                    // 7.7pt above the speaker row (constants assume the fixture's
-                    // single-line bubbles).
-                    row()
-                        .w_full()
-                        .center_y()
-                        .child(el().w(25.0))
-                        .child(
-                            el().grow(1.0)
-                                .h(1.0)
-                                .fill(rail)
-                                .shadow(1.0, 1.0, connector_shadow),
-                        )
-                        .child(
-                            text(item.text.clone())
-                                .key(format!("studio-user-text-{user_count}"))
-                                .font(TextStyle::new(14.0, 400.0).lh(22.68))
-                                .color(t.ink)
-                                .max_w(576.0)
-                                .px(15.0)
-                                .py(10.0)
-                                .corners([16.0, 16.0, 5.0, 16.0])
-                                .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
-                        )
-                        .child(
-                            icon(&CONNECTOR_CORNER, 12.0)
-                                .color(rail)
-                                .shadow(1.0, 1.0, connector_shadow)
-                                .pin(Some(13.0), Some(21.33), None, None),
-                        )
-                        .child(
-                            el().pin(Some(13.0), Some(33.33), None, None)
-                                .w(1.0)
-                                .h(55.67)
-                                .fill(rail)
-                                .shadow(1.0, 1.0, connector_shadow),
-                        )
-                }
-                "compaction" => row().w_full().justify_center().child(
-                    text(if s.studio.conversation_fixture.is_some() {
-                        format!("{} · 8:53 AM", item.text)
-                    } else {
-                        item.text.clone()
-                    })
-                    .font(TextStyle::new(16.0, 400.0).lh(24.8))
-                    .color(t.ink),
-                ),
-                "setting_mark" => {
-                    let brains = |count: usize, color: &str| {
-                        let mut stack = row().center_y().gap(1.0);
-                        for _ in 0..count {
-                            stack = stack.child(
-                                icon(&PICKER_BRAIN, 13.0).color(rune::color::hex(color).unwrap()),
-                            );
-                        }
-                        stack
-                    };
-                    row()
-                        .w_full()
-                        .center_y()
-                        .justify_center()
-                        .gap(6.0)
-                        .child(
-                            row().center_y().gap(4.0).child(brains(2, "#10B981")).child(
-                                text("Medium")
-                                    .font(TextStyle::new(12.0, 550.0).lh(16.0))
-                                    .color(t.ink_soft),
-                            ),
-                        )
-                        .child(icon(&SETTING_ARROW, 13.0).color(t.muted))
-                        .child(
-                            row().center_y().gap(4.0).child(brains(3, "#6366F1")).child(
-                                text("High")
-                                    .font(TextStyle::new(12.0, 550.0).lh(16.0))
-                                    .color(t.ink_soft),
-                            ),
-                        )
-                }
-                "handoff_mark" => row()
+        let line = match item.kind.as_str() {
+            "user" => {
+                user_count += 1;
+                let rail = t.ink.alpha(0.12);
+                let connector_shadow = rune::color::hex("#000000").unwrap().alpha(0.35);
+                // The connector runs from the bubble's left edge at its
+                // midline, corners down 12pt at the avatar column, and stops
+                // 7.7pt above the speaker row (constants assume the fixture's
+                // single-line bubbles).
+                row()
+                    .w_full()
+                    .center_y()
+                    .child(el().w(25.0))
+                    .child(
+                        el().grow(1.0)
+                            .h(1.0)
+                            .fill(rail)
+                            .shadow(1.0, 1.0, connector_shadow),
+                    )
+                    .child(
+                        text(item.text.clone())
+                            .key(format!("studio-user-text-{user_count}"))
+                            .font(TextStyle::new(14.0, 400.0).lh(22.68))
+                            .color(t.ink)
+                            .max_w(576.0)
+                            .px(15.0)
+                            .py(10.0)
+                            .corners([16.0, 16.0, 5.0, 16.0])
+                            .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
+                    )
+                    .child(
+                        icon(&CONNECTOR_CORNER, 12.0)
+                            .color(rail)
+                            .shadow(1.0, 1.0, connector_shadow)
+                            .pin(Some(13.0), Some(21.33), None, None),
+                    )
+                    .child(
+                        el().pin(Some(13.0), Some(33.33), None, None)
+                            .w(1.0)
+                            .h(55.67)
+                            .fill(rail)
+                            .shadow(1.0, 1.0, connector_shadow),
+                    )
+            }
+            "compaction" => row().w_full().justify_center().child(
+                text(if s.studio.conversation_fixture.is_some() {
+                    format!("{} · 8:53 AM", item.text)
+                } else {
+                    item.text.clone()
+                })
+                .font(TextStyle::new(16.0, 400.0).lh(24.8))
+                .color(t.ink),
+            ),
+            "setting_mark" => {
+                let brains = |count: usize, color: &str| {
+                    let mut stack = row().center_y().gap(1.0);
+                    for _ in 0..count {
+                        stack = stack.child(
+                            icon(&PICKER_BRAIN, 13.0).color(rune::color::hex(color).unwrap()),
+                        );
+                    }
+                    stack
+                };
+                row()
                     .w_full()
                     .center_y()
                     .justify_center()
-                    .gap(5.0)
-                    .py(2.0)
+                    .gap(6.0)
                     .child(
-                        text("Handed from")
-                            .font(TextStyle::new(12.0, 400.0).lh(18.59))
-                            .color(t.muted),
+                        row().center_y().gap(4.0).child(brains(2, "#10B981")).child(
+                            text("Medium")
+                                .font(TextStyle::new(12.0, 550.0).lh(16.0))
+                                .color(t.ink_soft),
+                        ),
                     )
-                    .child(brand_mark_size("gpt", 13.0, t))
+                    .child(icon(&SETTING_ARROW, 13.0).color(t.muted))
                     .child(
-                        text("GPT 5.4")
-                            .font(TextStyle::new(12.0, 550.0).lh(18.59))
-                            .color(t.ink_soft),
-                    ),
-                "assistant_text" => {
-                    let mut turn = col().w_full().gap(15.0);
-                    let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
-                    if first {
-                        speaker_count += 1;
-                        let mut head = row()
-                            .key(format!("studio-speaker-{speaker_count}"))
-                            .center_y()
-                            .gap(8.0)
-                            .min_h(26.0)
-                            .mb(-6.0);
-                        if let Some(identity) = &s.studio.connected_identity {
-                            head = head.child(avatar_at(identity, 26.0, t));
-                            head = head.child(
-                                text(identity.name.clone())
-                                    .font(TextStyle::new(13.0, 500.0).lh(13.0))
-                                    .color(t.ink_soft),
-                            );
-                        } else {
-                            head = head.child(
-                                text("Assistant")
-                                    .font(TextStyle::new(13.0, 500.0).lh(13.0))
-                                    .color(t.ink_soft),
-                            );
-                        }
-                        turn = turn.child(head);
+                        row().center_y().gap(4.0).child(brains(3, "#6366F1")).child(
+                            text("High")
+                                .font(TextStyle::new(12.0, 550.0).lh(16.0))
+                                .color(t.ink_soft),
+                        ),
+                    )
+            }
+            "handoff_mark" => row()
+                .w_full()
+                .center_y()
+                .justify_center()
+                .gap(5.0)
+                .py(2.0)
+                .child(
+                    text("Handed from")
+                        .font(TextStyle::new(12.0, 400.0).lh(18.59))
+                        .color(t.muted),
+                )
+                .child(brand_mark_size("gpt", 13.0, t))
+                .child(
+                    text("GPT 5.4")
+                        .font(TextStyle::new(12.0, 550.0).lh(18.59))
+                        .color(t.ink_soft),
+                ),
+            "assistant_text" => {
+                let mut turn = col().w_full().gap(15.0);
+                let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
+                if first {
+                    speaker_count += 1;
+                    let mut head = row()
+                        .key(format!("studio-speaker-{speaker_count}"))
+                        .center_y()
+                        .gap(8.0)
+                        .min_h(26.0)
+                        .mb(-6.0);
+                    if let Some(name) = s.studio.conversation_fixture.as_deref().and_then(|scene| {
+                        conversation_fixture_speaker(scene, t.dark, speaker_count)
+                    }) {
+                        let identity = crate::state::StudioIdentity {
+                            name: name.into(),
+                            svg: crate::review::conversation_avatar(name),
+                            avatar: None,
+                        };
+                        head = head.child(avatar_at(&identity, 26.0, t));
+                        head = head.child(
+                            text(identity.name)
+                                .font(TextStyle::new(13.0, 500.0).lh(13.0))
+                                .color(t.ink_soft),
+                        );
+                    } else if let Some(identity) = &s.studio.connected_identity {
+                        head = head.child(avatar_at(identity, 26.0, t));
+                        head = head.child(
+                            text(identity.name.clone())
+                                .font(TextStyle::new(13.0, 500.0).lh(13.0))
+                                .color(t.ink_soft),
+                        );
+                    } else {
+                        head = head.child(
+                            text("Assistant")
+                                .font(TextStyle::new(13.0, 500.0).lh(13.0))
+                                .color(t.ink_soft),
+                        );
                     }
-                    turn = turn.child(super::studio_markdown::render(
-                        &item.text,
-                        t,
-                        cb_base,
-                        s.studio.fixture_cb_copy,
-                    ));
-                    cb_base += item.text.matches("```").count() / 2;
-                    let copy = item.text.clone();
-                    let fixture = s.studio.conversation_fixture.is_some();
-                    let block_id = item.block_id.clone();
-                    let mut footer = row()
+                    turn = turn.child(head);
+                }
+                turn = turn.child(super::studio_markdown::render(
+                    &item.text,
+                    t,
+                    cb_base,
+                    s.studio.fixture_cb_copy,
+                ));
+                cb_base += item.text.matches("```").count() / 2;
+                let copy = item.text.clone();
+                let fixture = s.studio.conversation_fixture.is_some();
+                let block_id = item.block_id.clone();
+                let mut footer =
+                    row()
                         .center_y()
                         .gap(2.0)
                         .mt(-7.0)
@@ -2406,27 +2437,28 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .hover(t.hover)
                                 .child(icon(&FOOTER_FOOTPRINTS, 14.0).color(t.muted)),
                         );
-                    // Live replies keep the branch affordance; the Electron
-                    // fixture's footers carry only time, note and trace.
-                    if !fixture && let Some(block_id) = block_id {
-                        footer = footer.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
+                // Live replies keep the branch affordance; the Electron
+                // fixture's footers carry only time, note and trace.
+                if !fixture && let Some(block_id) = block_id {
+                    footer =
+                        footer.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
                             move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
                         ));
-                    }
-                    turn.child(footer)
                 }
-                _ => label(
-                    if item.kind == "tool_call" {
-                        format!("{}  {}", item.name, item.text)
-                    } else {
-                        item.text.clone()
-                    },
-                    12.5,
-                    400.0,
-                    t.muted,
-                )
-                .w_full(),
-            };
+                turn.child(footer)
+            }
+            _ => label(
+                if item.kind == "tool_call" {
+                    format!("{}  {}", item.name, item.text)
+                } else {
+                    item.text.clone()
+                },
+                12.5,
+                400.0,
+                t.muted,
+            )
+            .w_full(),
+        };
         if item.kind == "user" {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
