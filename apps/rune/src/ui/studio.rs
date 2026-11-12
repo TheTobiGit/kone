@@ -163,6 +163,13 @@ fn meter_arc(percent: usize) -> &'static Icon {
     static ARCS: std::sync::OnceLock<Vec<Icon>> = std::sync::OnceLock::new();
     &ARCS.get_or_init(|| {
         (0..=100).map(|p| {
+            if p == 100 {
+                return Icon {
+                    name: "studio-meter-100",
+                    view: 20.0,
+                    body: r#"<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2.25"/>"#,
+                };
+            }
             let angle = std::f32::consts::TAU * (p.min(99) as f32 / 100.0);
             let x = 10.0 + 7.0 * angle.sin();
             let y = 10.0 - 7.0 * angle.cos();
@@ -179,10 +186,11 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
     let Some((used, window)) = state.context_usage.filter(|(_, window)| *window > 0) else {
         return el().w(0.0);
     };
-    let percent = ((used as f64 / window as f64 * 100.0).round() as usize).min(100);
-    let color = if percent >= 90 {
+    let fraction = (used as f64 / window as f64 * 100.0).min(100.0);
+    let percent = fraction.round() as usize;
+    let color = if fraction >= 90.0 {
         rune::Color::from_oklab([0.6, 0.16, 0.08, 1.0])
-    } else if percent >= 70 {
+    } else if fraction >= 70.0 {
         t.accent
     } else {
         crate::theme::mix_srgb(t.muted, t.accent, 0.52)
@@ -207,6 +215,39 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                 .child(label(name, 11.0, 400.0, t.muted).font(TextStyle::new(11.0, 400.0).mono()))
                 .child(label(value, 11.0, 400.0, t.ink).font(TextStyle::new(11.0, 400.0).mono()))
         };
+        let mut data = col()
+            .w_full()
+            .padding(12.0)
+            .gap(3.0)
+            .radius(18.0)
+            .fill(t.raised)
+            .child(data_row(
+                "Used",
+                format!("{} · {}", format_percent(fraction), format_tokens(used)),
+            ));
+        if used < window {
+            data = data.child(data_row("Remaining", format_tokens(window - used)));
+        }
+        for (name, value) in [
+            ("Input", state.context_input),
+            ("Output", state.context_output),
+            ("Total", state.context_total),
+        ] {
+            if let Some(value) = value {
+                data = data.child(data_row(name, format_tokens(value)));
+            }
+        }
+        data = data.child(data_row("Window", format_tokens(window)));
+        if state.context_auto_compact {
+            data = data
+                .child(el().w_full().h(1.0).fill(t.line).my(5.0))
+                .child(label(
+                    format!("Auto-compacts at ~{}.", format_tokens(window)),
+                    11.0,
+                    400.0,
+                    t.muted,
+                ));
+        }
         let card = col()
             .w(260.0)
             .radius(20.0)
@@ -226,30 +267,36 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                             .on_press(|s: &mut AppState| s.studio.context_open = false),
                     ),
             )
-            .child(
-                col()
-                    .w_full()
-                    .padding(12.0)
-                    .gap(3.0)
-                    .radius(18.0)
-                    .fill(t.raised)
-                    .child(data_row("Used", format!("{percent}% · {}k", used / 1000)))
-                    .child(data_row(
-                        "Remaining",
-                        format!("{}k", window.saturating_sub(used) / 1000),
-                    ))
-                    .child(data_row("Window", format!("{}k", window / 1000)))
-                    .child(el().w_full().h(1.0).fill(t.line).my(5.0))
-                    .child(label(
-                        format!("Auto-compacts at ~{}k.", window / 1000),
-                        11.0,
-                        400.0,
-                        t.muted,
-                    )),
-            );
+            .child(data);
         meter = meter.child(card.absolute(-245.0, 23.0));
     }
     meter
+}
+
+fn format_tokens(value: u64) -> String {
+    if value < 1_000 {
+        return value.to_string();
+    }
+    if value < 10_000 {
+        return format_decimal(value as f64 / 1_000.0, "k");
+    }
+    if value < 1_000_000 {
+        return format!("{:.0}k", value as f64 / 1_000.0);
+    }
+    format_decimal(value as f64 / 1_000_000.0, "m")
+}
+
+fn format_decimal(value: f64, suffix: &str) -> String {
+    let number = format!("{value:.1}");
+    format!("{}{suffix}", number.strip_suffix(".0").unwrap_or(&number))
+}
+
+fn format_percent(value: f64) -> String {
+    if value < 10.0 {
+        format_decimal(value, "%")
+    } else {
+        format!("{value:.0}%")
+    }
 }
 
 fn title_of(state: &StudioState) -> String {

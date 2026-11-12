@@ -157,6 +157,10 @@ pub struct StudioState {
     pub side_chat: bool,
     pub head_tooltip: Option<String>,
     pub context_usage: Option<(u64, u64)>,
+    pub context_input: Option<u64>,
+    pub context_output: Option<u64>,
+    pub context_total: Option<u64>,
+    pub context_auto_compact: bool,
     pub context_open: bool,
     pub dormant: bool,
     pub terminal_command: Option<String>,
@@ -1284,6 +1288,11 @@ impl AppState {
                 self.studio.context_usage = usage["contextUsed"]
                     .as_u64()
                     .zip(usage["contextWindow"].as_u64());
+                self.studio.context_input = usage["input"].as_u64();
+                self.studio.context_output = usage["output"].as_u64();
+                self.studio.context_total = usage["total"].as_u64();
+                self.studio.context_auto_compact =
+                    usage["compactsAutomatically"].as_bool().unwrap_or(false);
             }
             "item.started" | "item.updated" | "item.completed" => {
                 let item = &event["item"];
