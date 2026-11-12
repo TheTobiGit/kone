@@ -488,6 +488,7 @@ fn studio_conversation(s: &mut AppState, scene: &str) {
 fn studio_activity(s: &mut AppState, scene: &str) {
     studio_conversation(s, "mid");
     s.studio.conversation_fixture = Some(format!("activity-{scene}"));
+    s.studio.title = "Studio activity reference".into();
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../assets/fixtures/studio-activity.json"))
             .expect("valid activity fixture");
@@ -513,9 +514,10 @@ fn studio_activity(s: &mut AppState, scene: &str) {
         });
     }
     s.studio.busy = scene == "running";
+    s.studio.activity_open = matches!(scene, "running" | "expanded" | "diff" | "hover");
     s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(17));
     s.studio.turn_title = "Review the Studio activity".into();
-    s.studio.conversation_scroll = Some(("studio-speaker-1".into(), 120.0));
+    s.studio.conversation_scroll = None;
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {

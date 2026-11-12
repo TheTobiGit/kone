@@ -1246,6 +1246,13 @@ fn studio_row(
             let side_chat = state.is_some_and(|s| s.side_chat);
             // `.col__head`: 33.59 tall with its 20pt controls at the top and a
             // 13.59pt run below (the body starts at +56 in the page).
+            let activity_fixture = state.is_some_and(|state| {
+                state
+                    .conversation_fixture
+                    .as_deref()
+                    .is_some_and(|x| x.starts_with("activity-"))
+            });
+            let activity_hover = s.studio.conversation_fixture.as_deref() == Some("activity-hover");
             let head = row()
                 .w_full()
                 .px(6.4)
@@ -1255,7 +1262,11 @@ fn studio_row(
                     row()
                         .w(100.0)
                         .gap(2.0)
-                        .opacity(if show_tools { 1.0 } else { 0.0 })
+                        .opacity(if show_tools && (!activity_fixture || activity_hover) {
+                            1.0
+                        } else {
+                            0.0
+                        })
                         .child(if has_thread && !side_chat {
                             fork_tool(&SIDE_CHAT, "Open a side chat", state, t)
                                 .on_press(|s: &mut AppState| s.create_continuation(false))
@@ -1285,7 +1296,9 @@ fn studio_row(
                         .gap(8.0)
                         .h(20.0)
                         .center_y()
-                        .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                        .child(if activity_fixture {
+                            el().w(0.0)
+                        } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             icon(&TERMINAL, 15.0).color(t.muted)
                         } else if state.is_some_and(|s| s.dormant) {
                             icon(&SIDE_CHAT, 15.0).color(t.muted)
@@ -1329,7 +1342,7 @@ fn studio_row(
                                     .fill(t.ink.alpha(0.05))
                                     .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
                                     .child(label(command.clone(), 10.0, 620.0, t.muted))
-                            } else if let Some(state) = state {
+                            } else if let Some(state) = state.filter(|_| !activity_fixture) {
                                 context_meter(state, t)
                             } else {
                                 el().w(0.0)
@@ -1338,7 +1351,11 @@ fn studio_row(
                 )
                 .child(
                     row()
-                        .opacity(if show_tools { 1.0 } else { 0.0 })
+                        .opacity(if show_tools && (!activity_fixture || activity_hover) {
+                            1.0
+                        } else {
+                            0.0
+                        })
                         .w(100.0)
                         .justify_end()
                         .gap(2.0)
@@ -1818,8 +1835,117 @@ fn resting_orb(t: Palette) -> El {
 }
 
 fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
+    let activity_plan = s.studio.conversation_fixture.as_deref() == Some("activity-plan");
     let dock =
-        if let Some(approval) = &s.studio.approval {
+        if activity_plan {
+            col()
+                .key("activity-tasks-dock")
+                .w(284.0)
+                .gap(10.0)
+                .padding(14.0)
+                .radius(18.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high)
+                .child(
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .child(label("●", 8.0, 600.0, t.accent))
+                        .child(label("Studio activity reference", 10.5, 550.0, t.ink_soft)),
+                )
+                .child(
+                    row()
+                        .center_y()
+                        .gap(7.0)
+                        .child(label("Changes", 12.0, 550.0, t.ink_soft))
+                        .child(el().grow(1.0))
+                        .child(label(
+                            "+4",
+                            10.0,
+                            500.0,
+                            rune::color::hex("#329b70").unwrap(),
+                        ))
+                        .child(label(
+                            "−2",
+                            10.0,
+                            500.0,
+                            rune::color::hex("#d25c5c").unwrap(),
+                        ))
+                        .child(label("⌄", 12.0, 400.0, t.muted)),
+                )
+                .child(el().w_full().h(1.0).fill(t.line_soft))
+                .child(
+                    row()
+                        .center_y()
+                        .gap(7.0)
+                        .child(label("Tasks", 12.0, 600.0, t.ink))
+                        .child(label("1/4", 10.5, 500.0, t.muted))
+                        .child(el().grow(1.0))
+                        .child(label("⌄", 12.0, 400.0, t.muted)),
+                )
+                .child(
+                    col()
+                        .w_full()
+                        .gap(9.0)
+                        .child(
+                            row()
+                                .center_y()
+                                .gap(8.0)
+                                .child(label("✓", 12.0, 500.0, t.muted))
+                                .child(
+                                    text("Inspect the conversation activity components")
+                                        .font(TextStyle::new(11.5, 400.0).lh(15.0))
+                                        .color(t.muted)
+                                        .wrap()
+                                        .grow(1.0),
+                                ),
+                        )
+                        .child(
+                            row()
+                                .center_y()
+                                .gap(8.0)
+                                .child(label("◉", 12.0, 500.0, t.accent))
+                                .child(label(
+                                    "Implement the turn activity layout",
+                                    11.5,
+                                    400.0,
+                                    t.ink_soft,
+                                )),
+                        )
+                        .child(
+                            row()
+                                .center_y()
+                                .gap(8.0)
+                                .child(label("○", 12.0, 400.0, t.muted))
+                                .child(label(
+                                    "Verify light and dark themes",
+                                    11.5,
+                                    400.0,
+                                    t.ink_soft,
+                                )),
+                        )
+                        .child(
+                            row()
+                                .center_y()
+                                .gap(8.0)
+                                .child(label("○", 12.0, 400.0, t.muted))
+                                .child(label(
+                                    "Capture reference screenshots",
+                                    11.5,
+                                    400.0,
+                                    t.ink_soft,
+                                )),
+                        ),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .center_y()
+                        .child(label("1 file · 1/4 tasks", 9.5, 400.0, t.muted))
+                        .child(el().grow(1.0))
+                        .child(label("Expand all  ⌄", 10.5, 400.0, t.muted)),
+                )
+        } else if let Some(approval) = &s.studio.approval {
             col()
                 .w_full()
                 .max_w(680.0)
@@ -2208,7 +2334,13 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             )
         };
     let mut transcript = col().w_full().max_w(720.0).self_center().gap(24.0).pt(24.0);
-    if !s.studio.items.is_empty() {
+    if !s.studio.items.is_empty()
+        && !s
+            .studio
+            .conversation_fixture
+            .as_deref()
+            .is_some_and(|x| x.starts_with("activity-"))
+    {
         // Head of a populated thread: the day, then who picked it up — two
         // small marks the column's 24pt gap spaces like every other row
         // (the connected mark sits 14pt higher, per `.thread-mark +
@@ -2252,8 +2384,20 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     // (`fixture_cb_copy`) can be matched across assistant items.
     let mut cb_base = 0usize;
     let mut exchange: Option<El> = None;
+    let is_activity = s
+        .studio
+        .conversation_fixture
+        .as_deref()
+        .is_some_and(|x| x.starts_with("activity-"));
+    let mut activity_head = false;
     for (index, item) in s.studio.items.iter().enumerate() {
+        if is_activity && !s.studio.activity_open && item.kind == "tool_call" {
+            continue;
+        }
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
+            continue;
+        }
+        if is_activity && s.studio.busy && item.kind == "assistant_text" {
             continue;
         }
         let line = match item.kind.as_str() {
@@ -2360,7 +2504,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             "assistant_text" => {
                 let mut turn = col().w_full().gap(15.0);
                 let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
-                if first {
+                if first && !is_activity {
                     speaker_count += 1;
                     let mut head = row()
                         .key(format!("studio-speaker-{speaker_count}"))
@@ -2409,7 +2553,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 {
                     for para in item.text.split("\n\n") {
                         turn = turn.child(
-                            text(para.to_owned())
+                            text(para.trim_start_matches("## ").to_owned())
                                 .font(
                                     TextStyle::new(
                                         if para.starts_with("## ") { 18.0 } else { 14.0 },
@@ -2417,7 +2561,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     )
                                     .lh(22.0),
                                 )
-                                .color(t.ink),
+                                .color(t.ink)
+                                .wrap()
+                                .w_full()
+                                .max_w(680.0),
                         );
                     }
                 } else {
@@ -2481,7 +2628,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
                         ));
                 }
-                turn.child(footer)
+                if is_activity {
+                    turn
+                } else {
+                    turn.child(footer)
+                }
             }
             "tool_call"
                 if s.studio
@@ -2490,74 +2641,237 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .is_some_and(|x| x.starts_with("activity-")) =>
             {
                 let command = item.name == "run_command";
-                let title = match item.name.as_str() {
-                    "read_file" => "Read",
-                    "edit_file" => "Edit",
-                    "run_command" => "Run",
-                    _ => "Tool",
+                let verb = if command {
+                    "Ran"
+                } else if item.name == "edit_file" {
+                    if s.studio.busy { "Editing" } else { "Edited" }
+                } else {
+                    "Read"
                 };
-                let mut body = col()
-                    .w_full()
-                    .gap(5.0)
-                    .px(12.0)
-                    .py(9.0)
-                    .border(1.0, t.ink.alpha(0.09))
-                    .radius(8.0)
-                    .fill(t.raised);
-                body = body.child(
+                let path = item.text.as_str();
+                let short_path = if path.chars().count() > 34 {
+                    format!("{}…", path.chars().take(34).collect::<String>())
+                } else {
+                    path.to_owned()
+                };
+                let mut body = col().w_full().gap(1.0).child(
                     row()
+                        .key(format!("activity-row-{}", item.id))
+                        .w_full()
+                        .h(20.0)
+                        .gap(7.0)
+                        .px(2.0)
                         .center_y()
-                        .gap(8.0)
+                        .radius(4.0)
+                        .fill(
+                            if s.studio.conversation_fixture.as_deref() == Some("activity-hover")
+                                && item.name == "read_file"
+                            {
+                                t.hover
+                            } else {
+                                t.ground.alpha(0.0)
+                            },
+                        )
+                        .hover(t.hover)
                         .child(
                             text(if command {
                                 "›"
-                            } else if title == "Read" {
+                            } else if item.name == "read_file" {
                                 "▤"
                             } else {
                                 "✎"
                             })
-                            .font(TextStyle::new(14.0, 400.0))
+                            .font(TextStyle::new(12.0, 400.0))
                             .color(t.muted),
                         )
                         .child(
-                            text(format!("{title} {}", item.text))
-                                .font(TextStyle::new(12.5, 450.0))
+                            text(verb)
+                                .font(TextStyle::new(12.5, 400.0))
                                 .color(t.ink_soft),
                         )
-                        .child(el().grow(1.0))
                         .child(
-                            text("1s")
-                                .font(TextStyle::new(11.0, 400.0).mono())
-                                .color(t.muted),
-                        ),
+                            el().px(5.0)
+                                .py(2.0)
+                                .radius(4.0)
+                                .fill(t.ink.alpha(0.045))
+                                .child(
+                                    row()
+                                        .center_y()
+                                        .gap(4.0)
+                                        .child(icon(super::file_icons::for_path(path), 13.0))
+                                        .child(
+                                            text(short_path)
+                                                .font(TextStyle::new(11.5, 400.0).mono())
+                                                .color(t.ink_soft),
+                                        ),
+                                ),
+                        )
+                        .child(el().grow(1.0))
+                        .child(if item.name == "edit_file" {
+                            text("+4  −2")
+                                .font(TextStyle::new(10.5, 500.0).mono())
+                                .color(t.muted)
+                        } else {
+                            el()
+                        })
+                        .child(text("›").font(TextStyle::new(14.0, 400.0)).color(t.faint))
+                        .on_press(|s: &mut AppState| {
+                            s.studio.activity_open = !s.studio.activity_open
+                        }),
                 );
                 if matches!(
                     s.studio.conversation_fixture.as_deref(),
-                    Some("activity-expanded" | "activity-diff" | "activity-hover")
+                    Some(
+                        "activity-running"
+                            | "activity-expanded"
+                            | "activity-diff"
+                            | "activity-hover"
+                    )
                 ) && (command || item.name == "edit_file")
                 {
-                    if command {
-                        body = body.child(
-                            el().w_full()
-                                .px(10.0)
-                                .py(8.0)
-                                .radius(6.0)
-                                .fill(t.ground)
+                    if command
+                        && s.studio.activity_open
+                        && s.studio.conversation_fixture.as_deref() != Some("activity-diff")
+                    {
+                        let mut detail = col()
+                            .w_full()
+                            .pl(25.0)
+                            .gap(3.0)
+                            .child(
+                                text("✓ No type errors found")
+                                    .font(TextStyle::new(11.0, 400.0).mono())
+                                    .color(t.ink_soft),
+                            )
+                            .child(
+                                text("Done in 4.02s")
+                                    .font(TextStyle::new(11.0, 400.0).mono())
+                                    .color(t.muted),
+                            );
+                        if s.studio.conversation_fixture.as_deref() != Some("activity-running") {
+                            detail = detail
                                 .child(
-                                    text(item.detail.clone())
-                                        .font(TextStyle::new(11.0, 400.0).mono().lh(16.0))
-                                        .color(t.ink_soft),
-                                ),
-                        );
-                    } else if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
+                                    row()
+                                        .w_full()
+                                        .h(24.0)
+                                        .px(9.0)
+                                        .center_y()
+                                        .gap(6.0)
+                                        .radius(7.0)
+                                        .fill(t.ink.alpha(0.035))
+                                        .child(
+                                            text("▧")
+                                                .font(TextStyle::new(11.0, 400.0))
+                                                .color(t.muted),
+                                        )
+                                        .child(label("Tool detail", 11.0, 500.0, t.muted))
+                                        .child(el().grow(1.0))
+                                        .child(label("Copy", 10.5, 400.0, t.muted)),
+                                )
+                                .child(
+                                    el().w_full()
+                                        .px(9.0)
+                                        .py(16.0)
+                                        .radius(6.0)
+                                        .fill(t.ink.alpha(0.025))
+                                        .child(
+                                            text(item.detail.clone())
+                                                .font(TextStyle::new(10.5, 400.0).mono().lh(15.0))
+                                                .color(t.ink_soft),
+                                        ),
+                                );
+                        }
+                        body = body.child(detail);
+                    } else if matches!(
+                        s.studio.conversation_fixture.as_deref(),
+                        Some("activity-diff" | "activity-expanded" | "activity-hover")
+                    ) && item.name == "edit_file"
+                    {
                         body = body.child(
-                            text(item.detail.clone())
-                                .font(TextStyle::new(10.5, 400.0).mono().lh(15.0))
-                                .color(t.ink_soft),
+                            col()
+                                .pl(25.0)
+                                .gap(1.0)
+                                .radius(7.0)
+                                .child(
+                                    el().w_full()
+                                        .h(18.0)
+                                        .px(7.0)
+                                        .center_y()
+                                        .fill(t.ink.alpha(0.035))
+                                        .child(
+                                            text("@@ -12,7 +12,8 @@")
+                                                .font(TextStyle::new(9.5, 400.0).mono())
+                                                .color(t.muted),
+                                        ),
+                                )
+                                .child(
+                                    row()
+                                        .w_full()
+                                        .h(19.0)
+                                        .center_y()
+                                        .fill(
+                                            rune::color::hex(if t.dark {
+                                                "#7f303044"
+                                            } else {
+                                                "#fbe9e9"
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .child(label(
+                                            "  12     12  −  const gap = 12;",
+                                            10.0,
+                                            400.0,
+                                            rune::color::hex("#bd5757").unwrap(),
+                                        )),
+                                )
+                                .child(
+                                    row()
+                                        .w_full()
+                                        .h(19.0)
+                                        .center_y()
+                                        .fill(
+                                            rune::color::hex(if t.dark {
+                                                "#23594144"
+                                            } else {
+                                                "#e7f3ed"
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .child(label(
+                                            "  12     12  +  const gap = 10;",
+                                            10.0,
+                                            400.0,
+                                            rune::color::hex("#32815e").unwrap(),
+                                        )),
+                                )
+                                .child(
+                                    row()
+                                        .w_full()
+                                        .h(19.0)
+                                        .center_y()
+                                        .fill(
+                                            rune::color::hex(if t.dark {
+                                                "#23594144"
+                                            } else {
+                                                "#e7f3ed"
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .child(label(
+                                            "  13     13  +  const reducedMotion = …",
+                                            10.0,
+                                            400.0,
+                                            rune::color::hex("#32815e").unwrap(),
+                                        )),
+                                )
+                                .child(label("3 more changed lines", 9.5, 400.0, t.muted)),
                         );
                     }
                 }
-                body
+                if s.studio.activity_open {
+                    body
+                } else {
+                    el().h(0.0)
+                }
             }
             "plan_text" => el(),
             _ => label(
@@ -2572,12 +2886,49 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             )
             .w_full(),
         };
+        if is_activity
+            && ((item.kind == "tool_call" && s.studio.activity_open)
+                || (item.kind == "assistant_text" && !s.studio.activity_open))
+            && !activity_head
+        {
+            let agent = s.studio.connected_identity.as_ref();
+            let mut head = row()
+                .key("activity-turn-head")
+                .w_full()
+                .h(26.0)
+                .center_y()
+                .gap(7.0)
+                .mt(4.0);
+            if let Some(agent) = agent {
+                head = head.child(avatar_at(agent, 22.0, t));
+            }
+            head = head.child(label("Marble", 12.5, 500.0, t.ink_soft));
+            if !s.studio.busy {
+                head = head.child(label("17s", 11.5, 400.0, t.muted));
+                head = head.child(
+                    text(if s.studio.activity_open { "⌃" } else { "⌄" })
+                        .font(TextStyle::new(11.0, 400.0))
+                        .color(t.muted),
+                );
+            }
+            let open = s.studio.activity_open;
+            head = head.on_press(move |s: &mut AppState| s.studio.activity_open = !open);
+            if let Some(group) = exchange.take() {
+                exchange = Some(group.child(head));
+            }
+            activity_head = true;
+            if s.studio.busy
+                && let Some(group) = exchange.take()
+            {
+                exchange = Some(group.child(label("◌  Thinking", 12.0, 400.0, t.muted)));
+            }
+        }
         if item.kind == "user" {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let mut group = col().w_full().gap(54.0);
-            if Some(index) == last_user {
+            let mut group = col().w_full().gap(if is_activity { 25.0 } else { 54.0 });
+            if Some(index) == last_user && !is_activity {
                 let height = if s.studio_viewport.1 > 0.0 {
                     s.studio_viewport.1
                 } else {
@@ -2637,10 +2988,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 // Anchored fixture scenes settle mid-content, so they must not
                 // fight the bottom stick; "mid" and live threads follow the end.
                 .scroll(ScrollSpec {
-                    stick_bottom: !matches!(
-                        s.studio.conversation_fixture.as_deref(),
-                        Some("scrolled" | "compaction" | "marks" | "code"),
-                    ),
+                    stick_bottom: !is_activity
+                        && !matches!(
+                            s.studio.conversation_fixture.as_deref(),
+                            Some("scrolled" | "compaction" | "marks" | "code"),
+                        ),
                 })
                 .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
                 .child(art)
@@ -2648,13 +3000,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 // The body's 208pt bottom padding (composer overlay clearance).
                 .child(el().h(208.0)),
         )
-        .child(
+        .child(if activity_plan {
+            row()
+                .pin(Some(0.0), None, Some(0.0), Some(22.0))
+                .px(16.0)
+                .justify_end()
+                .child(dock)
+        } else {
             row()
                 .pin(Some(0.0), None, Some(0.0), Some(22.0))
                 .px(16.0)
                 .justify_center()
-                .child(dock),
-        )
+                .child(dock)
+        })
 }
 
 #[cfg(test)]
