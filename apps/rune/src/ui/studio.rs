@@ -223,6 +223,22 @@ fn conversation_fixture_speaker(scene: &str, dark: bool, turn: usize) -> Option<
     Some(speaker)
 }
 
+fn fixture_dark_theme(fallback: bool) -> bool {
+    use std::sync::OnceLock;
+    static THEME: OnceLock<Option<bool>> = OnceLock::new();
+    THEME
+        .get_or_init(|| {
+            let mut args = std::env::args().skip(1);
+            while let Some(arg) = args.next() {
+                if arg == "--theme" {
+                    return args.next().map(|theme| theme == "dark");
+                }
+            }
+            None
+        })
+        .unwrap_or(fallback)
+}
+
 fn fork_tool(
     glyph: &'static Icon,
     tip: &'static str,
@@ -2358,7 +2374,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .min_h(26.0)
                         .mb(-6.0);
                     if let Some(name) = s.studio.conversation_fixture.as_deref().and_then(|scene| {
-                        conversation_fixture_speaker(scene, t.dark, speaker_count)
+                        conversation_fixture_speaker(
+                            scene,
+                            fixture_dark_theme(t.dark),
+                            speaker_count,
+                        )
                     }) {
                         let identity = crate::state::StudioIdentity {
                             name: name.into(),
