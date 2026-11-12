@@ -2966,9 +2966,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 ) && (command || item.name == "edit_file")
                 {
                     if command && activity_rows_open {
-                        let mut detail = col()
+                        let inline_output = col()
                             .w_full()
-                            .pl(24.0)
                             .pt(3.0)
                             .pb(1.0)
                             .gap(3.0)
@@ -2982,6 +2981,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .font(TextStyle::new(11.5, 400.0).mono().lh(20.0))
                                     .color(t.muted),
                             );
+                        let mut detail = col().w_full().pl(24.0).gap(0.0).child(inline_output);
                         if activity_row_open
                             && s.studio.conversation_fixture.as_deref() == Some("activity-expanded")
                         {
@@ -2989,8 +2989,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .child(
                                     row()
                                         .w_full()
-                                        .h(34.0)
-                                        .mt(1.4)
+                                        .h(34.047)
+                                        .mt(4.0)
                                         .px(10.0)
                                         .center_y()
                                         .gap(6.0)
@@ -3005,7 +3005,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .child(
                                     el().w_full()
                                         .px(16.0)
-                                        .py(16.0)
+                                        .py(15.9815)
                                         .radius(6.0)
                                         .fill(t.ink.alpha(0.025))
                                         .child(
@@ -3014,7 +3014,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                                 .color(t.ink_soft),
                                         ),
                                 );
-                            detail = detail.mb(4.0);
+                            detail = detail.mb(8.0);
                         }
                         body = body.child(detail);
                     } else if matches!(
