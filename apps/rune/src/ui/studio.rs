@@ -651,7 +651,9 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
     } else {
         t.ink
     };
-    let mut style = TextStyle::new(13.5, 620.0).lh(16.2).tracking(-0.2025);
+    // Electron ships Geist Regular without weight variants, so its CSS
+    // `font-weight: 620` resolves to Regular. Match the rendered font here.
+    let mut style = TextStyle::new(13.5, 400.0).lh(16.2).tracking(-0.2025);
     if side_chat {
         style = style.italic();
     }
@@ -2789,7 +2791,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .conversation_fixture
                     .as_deref()
                     .is_some_and(|fixture| fixture.starts_with("composer-"));
-                if composer_fixture || (is_activity && !hover_scene) {
+                if (composer_fixture && s.studio.composer_open) || (is_activity && !hover_scene) {
                     turn
                 } else {
                     turn.child(footer)
