@@ -27,7 +27,7 @@ fn inline(source: &str, t: Palette) -> El {
                 Span::new(start, output.len())
                     .mono()
                     .size(12.0)
-                    .bg(t.hover, 3.0),
+                    .bg(t.hover, 4.5),
             );
             rest = &after[end + 1..];
             continue;
@@ -36,6 +36,16 @@ fn inline(source: &str, t: Palette) -> El {
             && let Some(end) = after.find("](")
             && let Some(close) = after[end + 2..].find(')')
         {
+            let url = &after[end + 2..end + 2 + close];
+            if url.starts_with("https://") || url.starts_with("http://") {
+                let icon_start = output.len();
+                output.push_str("▣ ");
+                spans.push(
+                    Span::new(icon_start, output.len())
+                        .size(12.0)
+                        .color(t.accent),
+                );
+            }
             let start = output.len();
             output.push_str(&after[..end]);
             links.push(Link::new(
@@ -69,6 +79,77 @@ fn inline(source: &str, t: Palette) -> El {
     rendered
 }
 
+// Colours from Shiki's light-plus and dark-plus themes. Keep punctuation in
+// the theme's foreground; classify identifiers using their immediate context.
+fn syntax_spans(line: &str, dark: bool) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut previous = "";
+    while i < bytes.len() {
+        let start = i;
+        let b = bytes[i];
+        if b == b'"' || b == b'\'' || b == b'`' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            spans.push(
+                Span::new(start, i)
+                    .color(rune::color::hex(if dark { "#CE9178" } else { "#A31515" }).unwrap()),
+            );
+        } else if b.is_ascii_digit() {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            spans.push(
+                Span::new(start, i)
+                    .color(rune::color::hex(if dark { "#B5CEA8" } else { "#098658" }).unwrap()),
+            );
+        } else if b.is_ascii_alphabetic() || b == b'_' || b == b'$' {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            let word = &line[start..i];
+            let next = line[i..].trim_start();
+            let color = if matches!(word, "const" | "let" | "var" | "function") {
+                if dark { "#569CD6" } else { "#0000FF" }
+            } else if matches!(word, "export" | "return" | "if" | "else" | "type") {
+                if dark { "#C586C0" } else { "#AF00DB" }
+            } else if matches!(word, "number" | "boolean" | "void" | "string")
+                || word.chars().next().is_some_and(char::is_uppercase)
+            {
+                if dark { "#4EC9B0" } else { "#267F99" }
+            } else if next.starts_with('(') || previous == "function" {
+                if dark { "#DCDCAA" } else { "#795E26" }
+            } else if matches!(previous, "const" | "let" | "var") {
+                if dark { "#4FC1FF" } else { "#0070C1" }
+            } else if dark {
+                "#9CDCFE"
+            } else {
+                "#001080"
+            };
+            spans.push(Span::new(start, i).color(rune::color::hex(color).unwrap()));
+            previous = word;
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
 fn code_block(language: &str, source: &str, t: Palette) -> El {
     let name = match language.trim() {
         "ts" | "typescript" => "typescript",
@@ -79,39 +160,18 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
     let copied = source.trim_end_matches('\n').to_owned();
     let mut content = col();
     for line in copied.split('\n') {
-        let mut spans = Vec::new();
-        // Shiki's two themes both distinguish keywords, strings and numbers.
-        for word in ["const", "export", "function", "return", "if", "type"] {
-            for (start, _) in line.match_indices(word) {
-                let end = start + word.len();
-                let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
-                if boundary(line[..start].chars().next_back())
-                    && boundary(line[end..].chars().next())
-                {
-                    spans.push(Span::new(start, end).color(
-                        rune::color::hex(if t.dark { "#c792b5" } else { "#b600ff" }).unwrap(),
-                    ));
-                }
-            }
-        }
-        if let Some(start) = line.find('"')
-            && let Some(end) = line[start + 1..].find('"')
-        {
-            spans.push(
-                Span::new(start, start + end + 2)
-                    .color(rune::color::hex(if t.dark { "#ce9178" } else { "#c00000" }).unwrap()),
-            );
-        }
+        let spans = syntax_spans(line, t.dark);
         content = content.child(
             text(if line.is_empty() { " " } else { line }.to_owned())
                 .font(body_style(12.5, 20.0).mono())
-                .color(rune::color::hex(if t.dark { "#9cdcfe" } else { "#001080" }).unwrap())
+                .color(rune::color::hex(if t.dark { "#D4D4D4" } else { "#000000" }).unwrap())
                 .spans(spans),
         );
     }
     col()
         .w_full()
         .clip_rounded(13.0)
+        .hover_group_focus()
         .fill(mix_srgb(t.raised, t.ink, 0.03))
         .child(
             row()
@@ -128,6 +188,7 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
                 .child(el().grow(1.0))
                 .child(
                     text("▢ Copy")
+                        .group_opacity(0.0, 1.0)
                         .font(TextStyle::new(11.0, 400.0).mono())
                         .color(t.muted)
                         .on_press_tx(move |_: &mut AppState, tx| tx.copy(copied.clone())),
@@ -176,7 +237,7 @@ pub(super) fn render(source: &str, t: Palette) -> El {
                     .gap(12.0)
                     .child(text("•").font(body_style(14.0, 23.0)).color(t.muted))
                     .child(inline(item, t).grow(1.0))
-                    .mb(4.0),
+                    .mb(10.0),
             );
             if lines.peek().is_none_or(|line| !line.starts_with("- ")) {
                 result = result.child(el().h(8.0));
