@@ -2850,7 +2850,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 let mut activity_row = row()
                     .key(format!("activity-row-{}", item.id))
                     .w_full()
-                    .h(28.75)
+                    .h(if command { 28.141 } else { 28.75 })
                     .gap(8.0)
                     .center_y()
                     .radius(4.0)
