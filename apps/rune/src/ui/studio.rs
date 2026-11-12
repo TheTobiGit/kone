@@ -894,6 +894,49 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
     orb
 }
 
+fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
+    let done = status == "completed";
+    let live = status == "in-progress";
+    let mut check = el().w(15.0).h(15.0).mt(1.0).center().radius(4.0);
+    if done {
+        check = check.fill(t.accent.alpha(0.88)).child(label(
+            "✓",
+            10.0,
+            600.0,
+            rune::color::hex("#ffffff").unwrap(),
+        ));
+    } else if live {
+        check = check
+            .fill(t.ground.alpha(0.0))
+            .child(activity_orb(14.0, time, t.accent));
+    } else {
+        check = check.fill(t.hover);
+    }
+    let color = if done {
+        t.muted
+    } else if live {
+        t.ink
+    } else {
+        t.ink_soft
+    };
+    let mut row = row().px(8.8).py(5.6).gap(8.8).child(check).child(
+        text(title)
+            .font(TextStyle::new(12.5, 500.0).lh(17.5))
+            .color(color)
+            .wrap()
+            .w_full(),
+    );
+    if done {
+        row = row.child(
+            el().w(175.0)
+                .h(1.0)
+                .pin(Some(0.0), Some(0.0), None, None)
+                .fill(t.muted.alpha(0.4)),
+        );
+    }
+    row
+}
+
 fn project_nav(s: &AppState, t: Palette) -> El {
     let mut nav = row().center_y().gap(4.0).offset(0.0, 10.0);
     for (index, project) in s.projects.iter().enumerate() {
@@ -1987,103 +2030,31 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .padding(4.0)
                         .radius(14.0)
                         .fill(t.ground)
-                        .gap(2.0)
-                        .child(
-                            row()
-                                .px(9.0)
-                                .py(3.0)
-                                .center_y()
-                                .gap(9.0)
-                                .child(
-                                    el().w(15.0)
-                                        .h(15.0)
-                                        .center()
-                                        .radius(4.0)
-                                        .fill(t.accent)
-                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
-                                )
-                                .child(
-                                    el().w(228.0)
-                                        .h(32.0)
-                                        .center_y()
-                                        .child(
-                                            text("Inspect the conversation activity components")
-                                                .font(TextStyle::new(12.5, 400.0).lh(16.0))
-                                                .color(t.muted)
-                                                .wrap()
-                                                .w_full(),
-                                        )
-                                        .child(
-                                            el().w(196.0)
-                                                .h(1.0)
-                                                .pin(Some(0.0), Some(8.0), None, None)
-                                                .fill(t.muted.alpha(0.4)),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            row()
-                                .px(9.0)
-                                .py(3.0)
-                                .center_y()
-                                .gap(9.0)
-                                .child(
-                                    el().w(15.0)
-                                        .h(15.0)
-                                        .center()
-                                        .radius(4.0)
-                                        .fill(t.accent)
-                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
-                                )
-                                .child(label(
-                                    "Implement the turn activity layout",
-                                    12.5,
-                                    400.0,
-                                    t.ink_soft,
-                                )),
-                        )
-                        .child(
-                            row()
-                                .px(9.0)
-                                .py(3.0)
-                                .center_y()
-                                .gap(9.0)
-                                .child(
-                                    el().w(15.0)
-                                        .h(15.0)
-                                        .center()
-                                        .radius(4.0)
-                                        .fill(t.accent)
-                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
-                                )
-                                .child(label(
-                                    "Verify light and dark themes",
-                                    12.5,
-                                    400.0,
-                                    t.ink_soft,
-                                )),
-                        )
-                        .child(
-                            row()
-                                .px(9.0)
-                                .py(3.0)
-                                .center_y()
-                                .gap(9.0)
-                                .child(
-                                    el().w(15.0)
-                                        .h(15.0)
-                                        .center()
-                                        .radius(4.0)
-                                        .fill(t.accent)
-                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
-                                )
-                                .child(label(
-                                    "Capture reference screenshots",
-                                    12.5,
-                                    400.0,
-                                    t.ink_soft,
-                                )),
-                        ),
+                        .gap(0.0)
+                        .child(activity_task_row(
+                            "Inspect the conversation activity components",
+                            "completed",
+                            t,
+                            s.start_actions.clock as f32,
+                        ))
+                        .child(activity_task_row(
+                            "Implement the turn activity layout",
+                            "in-progress",
+                            t,
+                            s.start_actions.clock as f32,
+                        ))
+                        .child(activity_task_row(
+                            "Verify light and dark themes",
+                            "pending",
+                            t,
+                            s.start_actions.clock as f32,
+                        ))
+                        .child(activity_task_row(
+                            "Capture reference screenshots",
+                            "pending",
+                            t,
+                            s.start_actions.clock as f32,
+                        )),
                 )
                 .child(
                     row()
