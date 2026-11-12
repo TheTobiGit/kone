@@ -2760,11 +2760,13 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     "Read"
                 };
                 let path = item.text.as_str();
-                let short_path = if path.chars().count() > 29 {
-                    format!("{}…", path.chars().take(29).collect::<String>())
+                let (directory, filename) = path.rsplit_once('/').unwrap_or(("", path));
+                let short_name = if filename.chars().count() > 11 {
+                    format!("{}…", filename.chars().take(10).collect::<String>())
                 } else {
-                    path.to_owned()
+                    filename.to_owned()
                 };
+                let short_path = format!("{directory}{short_name}");
                 let step_icon = if command {
                     &ACTIVITY_COMMAND
                 } else if item.name == "edit_file" {
@@ -2826,8 +2828,13 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .gap(3.0)
                                     .child(icon(super::file_icons::for_path(path), 13.0))
                                     .child(
-                                        text(short_path)
+                                        text(directory)
                                             .font(TextStyle::new(11.5, 400.0).mono())
+                                            .color(t.muted),
+                                    )
+                                    .child(
+                                        text(short_name)
+                                            .font(TextStyle::new(11.5, 500.0).mono())
                                             .color(t.ink_soft),
                                     ),
                             ),
@@ -3196,7 +3203,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             }
             let open = s.studio.activity_open;
             if s.studio.busy {
-                head = head.mt(26.0);
+                head = head.mt(16.0);
             } else {
                 head = head
                     .mt(43.0)
@@ -3236,7 +3243,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let activity_gap = 7.0;
+            let activity_gap = 0.0;
             let mut group = col()
                 .w_full()
                 .gap(if is_activity { activity_gap } else { 54.0 });
