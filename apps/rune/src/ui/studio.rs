@@ -556,7 +556,13 @@ fn studio_row(
                             el().w(0.0)
                         })
                         .child(if has_thread {
-                            fork_tool(&ARCHIVE, "Archive conversation", state, t)
+                            fork_tool(&ARCHIVE, "Archive conversation", state, t).on_press({
+                                let id = id.clone();
+                                let path = path.clone();
+                                move |s: &mut AppState| {
+                                    s.archive_studio_thread(path.clone(), id.clone());
+                                }
+                            })
                         } else {
                             el().w(0.0)
                         }),

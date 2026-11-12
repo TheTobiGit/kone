@@ -45,6 +45,7 @@ enum Pending {
     Summary(String),
     Watches,
     SessionAction(String),
+    StudioArchive(String, String),
 }
 
 #[derive(Default)]
@@ -379,6 +380,26 @@ impl AppState {
         self.project_request(method, params, Pending::SessionAction(path));
     }
 
+    pub fn archive_studio_thread(&mut self, path: String, id: String) {
+        let busy = if self.studio.thread_id == id {
+            self.studio.busy
+        } else {
+            self.studio_threads.get(&id).is_some_and(|s| s.busy)
+        };
+        if busy {
+            self.studio.error = Some(
+                "This thread is still working — let it finish (or stop it) before archiving."
+                    .into(),
+            );
+            return;
+        }
+        self.project_request(
+            "history.archive",
+            json!({"threadId": id, "archived": true}),
+            Pending::StudioArchive(path, id),
+        );
+    }
+
     pub fn open_home_session(&mut self, path: String, id: String) {
         self.open_project(path);
         self.open_recent_session(id);
@@ -491,6 +512,23 @@ impl AppState {
                     } else if self.page == Page::Projects && self.projects.is_empty() {
                         self.page = Page::Empty;
                     }
+                }
+            }
+            Pending::StudioArchive(path, id) => {
+                if result.get("ok").and_then(Value::as_bool) == Some(false) {
+                    self.studio.error = Some(
+                        result["reason"]
+                            .as_str()
+                            .unwrap_or("Could not archive conversation")
+                            .to_owned(),
+                    );
+                } else {
+                    self.close_studio_thread(&id);
+                    self.project_request(
+                        "history.list",
+                        json!({"projectPath": path}),
+                        Pending::HomeSessions(path.clone()),
+                    );
                 }
             }
             Pending::SessionAction(path) => {

@@ -1078,6 +1078,14 @@ impl AppState {
                 let result = &message["result"];
                 self.studio.resume = result["conversationId"].as_str().map(str::to_owned);
                 self.studio.restore_model = result["model"].as_str().map(str::to_owned);
+                self.studio.title = result["title"].as_str().unwrap_or("").to_owned();
+                self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
+                self.studio.side_chat = result["relationshipToParent"] == "side_chat";
+                self.studio.context_usage = result["contextUsed"]
+                    .as_u64()
+                    .zip(result["contextWindow"].as_u64());
+                self.studio.context_auto_compact =
+                    result["compactsAutomatically"].as_bool().unwrap_or(false);
                 if let Some(provider) = result["provider"].as_str()
                     && let Some(index) = self.studio.providers.iter().position(|p| p.id == provider)
                 {
@@ -1381,6 +1389,21 @@ impl AppState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn restored_thread_recovers_header_metadata_and_zero_usage() {
+        let mut s = AppState::default();
+        s.studio.history_request = Some(42);
+        s.studio_message(json!({"id":42,"result":{
+            "title":"Review", "worktreePath":"/worktree", "relationshipToParent":"side_chat",
+            "contextUsed":0, "contextWindow":200000, "compactsAutomatically":true, "blocks":[]
+        }}));
+        assert_eq!(s.studio.title, "Review");
+        assert_eq!(s.studio.worktree_path.as_deref(), Some("/worktree"));
+        assert!(s.studio.side_chat);
+        assert_eq!(s.studio.context_usage, Some((0, 200000)));
+        assert!(s.studio.context_auto_compact);
+    }
 
     #[test]
     fn context_usage_routes_to_the_matching_thread_and_requires_both_values() {
