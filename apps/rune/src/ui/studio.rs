@@ -911,7 +911,7 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
             );
             let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
             let point = 0.9 * radius_scale;
-            points.push((z, x, y, point.max(0.3), 0.5 * (0.4 + 0.6 * depth)));
+            points.push((z, x, y, point.max(0.3), 0.18 * (0.4 + 0.6 * depth)));
         }
         for particle in 0..3 {
             let a = time * 3.9 * speed + particle as f32 / 3.0 * tau + h2 * 6.0;
@@ -923,7 +923,7 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
             );
             let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
             let point = (1.2 + 1.6 * depth) * radius_scale;
-            points.push((z, x, y, point.max(0.3), 0.52 + 0.38 * depth));
+            points.push((z, x, y, point.max(0.3), 0.36 + 0.28 * depth));
         }
     }
     points.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -938,6 +938,14 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
         );
     }
     orb
+}
+
+fn activity_busy_icon(glyph: &'static Icon, tint: rune::Color, time: f32) -> El {
+    el().w(16.0)
+        .h(16.0)
+        .center()
+        .child(activity_orb(16.0, time, tint.alpha(0.6)))
+        .child(icon(glyph, 14.0).color(tint.alpha(0.8)))
 }
 
 /// Wraps an inline step body with the rounded elbow branching from the step rail.
@@ -2133,7 +2141,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .child(label("Tasks", 12.5, 500.0, t.ink_soft))
                                 .child(el().grow(1.0))
                                 .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
-                                .child(label("1/4", 10.5, 500.0, t.muted))
+                                .child(
+                                    text("1/4")
+                                        .font(TextStyle::new(11.0, 500.0).mono())
+                                        .color(t.ink_soft),
+                                )
                                 .child(
                                     icon(&ACTIVITY_CHEVRON, 14.0)
                                         .color(t.muted)
@@ -2922,23 +2934,22 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .color(t.ink)
                         .truncate()
                         .shrink()
-                        .min_w(0.0);
+                        .min_w(0.0)
+                        .max_w(228.0);
                     if dir_len > 0 {
                         chip_text = chip_text.spans([Span::new(0, dir_len).color(t.muted)]);
                     }
-                    el().pl(5.0)
+                    row()
+                        .pl(5.0)
                         .pr(6.0)
                         .py(1.0)
                         .radius(6.0)
                         .fill(t.hover)
                         .max_w(256.0)
-                        .child(
-                            row()
-                                .center_y()
-                                .gap(4.0)
-                                .child(icon(super::file_icons::for_path(path), 13.0))
-                                .child(chip_text),
-                        )
+                        .center_y()
+                        .gap(4.0)
+                        .child(icon(super::file_icons::for_path(path), 13.0))
+                        .child(chip_text)
                 };
                 let mut activity_row = row()
                     .key(format!("activity-row-{}", item.id))
@@ -2961,7 +2972,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             )
                             .child(el().w(16.0).h(16.0).center().fill(t.ground).child(
                                 if item.name == "edit_file" && s.studio.busy {
-                                    activity_orb(16.0, s.start_actions.clock as f32, step_hue)
+                                    activity_busy_icon(
+                                        step_icon,
+                                        step_hue,
+                                        s.start_actions.clock as f32,
+                                    )
                                 } else {
                                     icon(step_icon, 14.0).color(step_hue)
                                 },
@@ -3304,7 +3319,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .mt(9.0)
                     .mb(0.0)
                     .center_y()
-                    .child(activity_orb(16.0, s.start_actions.clock as f32, t.ink_soft))
+                    .child(activity_busy_icon(
+                        &ACTIVITY_THINKING,
+                        t.ink_soft,
+                        s.start_actions.clock as f32,
+                    ))
                     .child(el().grow(1.0))
                     .child(
                         icon(
@@ -3424,7 +3443,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         s.studio.conversation_fixture.as_deref(),
                         Some("activity-expanded" | "activity-diff")
                     ) {
-                        264.0
+                        308.0
                     } else {
                         176.0
                     },
