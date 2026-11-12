@@ -173,6 +173,8 @@ pub struct StudioState {
     pub export_status: Option<String>,
     pub continuation_request: Option<u64>,
     pub handoff_picker: bool,
+    pub handoff_staged: bool,
+    pub handoff_query: TextEdit,
     pub handoff_selection: Option<(usize, Vec<StudioModel>, usize, String)>,
     pub compact_request: Option<u64>,
     pub compact_error: Option<String>,
@@ -331,6 +333,10 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        let title_blurred = s.studio.title_editing && !s.studio.title_draft.focused;
+        if title_blurred {
+            s.commit_studio_title();
+        }
         let mut tooltip_changed = false;
         if let Some((tip, at)) = &s.studio.head_tooltip_pending {
             let elapsed = at.elapsed();
@@ -418,6 +424,7 @@ impl AppState {
         }
         s.sync_project_watches();
         changed
+            || title_blurred
             || tooltip_changed
             || animating
             || session_motion
@@ -429,6 +436,33 @@ impl AppState {
             || icons
             || (s.page == Page::Overview
                 && (s.studio.busy || s.studio_threads.values().any(|t| t.busy)))
+    }
+
+    pub fn commit_studio_title(&mut self) {
+        if !self.studio.title_editing {
+            return;
+        }
+        let title: String = self
+            .studio
+            .title_draft
+            .text
+            .trim()
+            .chars()
+            .take(120)
+            .collect();
+        self.studio.title_editing = false;
+        self.studio.title_draft.focused = false;
+        if !title.is_empty() && title != self.studio.title {
+            let previous = std::mem::replace(&mut self.studio.title, title.clone());
+            if !self.studio.thread_id.is_empty() {
+                self.studio.title_rename_request = self
+                    .request(
+                        "history.rename",
+                        serde_json::json!({"threadId": self.studio.thread_id, "title": title}),
+                    )
+                    .map(|id| (id, previous));
+            }
+        }
     }
 
     fn park_studio_thread(&mut self) {
@@ -628,6 +662,10 @@ impl AppState {
             return false;
         }
         if event.key == rune::Key::Escape {
+            if s.studio.handoff_picker {
+                s.cancel_handoff_picker();
+                return true;
+            }
             if s.studio.title_info_open {
                 if s.studio.title_editing {
                     s.studio.title_editing = false;
@@ -949,11 +987,12 @@ impl AppState {
             self.studio.effort.clone(),
         ));
         self.studio.handoff_picker = true;
-        self.studio.composer_open = true;
-        self.studio.picker_open = true;
+        self.studio.handoff_staged = false;
+        self.studio.handoff_query = TextEdit::default();
+        self.studio.picker_open = false;
     }
 
-    fn cancel_handoff_picker(&mut self) {
+    pub fn cancel_handoff_picker(&mut self) {
         if let Some((provider, models, model, effort)) = self.studio.handoff_selection.take() {
             self.studio.provider_index = provider;
             self.studio.models = models;
@@ -962,6 +1001,7 @@ impl AppState {
             self.studio.models_request = None;
         }
         self.studio.handoff_picker = false;
+        self.studio.handoff_staged = false;
     }
 
     pub fn create_continuation(&mut self, handoff: bool) {
@@ -1177,6 +1217,24 @@ impl AppState {
             })
             .map(|(thread, _)| thread.clone());
         if let Some(thread) = target {
+            // A successful continuation opens and focuses its child beside the
+            // source, even if the user focused another pane while it ran.
+            // Process it in the foreground: the usual temporary background swap
+            // would otherwise discard the newly focused child on return.
+            if message["result"]["threadId"].is_string()
+                && response_id
+                    .is_some_and(|id| self.studio_threads[&thread].continuation_request == Some(id))
+            {
+                let path = self.studio_threads[&thread].project_path.clone();
+                self.park_studio_thread();
+                self.restore_studio_thread(&thread);
+                if let Some(index) = self.projects.iter().position(|p| p.path == path) {
+                    self.selected_project = Some(index);
+                    self.studio_scroll_row = Some(path);
+                }
+                self.studio_message(message);
+                return;
+            }
             let background = self.studio_threads.remove(&thread).unwrap();
             let foreground = std::mem::replace(&mut self.studio, background);
             self.studio_message(message);
@@ -1621,6 +1679,49 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn continuation_focuses_child_beside_source_after_focus_changes() {
+        let mut s = AppState::default();
+        s.projects = vec![Project {
+            name: "Project".into(),
+            path: "/p".into(),
+        }];
+        s.selected_project = Some(0);
+        s.studio_layout_ready = true;
+        s.studio_layout = json!({"version":2,"focusedRow":"/p","rows":[{
+            "projectPath":"/p","focusedId":"other","panes":[
+                {"id":"source","kind":"thread","anchor":{"kind":"thread","threadId":"source"}},
+                {"id":"other","kind":"thread","anchor":{"kind":"thread","threadId":"other"}}
+            ]
+        }]});
+        s.studio.thread_id = "other".into();
+        s.studio.project_path = "/p".into();
+        s.studio_threads.insert(
+            "source".into(),
+            StudioState {
+                thread_id: "source".into(),
+                project_path: "/p".into(),
+                continuation_request: Some(42),
+                ..Default::default()
+            },
+        );
+
+        s.studio_message(json!({"id":42,"result":{"threadId":"child"}}));
+
+        assert_eq!(s.studio.thread_id, "child");
+        assert!(s.studio_threads.contains_key("other"));
+        assert!(s.studio_threads.contains_key("source"));
+        let row = &s.studio_layout["rows"][0];
+        assert_eq!(row["focusedId"], "child");
+        let ids: Vec<_> = row["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pane| pane["anchor"]["threadId"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["source", "child", "other"]);
+    }
+
+    #[test]
     fn restored_thread_recovers_header_metadata_and_zero_usage() {
         let mut s = AppState::default();
         s.studio.history_request = Some(42);
@@ -1726,6 +1827,24 @@ mod tests {
         assert!(!s.studio.busy && s.studio.pending_send.is_none());
         assert!(!s.studio_threads["b"].busy && s.studio_threads["b"].pending_send.is_none());
         assert_eq!(s.studio_threads["b"].error.as_deref(), Some("pipe closed"));
+    }
+
+    #[test]
+    fn title_edit_commits_on_blur_and_escape_cancels() {
+        let mut s = AppState::default();
+        s.studio.title = "Original".into();
+        s.studio.title_editing = true;
+        s.studio.title_draft = TextEdit::new("  Updated  ");
+        s.studio.title_draft.focused = false;
+        AppState::poll(&mut s, 0.0, &mut rune::Tx::default());
+        assert_eq!(s.studio.title, "Updated");
+        assert!(!s.studio.title_editing);
+
+        s.studio.title_editing = true;
+        s.studio.title_draft = TextEdit::new("Discarded");
+        s.studio.title_editing = false; // Escape cancels before focus is lost.
+        AppState::poll(&mut s, 0.0, &mut rune::Tx::default());
+        assert_eq!(s.studio.title, "Updated");
     }
 
     #[test]

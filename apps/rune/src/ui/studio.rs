@@ -81,7 +81,21 @@ static STUDIO_PROVIDER_CLAUDE: Icon = Icon {
     body: r#"<path d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z" fill="currentColor" fill-rule="evenodd"/>"#,
 };
 
+static PICKER_BRAIN: Icon = Icon {
+    name: "studio-picker-brain",
+    view: 24.0,
+    body: r#"<path d="M12 5c-1-3-5-2-5 1-3-1-5 2-3 4-3 2-1 5 1 5-1 3 2 5 4 3 1 3 4 2 4-1V6m-1-1c1-3 5-2 5 1 3-1 5 2 3 4 3 2 1 5-1 5 1 3-2 5-4 3-1 3-4 2-4-1M7 9c1 0 2 1 2 2m-3 4c1-1 2-1 3 0m8-6c-1 0-2 1-2 2m3 4c-1-1-2-1-3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static PICKER_SEARCH: Icon = Icon {
+    name: "studio-picker-search",
+    view: 24.0,
+    body: r#"<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
+
 fn brand_mark(provider: &str, t: Palette) -> El {
+    brand_mark_size(provider, 15.0, t)
+}
+fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
     let mark = match provider {
         "claudeAgent" => &STUDIO_PROVIDER_CLAUDE,
         "cursor" => &STUDIO_PROVIDER_CURSOR,
@@ -89,7 +103,7 @@ fn brand_mark(provider: &str, t: Palette) -> El {
         "gpt" | "openai" => &STUDIO_PROVIDER_GPT,
         _ => &STUDIO_PROVIDER_CODEX,
     };
-    icon(mark, 15.0).color(if provider == "claudeAgent" {
+    icon(mark, size).color(if provider == "claudeAgent" {
         t.accent
     } else {
         t.ink_soft
@@ -181,9 +195,19 @@ fn fork_tool(
             };
         });
     if shown {
+        let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
         button = button.child(
-            el().absolute(-75.0, -26.0)
-                .w(170.0)
+            el().key(format!("studio-tooltip-{tip}"))
+                .absolute(
+                    if tip == "Open a side chat" {
+                        0.0
+                    } else {
+                        (20.0 - width) / 2.0
+                    },
+                    -26.0,
+                )
+                .transition(tooltip_transition())
+                .w(width)
                 .px(7.0)
                 .h(20.0)
                 .center()
@@ -206,20 +230,22 @@ fn head_tip(
     let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
     if shown {
         control = control.child(
-            el().absolute(
-                if right {
-                    20.0 - width
-                } else {
-                    (20.0 - width) / 2.0
-                },
-                -26.0,
-            )
-            .w(width)
-            .h(20.0)
-            .center()
-            .radius(6.0)
-            .fill(t.ink)
-            .child(label(tip.clone(), 11.0, 500.0, t.ground)),
+            el().key(format!("studio-tooltip-{tip}"))
+                .transition(tooltip_transition())
+                .absolute(
+                    if right {
+                        20.0 - width
+                    } else {
+                        (20.0 - width) / 2.0
+                    },
+                    -26.0,
+                )
+                .w(width)
+                .h(20.0)
+                .center()
+                .radius(6.0)
+                .fill(t.ink)
+                .child(label(tip.clone(), 11.0, 500.0, t.ground)),
         );
     }
     control
@@ -233,6 +259,13 @@ fn head_tip(
                 None
             };
         })
+}
+
+fn tooltip_transition() -> rune::Transition {
+    let spring = rune::Spring::from_stiffness_damping(900.0, 60.0, 1.0);
+    rune::Transition::offset(0.0, 2.0)
+        .combined(rune::Transition::opacity())
+        .springs(rune::SpringPair::new(spring, spring))
 }
 
 static METER_TRACK: Icon = Icon {
@@ -427,7 +460,17 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
             }
             card = card.child(actions);
         }
-        meter = meter.child(card.absolute(-245.0, 23.0));
+        let spring = rune::Spring::from_stiffness_damping(300.0, 22.0, 0.9);
+        meter = meter.child(
+            card.key("studio-context-card")
+                .transition(
+                    rune::Transition::offset(0.0, -6.0)
+                        .combined(rune::Transition::scale(0.97))
+                        .springs(rune::SpringPair::new(spring, spring)),
+                )
+                .absolute(-245.0, 23.0)
+                .raise(),
+        );
     }
     let mut tip = format!(
         "{} used · {} of {} tokens",
@@ -564,21 +607,23 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .map(|m| m.label.clone())
         .unwrap_or_else(|| "Default".into());
     let name_row = if state.title_editing {
-        row().w_full().h(28.0).center_y().justify_between()
+        row()
+            .w_full()
+            .h(28.0)
+            .center_y()
+            .justify_between()
             .child(label("Name", 11.5, 400.0, t.muted))
-            .child(text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
-                .key("studio-title-draft").w(180.0).h(24.0).color(t.ink)
-                .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
-                .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
-                    let title: String = s.studio.title_draft.text.trim().chars().take(120).collect();
-                    s.studio.title_editing = false;
-                    if !title.is_empty() && title != s.studio.title {
-                        let previous = std::mem::replace(&mut s.studio.title, title.clone());
-                        if !s.studio.thread_id.is_empty() {
-                            s.studio.title_rename_request = s.request("history.rename", serde_json::json!({"threadId": s.studio.thread_id, "title": title})).map(|id| (id, previous));
-                        }
-                    }
-                }))
+            .child(
+                text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
+                    .key("studio-title-draft")
+                    .w(180.0)
+                    .h(24.0)
+                    .color(t.ink)
+                    .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
+                    .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
+                        s.commit_studio_title();
+                    }),
+            )
     } else {
         info_row("Name", title_of(state))
             .key("studio-title-edit")
@@ -816,13 +861,261 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             }
         })
         .child(plane);
-    if s.studio_refusal.is_some() {
+    let plane = if s.studio_refusal.is_some() {
         plane.child(el().pin(None, Some(0.0), Some(34.0), Some(0.0)).center().child(
             label("A column can’t cross the vertical axis — a row is a project, and a thread is bound to its repo.", 12.5, 400.0, t.muted)
         ))
     } else {
         plane
+    };
+    if s.studio.handoff_picker {
+        plane.child(handoff_picker(s, t))
+    } else {
+        plane
     }
+}
+
+fn handoff_picker(s: &AppState, t: Palette) -> El {
+    let source = s.studio.handoff_selection.as_ref();
+    let source_provider = source.and_then(|(index, _, _, _)| s.studio.providers.get(*index));
+    let source_model = source.and_then(|(_, models, index, _)| models.get(*index));
+    let mut rail = col().w(44.0).h(294.0).items_center().pt(4.0).gap(10.0);
+    for (index, provider) in s.studio.providers.iter().enumerate() {
+        rail = rail.child(
+            el().key(format!("handoff-provider-{index}"))
+                .role("button")
+                .label(provider.label.clone())
+                .focusable(true)
+                .on_key(move |s: &mut AppState, event, _| {
+                    if event.key != rune::Key::Enter {
+                        return false;
+                    }
+                    s.studio.handoff_staged = false;
+                    if index != s.studio.provider_index {
+                        s.select_provider(index);
+                    }
+                    true
+                })
+                .w(44.0)
+                .h(44.0)
+                .center()
+                .hover(t.hover)
+                .opacity(if index == s.studio.provider_index {
+                    1.0
+                } else {
+                    0.48
+                })
+                .child(brand_mark_size(&provider.id, 20.0, t))
+                .on_press(move |s: &mut AppState| {
+                    s.studio.handoff_staged = false;
+                    if index != s.studio.provider_index {
+                        s.select_provider(index);
+                    }
+                }),
+        );
+    }
+    let mut models = col().w_full().grow(1.0).padding(14.0);
+    if s.studio.models.is_empty() {
+        models = models
+            .center()
+            .child(label("No models available.", 13.0, 400.0, t.muted));
+    }
+    for (index, model) in s.studio.models.iter().enumerate() {
+        let query = s.studio.handoff_query.text.trim().to_lowercase();
+        if !query.is_empty()
+            && !format!("{} {}", model.label, model.id)
+                .to_lowercase()
+                .contains(&query)
+        {
+            continue;
+        }
+        let selected = (s.studio.handoff_staged && index == s.studio.model_index)
+            || source.is_some_and(|(provider, models, source_index, _)| {
+                *provider == s.studio.provider_index
+                    && models
+                        .get(*source_index)
+                        .is_some_and(|source| source.id == model.id)
+            });
+        let provider = s
+            .studio
+            .providers
+            .get(s.studio.provider_index)
+            .map(|p| p.id.as_str())
+            .unwrap_or("codex");
+        models = models.child(
+            row()
+                .key(format!("handoff-model-{index}"))
+                .role("button")
+                .label(model.label.clone())
+                .focusable(true)
+                .on_key(move |s: &mut AppState, event, _| {
+                    if event.key != rune::Key::Enter {
+                        return false;
+                    }
+                    s.studio.model_index = index;
+                    s.studio.effort = s.studio.models[index]
+                        .default_effort
+                        .clone()
+                        .unwrap_or_default();
+                    s.studio.handoff_staged = true;
+                    true
+                })
+                .w_full()
+                .h(40.0)
+                .px(10.0)
+                .gap(10.0)
+                .center_y()
+                .radius(11.0)
+                .fill(if selected {
+                    t.hover
+                } else {
+                    t.ground.alpha(0.0)
+                })
+                .hover(t.hover)
+                .child(
+                    brand_mark_size(if provider == "codex" { "gpt" } else { provider }, 17.0, t)
+                        .opacity(0.72),
+                )
+                .child(label(model.label.clone(), 15.0, 400.0, t.ink).opacity(0.72))
+                .child(if model.efforts.is_empty() {
+                    el()
+                } else {
+                    let color = rune::color::hex(if model.label.contains("Mini") {
+                        "#50b9ed"
+                    } else {
+                        "#59cba8"
+                    })
+                    .unwrap();
+                    let count = if model.label.contains("Mini") { 1 } else { 2 };
+                    let mut brains = row();
+                    for _ in 0..count {
+                        brains = brains.child(icon(&PICKER_BRAIN, 13.0).color(color));
+                    }
+                    brains
+                })
+                .on_press(move |s: &mut AppState| {
+                    s.studio.model_index = index;
+                    s.studio.effort = s.studio.models[index]
+                        .default_effort
+                        .clone()
+                        .unwrap_or_default();
+                    s.studio.handoff_staged = true;
+                }),
+        );
+    }
+    let content = col()
+        .w(340.0)
+        .h(294.0)
+        .radius(18.0)
+        .border(1.0, t.line)
+        .fill(t.raised)
+        .child(
+            row()
+                .h(32.0)
+                .mx(10.0)
+                .mt(10.0)
+                .px(10.0)
+                .gap(8.0)
+                .center_y()
+                .radius(12.0)
+                .fill(t.hover)
+                .child(icon(&PICKER_SEARCH, 14.0).color(t.muted))
+                .child(
+                    text_input(&s.studio.handoff_query, TextStyle::new(12.5, 400.0))
+                        .key("handoff-search")
+                        .grow(1.0)
+                        .single_line()
+                        .placeholder("Search models…", t.placeholder)
+                        .color(t.ink)
+                        .on_edit(|s: &mut AppState| &mut s.studio.handoff_query),
+                ),
+        )
+        .child(models);
+    let mut route = row().center_y().gap(5.0).grow(1.0);
+    if let Some(provider) = source_provider {
+        route = route.child(brand_mark(&provider.id, t));
+    }
+    route = route
+        .child(label(
+            source_model.map(|m| m.label.as_str()).unwrap_or("Model"),
+            12.5,
+            400.0,
+            t.ink,
+        ))
+        .child(label("→", 12.0, 400.0, t.muted));
+    if s.studio.handoff_staged {
+        if let Some(provider) = s.studio.providers.get(s.studio.provider_index) {
+            route = route.child(brand_mark(&provider.id, t));
+        }
+        if let Some(model) = s.studio.models.get(s.studio.model_index) {
+            route = route.child(label(model.label.clone(), 12.5, 400.0, t.ink));
+        }
+    }
+    let different = source.is_some_and(|(provider, models, model, effort)| {
+        *provider != s.studio.provider_index
+            || models.get(*model).map(|m| &m.id)
+                != s.studio.models.get(s.studio.model_index).map(|m| &m.id)
+            || *effort != s.studio.effort
+    });
+    let mut confirm = row()
+        .role("button")
+        .label("Hand off")
+        .focusable(s.studio.handoff_staged && different)
+        .center_y()
+        .gap(6.0)
+        .opacity(if s.studio.handoff_staged && different {
+            1.0
+        } else {
+            0.4
+        })
+        .child(label("Hand off", 14.0, 600.0, t.ink))
+        .child(label("→", 14.0, 400.0, t.accent));
+    if s.studio.handoff_staged && different {
+        confirm = confirm
+            .on_key(|s: &mut AppState, event, _| {
+                if event.key != rune::Key::Enter {
+                    return false;
+                }
+                s.create_continuation(true);
+                true
+            })
+            .on_press(|s: &mut AppState| s.create_continuation(true));
+    }
+    let mut card = col()
+        .w(384.0)
+        .radius(22.0)
+        .fill(if t.dark { t.ground } else { t.sunken })
+        .border(1.0, t.line_soft)
+        .child(row().child(rail).child(content))
+        .child(
+            row()
+                .w_full()
+                .h(34.0)
+                .px(14.0)
+                .center_y()
+                .gap(10.0)
+                .child(route)
+                .child(confirm),
+        );
+    if s.studio.handoff_staged && !different {
+        card = card.child(
+            label(
+                "Already here — pick another provider or model to hand off to.",
+                11.5,
+                400.0,
+                t.muted,
+            )
+            .px(14.0)
+            .pb(4.0),
+        );
+    }
+    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .fill(t.ground.alpha(0.62))
+                .on_press(|s: &mut AppState| s.cancel_handoff_picker()),
+        )
+        .child(card.pin(None, None, Some(24.0), Some(24.0)))
 }
 
 fn studio_row(
@@ -2176,5 +2469,60 @@ mod title_info_tests {
         );
         click(&mut rt, 550.0, 400.0);
         assert!(!rt.state.studio.title_info_open, "outside press dismisses");
+    }
+}
+
+#[cfg(test)]
+mod handoff_picker_tests {
+    use super::*;
+    use crate::state::{StudioModel, StudioProvider};
+    use rune::{Env, Key, KeyEvent, Mods, Runtime};
+
+    fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
+        el().w_full()
+            .h_full()
+            .child(handoff_picker(s, Palette::new(cx.system_dark())))
+    }
+
+    #[test]
+    fn keyboard_stages_model_without_creating_handoff() {
+        let mut state = AppState::default();
+        state.studio.providers = vec![StudioProvider {
+            id: "codex".into(),
+            label: "Codex".into(),
+            supports_compaction: false,
+        }];
+        state.studio.models = vec![StudioModel {
+            id: "model".into(),
+            label: "Model".into(),
+            efforts: vec![],
+            default_effort: None,
+        }];
+        state.open_handoff_picker();
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (500.0, 400.0),
+            Env {
+                system_dark: false,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.0);
+        for _ in 0..3 {
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+        }
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(rt.state.studio.handoff_staged);
+        assert!(rt.state.studio.handoff_picker);
+        assert!(rt.state.studio.continuation_request.is_none());
     }
 }

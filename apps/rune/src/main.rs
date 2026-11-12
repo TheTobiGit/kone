@@ -96,6 +96,38 @@ fn main() {
                 studio_column_head(s);
                 s.studio.title_info_open = true;
             }),
+            ("studio-column-head-handoff-picker", |s| {
+                use state::{StudioModel, StudioProvider};
+                studio_column_head(s);
+                s.studio.providers = [
+                    ("codex", "Codex"),
+                    ("claudeAgent", "Claude"),
+                    ("opencode", "OpenCode"),
+                    ("cursor", "Cursor"),
+                ]
+                .into_iter()
+                .map(|(id, label)| StudioProvider {
+                    id: id.into(),
+                    label: label.into(),
+                    supports_compaction: false,
+                })
+                .collect();
+                s.studio.models = ["GPT-5.6-Terra", "GPT-5.6-Luna", "GPT-5.5", "GPT-5.4-Mini"]
+                    .into_iter()
+                    .map(|name| StudioModel {
+                        id: name.to_lowercase(),
+                        label: name.into(),
+                        efforts: vec!["medium".into()],
+                        default_effort: Some("medium".into()),
+                    })
+                    .collect();
+                s.open_handoff_picker();
+                s.studio.connected_identity = None;
+                if let Some((_, models, _, _)) = &mut s.studio.handoff_selection {
+                    models[0].id = "default".into();
+                    models[0].label = "default model".into();
+                }
+            }),
             ("studio-column-head-hover", |s| {
                 studio_column_head(s);
                 s.studio_column_hover = Some("review-one".into());
