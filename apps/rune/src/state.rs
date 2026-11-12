@@ -577,6 +577,10 @@ impl AppState {
             return false;
         }
         if event.key == rune::Key::Escape {
+            if s.studio.context_open {
+                s.studio.context_open = false;
+                return true;
+            }
             if s.studio_insert_menu.take().is_some() {
                 return true;
             }
@@ -1275,6 +1279,12 @@ impl AppState {
             return;
         }
         match event["type"].as_str().unwrap_or("") {
+            "thread.token-usage.updated" => {
+                let usage = &event["usage"];
+                self.studio.context_usage = usage["contextUsed"]
+                    .as_u64()
+                    .zip(usage["contextWindow"].as_u64());
+            }
             "item.started" | "item.updated" | "item.completed" => {
                 let item = &event["item"];
                 let id = item["itemId"].as_str().unwrap_or("").to_owned();
@@ -1362,6 +1372,24 @@ impl AppState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn context_usage_routes_to_the_matching_thread_and_requires_both_values() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "a".into();
+        s.studio_threads.insert(
+            "b".into(),
+            StudioState {
+                thread_id: "b".into(),
+                ..Default::default()
+            },
+        );
+        s.studio_message(json!({"method":"agent.event", "params":{"threadId":"b", "type":"thread.token-usage.updated", "usage":{"contextUsed":0, "contextWindow":200000}}}));
+        assert_eq!(s.studio.context_usage, None);
+        assert_eq!(s.studio_threads["b"].context_usage, Some((0, 200000)));
+        s.studio_message(json!({"method":"agent.event", "params":{"threadId":"b", "type":"thread.token-usage.updated", "usage":{"total":100}}}));
+        assert_eq!(s.studio_threads["b"].context_usage, None);
+    }
 
     #[test]
     fn streaming_item_snapshots_route_to_each_thread() {

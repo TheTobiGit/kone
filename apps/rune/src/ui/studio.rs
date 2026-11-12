@@ -107,7 +107,13 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
             }
         }
     }
-    marks.child(brand_mark(provider, t))
+    marks = marks.child(brand_mark(provider, t));
+    if state.is_some_and(|s| s.side_chat) {
+        marks = marks.child(
+            icon(&SIDE_CHAT, 11.0).color(crate::theme::mix_srgb(t.ink_soft, t.accent, 0.72)),
+        );
+    }
+    marks
 }
 
 fn fork_tool(
@@ -173,7 +179,7 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
     } else if percent >= 70 {
         t.accent
     } else {
-        crate::theme::mix_srgb(t.accent, t.muted, 0.52)
+        crate::theme::mix_srgb(t.muted, t.accent, 0.52)
     };
     let mut meter = el()
         .w(15.0)
@@ -182,6 +188,7 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         .child(icon(&METER_TRACK, 15.0).color(t.muted.alpha(0.22)))
         .child(
             icon(meter_arc(percent), 15.0)
+                .opacity(if percent == 0 { 0.0 } else { 1.0 })
                 .color(color)
                 .pin(Some(0.0), None, None, Some(0.0)),
         )
@@ -451,6 +458,10 @@ fn studio_row(
             let project_path = path.clone();
             let hover_id = id.clone();
             let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str());
+            let has_thread = state.is_some_and(|s| {
+                !s.dormant && s.terminal_command.is_none() && (!s.items.is_empty() || s.busy)
+            });
+            let side_chat = state.is_some_and(|s| s.side_chat);
             let head = row()
                 .offset(0.0, -17.0)
                 .w_full()
@@ -463,14 +474,21 @@ fn studio_row(
                         .center_y()
                         .gap(2.0)
                         .opacity(if show_tools { 1.0 } else { 0.0 })
-                        .child(fork_tool(&SIDE_CHAT, "Open a side chat", state, t))
-                        .child(fork_tool(
-                            &HANDOFF,
-                            "Hand off to another provider",
-                            state,
-                            t,
-                        ))
-                        .child(fork_tool(&ARCHIVE, "Archive conversation", state, t)),
+                        .child(if has_thread && !side_chat {
+                            fork_tool(&SIDE_CHAT, "Open a side chat", state, t)
+                        } else {
+                            el().w(0.0)
+                        })
+                        .child(if has_thread && !side_chat {
+                            fork_tool(&HANDOFF, "Hand off to another provider", state, t)
+                        } else {
+                            el().w(0.0)
+                        })
+                        .child(if has_thread {
+                            fork_tool(&ARCHIVE, "Archive conversation", state, t)
+                        } else {
+                            el().w(0.0)
+                        }),
                 )
                 .child(
                     row()

@@ -374,3 +374,10 @@ Both capture commands write `<scene>-<theme>.png` for light and dark at 1292×85
 ### studio-4 progress
 
 Added deterministic meter, dormant, terminal-live and tooltip scenes and initial header rendering. Meter arc rendering, popover styling/placement, delayed tooltips, host data and actions still need parity work. Comparisons are in `/workspace/rune-compare/studio-4-studio-column-head-*.png`.
+
+### Studio column head follow-up (studio-4, 2026-11-12)
+
+- Live `thread.token-usage.updated` events now route known context fill and window to the correct thread, including explicit zero; Escape closes the meter before other Studio layers. Blank and side-chat threads no longer expose inapplicable fork controls, and the side-chat brand mark and calm meter colour were corrected.
+- Electron-left/Rune-right 2x captures: `/workspace/rune-compare/studio-column-head-{light,dark}.png` and `studio-column-head-hover-{light,dark}.png`. The Electron session is injected with a title, worktree and busy state; Rune's fixture has different content and composer state. Prior state captures are under `studio-4-studio-column-head-*` and were made before this follow-up.
+- Remaining differences: the title does not open ThreadInfoPanel; side chat, handoff and archive actions are inert; worktree, handoff and changed-hands data are fixture-only. The meter popover lacks the source shell, rows, conditional compact action, outside dismissal, keyboard and arrival motion; restored usage is not loaded. Tooltips appear immediately and only on fork controls; hover/focus transitions and keyboard access differ. Dormant and terminal headers use approximate icons and fixture-only state. Meter state captures have not been regenerated at 2x. This does not establish 1:1 parity.
+- Validation: debug build, `cargo fmt --check`, Clippy with `-D warnings`, and 38 native tests passed with `LIBRARY_PATH=/tmp/kone-rune-libs`.
