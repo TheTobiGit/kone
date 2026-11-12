@@ -842,6 +842,58 @@ fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
+/// Small native approximation of TurnOrb's `work` frame. Electron bakes an
+/// icon into 80 points, maps them onto the (p=2, q=3) torus knot, then advances
+/// a brightness head around it. At this UI size the baked silhouette is below
+/// a device pixel; preserving the source knot, spin, yaw, and head motion keeps
+/// the recognizable orbit without rotating a brain glyph.
+fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
+    let count = 32usize;
+    let tau = std::f32::consts::TAU;
+    let cycle = 5.5 + 1.9 * 2.0;
+    let local = time.rem_euclid(cycle);
+    let morph = if local < 5.5 {
+        0.0
+    } else {
+        0.5 - 0.5 * (std::f32::consts::PI * (local - 5.5) / 1.9).cos()
+    };
+    let spin = time * 0.35;
+    let yaw = 0.4 + 0.3 * (time * 0.26).sin();
+    let tilt: f32 = 0.4;
+    let radius = size * 0.82;
+    let mut orb = el().w(size).h(size);
+    let head = (local / 5.5 * count as f32).rem_euclid(count as f32);
+    for i in 0..count {
+        let seat = i as f32 / count as f32;
+        let u = seat * tau * 2.0 + spin;
+        let v = seat * tau * 3.0;
+        let ring = 0.68 + 0.28 * v.cos();
+        let x3 = ring * u.cos();
+        let y3 = ring * u.sin();
+        let z3 = 0.28 * v.sin();
+        let x = x3 * yaw.cos() - z3 * yaw.sin();
+        let z = x3 * yaw.sin() + z3 * yaw.cos();
+        let y = y3 * tilt.cos() - z * tilt.sin();
+        let depth = ((z + 1.0) * 0.5).clamp(0.0, 1.0);
+        let distance = (i as f32 - head)
+            .abs()
+            .min(count as f32 - (i as f32 - head).abs());
+        let bright = (-distance * distance / 3.0).exp();
+        let point_size = 1.5 + 0.5 * depth + 0.4 * bright;
+        let x = size * 0.5 + x * radius - point_size * 0.5;
+        let y = size * 0.5 + y * radius - point_size * 0.5;
+        let alpha = (0.38 + 0.3 * depth + 0.32 * bright + 0.08 * morph).min(0.96);
+        orb = orb.child(
+            el().w(point_size)
+                .h(point_size)
+                .absolute(x, y)
+                .radius(point_size * 0.5)
+                .fill(tint.alpha(alpha)),
+        );
+    }
+    orb
+}
+
 fn project_nav(s: &AppState, t: Palette) -> El {
     let mut nav = row().center_y().gap(4.0).offset(0.0, 10.0);
     for (index, project) in s.projects.iter().enumerate() {
@@ -2811,10 +2863,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             )
                             .child(el().w(16.0).h(16.0).center().fill(t.ground).child(
                                 if item.name == "edit_file" && s.studio.busy {
-                                    icon(&ACTIVITY_THINKING, 14.0).color(step_hue).rotate(
-                                        (s.start_actions.clock as f32 * 2.6)
-                                            % std::f32::consts::TAU,
-                                    )
+                                    activity_orb(16.0, s.start_actions.clock as f32, step_hue)
                                 } else {
                                     icon(step_icon, 14.0).color(step_hue)
                                 },
@@ -3237,13 +3286,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if s.studio.busy
                 && let Some(group) = exchange.take()
             {
-                let angle = (s.start_actions.clock as f32 * 2.6) % std::f32::consts::TAU;
                 let status = row()
                     .key("activity-thinking-status")
                     .w_full()
                     .h(26.0)
                     .center_y()
-                    .child(icon(&ACTIVITY_THINKING, 14.0).color(t.muted).rotate(angle))
+                    .child(activity_orb(16.0, s.start_actions.clock as f32, t.muted))
                     .child(el().grow(1.0))
                     .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
                 exchange = Some(group.child(status));
