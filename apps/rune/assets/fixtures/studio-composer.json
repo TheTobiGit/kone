@@ -1,0 +1,31 @@
+{
+  "title": "Composer review",
+  "blocks": [
+    {
+      "id": "user-composer-1",
+      "role": "user",
+      "text": "Could you summarize the resting orb and composer states before we finalize Studio?",
+      "at": 1760000000000,
+      "historical": true,
+      "model": "gpt-5.4",
+      "effort": "high"
+    },
+    {
+      "id": "assistant-composer-1",
+      "role": "assistant",
+      "turnId": "assistant-composer-1",
+      "at": 1760000001000,
+      "state": "completed",
+      "endedAt": 1760000006000,
+      "historical": true,
+      "items": [
+        {
+          "itemId": "composer-reply-1",
+          "kind": "assistant_text",
+          "status": "completed",
+          "text": "The composer rests as a compact 55px sphere orb at the bottom center of the column. Activating it expands the card to full track width with the input field, autonomy mode, model and effort controls, and the context tray underneath."
+        }
+      ]
+    }
+  ]
+}

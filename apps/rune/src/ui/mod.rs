@@ -1,9 +1,11 @@
+mod composer;
 mod empty;
 mod file_icons;
 mod icon_motion;
 pub(crate) mod overview;
 mod pills;
 mod projects;
+mod sphere_face;
 pub(crate) mod start_motion;
 mod studio;
 mod studio_markdown;

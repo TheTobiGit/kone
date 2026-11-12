@@ -109,6 +109,13 @@ fn main() {
             ("studio-activity-diff", |s| studio_activity(s, "diff")),
             ("studio-activity-hover", |s| studio_activity(s, "hover")),
             ("studio-activity-plan", |s| studio_activity(s, "plan")),
+            ("studio-composer-orb", |s| studio_composer(s, "orb")),
+            ("studio-composer-orb-hover", |s| {
+                studio_composer(s, "orb-hover")
+            }),
+            ("studio-composer-open", |s| studio_composer(s, "open")),
+            ("studio-composer-text", |s| studio_composer(s, "text")),
+            ("studio-composer-running", |s| studio_composer(s, "running")),
             ("studio-column-head-info", |s| {
                 studio_column_head(s);
                 s.studio.title_info_open = true;
@@ -522,6 +529,89 @@ fn studio_activity(s: &mut AppState, scene: &str) {
     };
     s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(17));
     s.studio.turn_title = "Review the Studio activity".into();
+    s.studio.conversation_scroll = None;
+}
+
+fn studio_composer(s: &mut AppState, scene: &str) {
+    studio_conversation(s, "mid");
+    s.studio.conversation_fixture = Some(format!("composer-{scene}"));
+    s.studio.title = "Composer review".into();
+    s.studio.turn_title = "Composer review".into();
+    s.studio.models = vec![state::StudioModel {
+        id: "gpt-5.6-terra".into(),
+        label: "GPT-5.6-Terra".into(),
+        efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
+        default_effort: Some("medium".into()),
+    }];
+    s.studio.mode = "accept-edits".into();
+    s.studio.effort = "medium".into();
+    s.studio.fast_tier = true;
+    s.studio.fast_mode = false;
+    s.studio_column_hover = if scene == "orb-hover" {
+        Some(s.studio.thread_id.clone())
+    } else {
+        None
+    };
+    s.studio.orb_live = false;
+    s.studio.orb_clock = Some(0.9);
+    s.studio.orb_hover = scene == "orb-hover";
+    s.studio.orb_aim = if scene == "orb-hover" {
+        Some((0.0, 0.0, 1.0))
+    } else {
+        None
+    };
+    s.studio.composer_open = matches!(scene, "open" | "text" | "running");
+    s.studio.composer_opened_at = None;
+    s.studio.composer_closing_at = None;
+    s.studio.busy = scene == "running";
+    s.studio.items.clear();
+    s.studio.connected_identity = Some(state::StudioIdentity {
+        name: "Harbor".into(),
+        svg: review::fixture_avatar(),
+        avatar: None,
+    });
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/fixtures/studio-composer.json"))
+            .expect("valid composer fixture");
+    s.studio.items.push(state::StudioItem {
+        id: fixture["blocks"][0]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+        kind: "user".into(),
+        text: fixture["blocks"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+        ..Default::default()
+    });
+    if scene == "running" {
+        s.studio.turn_started =
+            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(6));
+        s.studio.items.push(state::StudioItem {
+            id: "composer-running-read".into(),
+            kind: "tool_call".into(),
+            status: "in-progress".into(),
+            name: "read_file".into(),
+            text: "app/components/agent/AgentComposer.vue".into(),
+            ..Default::default()
+        });
+    } else {
+        let reply = &fixture["blocks"][1]["items"][0];
+        s.studio.items.push(state::StudioItem {
+            id: reply["itemId"].as_str().unwrap_or_default().into(),
+            block_id: fixture["blocks"][1]["id"].as_str().map(str::to_owned),
+            kind: reply["kind"].as_str().unwrap_or_default().into(),
+            text: reply["text"].as_str().unwrap_or_default().into(),
+            status: reply["status"].as_str().unwrap_or_default().into(),
+            ..Default::default()
+        });
+    }
+    if scene == "text" {
+        s.composer.text = "Line one: check the composer card geometry and spacing.\nLine two: verify provider, model, and effort controls stay aligned.\nLine three: confirm Escape collapses back to the resting orb.".into();
+    } else {
+        s.composer.clear();
+    }
     s.studio.conversation_scroll = None;
 }
 

@@ -203,6 +203,20 @@ pub struct StudioState {
     pub thread_open: bool,
     pub project_path: String,
     pub composer_open: bool,
+    pub composer_opened_at: Option<std::time::Instant>,
+    pub composer_closing_at: Option<std::time::Instant>,
+    pub orb_clock: Option<f64>,
+    pub orb_last_tick: Option<f64>,
+    pub orb_aim: Option<(f32, f32, f32)>,
+    pub orb_hover: bool,
+    pub orb_live: bool,
+    pub fast_mode: bool,
+    pub fast_tier: bool,
+    pub context_window: Option<String>,
+    pub blocked_reason: Option<(String, bool, Option<String>)>,
+    pub workspace_steps: Vec<(String, String, String)>,
+    pub workspace_heading: String,
+    pub workspace_tray_open: bool,
     pub picker_open: bool,
     pub effort_picker_open: bool,
     pub mode_picker_open: bool,
@@ -487,6 +501,10 @@ impl AppState {
 
     pub fn setup(s: &mut Self, wake: rune::Waker) {
         s.start_actions.live = true;
+        s.studio.orb_live = true;
+        if s.studio.mode.is_empty() {
+            s.studio.mode = "accept-edits".into();
+        }
         if let Ok(data) = std::fs::read(Self::changes_preferences_path()) {
             s.changes_folded = serde_json::from_slice(&data).unwrap_or_default();
         }
@@ -551,6 +569,39 @@ impl AppState {
         let activity_motion = s.page == Page::Studio && s.studio.busy;
         if activity_motion {
             tx.wake_after(std::time::Duration::from_millis(33));
+        }
+        if s.studio
+            .composer_closing_at
+            .is_some_and(|at| at.elapsed().as_secs_f32() >= 0.20)
+        {
+            s.studio.composer_closing_at = None;
+        }
+        if s.studio
+            .composer_opened_at
+            .is_some_and(|at| at.elapsed().as_secs_f32() >= 0.56)
+        {
+            s.studio.composer_opened_at = None;
+        }
+        let composer_motion = s.page == Page::Studio
+            && (s.studio.composer_closing_at.is_some() || s.studio.composer_opened_at.is_some());
+        if composer_motion {
+            tx.wake_after(std::time::Duration::from_millis(16));
+        }
+        let orb_animating = s.page == Page::Studio
+            && s.studio.orb_live
+            && !s.studio.composer_open
+            && s.studio.approval.is_none()
+            && s.studio.question.is_none();
+        if orb_animating {
+            let dt = s
+                .studio
+                .orb_last_tick
+                .map_or(0.0, |prev| (clock - prev).clamp(0.0, 0.05));
+            s.studio.orb_last_tick = Some(clock);
+            s.studio.orb_clock = Some(s.studio.orb_clock.unwrap_or(0.9) + dt);
+            tx.wake_after(std::time::Duration::from_millis(33));
+        } else {
+            s.studio.orb_last_tick = None;
         }
         if s.studio_fade
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= 0.22)
@@ -889,8 +940,7 @@ impl AppState {
                 return true;
             }
             if s.studio.composer_open {
-                s.studio.composer_open = false;
-                s.composer.focused = false;
+                s.close_composer();
                 return true;
             }
         }
@@ -1095,9 +1145,69 @@ impl AppState {
         self.studio.thread_id = format!("rune-{}-{time}", std::process::id());
         self.studio.thread_open = true;
         self.studio.composer_open = false;
+        self.studio.composer_opened_at = None;
+        self.studio.composer_closing_at = None;
         self.studio.error = None;
         self.composer.clear();
         self.save_studio_layout();
+    }
+
+    pub fn open_composer(&mut self) {
+        self.studio.composer_closing_at = None;
+        if !self.studio.composer_open {
+            self.studio.composer_opened_at = Some(std::time::Instant::now());
+        }
+        self.studio.composer_open = true;
+        self.composer.focused = true;
+    }
+
+    pub fn close_composer(&mut self) {
+        self.studio.composer_opened_at = None;
+        if self.studio.composer_open {
+            self.studio.composer_closing_at = Some(std::time::Instant::now());
+        }
+        self.studio.composer_open = false;
+        self.composer.focused = false;
+    }
+
+    pub fn cycle_studio_mode(&mut self) {
+        const ORDER: [&str; 3] = ["ask", "accept-edits", "full-access"];
+        let current = if self.studio.mode.is_empty() {
+            "accept-edits"
+        } else {
+            self.studio.mode.as_str()
+        };
+        let next = match ORDER.iter().position(|m| *m == current) {
+            Some(i) => ORDER[(i + 1) % ORDER.len()],
+            None => ORDER[1],
+        };
+        self.studio.mode = next.into();
+    }
+
+    pub fn cycle_studio_effort(&mut self) {
+        let fallback = [
+            "low".to_owned(),
+            "medium".to_owned(),
+            "high".to_owned(),
+            "xhigh".to_owned(),
+        ];
+        let list: &[String] = self
+            .studio
+            .models
+            .get(self.studio.model_index)
+            .filter(|m| !m.efforts.is_empty())
+            .map(|m| m.efforts.as_slice())
+            .unwrap_or(&fallback);
+        let cur = if self.studio.effort.is_empty() {
+            "medium"
+        } else {
+            self.studio.effort.as_str()
+        };
+        let next = match list.iter().position(|e| e == cur) {
+            Some(i) => &list[(i + 1) % list.len()],
+            None => &list[0],
+        };
+        self.studio.effort = next.clone();
     }
 
     pub fn insert_studio_thread(&mut self, at: usize) {
@@ -2234,5 +2344,46 @@ mod start_actions_tests {
         assert!(!state.pointer_move(60.0, 20.0, pending));
         assert!(state.pointer_move(200.0, 20.0, false));
         assert!(!state.active[0]);
+    }
+
+    #[test]
+    fn studio_escape_closes_pickers_then_composer_before_leaving_studio() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            ..Default::default()
+        };
+        s.studio.composer_open = true;
+        s.studio.mode_picker_open = true;
+        s.composer.focused = true;
+        let esc = rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.studio.mode_picker_open);
+        assert!(s.studio.composer_open);
+
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.studio.composer_open);
+        assert!(!s.composer.focused);
+
+        assert!(!super::AppState::studio_key(&mut s, &esc, &mut tx));
+    }
+
+    #[test]
+    fn mode_and_effort_cycle_through_expected_order() {
+        let mut s = super::AppState::default();
+        s.cycle_studio_mode();
+        assert_eq!(s.studio.mode, "full-access");
+        s.cycle_studio_mode();
+        assert_eq!(s.studio.mode, "ask");
+        s.cycle_studio_mode();
+        assert_eq!(s.studio.mode, "accept-edits");
+
+        s.cycle_studio_effort();
+        assert_eq!(s.studio.effort, "high");
+        s.cycle_studio_effort();
+        assert_eq!(s.studio.effort, "xhigh");
     }
 }

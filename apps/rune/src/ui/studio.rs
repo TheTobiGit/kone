@@ -146,7 +146,7 @@ static STUDIO_PROVIDER_CLAUDE: Icon = Icon {
     body: r#"<path d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z" fill="currentColor" fill-rule="evenodd"/>"#,
 };
 
-static PICKER_BRAIN: Icon = Icon {
+pub(super) static PICKER_BRAIN: Icon = Icon {
     name: "studio-picker-brain",
     view: 24.0,
     body: r#"<path d="M7 4.5C5.34315 4.5 4 5.84315 4 7.5C4 8.06866 4.15822 8.60037 4.43304 9.0535C3.04727 9.31855 2 10.537 2 12C2 13.463 3.04727 14.6814 4.43304 14.9465M7 4.5C7 3.11929 8.11929 2 9.5 2C10.8807 2 12 3.11929 12 4.5V19.5C12 20.8807 10.8807 22 9.5 22C8.11929 22 7 20.8807 7 19.5C5.34315 19.5 4 18.1569 4 16.5C4 15.9313 4.15822 15.3996 4.43304 14.9465M7 4.5C7 5.31791 7.39278 6.04408 8 6.50018M4.43304 14.9465C4.78948 14.3588 5.34207 13.9032 6 13.6707" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 19.4999C18.6569 19.4999 20 18.1567 20 16.4999C20 15.9312 19.8418 15.3995 19.567 14.9464C20.9527 14.6813 22 13.4629 22 11.9999C22 10.5369 20.9527 9.31843 19.567 9.05338M17 19.4999C17 20.8806 15.8807 21.9999 14.5 21.9999C13.1193 21.9999 12 20.8806 12 19.4999L12 4.49988C12 3.11917 13.1193 1.99988 14.5 1.99988C15.8807 1.99988 17 3.11917 17 4.49988C18.6569 4.49988 20 5.84302 20 7.49988C20 8.06854 19.8418 8.60024 19.567 9.05338M17 19.4999C17 18.682 16.6072 17.9558 16 17.4997M19.567 9.05338C19.2105 9.64109 18.6579 10.0966 18 10.3292" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
@@ -160,7 +160,7 @@ static PICKER_SEARCH: Icon = Icon {
 fn brand_mark(provider: &str, t: Palette) -> El {
     brand_mark_size(provider, 15.0, t)
 }
-fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
+pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
     let mark = match provider {
         "claudeAgent" => &STUDIO_PROVIDER_CLAUDE,
         "cursor" => &STUDIO_PROVIDER_CURSOR,
@@ -205,7 +205,7 @@ fn connected_avatar(identity: &crate::state::StudioIdentity, t: Palette) -> El {
     avatar_at(identity, 16.0, t)
 }
 
-fn avatar_at(identity: &crate::state::StudioIdentity, size: f32, t: Palette) -> El {
+pub(super) fn avatar_at(identity: &crate::state::StudioIdentity, size: f32, t: Palette) -> El {
     use std::sync::{Arc, OnceLock};
     static IMAGES: OnceLock<rune::ImageCache> = OnceLock::new();
     let cache = IMAGES.get_or_init(|| rune::ImageCache::new(Arc::new(|| {})));
@@ -848,7 +848,7 @@ fn short_thread_id(id: &str) -> String {
     }
 }
 
-fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -> El {
+pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -> El {
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
@@ -1780,6 +1780,7 @@ fn studio_row(
                 focused_body(
                     s,
                     &project.name,
+                    width,
                     t,
                     crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
                 )
@@ -2129,44 +2130,11 @@ fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
         .child(transcript)
 }
 
-fn resting_orb(t: Palette) -> El {
-    el().w(55.0)
-        .h(55.0)
-        .radius(27.5)
-        .fill(t.ink)
-        .child(
-            el().w(5.0)
-                .h(11.0)
-                .radius(2.5)
-                .fill(t.ground)
-                .rotate(-0.43)
-                .absolute(30.0, 11.0),
-        )
-        .child(
-            el().w(4.0)
-                .h(9.0)
-                .radius(2.0)
-                .fill(t.ground)
-                .rotate(-0.43)
-                .absolute(41.0, 8.0),
-        )
-}
-
-fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
+fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32) -> El {
     let activity_plan = s.studio.conversation_fixture.as_deref() == Some("activity-plan");
-    let show_resting_orb =
-        !s.studio.composer_open && s.studio.approval.is_none() && s.studio.question.is_none();
-    let wake_orb =
-        || {
-            col().w_full().items_center().child(
-                resting_orb(t)
-                    .key("studio-wake-composer")
-                    .on_press(|s: &mut AppState| {
-                        s.studio.composer_open = true;
-                        s.composer.focused = true;
-                    }),
-            )
-        };
+    let show_closing = s.studio.composer_closing_at.is_some();
+    let track_w = (col_width - 32.0).clamp(0.0, 680.0);
+    let wake_orb = || super::composer::wake_orb(s, t);
     let dock = if activity_plan {
         col()
             .key("activity-tasks-dock")
@@ -2396,125 +2364,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     }),
             )
         }
-    } else if s.studio.composer_open {
-        let input = text_input(&s.composer, TextStyle::new(14.0, 400.0))
-            .key("studio-composer")
-            .placeholder("Ask anything…", t.placeholder)
-            .color(t.ink)
-            .w_full()
-            .h(54.0)
-            .on_edit(|s: &mut AppState| &mut s.composer)
-            .on_submit(AppState::send_studio);
-        let bar = row()
-            .w_full()
-            .h(39.0)
-            .center_y()
-            .gap(8.0)
-            .child(label("+", 21.0, 400.0, t.muted))
-            .child(
-                el().key("studio-mode-picker")
-                    .px(7.0)
-                    .h(30.0)
-                    .center()
-                    .radius(9.0)
-                    .hover(t.hover)
-                    .child(label(
-                        if s.studio.mode.is_empty() {
-                            "Ask"
-                        } else {
-                            &s.studio.mode
-                        },
-                        12.0,
-                        500.0,
-                        t.ink_soft,
-                    ))
-                    .on_press(|s: &mut AppState| {
-                        s.studio.mode_picker_open = !s.studio.mode_picker_open;
-                        s.studio.effort_picker_open = false;
-                        s.studio.picker_open = false;
-                    }),
-            )
-            .child(el().grow(1.0))
-            .child(
-                el().key("studio-model-picker")
-                    .px(7.0)
-                    .h(30.0)
-                    .center()
-                    .radius(9.0)
-                    .hover(t.hover)
-                    .child(label(
-                        format!(
-                            "{}  {}",
-                            s.studio
-                                .providers
-                                .get(s.studio.provider_index)
-                                .map(|p| p.label.as_str())
-                                .unwrap_or("Select provider"),
-                            s.studio
-                                .models
-                                .get(s.studio.model_index)
-                                .map(|m| m.label.as_str())
-                                .unwrap_or("")
-                        ),
-                        12.5,
-                        500.0,
-                        t.ink_soft,
-                    ))
-                    .on_press(|s: &mut AppState| s.studio.picker_open = !s.studio.picker_open),
-            )
-            .child(
-                el().key("studio-effort-picker")
-                    .px(7.0)
-                    .h(30.0)
-                    .center()
-                    .radius(9.0)
-                    .hover(t.hover)
-                    .child(label(
-                        if s.studio.effort.is_empty() {
-                            "Effort"
-                        } else {
-                            &s.studio.effort
-                        },
-                        12.0,
-                        500.0,
-                        t.ink_soft,
-                    ))
-                    .on_press(|s: &mut AppState| {
-                        s.studio.effort_picker_open = !s.studio.effort_picker_open;
-                        s.studio.mode_picker_open = false;
-                        s.studio.picker_open = false;
-                    }),
-            )
-            .child(
-                el().w(32.0)
-                    .h(32.0)
-                    .center()
-                    .radius(16.0)
-                    .fill(t.accent)
-                    .child(label(
-                        if s.studio.busy { "■" } else { "↑" },
-                        18.0,
-                        600.0,
-                        t.accent_ink,
-                    ))
-                    .on_press_tx(|s: &mut AppState, tx| {
-                        if s.studio.busy {
-                            s.interrupt_studio();
-                        } else {
-                            s.send_studio(tx);
-                        }
-                    }),
-            );
-        let mut picker = col()
-            .w_full()
-            .max_w(360.0)
-            .padding(6.0)
-            .gap(2.0)
-            .radius(14.0)
-            .border(1.0, t.line)
-            .fill(t.raised_high);
-        if s.studio.picker_open {
-            picker = picker.child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
+    } else if s.studio.composer_open || show_closing {
+        let mut dock = col().w(track_w).items_center();
+        if s.studio.composer_open && s.studio.picker_open {
+            let mut picker = col()
+                .w_full()
+                .max_w(360.0)
+                .mb(10.0)
+                .padding(6.0)
+                .gap(2.0)
+                .radius(14.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high)
+                .child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
             for (index, provider) in s.studio.providers.iter().enumerate() {
                 picker = picker.child(
                     el().key(format!("provider-{index}"))
@@ -2579,90 +2441,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         }),
                 );
             }
-        }
-        let mut dock = col().w_full().max_w(680.0).items_center();
-        if s.studio.picker_open {
             dock = dock.child(picker);
         }
-        if s.studio.mode_picker_open {
-            let mut menu = col()
-                .w_full()
-                .max_w(240.0)
-                .padding(6.0)
-                .radius(14.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high);
-            for (value, title) in [
-                ("ask", "Ask"),
-                ("accept-edits", "Accept edits"),
-                ("full-access", "Full access"),
-            ] {
-                menu = menu.child(
-                    el().key(format!("mode-{value}"))
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
-                        .hover(t.hover)
-                        .child(label(title, 12.5, 500.0, t.ink))
-                        .on_press(move |s: &mut AppState| {
-                            s.studio.mode = value.into();
-                            s.studio.mode_picker_open = false;
-                        }),
-                );
-            }
-            dock = dock.child(menu);
-        }
-        if s.studio.effort_picker_open {
-            let mut menu = col()
-                .w_full()
-                .max_w(240.0)
-                .padding(6.0)
-                .radius(14.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high);
-            if let Some(model) = s.studio.models.get(s.studio.model_index) {
-                for effort in &model.efforts {
-                    let value = effort.clone();
-                    menu = menu.child(
-                        el().key(format!("effort-{effort}"))
-                            .w_full()
-                            .h(32.0)
-                            .px(8.0)
-                            .center_y()
-                            .hover(t.hover)
-                            .child(label(effort.clone(), 12.5, 500.0, t.ink))
-                            .on_press(move |s: &mut AppState| {
-                                s.studio.effort = value.clone();
-                                s.studio.effort_picker_open = false;
-                            }),
-                    );
-                }
-            }
-            dock = dock.child(menu);
-        }
-        dock.child(
-            col()
-                .w_full()
-                .padding(14.0)
-                .radius(26.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .child(input)
-                .child(bar),
-        )
-        .child(
-            row()
-                .w_full()
-                .h(26.0)
-                .px(20.0)
-                .gap(16.0)
-                .center_y()
-                .child(label("ϟ  Guest", 11.5, 500.0, t.ink_soft))
-                .child(label(format!("▱  {name}"), 11.5, 500.0, t.ink_soft))
-                .child(el().grow(1.0))
-                .child(label("New thread", 11.5, 500.0, t.muted)),
-        )
+        dock.child(super::composer::composer_dock(s, name, track_w, t))
     } else {
         wake_orb()
     };
@@ -2681,10 +2462,21 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         let mut date_style = TextStyle::new(11.0, 500.0).mono().lh(16.0);
         date_style.tracking = 0.22;
         transcript = transcript.child(
-            row()
-                .w_full()
-                .justify_center()
-                .child(text("Today").font(date_style).color(t.muted)),
+            row().w_full().justify_center().child(
+                text(
+                    if s.studio
+                        .conversation_fixture
+                        .as_deref()
+                        .is_some_and(|f| f.starts_with("composer-"))
+                    {
+                        "October 9, 2025"
+                    } else {
+                        "Today"
+                    },
+                )
+                .font(date_style)
+                .color(t.muted),
+            ),
         );
         if let Some(identity) = &s.studio.connected_identity {
             let mut name_style = TextStyle::new(12.0, 600.0).lh(16.0);
@@ -3511,10 +3303,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 // fight the bottom stick; "mid" and live threads follow the end.
                 .scroll(ScrollSpec {
                     stick_bottom: !is_activity
-                        && !matches!(
-                            s.studio.conversation_fixture.as_deref(),
-                            Some("scrolled" | "compaction" | "marks" | "code"),
-                        ),
+                        && !s.studio.conversation_fixture.as_deref().is_some_and(|f| {
+                            matches!(f, "scrolled" | "compaction" | "marks" | "code")
+                                || f.starts_with("composer-")
+                        }),
                 })
                 .clip_fade_linear(
                     0.0,
@@ -3551,12 +3343,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 .child(dock)
         } else {
             row()
-                .pin(
-                    Some(0.0),
-                    None,
-                    Some(0.0),
-                    Some(if show_resting_orb { 33.5 } else { 22.0 }),
-                )
+                .pin(Some(0.0), None, Some(0.0), Some(32.0))
                 .px(16.0)
                 .justify_center()
                 .child(dock)

@@ -8,6 +8,7 @@ pub struct Palette {
     pub raised: Color,
     pub sunken: Color,
     pub raised_high: Color,
+    pub field: Color,
     pub ink: Color,
     pub ink_soft: Color,
     pub muted: Color,
@@ -22,6 +23,8 @@ pub struct Palette {
     pub accent_wash: Color,
     pub folder: Color,
     pub warn: Color,
+    pub danger: Color,
+    pub boost: Color,
 }
 
 fn c(value: &str) -> Color {
@@ -38,6 +41,7 @@ impl Palette {
             sunken: c(if dark { "#000000" } else { "#e9e8e5" }),
             raised: c(if dark { "#18181a" } else { "#fffefb" }),
             raised_high: c(if dark { "#212124" } else { "#ffffff" }),
+            field: c(if dark { "#101012" } else { "#ffffff" }),
             ink,
             ink_soft: c(if dark { "#f4f4f5" } else { "#52525b" }),
             muted: c(if dark { "#8a8a90" } else { "#9c9a94" }),
@@ -52,6 +56,8 @@ impl Palette {
             accent_wash: accent.alpha(0.1),
             folder: c("#c4a44a"),
             warn: c(if dark { "#c99b45" } else { "#a57c2b" }),
+            danger: c(if dark { "#f43f5e" } else { "#e11d48" }),
+            boost: c("#f5b300"),
         }
     }
 }
