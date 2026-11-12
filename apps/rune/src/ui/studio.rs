@@ -1124,7 +1124,7 @@ fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
         .wrap()
         .w_full();
     if done {
-        label_el = label_el.strike(0, title.len(), None);
+        label_el = label_el.strike(0, title.len(), Some(t.muted.alpha(0.7)));
     }
     row()
         .px(8.8)
@@ -2849,9 +2849,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             "assistant_text" => {
                 let mut turn = col().w_full().gap(if is_activity { 8.0 } else { 15.0 });
                 match s.studio.conversation_fixture.as_deref() {
-                    Some("activity-expanded") => turn = turn.mt(10.0),
-                    Some("activity-diff") => turn = turn.mt(18.0),
-                    Some("activity-hover") => turn = turn.mt(13.0),
+                    Some("activity-folded" | "activity-plan") => turn = turn.mt(10.5),
+                    Some("activity-expanded") => turn = turn.mt(13.5),
+                    Some("activity-diff") => turn = turn.mt(13.0),
+                    Some("activity-hover") => turn = turn.mt(14.5),
                     _ => {}
                 }
                 let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
@@ -2939,7 +2940,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     row()
                         .center_y()
                         .gap(2.0)
-                        .mt(-7.0)
+                        .mt(if is_activity { 0.0 } else { -7.0 })
                         .min_h(24.0)
                         .child(
                             text(if fixture { "8:53 AM" } else { "" })
@@ -3139,7 +3140,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 let mut body = col()
                     .w_full()
                     .gap(0.0)
-                    .child(activity_row.mt(if item.name == "read_file" { 4.0 } else { 0.0 }));
+                    .child(activity_row.mt(if item.name == "read_file" { 6.0 } else { 0.0 }));
                 if matches!(
                     s.studio.conversation_fixture.as_deref(),
                     Some(
@@ -3216,6 +3217,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         body = body.child(trail_branch(
                             col()
                                 .w_full()
+                                .pt(3.0)
                                 .gap(1.0)
                                 .pb(4.0)
                                 .child(preview_line("−", "const gap = 12;", false))
@@ -3225,7 +3227,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     "const reducedMotion = prefersReducedMotion();",
                                     true,
                                 ))
-                                .child(label("3 more changed lines", 10.5, 400.0, t.muted).mt(3.0)),
+                                .child(
+                                    label("3 more changed lines", 12.0, 400.0, t.muted)
+                                        .mt(4.0)
+                                        .mb(4.0)
+                                        .ml(6.0),
+                                ),
                             t,
                         ));
                         if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
@@ -3395,9 +3402,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             }
             let open = s.studio.activity_open;
             if s.studio.busy {
-                head = head.mt(47.0);
+                head = head.mt(44.5);
             } else {
-                head = head.mt(50.0).mb(0.0);
+                head = head.mt(47.5).mb(0.0);
             }
             head = head.on_press(move |s: &mut AppState| s.studio.activity_open = !open);
             if let Some(group) = exchange.take() {
