@@ -2065,504 +2065,10 @@ fn resting_orb(t: Palette) -> El {
 
 fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     let activity_plan = s.studio.conversation_fixture.as_deref() == Some("activity-plan");
-    let dock =
-        if activity_plan {
-            col()
-                .key("activity-tasks-dock")
-                .w(288.0)
-                .pt(4.0)
-                .px(4.0)
-                .pb(0.0)
-                .gap(0.0)
-                .offset(4.0, 2.0)
-                .radius(18.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .child(
-                    row()
-                        .h(25.375)
-                        .mb(6.0)
-                        .center_y()
-                        .gap(5.0)
-                        .child(label("●", 8.0, 600.0, t.accent))
-                        .child(brand_mark_size("gpt", 14.0, t))
-                        .child(label("Studio activity reference", 12.0, 500.0, t.ink_soft)),
-                )
-                .child(
-                    row()
-                        .w(286.0)
-                        .h(41.438)
-                        .ml(-3.0)
-                        .mb(5.0)
-                        .center_y()
-                        .padding(4.0)
-                        .radius(14.0)
-                        .fill(t.ground)
-                        .px(9.0)
-                        .py(0.0)
-                        .gap(7.0)
-                        .child(label("Changes", 12.0, 550.0, t.ink_soft))
-                        .child(el().grow(1.0))
-                        .child(label(
-                            "+4",
-                            10.0,
-                            500.0,
-                            rune::color::hex("#329b70").unwrap(),
-                        ))
-                        .child(label(
-                            "−2",
-                            10.0,
-                            500.0,
-                            rune::color::hex("#d25c5c").unwrap(),
-                        ))
-                        .child(
-                            icon(&ACTIVITY_CHEVRON, 14.0)
-                                .color(t.muted)
-                                .rotate(std::f32::consts::FRAC_PI_2),
-                        ),
-                )
-                .child(
-                    col()
-                        .w(286.0)
-                        .h(177.672)
-                        .ml(-3.0)
-                        .padding(4.0)
-                        .pb(6.391)
-                        .radius(14.0)
-                        .fill(t.ground)
-                        .gap(1.593)
-                        .child(
-                            row()
-                                .w_full()
-                                .h(33.438)
-                                .center_y()
-                                .px(9.0)
-                                .gap(6.0)
-                                .child(label("Tasks", 12.5, 500.0, t.ink_soft))
-                                .child(el().grow(1.0))
-                                .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
-                                .child(
-                                    text("1/4")
-                                        .font(TextStyle::new(11.0, 500.0).mono())
-                                        .color(t.ink_soft),
-                                )
-                                .child(
-                                    icon(&ACTIVITY_CHEVRON, 14.0)
-                                        .color(t.muted)
-                                        .rotate(std::f32::consts::FRAC_PI_2),
-                                ),
-                        )
-                        .child(activity_task_row(
-                            "Inspect the conversation activity components",
-                            "completed",
-                            t,
-                        ))
-                        .child(activity_task_row(
-                            "Implementing the turn activity layout",
-                            "in-progress",
-                            t,
-                        ))
-                        .child(activity_task_row(
-                            "Verify light and dark themes",
-                            "pending",
-                            t,
-                        ))
-                        .child(activity_task_row(
-                            "Capture reference screenshots",
-                            "pending",
-                            t,
-                        )),
-                )
-                .child(
-                    row()
-                        .w(288.0)
-                        .h(35.375)
-                        .ml(-4.0)
-                        .center_y()
-                        .px(12.8)
-                        .child(label("1 file · 1/4 tasks", 10.5, 400.0, t.muted))
-                        .child(el().grow(1.0))
-                        .child(label("Expand all", 10.5, 400.0, t.muted)),
-                )
-        } else if let Some(approval) = &s.studio.approval {
-            col()
-                .w_full()
-                .max_w(680.0)
-                .padding(18.0)
-                .gap(12.0)
-                .radius(20.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .child(label("Approval requested", 12.0, 600.0, t.muted))
-                .child(label(approval.title.clone(), 14.0, 600.0, t.ink))
-                .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft))
-                .child(
-                    row()
-                        .gap(8.0)
-                        .child(
-                            el().key("approval-reject")
-                                .px(14.0)
-                                .h(32.0)
-                                .center()
-                                .radius(9.0)
-                                .hover(t.hover)
-                                .child(label("Decline", 12.5, 500.0, t.ink_soft))
-                                .on_press(|s: &mut AppState| s.answer_approval("reject-once")),
-                        )
-                        .child(
-                            el().key("approval-allow")
-                                .px(14.0)
-                                .h(32.0)
-                                .center()
-                                .radius(9.0)
-                                .fill(t.accent)
-                                .child(label("Allow once", 12.5, 500.0, t.accent_ink))
-                                .on_press(|s: &mut AppState| s.answer_approval("allow-once")),
-                        ),
-                )
-        } else if let Some(request) = &s.studio.question {
-            let question = &request.questions[request.index];
-            let mut card = col()
-                .w_full()
-                .max_w(680.0)
-                .padding(18.0)
-                .gap(12.0)
-                .radius(20.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .child(label(question.prompt.clone(), 14.0, 600.0, t.ink));
-            for (index, option) in question.options.iter().enumerate() {
-                let answer = option.clone();
-                let multi = question.multi;
-                let prefix = if multi {
-                    if request.selected.contains(option) {
-                        "☑  "
-                    } else {
-                        "□  "
-                    }
-                } else {
-                    ""
-                };
-                card = card.child(
-                    el().key(format!("question-option-{index}"))
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
-                        .radius(8.0)
-                        .hover(t.hover)
-                        .child(label(format!("{prefix}{option}"), 13.0, 500.0, t.ink_soft))
-                        .on_press(move |s: &mut AppState| {
-                            if multi {
-                                s.toggle_question_option(answer.clone());
-                            } else {
-                                s.answer_question(answer.clone().into());
-                            }
-                        }),
-                );
-            }
-            if question.multi {
-                card.child(
-                    el().key("question-submit")
-                        .h(32.0)
-                        .px(12.0)
-                        .center()
-                        .radius(9.0)
-                        .fill(t.accent)
-                        .child(label("Continue", 12.5, 500.0, t.accent_ink))
-                        .on_press(|s: &mut AppState| {
-                            let selected = s
-                                .studio
-                                .question
-                                .as_ref()
-                                .map(|q| q.selected.clone())
-                                .unwrap_or_default();
-                            s.answer_question(serde_json::json!(selected));
-                        }),
-                )
-            } else {
-                card.child(
-                    text_input(&s.studio.answer, TextStyle::new(14.0, 400.0))
-                        .key("studio-answer")
-                        .w_full()
-                        .h(38.0)
-                        .placeholder("Your answer…", t.placeholder)
-                        .color(t.ink)
-                        .on_edit(|s: &mut AppState| &mut s.studio.answer)
-                        .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
-                            let answer = s.studio.answer.text.clone();
-                            s.answer_question(answer.into());
-                        }),
-                )
-            }
-        } else if s.studio.composer_open {
-            let input = text_input(&s.composer, TextStyle::new(14.0, 400.0))
-                .key("studio-composer")
-                .placeholder("Ask anything…", t.placeholder)
-                .color(t.ink)
-                .w_full()
-                .h(54.0)
-                .on_edit(|s: &mut AppState| &mut s.composer)
-                .on_submit(AppState::send_studio);
-            let bar = row()
-                .w_full()
-                .h(39.0)
-                .center_y()
-                .gap(8.0)
-                .child(label("+", 21.0, 400.0, t.muted))
-                .child(
-                    el().key("studio-mode-picker")
-                        .px(7.0)
-                        .h(30.0)
-                        .center()
-                        .radius(9.0)
-                        .hover(t.hover)
-                        .child(label(
-                            if s.studio.mode.is_empty() {
-                                "Ask"
-                            } else {
-                                &s.studio.mode
-                            },
-                            12.0,
-                            500.0,
-                            t.ink_soft,
-                        ))
-                        .on_press(|s: &mut AppState| {
-                            s.studio.mode_picker_open = !s.studio.mode_picker_open;
-                            s.studio.effort_picker_open = false;
-                            s.studio.picker_open = false;
-                        }),
-                )
-                .child(el().grow(1.0))
-                .child(
-                    el().key("studio-model-picker")
-                        .px(7.0)
-                        .h(30.0)
-                        .center()
-                        .radius(9.0)
-                        .hover(t.hover)
-                        .child(label(
-                            format!(
-                                "{}  {}",
-                                s.studio
-                                    .providers
-                                    .get(s.studio.provider_index)
-                                    .map(|p| p.label.as_str())
-                                    .unwrap_or("Select provider"),
-                                s.studio
-                                    .models
-                                    .get(s.studio.model_index)
-                                    .map(|m| m.label.as_str())
-                                    .unwrap_or("")
-                            ),
-                            12.5,
-                            500.0,
-                            t.ink_soft,
-                        ))
-                        .on_press(|s: &mut AppState| s.studio.picker_open = !s.studio.picker_open),
-                )
-                .child(
-                    el().key("studio-effort-picker")
-                        .px(7.0)
-                        .h(30.0)
-                        .center()
-                        .radius(9.0)
-                        .hover(t.hover)
-                        .child(label(
-                            if s.studio.effort.is_empty() {
-                                "Effort"
-                            } else {
-                                &s.studio.effort
-                            },
-                            12.0,
-                            500.0,
-                            t.ink_soft,
-                        ))
-                        .on_press(|s: &mut AppState| {
-                            s.studio.effort_picker_open = !s.studio.effort_picker_open;
-                            s.studio.mode_picker_open = false;
-                            s.studio.picker_open = false;
-                        }),
-                )
-                .child(
-                    el().w(32.0)
-                        .h(32.0)
-                        .center()
-                        .radius(16.0)
-                        .fill(t.accent)
-                        .child(label(
-                            if s.studio.busy { "■" } else { "↑" },
-                            18.0,
-                            600.0,
-                            t.accent_ink,
-                        ))
-                        .on_press_tx(|s: &mut AppState, tx| {
-                            if s.studio.busy {
-                                s.interrupt_studio();
-                            } else {
-                                s.send_studio(tx);
-                            }
-                        }),
-                );
-            let mut picker = col()
-                .w_full()
-                .max_w(360.0)
-                .padding(6.0)
-                .gap(2.0)
-                .radius(14.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high);
-            if s.studio.picker_open {
-                picker = picker.child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
-                for (index, provider) in s.studio.providers.iter().enumerate() {
-                    picker = picker.child(
-                        el().key(format!("provider-{index}"))
-                            .w_full()
-                            .h(32.0)
-                            .px(8.0)
-                            .center_y()
-                            .radius(8.0)
-                            .hover(t.hover)
-                            .child(label(
-                                format!(
-                                    "{}{}",
-                                    if index == s.studio.provider_index {
-                                        "✓  "
-                                    } else {
-                                        "    "
-                                    },
-                                    provider.label
-                                ),
-                                12.5,
-                                500.0,
-                                t.ink,
-                            ))
-                            .on_press(move |s: &mut AppState| s.select_provider(index)),
-                    );
-                }
-                picker = picker.child(label("MODEL", 10.0, 600.0, t.muted).px(8.0).py(4.0));
-                for (index, model) in s.studio.models.iter().enumerate() {
-                    picker = picker.child(
-                        el().key(format!("model-{index}"))
-                            .w_full()
-                            .h(32.0)
-                            .px(8.0)
-                            .center_y()
-                            .radius(8.0)
-                            .hover(t.hover)
-                            .child(label(
-                                format!(
-                                    "{}{}",
-                                    if index == s.studio.model_index {
-                                        "✓  "
-                                    } else {
-                                        "    "
-                                    },
-                                    model.label
-                                ),
-                                12.5,
-                                500.0,
-                                t.ink,
-                            ))
-                            .on_press(move |s: &mut AppState| {
-                                s.studio.model_index = index;
-                                s.studio.effort = s.studio.models[index]
-                                    .default_effort
-                                    .clone()
-                                    .unwrap_or_default();
-                                if s.studio.handoff_picker {
-                                    s.create_continuation(true);
-                                } else {
-                                    s.studio.picker_open = false;
-                                }
-                            }),
-                    );
-                }
-            }
-            let mut dock = col().w_full().max_w(680.0).items_center();
-            if s.studio.picker_open {
-                dock = dock.child(picker);
-            }
-            if s.studio.mode_picker_open {
-                let mut menu = col()
-                    .w_full()
-                    .max_w(240.0)
-                    .padding(6.0)
-                    .radius(14.0)
-                    .border(1.0, t.line)
-                    .fill(t.raised_high);
-                for (value, title) in [
-                    ("ask", "Ask"),
-                    ("accept-edits", "Accept edits"),
-                    ("full-access", "Full access"),
-                ] {
-                    menu = menu.child(
-                        el().key(format!("mode-{value}"))
-                            .w_full()
-                            .h(32.0)
-                            .px(8.0)
-                            .center_y()
-                            .hover(t.hover)
-                            .child(label(title, 12.5, 500.0, t.ink))
-                            .on_press(move |s: &mut AppState| {
-                                s.studio.mode = value.into();
-                                s.studio.mode_picker_open = false;
-                            }),
-                    );
-                }
-                dock = dock.child(menu);
-            }
-            if s.studio.effort_picker_open {
-                let mut menu = col()
-                    .w_full()
-                    .max_w(240.0)
-                    .padding(6.0)
-                    .radius(14.0)
-                    .border(1.0, t.line)
-                    .fill(t.raised_high);
-                if let Some(model) = s.studio.models.get(s.studio.model_index) {
-                    for effort in &model.efforts {
-                        let value = effort.clone();
-                        menu = menu.child(
-                            el().key(format!("effort-{effort}"))
-                                .w_full()
-                                .h(32.0)
-                                .px(8.0)
-                                .center_y()
-                                .hover(t.hover)
-                                .child(label(effort.clone(), 12.5, 500.0, t.ink))
-                                .on_press(move |s: &mut AppState| {
-                                    s.studio.effort = value.clone();
-                                    s.studio.effort_picker_open = false;
-                                }),
-                        );
-                    }
-                }
-                dock = dock.child(menu);
-            }
-            dock.child(
-                col()
-                    .w_full()
-                    .padding(14.0)
-                    .radius(26.0)
-                    .border(1.0, t.line)
-                    .fill(t.raised_high)
-                    .child(input)
-                    .child(bar),
-            )
-            .child(
-                row()
-                    .w_full()
-                    .h(26.0)
-                    .px(20.0)
-                    .gap(16.0)
-                    .center_y()
-                    .child(label("ϟ  Guest", 11.5, 500.0, t.ink_soft))
-                    .child(label(format!("▱  {name}"), 11.5, 500.0, t.ink_soft))
-                    .child(el().grow(1.0))
-                    .child(label("New thread", 11.5, 500.0, t.muted)),
-            )
-        } else {
+    let show_resting_orb =
+        !s.studio.composer_open && s.studio.approval.is_none() && s.studio.question.is_none();
+    let wake_orb =
+        || {
             col().w_full().items_center().child(
                 resting_orb(t)
                     .key("studio-wake-composer")
@@ -2572,6 +2078,505 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     }),
             )
         };
+    let dock = if activity_plan {
+        col()
+            .key("activity-tasks-dock")
+            .w(288.0)
+            .pt(4.0)
+            .px(4.0)
+            .pb(0.0)
+            .gap(0.0)
+            .offset(4.0, 2.0)
+            .radius(18.0)
+            .border(1.0, t.line)
+            .fill(t.raised_high)
+            .child(
+                row()
+                    .h(25.375)
+                    .mb(6.0)
+                    .center_y()
+                    .gap(5.0)
+                    .child(label("●", 8.0, 600.0, t.accent))
+                    .child(brand_mark_size("gpt", 14.0, t))
+                    .child(label("Studio activity reference", 12.0, 500.0, t.ink_soft)),
+            )
+            .child(
+                row()
+                    .w(286.0)
+                    .h(41.438)
+                    .ml(-3.0)
+                    .mb(5.0)
+                    .center_y()
+                    .padding(4.0)
+                    .radius(14.0)
+                    .fill(t.ground)
+                    .px(9.0)
+                    .py(0.0)
+                    .gap(7.0)
+                    .child(label("Changes", 12.0, 550.0, t.ink_soft))
+                    .child(el().grow(1.0))
+                    .child(label(
+                        "+4",
+                        10.0,
+                        500.0,
+                        rune::color::hex("#329b70").unwrap(),
+                    ))
+                    .child(label(
+                        "−2",
+                        10.0,
+                        500.0,
+                        rune::color::hex("#d25c5c").unwrap(),
+                    ))
+                    .child(
+                        icon(&ACTIVITY_CHEVRON, 14.0)
+                            .color(t.muted)
+                            .rotate(std::f32::consts::FRAC_PI_2),
+                    ),
+            )
+            .child(
+                col()
+                    .w(286.0)
+                    .h(177.672)
+                    .ml(-3.0)
+                    .padding(4.0)
+                    .pb(6.391)
+                    .radius(14.0)
+                    .fill(t.ground)
+                    .gap(1.593)
+                    .child(
+                        row()
+                            .w_full()
+                            .h(33.438)
+                            .center_y()
+                            .px(9.0)
+                            .gap(6.0)
+                            .child(label("Tasks", 12.5, 500.0, t.ink_soft))
+                            .child(el().grow(1.0))
+                            .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
+                            .child(
+                                text("1/4")
+                                    .font(TextStyle::new(11.0, 500.0).mono())
+                                    .color(t.ink_soft),
+                            )
+                            .child(
+                                icon(&ACTIVITY_CHEVRON, 14.0)
+                                    .color(t.muted)
+                                    .rotate(std::f32::consts::FRAC_PI_2),
+                            ),
+                    )
+                    .child(activity_task_row(
+                        "Inspect the conversation activity components",
+                        "completed",
+                        t,
+                    ))
+                    .child(activity_task_row(
+                        "Implementing the turn activity layout",
+                        "in-progress",
+                        t,
+                    ))
+                    .child(activity_task_row(
+                        "Verify light and dark themes",
+                        "pending",
+                        t,
+                    ))
+                    .child(activity_task_row(
+                        "Capture reference screenshots",
+                        "pending",
+                        t,
+                    )),
+            )
+            .child(
+                row()
+                    .w(288.0)
+                    .h(35.375)
+                    .ml(-4.0)
+                    .center_y()
+                    .px(12.8)
+                    .child(label("1 file · 1/4 tasks", 10.5, 400.0, t.muted))
+                    .child(el().grow(1.0))
+                    .child(label("Expand all", 10.5, 400.0, t.muted)),
+            )
+    } else if let Some(approval) = &s.studio.approval {
+        col()
+            .w_full()
+            .max_w(680.0)
+            .padding(18.0)
+            .gap(12.0)
+            .radius(20.0)
+            .border(1.0, t.line)
+            .fill(t.raised_high)
+            .child(label("Approval requested", 12.0, 600.0, t.muted))
+            .child(label(approval.title.clone(), 14.0, 600.0, t.ink))
+            .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft))
+            .child(
+                row()
+                    .gap(8.0)
+                    .child(
+                        el().key("approval-reject")
+                            .px(14.0)
+                            .h(32.0)
+                            .center()
+                            .radius(9.0)
+                            .hover(t.hover)
+                            .child(label("Decline", 12.5, 500.0, t.ink_soft))
+                            .on_press(|s: &mut AppState| s.answer_approval("reject-once")),
+                    )
+                    .child(
+                        el().key("approval-allow")
+                            .px(14.0)
+                            .h(32.0)
+                            .center()
+                            .radius(9.0)
+                            .fill(t.accent)
+                            .child(label("Allow once", 12.5, 500.0, t.accent_ink))
+                            .on_press(|s: &mut AppState| s.answer_approval("allow-once")),
+                    ),
+            )
+    } else if let Some(request) = &s.studio.question {
+        let question = &request.questions[request.index];
+        let mut card = col()
+            .w_full()
+            .max_w(680.0)
+            .padding(18.0)
+            .gap(12.0)
+            .radius(20.0)
+            .border(1.0, t.line)
+            .fill(t.raised_high)
+            .child(label(question.prompt.clone(), 14.0, 600.0, t.ink));
+        for (index, option) in question.options.iter().enumerate() {
+            let answer = option.clone();
+            let multi = question.multi;
+            let prefix = if multi {
+                if request.selected.contains(option) {
+                    "☑  "
+                } else {
+                    "□  "
+                }
+            } else {
+                ""
+            };
+            card = card.child(
+                el().key(format!("question-option-{index}"))
+                    .w_full()
+                    .h(32.0)
+                    .px(8.0)
+                    .center_y()
+                    .radius(8.0)
+                    .hover(t.hover)
+                    .child(label(format!("{prefix}{option}"), 13.0, 500.0, t.ink_soft))
+                    .on_press(move |s: &mut AppState| {
+                        if multi {
+                            s.toggle_question_option(answer.clone());
+                        } else {
+                            s.answer_question(answer.clone().into());
+                        }
+                    }),
+            );
+        }
+        if question.multi {
+            card.child(
+                el().key("question-submit")
+                    .h(32.0)
+                    .px(12.0)
+                    .center()
+                    .radius(9.0)
+                    .fill(t.accent)
+                    .child(label("Continue", 12.5, 500.0, t.accent_ink))
+                    .on_press(|s: &mut AppState| {
+                        let selected = s
+                            .studio
+                            .question
+                            .as_ref()
+                            .map(|q| q.selected.clone())
+                            .unwrap_or_default();
+                        s.answer_question(serde_json::json!(selected));
+                    }),
+            )
+        } else {
+            card.child(
+                text_input(&s.studio.answer, TextStyle::new(14.0, 400.0))
+                    .key("studio-answer")
+                    .w_full()
+                    .h(38.0)
+                    .placeholder("Your answer…", t.placeholder)
+                    .color(t.ink)
+                    .on_edit(|s: &mut AppState| &mut s.studio.answer)
+                    .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
+                        let answer = s.studio.answer.text.clone();
+                        s.answer_question(answer.into());
+                    }),
+            )
+        }
+    } else if s.studio.composer_open {
+        let input = text_input(&s.composer, TextStyle::new(14.0, 400.0))
+            .key("studio-composer")
+            .placeholder("Ask anything…", t.placeholder)
+            .color(t.ink)
+            .w_full()
+            .h(54.0)
+            .on_edit(|s: &mut AppState| &mut s.composer)
+            .on_submit(AppState::send_studio);
+        let bar = row()
+            .w_full()
+            .h(39.0)
+            .center_y()
+            .gap(8.0)
+            .child(label("+", 21.0, 400.0, t.muted))
+            .child(
+                el().key("studio-mode-picker")
+                    .px(7.0)
+                    .h(30.0)
+                    .center()
+                    .radius(9.0)
+                    .hover(t.hover)
+                    .child(label(
+                        if s.studio.mode.is_empty() {
+                            "Ask"
+                        } else {
+                            &s.studio.mode
+                        },
+                        12.0,
+                        500.0,
+                        t.ink_soft,
+                    ))
+                    .on_press(|s: &mut AppState| {
+                        s.studio.mode_picker_open = !s.studio.mode_picker_open;
+                        s.studio.effort_picker_open = false;
+                        s.studio.picker_open = false;
+                    }),
+            )
+            .child(el().grow(1.0))
+            .child(
+                el().key("studio-model-picker")
+                    .px(7.0)
+                    .h(30.0)
+                    .center()
+                    .radius(9.0)
+                    .hover(t.hover)
+                    .child(label(
+                        format!(
+                            "{}  {}",
+                            s.studio
+                                .providers
+                                .get(s.studio.provider_index)
+                                .map(|p| p.label.as_str())
+                                .unwrap_or("Select provider"),
+                            s.studio
+                                .models
+                                .get(s.studio.model_index)
+                                .map(|m| m.label.as_str())
+                                .unwrap_or("")
+                        ),
+                        12.5,
+                        500.0,
+                        t.ink_soft,
+                    ))
+                    .on_press(|s: &mut AppState| s.studio.picker_open = !s.studio.picker_open),
+            )
+            .child(
+                el().key("studio-effort-picker")
+                    .px(7.0)
+                    .h(30.0)
+                    .center()
+                    .radius(9.0)
+                    .hover(t.hover)
+                    .child(label(
+                        if s.studio.effort.is_empty() {
+                            "Effort"
+                        } else {
+                            &s.studio.effort
+                        },
+                        12.0,
+                        500.0,
+                        t.ink_soft,
+                    ))
+                    .on_press(|s: &mut AppState| {
+                        s.studio.effort_picker_open = !s.studio.effort_picker_open;
+                        s.studio.mode_picker_open = false;
+                        s.studio.picker_open = false;
+                    }),
+            )
+            .child(
+                el().w(32.0)
+                    .h(32.0)
+                    .center()
+                    .radius(16.0)
+                    .fill(t.accent)
+                    .child(label(
+                        if s.studio.busy { "■" } else { "↑" },
+                        18.0,
+                        600.0,
+                        t.accent_ink,
+                    ))
+                    .on_press_tx(|s: &mut AppState, tx| {
+                        if s.studio.busy {
+                            s.interrupt_studio();
+                        } else {
+                            s.send_studio(tx);
+                        }
+                    }),
+            );
+        let mut picker = col()
+            .w_full()
+            .max_w(360.0)
+            .padding(6.0)
+            .gap(2.0)
+            .radius(14.0)
+            .border(1.0, t.line)
+            .fill(t.raised_high);
+        if s.studio.picker_open {
+            picker = picker.child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
+            for (index, provider) in s.studio.providers.iter().enumerate() {
+                picker = picker.child(
+                    el().key(format!("provider-{index}"))
+                        .w_full()
+                        .h(32.0)
+                        .px(8.0)
+                        .center_y()
+                        .radius(8.0)
+                        .hover(t.hover)
+                        .child(label(
+                            format!(
+                                "{}{}",
+                                if index == s.studio.provider_index {
+                                    "✓  "
+                                } else {
+                                    "    "
+                                },
+                                provider.label
+                            ),
+                            12.5,
+                            500.0,
+                            t.ink,
+                        ))
+                        .on_press(move |s: &mut AppState| s.select_provider(index)),
+                );
+            }
+            picker = picker.child(label("MODEL", 10.0, 600.0, t.muted).px(8.0).py(4.0));
+            for (index, model) in s.studio.models.iter().enumerate() {
+                picker = picker.child(
+                    el().key(format!("model-{index}"))
+                        .w_full()
+                        .h(32.0)
+                        .px(8.0)
+                        .center_y()
+                        .radius(8.0)
+                        .hover(t.hover)
+                        .child(label(
+                            format!(
+                                "{}{}",
+                                if index == s.studio.model_index {
+                                    "✓  "
+                                } else {
+                                    "    "
+                                },
+                                model.label
+                            ),
+                            12.5,
+                            500.0,
+                            t.ink,
+                        ))
+                        .on_press(move |s: &mut AppState| {
+                            s.studio.model_index = index;
+                            s.studio.effort = s.studio.models[index]
+                                .default_effort
+                                .clone()
+                                .unwrap_or_default();
+                            if s.studio.handoff_picker {
+                                s.create_continuation(true);
+                            } else {
+                                s.studio.picker_open = false;
+                            }
+                        }),
+                );
+            }
+        }
+        let mut dock = col().w_full().max_w(680.0).items_center();
+        if s.studio.picker_open {
+            dock = dock.child(picker);
+        }
+        if s.studio.mode_picker_open {
+            let mut menu = col()
+                .w_full()
+                .max_w(240.0)
+                .padding(6.0)
+                .radius(14.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high);
+            for (value, title) in [
+                ("ask", "Ask"),
+                ("accept-edits", "Accept edits"),
+                ("full-access", "Full access"),
+            ] {
+                menu = menu.child(
+                    el().key(format!("mode-{value}"))
+                        .w_full()
+                        .h(32.0)
+                        .px(8.0)
+                        .center_y()
+                        .hover(t.hover)
+                        .child(label(title, 12.5, 500.0, t.ink))
+                        .on_press(move |s: &mut AppState| {
+                            s.studio.mode = value.into();
+                            s.studio.mode_picker_open = false;
+                        }),
+                );
+            }
+            dock = dock.child(menu);
+        }
+        if s.studio.effort_picker_open {
+            let mut menu = col()
+                .w_full()
+                .max_w(240.0)
+                .padding(6.0)
+                .radius(14.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high);
+            if let Some(model) = s.studio.models.get(s.studio.model_index) {
+                for effort in &model.efforts {
+                    let value = effort.clone();
+                    menu = menu.child(
+                        el().key(format!("effort-{effort}"))
+                            .w_full()
+                            .h(32.0)
+                            .px(8.0)
+                            .center_y()
+                            .hover(t.hover)
+                            .child(label(effort.clone(), 12.5, 500.0, t.ink))
+                            .on_press(move |s: &mut AppState| {
+                                s.studio.effort = value.clone();
+                                s.studio.effort_picker_open = false;
+                            }),
+                    );
+                }
+            }
+            dock = dock.child(menu);
+        }
+        dock.child(
+            col()
+                .w_full()
+                .padding(14.0)
+                .radius(26.0)
+                .border(1.0, t.line)
+                .fill(t.raised_high)
+                .child(input)
+                .child(bar),
+        )
+        .child(
+            row()
+                .w_full()
+                .h(26.0)
+                .px(20.0)
+                .gap(16.0)
+                .center_y()
+                .child(label("ϟ  Guest", 11.5, 500.0, t.ink_soft))
+                .child(label(format!("▱  {name}"), 11.5, 500.0, t.ink_soft))
+                .child(el().grow(1.0))
+                .child(label("New thread", 11.5, 500.0, t.muted)),
+        )
+    } else {
+        wake_orb()
+    };
     let mut transcript = col().w_full().max_w(720.0).self_center().gap(24.0).pt(24.0);
     if !s.studio.items.is_empty()
         && !s
@@ -3455,13 +3460,27 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         )
         .child(if activity_plan {
             row()
+                .pin(Some(0.0), None, Some(0.0), Some(33.5))
+                .px(16.0)
+                .justify_center()
+                .child(wake_orb())
+        } else {
+            el()
+        })
+        .child(if activity_plan {
+            row()
                 .pin(Some(0.0), None, Some(0.0), Some(14.0))
                 .px(16.0)
                 .justify_end()
                 .child(dock)
         } else {
             row()
-                .pin(Some(0.0), None, Some(0.0), Some(22.0))
+                .pin(
+                    Some(0.0),
+                    None,
+                    Some(0.0),
+                    Some(if show_resting_orb { 33.5 } else { 22.0 }),
+                )
                 .px(16.0)
                 .justify_center()
                 .child(dock)
