@@ -92,6 +92,15 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
+            ("studio-convo-mid", |s| studio_conversation(s, "mid")),
+            ("studio-convo-scrolled", |s| {
+                studio_conversation(s, "scrolled")
+            }),
+            ("studio-convo-compaction", |s| {
+                studio_conversation(s, "compaction")
+            }),
+            ("studio-convo-marks", |s| studio_conversation(s, "marks")),
+            ("studio-convo-code", |s| studio_conversation(s, "code")),
             ("studio-column-head-info", |s| {
                 studio_column_head(s);
                 s.studio.title_info_open = true;
@@ -384,6 +393,63 @@ fn studio_column_head(s: &mut AppState) {
     });
     s.studio.title = "Review thread".into();
     s.studio.worktree_path = Some("/tmp/kone-review-worktree".into());
+}
+
+/// Conversation captures share the exact block text used by the Electron fixture.
+fn studio_conversation(s: &mut AppState, scene: &str) {
+    studio_column_head(s);
+    s.projects[0].path = "/review/kone".into();
+    s.studio_layout["rows"][0]["projectPath"] = serde_json::json!("/review/kone");
+    s.studio.project_path = "/review/kone".into();
+    s.studio.title = "Conversation review".into();
+    s.studio.worktree_path = None;
+    s.studio.items.clear();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/fixtures/studio-conversation.json"))
+            .expect("valid Studio conversation fixture");
+    s.studio.conversation_fixture = Some(scene.into());
+    for (index, block) in fixture["blocks"].as_array().unwrap().iter().enumerate() {
+        if index == 2 {
+            if scene == "compaction" {
+                s.studio.items.push(state::StudioItem {
+                    kind: "compaction".into(),
+                    text: "Context compacted · 120k → 32k".into(),
+                    ..Default::default()
+                });
+            }
+            if scene == "marks" {
+                s.studio.handoff_source = Some("codex".into());
+                s.studio.items.push(state::StudioItem {
+                    kind: "handoff_mark".into(),
+                    text: "Handed from GPT 5.4".into(),
+                    ..Default::default()
+                });
+            }
+            s.studio.items.push(state::StudioItem {
+                kind: "setting_mark".into(),
+                text: "Medium › High".into(),
+                ..Default::default()
+            });
+        }
+        if block["role"] == "user" {
+            s.studio.items.push(state::StudioItem {
+                id: block["id"].as_str().unwrap_or_default().into(),
+                kind: "user".into(),
+                text: block["text"].as_str().unwrap_or_default().into(),
+                ..Default::default()
+            });
+        } else {
+            for item in block["items"].as_array().into_iter().flatten() {
+                s.studio.items.push(state::StudioItem {
+                    id: item["itemId"].as_str().unwrap_or_default().into(),
+                    kind: item["kind"].as_str().unwrap_or_default().into(),
+                    text: item["text"].as_str().unwrap_or_default().into(),
+                    status: item["status"].as_str().unwrap_or_default().into(),
+                    ..Default::default()
+                });
+            }
+        }
+    }
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {

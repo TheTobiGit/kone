@@ -1,0 +1,99 @@
+{
+  "blocks": [
+    {
+      "id": "user-1",
+      "role": "user",
+      "text": "Could you outline a small release checklist for the Studio conversation view?",
+      "at": 1760000000000,
+      "historical": true,
+      "model": "gpt-5.4",
+      "effort": "medium"
+    },
+    {
+      "id": "assistant-1",
+      "role": "assistant",
+      "turnId": "assistant-1",
+      "at": 1760000001000,
+      "endedAt": 1760000004000,
+      "state": "completed",
+      "historical": true,
+      "items": [
+        {
+          "itemId": "assistant-1-text",
+          "kind": "assistant_text",
+          "status": "completed",
+          "text": "## Release checklist\n\nHere is a practical pass for the conversation view:\n\n- Check message spacing and readable line lengths.\n- Verify links, lists, and `inline code` in both themes.\n- Keep the newest reply in view when a turn finishes.\n\nSee the [Markdown guide](https://www.markdownguide.org/) for formatting details.\n\n```ts\nconst ready = checks.every((check) => check.passed);\nif (ready) console.log(\"Ready to ship\");\n```"
+        }
+      ]
+    },
+    {
+      "id": "user-2",
+      "role": "user",
+      "text": "Thanks. Can you show a reusable example with a longer line too?",
+      "at": 1760000010000,
+      "historical": true,
+      "model": "gpt-5.4",
+      "effort": "high"
+    },
+    {
+      "id": "assistant-2",
+      "role": "assistant",
+      "turnId": "assistant-2",
+      "at": 1760000011000,
+      "endedAt": 1760000014000,
+      "state": "completed",
+      "historical": true,
+      "items": [
+        {
+          "itemId": "assistant-2-text",
+          "kind": "assistant_text",
+          "status": "completed",
+          "text": "## Example implementation\n\nThis helper keeps the conversation settled at the bottom while leaving room for a reader to scroll upward.\n\n```ts\ntype ScrollState = { scrollTop: number; clientHeight: number; scrollHeight: number };\n\nexport function isNearBottom(element: ScrollState, threshold = 48): boolean {\n  const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;\n  return remaining <= threshold;\n}\n\nexport function settleConversation(element: HTMLElement): void {\n  if (isNearBottom(element)) {\n    element.scrollTop = element.scrollHeight;\n  }\n}\n\nconst diagnosticMessage = \"A deliberately long line makes horizontal overflow visible in the conversation code block without wrapping the source text.\";\nconsole.log(diagnosticMessage);\n```\n\nThe threshold prevents small layout changes from pulling the reader away from their place."
+        }
+      ]
+    },
+    {
+      "id": "user-3",
+      "role": "user",
+      "text": "What should we verify before calling this done?",
+      "at": 1760000020000,
+      "historical": true,
+      "model": "gpt-5.4",
+      "effort": "high"
+    },
+    {
+      "id": "assistant-3",
+      "role": "assistant",
+      "turnId": "assistant-3",
+      "at": 1760000021000,
+      "endedAt": 1760000024000,
+      "state": "completed",
+      "historical": true,
+      "items": [
+        {
+          "itemId": "assistant-3-text",
+          "kind": "assistant_text",
+          "status": "completed",
+          "text": "## Final checks\n\n- Test both light and dark appearances.\n- Scroll up and confirm the edge fades remain visible.\n- Return to the bottom and check that the latest reply stays in view.\n\nThe `isNearBottom` helper keeps this behavior predictable. See the [Markdown guide](https://www.markdownguide.org/) for examples.\n\n```ts\nconst threshold = 48;\nconst ready = isNearBottom(conversation, threshold);\n```\n\nOnce those checks pass, the conversation is ready for review."
+        }
+      ]
+    }
+  ],
+  "compactions": [
+    {
+      "threadId": "review-thread",
+      "at": 1760000005000,
+      "beforeTokens": 120000,
+      "afterTokens": 32000
+    }
+  ],
+  "forkContext": {
+    "sourceThreadId": "source-thread",
+    "forkPointBlockId": null,
+    "importedAt": 1760000005000,
+    "bootstrapStatus": "completed",
+    "forkKind": "handoff",
+    "sourceProvider": "codex",
+    "sourceModel": "gpt-5.4"
+  }
+}

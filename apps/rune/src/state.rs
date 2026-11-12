@@ -153,6 +153,8 @@ impl AppState {
 
 #[derive(Default)]
 pub struct StudioState {
+    /// Initial positioning for deterministic conversation comparison captures.
+    pub conversation_fixture: Option<String>,
     pub title: String,
     pub connected_identity: Option<StudioIdentity>,
     pub side_chat: bool,

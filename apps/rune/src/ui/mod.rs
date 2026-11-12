@@ -6,6 +6,7 @@ mod pills;
 mod projects;
 pub(crate) mod start_motion;
 mod studio;
+mod studio_markdown;
 
 pub(crate) use empty::tick as start_tick;
 

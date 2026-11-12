@@ -2139,31 +2139,70 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     }),
             )
         };
-    let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
-    for item in &s.studio.items {
+    let mut transcript = col().w_full().max_w(720.0).self_center().gap(24.0).py(24.0);
+    for (index, item) in s.studio.items.iter().enumerate() {
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
-        let value = if item.kind == "tool_call" {
-            format!("{}  {}", item.name, item.text)
-        } else {
-            item.text.clone()
+        let line = match item.kind.as_str() {
+            "user" => row().w_full().justify_end().child(
+                label(item.text.clone(), 14.0, 400.0, t.ink)
+                    .max_w(576.0)
+                    .px(15.0)
+                    .py(10.0)
+                    .radius(16.0)
+                    .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
+            ),
+            "compaction" | "setting_mark" | "handoff_mark" => row()
+                .w_full()
+                .justify_center()
+                .child(label(item.text.clone(), 12.0, 400.0, t.muted)),
+            "assistant_text" => {
+                let mut turn = col().w_full().gap(10.0);
+                if !s.studio.items[index + 1..]
+                    .iter()
+                    .any(|next| next.kind == "assistant_text")
+                {
+                    turn = turn.min_h(620.0);
+                }
+                let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
+                if first {
+                    let mut head = row().center_y().gap(8.0);
+                    if let Some(identity) = &s.studio.connected_identity {
+                        head = head.child(connected_avatar(identity));
+                        head = head.child(label(identity.name.clone(), 13.0, 400.0, t.ink_soft));
+                    } else {
+                        head = head.child(label("Assistant", 13.0, 400.0, t.ink_soft));
+                    }
+                    turn = turn.child(head);
+                }
+                turn = turn.child(super::studio_markdown::render(&item.text, t));
+                let copy = item.text.clone();
+                turn.child(
+                    row()
+                        .center_y()
+                        .gap(12.0)
+                        .child(label("8:53 AM", 11.0, 400.0, t.muted))
+                        .child(
+                            label("▢", 14.0, 400.0, t.muted)
+                                .on_press_tx(move |_: &mut AppState, tx| tx.copy(copy.clone())),
+                        )
+                        .child(label("⑂", 14.0, 400.0, t.muted))
+                        .child(label("⑃", 14.0, 400.0, t.muted)),
+                )
+            }
+            _ => label(
+                if item.kind == "tool_call" {
+                    format!("{}  {}", item.name, item.text)
+                } else {
+                    item.text.clone()
+                },
+                12.5,
+                400.0,
+                t.muted,
+            )
+            .w_full(),
         };
-        let item_color = if item.kind == "reasoning_text" || item.kind == "tool_call" {
-            t.muted
-        } else {
-            t.ink
-        };
-        let mut line = label(
-            value,
-            if item.kind == "tool_call" { 12.5 } else { 14.0 },
-            400.0,
-            item_color,
-        )
-        .w_full();
-        if item.kind == "user" {
-            line = line.padding(14.0).radius(14.0).fill(t.hover);
-        }
         transcript = transcript.child(line);
     }
     if let Some(error) = &s.studio.error {
@@ -2232,6 +2271,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 .grow(1.0)
                 .shrink()
                 .scroll(ScrollSpec { stick_bottom: true })
+                .clip_fade_linear(0.0, 18.0, 0.0, 40.0)
                 .child(art)
                 .child(transcript),
         )
