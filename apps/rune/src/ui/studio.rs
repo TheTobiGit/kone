@@ -855,7 +855,7 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
     let radius_scale = (size / 300.0).powf(0.6) * 2.4;
     let mut points = Vec::with_capacity(orbit_count * (ghost_count + 3));
     let hash = |a: f32, b: f32| {
-        let h = (a * 12.9898 + b * 78.233).sin() * 43_758.5453;
+        let h = (a * 12.9898 + b * 78.233).sin() * 43_758.547;
         h - h.floor()
     };
     let project = |x: f32, y: f32, z: f32| {
