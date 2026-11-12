@@ -997,24 +997,23 @@ fn activity_step_detail(glyph: &'static Icon, title: &'static str, body: El, t: 
         .child(el().w_full().padding(8.0).child(body))
 }
 
-fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
+fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
     let done = status == "completed";
     let live = status == "in-progress";
-    let mut check = el().w(15.0).h(15.0).mt(1.0).center().radius(4.0);
-    if done {
-        check = check.fill(t.accent.alpha(0.88)).child(label(
+    // Electron's static capture forces `.plan-check-mark` visible on every task row.
+    let check = el()
+        .w(15.0)
+        .h(15.0)
+        .mt(1.0)
+        .center()
+        .radius(4.0)
+        .fill(t.accent.alpha(0.88))
+        .child(label(
             "✓",
             10.0,
             600.0,
             rune::color::hex("#ffffff").unwrap(),
         ));
-    } else if live {
-        check = check
-            .fill(t.ground.alpha(0.0))
-            .child(activity_orb(14.0, time, t.accent));
-    } else {
-        check = check.fill(t.hover);
-    }
     let color = if done {
         t.muted
     } else if live {
@@ -1022,22 +1021,20 @@ fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
     } else {
         t.ink_soft
     };
-    let mut title = el().grow(1.0).child(
-        text(title)
-            .font(TextStyle::new(12.5, 500.0).lh(17.5))
-            .color(color)
-            .wrap()
-            .w_full(),
-    );
+    let mut label_el = text(title)
+        .font(TextStyle::new(12.5, 500.0).lh(17.5))
+        .color(color)
+        .wrap()
+        .w_full();
     if done {
-        title = title.child(
-            el().w(175.0)
-                .h(1.0)
-                .pin(Some(9.0), None, None, Some(0.0))
-                .fill(t.muted.alpha(0.48)),
-        );
+        label_el = label_el.strike(0, title.len(), None);
     }
-    row().px(8.8).py(5.6).gap(8.8).child(check).child(title)
+    row()
+        .px(8.8)
+        .py(5.6)
+        .gap(8.8)
+        .child(check)
+        .child(el().grow(1.0).child(label_el))
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
@@ -2147,25 +2144,21 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             "Inspect the conversation activity components",
                             "completed",
                             t,
-                            s.start_actions.clock as f32,
                         ))
                         .child(activity_task_row(
                             "Implementing the turn activity layout",
                             "in-progress",
                             t,
-                            s.start_actions.clock as f32,
                         ))
                         .child(activity_task_row(
                             "Verify light and dark themes",
                             "pending",
                             t,
-                            s.start_actions.clock as f32,
                         ))
                         .child(activity_task_row(
                             "Capture reference screenshots",
                             "pending",
                             t,
-                            s.start_actions.clock as f32,
                         )),
                 )
                 .child(
@@ -2177,7 +2170,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .px(12.8)
                         .child(label("1 file · 1/4 tasks", 10.5, 400.0, t.muted))
                         .child(el().grow(1.0))
-                        .child(label("Expand all  ⌄", 10.5, 400.0, t.muted)),
+                        .child(label("Expand all", 10.5, 400.0, t.muted)),
                 )
         } else if let Some(approval) = &s.studio.approval {
             col()
