@@ -919,7 +919,7 @@ fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
     } else {
         t.ink_soft
     };
-    let mut row = row().px(8.8).py(5.6).gap(8.8).child(check).child(
+    let mut title = el().grow(1.0).child(
         text(title)
             .font(TextStyle::new(12.5, 500.0).lh(17.5))
             .color(color)
@@ -927,14 +927,14 @@ fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
             .w_full(),
     );
     if done {
-        row = row.child(
+        title = title.child(
             el().w(175.0)
                 .h(1.0)
-                .pin(Some(0.0), Some(0.0), None, None)
-                .fill(t.muted.alpha(0.4)),
+                .pin(Some(9.0), None, None, Some(0.0))
+                .fill(t.muted.alpha(0.48)),
         );
     }
-    row
+    row().px(8.8).py(5.6).gap(8.8).child(check).child(title)
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
@@ -1962,13 +1962,18 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             col()
                 .key("activity-tasks-dock")
                 .w(288.0)
-                .gap(6.0)
-                .padding(4.0)
+                .pt(4.0)
+                .px(4.0)
+                .pb(0.0)
+                .gap(0.0)
+                .offset(4.0, 2.0)
                 .radius(18.0)
                 .border(1.0, t.line)
                 .fill(t.raised_high)
                 .child(
                     row()
+                        .h(25.375)
+                        .mb(6.0)
                         .center_y()
                         .gap(5.0)
                         .child(label("●", 8.0, 600.0, t.accent))
@@ -1977,12 +1982,16 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 )
                 .child(
                     row()
+                        .w(286.0)
+                        .h(41.438)
+                        .ml(-3.0)
+                        .mb(5.0)
                         .center_y()
                         .padding(4.0)
                         .radius(14.0)
                         .fill(t.ground)
                         .px(9.0)
-                        .py(7.0)
+                        .py(0.0)
                         .gap(7.0)
                         .child(label("Changes", 12.0, 550.0, t.ink_soft))
                         .child(el().grow(1.0))
@@ -2004,33 +2013,33 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .rotate(std::f32::consts::FRAC_PI_2),
                         ),
                 )
-                .child(el().w_full().h(1.0).fill(t.line_soft))
-                .child(
-                    row()
-                        .center_y()
-                        .padding(4.0)
-                        .radius(14.0)
-                        .fill(t.ground)
-                        .px(9.0)
-                        .py(7.0)
-                        .gap(6.0)
-                        .child(label("Tasks", 12.5, 500.0, t.ink_soft))
-                        .child(el().grow(1.0))
-                        .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
-                        .child(label("1/4", 10.5, 500.0, t.muted))
-                        .child(
-                            icon(&ACTIVITY_CHEVRON, 14.0)
-                                .color(t.muted)
-                                .rotate(std::f32::consts::FRAC_PI_2),
-                        ),
-                )
                 .child(
                     col()
-                        .w_full()
+                        .w(286.0)
+                        .h(177.672)
+                        .ml(-3.0)
                         .padding(4.0)
+                        .pb(6.391)
                         .radius(14.0)
                         .fill(t.ground)
-                        .gap(0.0)
+                        .gap(1.593)
+                        .child(
+                            row()
+                                .w_full()
+                                .h(33.438)
+                                .center_y()
+                                .px(9.0)
+                                .gap(6.0)
+                                .child(label("Tasks", 12.5, 500.0, t.ink_soft))
+                                .child(el().grow(1.0))
+                                .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
+                                .child(label("1/4", 10.5, 500.0, t.muted))
+                                .child(
+                                    icon(&ACTIVITY_CHEVRON, 14.0)
+                                        .color(t.muted)
+                                        .rotate(std::f32::consts::FRAC_PI_2),
+                                ),
+                        )
                         .child(activity_task_row(
                             "Inspect the conversation activity components",
                             "completed",
@@ -2038,7 +2047,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             s.start_actions.clock as f32,
                         ))
                         .child(activity_task_row(
-                            "Implement the turn activity layout",
+                            "Implementing the turn activity layout",
                             "in-progress",
                             t,
                             s.start_actions.clock as f32,
@@ -2058,10 +2067,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 )
                 .child(
                     row()
-                        .w_full()
+                        .w(288.0)
+                        .h(35.375)
+                        .ml(-4.0)
                         .center_y()
-                        .px(9.0)
-                        .py(4.0)
+                        .px(12.8)
                         .child(label("1 file · 1/4 tasks", 10.5, 400.0, t.muted))
                         .child(el().grow(1.0))
                         .child(label("Expand all  ⌄", 10.5, 400.0, t.muted)),
