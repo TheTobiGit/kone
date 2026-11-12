@@ -21,6 +21,11 @@ static CONNECTOR_CORNER: Icon = Icon {
     view: 12.0,
     body: r#"<path d="M12 0 Q0 0 0 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>"#,
 };
+static TRAIL_CORNER: Icon = Icon {
+    name: "activity-trail-corner",
+    view: 11.0,
+    body: r#"<path d="M0.75 0 V3.25 Q0.75 10.25 7.75 10.25 H11" fill="none" stroke="currentColor" stroke-width="1.5"/>"#,
+};
 
 static SETTING_ARROW: Icon = Icon {
     name: "studio-setting-arrow",
@@ -923,6 +928,28 @@ fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
         );
     }
     orb
+}
+
+/// Wraps an inline step body with the rounded elbow branching from the step rail.
+fn trail_branch(body: El, t: Palette) -> El {
+    let trail_rail = crate::theme::mix_srgb(t.ground, t.ink, 0.12);
+    col()
+        .w_full()
+        .pl(24.0)
+        .pt(3.0)
+        .gap(0.0)
+        .child(
+            el().w(1.5)
+                .h(12.0)
+                .pin(Some(7.0), Some(-10.0), None, None)
+                .fill(trail_rail),
+        )
+        .child(
+            icon(&TRAIL_CORNER, 11.0)
+                .color(trail_rail)
+                .pin(Some(7.0), Some(2.0), None, None),
+        )
+        .child(body)
 }
 
 fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
@@ -2573,8 +2600,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         let line = match item.kind.as_str() {
             "user" => {
                 user_count += 1;
-                let rail = t.ink.alpha(0.12);
-                let connector_shadow = rune::color::hex("#000000").unwrap().alpha(0.35);
+                let rail = if s.studio.busy {
+                    crate::theme::mix_srgb(t.ink, t.accent, 0.87).alpha(0.516)
+                } else {
+                    t.ink.alpha(0.11)
+                };
+                let connector_shadow = rune::color::hex("#000000").unwrap().alpha(0.35 * rail.a);
                 // The connector runs from the bubble's left edge at its
                 // midline, corners down 12pt at the avatar column, and stops
                 // 7.7pt above the speaker row (constants assume the fixture's
@@ -2968,7 +2999,6 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     if command && activity_rows_open {
                         let inline_output = col()
                             .w_full()
-                            .pt(3.0)
                             .pb(1.0)
                             .gap(3.0)
                             .child(
@@ -2979,9 +3009,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             .child(
                                 text("Done in 4.82s")
                                     .font(TextStyle::new(11.5, 400.0).mono().lh(20.0))
-                                    .color(t.muted),
+                                    .color(t.ink_soft),
                             );
-                        let mut detail = col().w_full().pl(24.0).gap(0.0).child(inline_output);
+                        let mut detail = trail_branch(inline_output, t);
                         if activity_row_open
                             && s.studio.conversation_fixture.as_deref() == Some("activity-expanded")
                         {
@@ -3023,9 +3053,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     ) && item.name == "edit_file"
                         && activity_row_open
                     {
-                        body = body.child(
+                        body = body.child(trail_branch(
                             col()
-                                .pl(24.0)
+                                .w_full()
                                 .gap(1.0)
                                 .radius(7.0)
                                 .child(
@@ -3108,7 +3138,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                         ),
                                 )
                                 .child(label("3 more changed lines", 10.5, 400.0, t.muted)),
-                        );
+                            t,
+                        ));
                         if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
                             let deleted =
                                 rune::color::hex(if t.dark { "#7f3030" } else { "#d25c5c" })
