@@ -3206,7 +3206,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                                 "",
                                                 "1",
                                                 "+",
-                                                ".fold { transition: grid-template-rows 380ms …",
+                                                ".fold { transition: grid-template-rows 380ms cubic-bezier(.22,1,.36,1); }",
                                                 added,
                                             ))
                                             .child(line(
