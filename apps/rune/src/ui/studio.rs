@@ -1031,7 +1031,7 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
                 .w_full()
                 .h(40.0)
                 .px(10.0)
-                .gap(10.0)
+                .gap(13.0)
                 .center_y()
                 .radius(11.0)
                 .fill(if selected {
@@ -1841,7 +1841,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             col()
                 .key("activity-tasks-dock")
                 .w(284.0)
-                .gap(10.0)
+                .gap(14.0)
                 .padding(14.0)
                 .radius(18.0)
                 .border(1.0, t.line)
@@ -1886,22 +1886,42 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 .child(
                     col()
                         .w_full()
-                        .gap(9.0)
+                        .gap(14.0)
                         .child(
                             row()
+                                .py(3.0)
                                 .center_y()
                                 .gap(8.0)
-                                .child(label("✓", 12.0, 500.0, t.muted))
                                 .child(
-                                    text("Inspect the conversation activity components")
-                                        .font(TextStyle::new(11.5, 400.0).lh(15.0))
-                                        .color(t.muted)
-                                        .wrap()
-                                        .grow(1.0),
+                                    el().w(12.0)
+                                        .h(12.0)
+                                        .center()
+                                        .radius(3.0)
+                                        .fill(t.accent)
+                                        .child(label("✓", 9.0, 600.0, t.accent_ink)),
+                                )
+                                .child(
+                                    el().w(205.0)
+                                        .h(30.0)
+                                        .center_y()
+                                        .child(
+                                            text("Inspect the conversation activity components")
+                                                .font(TextStyle::new(11.5, 400.0).lh(15.0))
+                                                .color(t.muted)
+                                                .wrap()
+                                                .w_full(),
+                                        )
+                                        .child(
+                                            el().w(182.0)
+                                                .h(1.0)
+                                                .pin(Some(0.0), Some(8.0), None, None)
+                                                .fill(t.muted.alpha(0.4)),
+                                        ),
                                 ),
                         )
                         .child(
                             row()
+                                .py(3.0)
                                 .center_y()
                                 .gap(8.0)
                                 .child(label("◉", 12.0, 500.0, t.accent))
@@ -1914,6 +1934,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .child(
                             row()
+                                .py(3.0)
                                 .center_y()
                                 .gap(8.0)
                                 .child(label("○", 12.0, 400.0, t.muted))
@@ -1926,6 +1947,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .child(
                             row()
+                                .py(3.0)
                                 .center_y()
                                 .gap(8.0)
                                 .child(label("○", 12.0, 400.0, t.muted))
@@ -2384,14 +2406,21 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     // (`fixture_cb_copy`) can be matched across assistant items.
     let mut cb_base = 0usize;
     let mut exchange: Option<El> = None;
-    let is_activity = s
+    let activity_fixture = s
         .studio
         .conversation_fixture
         .as_deref()
         .is_some_and(|x| x.starts_with("activity-"));
+    let is_activity = activity_fixture
+        || (s.studio.busy && s.studio.items.iter().any(|item| item.kind == "tool_call"));
+    let activity_rows_open = if activity_fixture {
+        s.studio.activity_open
+    } else {
+        s.studio.busy
+    };
     let mut activity_head = false;
     for (index, item) in s.studio.items.iter().enumerate() {
-        if is_activity && !s.studio.activity_open && item.kind == "tool_call" {
+        if activity_fixture && !s.studio.activity_open && item.kind == "tool_call" {
             continue;
         }
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
@@ -2400,6 +2429,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         if is_activity && s.studio.busy && item.kind == "assistant_text" {
             continue;
         }
+        let activity_row_open = s.studio.activity_expanded.contains(&item.id);
         let line = match item.kind.as_str() {
             "user" => {
                 user_count += 1;
@@ -2502,7 +2532,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .color(t.ink_soft),
                 ),
             "assistant_text" => {
-                let mut turn = col().w_full().gap(15.0);
+                let mut turn = col().w_full().gap(if is_activity { 8.0 } else { 15.0 });
+                if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
+                    turn = turn.mt(10.0);
+                }
                 let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
                 if first && !is_activity {
                     speaker_count += 1;
@@ -2557,7 +2590,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .font(
                                     TextStyle::new(
                                         if para.starts_with("## ") { 18.0 } else { 14.0 },
-                                        400.0,
+                                        if para.starts_with("## ") {
+                                            600.0
+                                        } else {
+                                            400.0
+                                        },
                                     )
                                     .lh(22.0),
                                 )
@@ -2634,12 +2671,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     turn.child(footer)
                 }
             }
-            "tool_call"
-                if s.studio
-                    .conversation_fixture
-                    .as_deref()
-                    .is_some_and(|x| x.starts_with("activity-")) =>
-            {
+            "tool_call" => {
                 let command = item.name == "run_command";
                 let verb = if command {
                     "Ran"
@@ -2674,7 +2706,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .hover(t.hover)
                         .child(
-                            text(if command {
+                            text(if item.name == "edit_file" && s.studio.busy {
+                                "◉"
+                            } else if command {
                                 "›"
                             } else if item.name == "read_file" {
                                 "▤"
@@ -2682,7 +2716,13 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 "✎"
                             })
                             .font(TextStyle::new(12.0, 400.0))
-                            .color(t.muted),
+                            .color(
+                                if item.name == "edit_file" && s.studio.busy {
+                                    t.accent
+                                } else {
+                                    t.muted
+                                },
+                            ),
                         )
                         .child(
                             text(verb)
@@ -2715,8 +2755,15 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             el()
                         })
                         .child(text("›").font(TextStyle::new(14.0, 400.0)).color(t.faint))
-                        .on_press(|s: &mut AppState| {
-                            s.studio.activity_open = !s.studio.activity_open
+                        .on_press({
+                            let row_id = item.id.clone();
+                            move |s: &mut AppState| {
+                                if s.studio.activity_expanded.contains(&row_id) {
+                                    s.studio.activity_expanded.retain(|id| id != &row_id);
+                                } else {
+                                    s.studio.activity_expanded.push(row_id.clone());
+                                }
+                            }
                         }),
                 );
                 if matches!(
@@ -2729,10 +2776,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     )
                 ) && (command || item.name == "edit_file")
                 {
-                    if command
-                        && s.studio.activity_open
-                        && s.studio.conversation_fixture.as_deref() != Some("activity-diff")
-                    {
+                    if command && activity_rows_open {
                         let mut detail = col()
                             .w_full()
                             .pl(25.0)
@@ -2747,7 +2791,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .font(TextStyle::new(11.0, 400.0).mono())
                                     .color(t.muted),
                             );
-                        if s.studio.conversation_fixture.as_deref() != Some("activity-running") {
+                        if activity_row_open
+                            && s.studio.conversation_fixture.as_deref() == Some("activity-expanded")
+                        {
                             detail = detail
                                 .child(
                                     row()
@@ -2785,6 +2831,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         s.studio.conversation_fixture.as_deref(),
                         Some("activity-diff" | "activity-expanded" | "activity-hover")
                     ) && item.name == "edit_file"
+                        && activity_row_open
                     {
                         body = body.child(
                             col()
@@ -2865,9 +2912,123 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 )
                                 .child(label("3 more changed lines", 9.5, 400.0, t.muted)),
                         );
+                        if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
+                            let deleted =
+                                rune::color::hex(if t.dark { "#7f3030" } else { "#d25c5c" })
+                                    .unwrap();
+                            let added =
+                                rune::color::hex(if t.dark { "#2c6747" } else { "#329b70" })
+                                    .unwrap();
+                            let line = |old: &str,
+                                        new: &str,
+                                        sign: &str,
+                                        code: &str,
+                                        color: rune::Color| {
+                                row()
+                                    .w_full()
+                                    .h(19.0)
+                                    .center_y()
+                                    .px(8.0)
+                                    .fill(color.alpha(0.12))
+                                    .child(label(old, 9.0, 400.0, t.muted).w(28.0))
+                                    .child(label(new, 9.0, 400.0, t.muted).w(28.0))
+                                    .child(label(sign, 10.0, 600.0, color).w(14.0))
+                                    .child(
+                                        text(code.to_owned())
+                                            .font(TextStyle::new(10.5, 400.0).mono())
+                                            .color(t.ink_soft),
+                                    )
+                            };
+                            let hunk = |value: &str| {
+                                el().w_full()
+                                    .h(20.0)
+                                    .px(8.0)
+                                    .center_y()
+                                    .fill(t.ink.alpha(0.03))
+                                    .child(label(value, 9.5, 400.0, t.muted))
+                            };
+                            body = body.child(
+                                col()
+                                    .w_full()
+                                    .pl(25.0)
+                                    .mt(5.0)
+                                    .gap(4.0)
+                                    .child(
+                                        row()
+                                            .w_full()
+                                            .h(24.0)
+                                            .px(9.0)
+                                            .center_y()
+                                            .gap(6.0)
+                                            .radius(8.0)
+                                            .fill(t.ink.alpha(0.04))
+                                            .child(label("▧", 11.0, 400.0, t.muted))
+                                            .child(label("Diff", 11.0, 500.0, t.muted))
+                                            .child(el().grow(1.0))
+                                            .child(label("Copy", 10.5, 400.0, t.muted)),
+                                    )
+                                    .child(
+                                        col()
+                                            .w_full()
+                                            .padding(4.0)
+                                            .gap(0.0)
+                                            .radius(8.0)
+                                            .fill(t.ink.alpha(0.025))
+                                            .child(hunk("@@ -12,7 +12,8 @@"))
+                                            .child(line("1", "", "−", "const gap = 12;", deleted))
+                                            .child(line("", "1", "+", "const gap = 10;", added))
+                                            .child(line(
+                                                "",
+                                                "2",
+                                                "+",
+                                                "const reducedMotion = prefersReducedMotion();",
+                                                added,
+                                            ))
+                                            .child(hunk("@@ -41,6 +42,7 @@"))
+                                            .child(line(
+                                                "1",
+                                                "",
+                                                "−",
+                                                ".fold { transition: all 380ms ease; }",
+                                                deleted,
+                                            ))
+                                            .child(line(
+                                                "",
+                                                "1",
+                                                "+",
+                                                ".fold { transition: grid-template-rows 380ms …",
+                                                added,
+                                            ))
+                                            .child(line(
+                                                "",
+                                                "2",
+                                                "+",
+                                                "@media (prefers-reduced-motion: reduce)…",
+                                                added,
+                                            )),
+                                    ),
+                            );
+                        }
                     }
                 }
-                if s.studio.activity_open {
+                if !activity_fixture && command && activity_row_open && !item.detail.is_empty() {
+                    body = body.child(
+                        el().w_full()
+                            .pl(25.0)
+                            .px(9.0)
+                            .py(8.0)
+                            .radius(7.0)
+                            .fill(t.ink.alpha(0.035))
+                            .child(
+                                text(item.detail.clone())
+                                    .font(TextStyle::new(10.5, 400.0).mono().lh(15.0))
+                                    .color(t.ink_soft)
+                                    .wrap()
+                                    .w_full(),
+                            ),
+                    );
+                }
+                if activity_rows_open {
                     body
                 } else {
                     el().h(0.0)
@@ -2887,8 +3048,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             .w_full(),
         };
         if is_activity
-            && ((item.kind == "tool_call" && s.studio.activity_open)
-                || (item.kind == "assistant_text" && !s.studio.activity_open))
+            && ((item.kind == "tool_call" && activity_rows_open)
+                || (item.kind == "assistant_text" && !activity_rows_open))
             && !activity_head
         {
             let agent = s.studio.connected_identity.as_ref();
@@ -2902,7 +3063,15 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(agent) = agent {
                 head = head.child(avatar_at(agent, 22.0, t));
             }
-            head = head.child(label("Marble", 12.5, 500.0, t.ink_soft));
+            let assistant_name = if activity_fixture {
+                if s.studio.busy { "Garnet" } else { "Marble" }
+            } else {
+                s.studio
+                    .connected_identity
+                    .as_ref()
+                    .map_or("Assistant", |identity| identity.name.as_str())
+            };
+            head = head.child(label(assistant_name, 12.5, 500.0, t.ink_soft));
             if !s.studio.busy {
                 head = head.child(label("17s", 11.5, 400.0, t.muted));
                 head = head.child(
@@ -2912,6 +3081,13 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 );
             }
             let open = s.studio.activity_open;
+            if s.studio.busy {
+                head = head.mt(26.0);
+            } else {
+                head = head
+                    .mt(43.0)
+                    .mb(if s.studio.activity_open { 30.0 } else { 0.0 });
+            }
             head = head.on_press(move |s: &mut AppState| s.studio.activity_open = !open);
             if let Some(group) = exchange.take() {
                 exchange = Some(group.child(head));
@@ -2920,14 +3096,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if s.studio.busy
                 && let Some(group) = exchange.take()
             {
-                exchange = Some(group.child(label("◌  Thinking", 12.0, 400.0, t.muted)));
+                exchange = Some(group.child(label("◌", 12.0, 400.0, t.muted)));
+            } else if activity_rows_open && let Some(group) = exchange.take() {
+                exchange = Some(group.child(label("◉", 11.0, 400.0, t.muted)));
             }
         }
         if item.kind == "user" {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let mut group = col().w_full().gap(if is_activity { 25.0 } else { 54.0 });
+            let activity_gap = if s.studio.busy { 22.0 } else { 12.0 };
+            let mut group = col()
+                .w_full()
+                .gap(if is_activity { activity_gap } else { 54.0 });
             if Some(index) == last_user && !is_activity {
                 let height = if s.studio_viewport.1 > 0.0 {
                     s.studio_viewport.1
@@ -3002,7 +3183,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         )
         .child(if activity_plan {
             row()
-                .pin(Some(0.0), None, Some(0.0), Some(22.0))
+                .pin(Some(0.0), None, Some(0.0), Some(14.0))
                 .px(16.0)
                 .justify_end()
                 .child(dock)

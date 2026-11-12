@@ -156,6 +156,7 @@ pub struct StudioState {
     /// Initial positioning for deterministic conversation comparison captures.
     pub conversation_fixture: Option<String>,
     pub activity_open: bool,
+    pub activity_expanded: Vec<String>,
     /// Fixture-only scroll anchor (element key, top offset below the viewport
     /// top): `poll` issues it for the first second of the scene clock, then
     /// releases so the capture frame draws settled.

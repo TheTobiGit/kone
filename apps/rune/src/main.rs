@@ -515,6 +515,11 @@ fn studio_activity(s: &mut AppState, scene: &str) {
     }
     s.studio.busy = scene == "running";
     s.studio.activity_open = matches!(scene, "running" | "expanded" | "diff" | "hover");
+    s.studio.activity_expanded = match scene {
+        "expanded" => vec!["activity-command".into(), "activity-edit".into()],
+        "diff" | "hover" => vec!["activity-edit".into()],
+        _ => Vec::new(),
+    };
     s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(17));
     s.studio.turn_title = "Review the Studio activity".into();
     s.studio.conversation_scroll = None;
