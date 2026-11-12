@@ -248,7 +248,7 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                     t.muted,
                 ));
         }
-        let card = col()
+        let mut card = col()
             .w(260.0)
             .radius(20.0)
             .border(1.0, t.line)
@@ -268,6 +268,52 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                     ),
             )
             .child(data);
+        if state
+            .providers
+            .get(state.provider_index)
+            .is_some_and(|p| p.supports_compaction)
+        {
+            let ready = state.started
+                && !state.busy
+                && state.compact_request.is_none()
+                && state.items.iter().any(|item| item.kind == "user");
+            let mut action = el()
+                .w_full()
+                .h(34.0)
+                .px(12.0)
+                .center_y()
+                .radius(12.0)
+                .child(label(
+                    if state.compact_request.is_some() {
+                        "Compacting…"
+                    } else {
+                        "Compact context"
+                    },
+                    12.0,
+                    400.0,
+                    t.ink_soft,
+                ))
+                .opacity(if ready { 1.0 } else { 0.45 });
+            if ready {
+                action = action.hover(t.hover).on_press(|s: &mut AppState| {
+                    s.studio.compact_error = None;
+                    s.studio.compact_request = s.request(
+                        "agent.compact",
+                        serde_json::json!({"threadId": s.studio.thread_id}),
+                    );
+                });
+            }
+            let mut actions = col()
+                .w_full()
+                .padding(6.0)
+                .radius(18.0)
+                .fill(t.raised)
+                .child(action);
+            if let Some(error) = &state.compact_error {
+                actions = actions.child(label(error.clone(), 11.0, 400.0, t.muted));
+            }
+            card = card.child(actions);
+        }
         meter = meter.child(card.absolute(-245.0, 23.0));
     }
     meter

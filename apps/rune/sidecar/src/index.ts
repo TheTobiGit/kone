@@ -230,6 +230,7 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       const input = turnSchema.parse(params);
       return method === "agent.send" ? dispatcher.sendThreadTurn(input) : dispatcher.steerThreadTurn(input);
     }
+    case "agent.compact": return service.compactThread(thread.parse(params).threadId);
     case "agent.interrupt": return service.interruptTurn(thread.parse(params).threadId);
     case "agent.stop": return service.stopSession(thread.parse(params).threadId);
     case "agent.approval": {

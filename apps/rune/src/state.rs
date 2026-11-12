@@ -162,6 +162,8 @@ pub struct StudioState {
     pub context_total: Option<u64>,
     pub context_auto_compact: bool,
     pub context_open: bool,
+    pub compact_request: Option<u64>,
+    pub compact_error: Option<String>,
     pub dormant: bool,
     pub terminal_command: Option<String>,
     pub worktree_path: Option<String>,
@@ -240,6 +242,7 @@ pub struct StudioItem {
 pub struct StudioProvider {
     pub id: String,
     pub label: String,
+    pub supports_compaction: bool,
 }
 
 #[derive(Clone)]
@@ -1037,6 +1040,7 @@ impl AppState {
                 event_thread == Some(thread.as_str())
                     || response_id.is_some_and(|id| {
                         [
+                            state.compact_request,
                             state.history_request,
                             state.start_request,
                             state.send_request,
@@ -1133,6 +1137,12 @@ impl AppState {
             }
             if self.launcher.browser_request_id == Some(id) {
                 self.launcher.browser_request_id = None;
+                if self.studio.compact_request == Some(id) {
+                    self.studio.compact_request = None;
+                    self.studio.compact_error =
+                        message["error"]["message"].as_str().map(str::to_owned);
+                    return;
+                }
                 if let Some(error) = message.get("error") {
                     crate::launcher::browser_failed(
                         self,
@@ -1147,6 +1157,12 @@ impl AppState {
             }
             if self.launcher.request_id == Some(id) {
                 self.launcher.request_id = None;
+                if self.studio.compact_request == Some(id) {
+                    self.studio.compact_request = None;
+                    self.studio.compact_error =
+                        message["error"]["message"].as_str().map(str::to_owned);
+                    return;
+                }
                 if let Some(error) = message.get("error") {
                     crate::launcher::failed(
                         self,
@@ -1190,6 +1206,11 @@ impl AppState {
                 }
                 return;
             }
+            if self.studio.compact_request == Some(id) {
+                self.studio.compact_request = None;
+                self.studio.compact_error = message["error"]["message"].as_str().map(str::to_owned);
+                return;
+            }
             if let Some(error) = message.get("error") {
                 self.studio.error = Some(
                     error
@@ -1224,6 +1245,9 @@ impl AppState {
                         Some(StudioProvider {
                             id: p["provider"].as_str()?.to_owned(),
                             label: p["label"].as_str()?.to_owned(),
+                            supports_compaction: p["supportsThreadCompaction"]
+                                .as_bool()
+                                .unwrap_or(false),
                         })
                     })
                     .collect();
@@ -1258,6 +1282,7 @@ impl AppState {
             } else if self.studio.start_request == Some(id) {
                 self.studio.start_request = None;
                 self.studio.started = true;
+                self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
                 if let Some(input) = self.studio.pending_send.take() {
                     self.dispatch_studio_send(input);
                 }
@@ -1299,6 +1324,12 @@ impl AppState {
             return;
         }
         match event["type"].as_str().unwrap_or("") {
+            "thread.state.changed" if event["state"] == "compacted" => {
+                self.studio.context_usage = None;
+                self.studio.context_input = None;
+                self.studio.context_output = None;
+                self.studio.context_total = None;
+            }
             "thread.token-usage.updated" => {
                 let usage = &event["usage"];
                 self.studio.context_usage = usage["contextUsed"]

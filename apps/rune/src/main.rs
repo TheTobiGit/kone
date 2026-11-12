@@ -302,6 +302,7 @@ fn studio_review(s: &mut AppState) {
     s.studio.thread_id = "review-one".into();
     s.studio.project_path = "/demo".into();
     s.studio.providers = vec![StudioProvider {
+        supports_compaction: true,
         id: "codex".into(),
         label: "Codex".into(),
     }];
