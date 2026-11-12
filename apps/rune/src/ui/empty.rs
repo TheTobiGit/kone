@@ -20,7 +20,8 @@ const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 const REGULAR: f32 = 400.0;
 
 /// Shared home-page chrome. The first-run screen uses the same outer inset
-/// and the same gap under the header as the populated projects list.
+/// as the populated projects list. Start actions stay centered in the
+/// content area; `CONTENT_PT` is the projects-list gap under the header.
 pub(crate) const PAGE_PX: f32 = 64.0;
 pub(crate) const PAGE_PT: f32 = 20.0;
 pub(crate) const PAGE_PB: f32 = 64.0;
@@ -296,20 +297,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .child(settings_button(t)),
                 )
                 .child(
-                    row()
-                        .w_full()
-                        .grow(1.0)
-                        .min_h(0.0)
-                        .justify_center()
-                        .pt(CONTENT_PT)
-                        .child(
-                            el().key("start-hero")
-                                .opacity(rise)
-                                .opacity_motion(NOW)
-                                .offset(0.0, 8.0 * (1.0 - rise))
-                                .offset_motion(NOW)
-                                .child(actions(t, s, reduced)),
-                        ),
+                    col().w_full().grow(1.0).min_h(0.0).center().child(
+                        el().key("start-hero")
+                            .opacity(rise)
+                            .opacity_motion(NOW)
+                            .offset(0.0, 8.0 * (1.0 - rise))
+                            .offset_motion(NOW)
+                            .child(actions(t, s, reduced)),
+                    ),
                 ),
         )
 }
