@@ -442,6 +442,7 @@ fn studio_conversation(s: &mut AppState, scene: &str) {
             for item in block["items"].as_array().into_iter().flatten() {
                 s.studio.items.push(state::StudioItem {
                     id: item["itemId"].as_str().unwrap_or_default().into(),
+                    block_id: block["id"].as_str().map(str::to_owned),
                     kind: item["kind"].as_str().unwrap_or_default().into(),
                     text: item["text"].as_str().unwrap_or_default().into(),
                     status: item["status"].as_str().unwrap_or_default().into(),

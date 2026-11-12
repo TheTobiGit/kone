@@ -175,6 +175,8 @@ pub struct StudioState {
     pub export_status: Option<String>,
     pub continuation_request: Option<u64>,
     pub handoff_picker: bool,
+    /// Reply anchor for a branch created through the continuation picker.
+    pub branch_block_id: Option<String>,
     pub handoff_staged: bool,
     pub handoff_query: TextEdit,
     pub handoff_selection: Option<(usize, Vec<StudioModel>, usize, String)>,
@@ -264,6 +266,7 @@ pub struct StudioQuestionEntry {
 #[derive(Clone, Default)]
 pub struct StudioItem {
     pub id: String,
+    pub block_id: Option<String>,
     pub kind: String,
     pub text: String,
     pub name: String,
@@ -975,13 +978,26 @@ impl AppState {
     }
 
     pub fn open_handoff_picker(&mut self) {
+        self.open_continuation_picker(None);
+    }
+
+    pub fn open_branch_picker(&mut self, block_id: String) {
+        self.open_continuation_picker(Some(block_id));
+    }
+
+    fn open_continuation_picker(&mut self, block_id: Option<String>) {
         if self.studio.busy {
             self.studio.error = Some(
-                "This thread is still working — let it finish (or stop it) before handing off."
-                    .into(),
+                if block_id.is_some() {
+                    "This thread is still working — let it finish (or stop it) before forking."
+                } else {
+                    "This thread is still working — let it finish (or stop it) before handing off."
+                }
+                .into(),
             );
             return;
         }
+        self.studio.branch_block_id = block_id;
         self.studio.handoff_selection = Some((
             self.studio.provider_index,
             self.studio.models.clone(),
@@ -1003,6 +1019,7 @@ impl AppState {
             self.studio.models_request = None;
         }
         self.studio.handoff_picker = false;
+        self.studio.branch_block_id = None;
         self.studio.handoff_staged = false;
     }
 
@@ -1030,6 +1047,9 @@ impl AppState {
                 target["effort"] = self.studio.effort.clone().into();
             }
             params["target"] = target;
+        }
+        if handoff && let Some(block_id) = self.studio.branch_block_id.as_ref() {
+            params["throughBlockId"] = block_id.clone().into();
         }
         self.cancel_handoff_picker();
         self.studio.picker_open = false;
@@ -1337,6 +1357,7 @@ impl AppState {
                         for item in block["items"].as_array().into_iter().flatten() {
                             self.studio.items.push(StudioItem {
                                 id: item["itemId"].as_str().unwrap_or("").to_owned(),
+                                block_id: block["id"].as_str().map(str::to_owned),
                                 kind: item["kind"].as_str().unwrap_or("").to_owned(),
                                 text: item["text"].as_str().unwrap_or("").to_owned(),
                                 name: item["name"].as_str().unwrap_or("").to_owned(),
@@ -1600,6 +1621,9 @@ impl AppState {
                 }
                 let value = StudioItem {
                     id: id.clone(),
+                    block_id: event["turnId"]
+                        .as_str()
+                        .map(|turn| format!("{}::{turn}", self.studio.thread_id)),
                     kind: item["kind"].as_str().unwrap_or("").to_owned(),
                     text: item["text"].as_str().unwrap_or("").to_owned(),
                     name: item["name"].as_str().unwrap_or("").to_owned(),

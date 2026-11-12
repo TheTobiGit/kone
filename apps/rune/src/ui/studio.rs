@@ -5,6 +5,22 @@ use crate::{
     theme::Palette,
 };
 
+static FOOTER_COPY01: Icon = Icon {
+    name: "footer-Copy01",
+    view: 24.0,
+    body: r#"<path d="M9 15C9 12.1716 9 10.7574 9.87868 9.87868C10.7574 9 12.1716 9 15 9L16 9C18.8284 9 20.2426 9 21.1213 9.87868C22 10.7574 22 12.1716 22 15V16C22 18.8284 22 20.2426 21.1213 21.1213C20.2426 22 18.8284 22 16 22H15C12.1716 22 10.7574 22 9.87868 21.1213C9 20.2426 9 18.8284 9 16L9 15Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.9999 9C16.9975 6.04291 16.9528 4.51121 16.092 3.46243C15.9258 3.25989 15.7401 3.07418 15.5376 2.90796C14.4312 2 12.7875 2 9.5 2C6.21252 2 4.56878 2 3.46243 2.90796C3.25989 3.07417 3.07418 3.25989 2.90796 3.46243C2 4.56878 2 6.21252 2 9.5C2 12.7875 2 14.4312 2.90796 15.5376C3.07417 15.7401 3.25989 15.9258 3.46243 16.092C4.51121 16.9528 6.04291 16.9975 9 16.9999" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static FOOTER_FOOTPRINTS: Icon = Icon {
+    name: "footer-Footprints",
+    view: 24.0,
+    body: r#"<path d="M15.5 17H20M17.0192 6C19.5072 6 21 8 21 11C21 12.5022 20.7401 13.9522 20.4642 15.0312C20.2122 16.017 20.0362 17.0241 19.965 18.0394C19.8371 19.8655 19.2971 22 17.0192 22C14.6308 22 14.5312 19 15.5264 16.5C16.1931 14 14.0336 12.4 14.0336 10C13.8678 8.66667 14.2327 6 17.0192 6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 13H4M6.98077 2C4.49279 2 3 4 3 7C3 8.50224 3.25994 9.95224 3.53576 11.0312C3.78776 12.017 3.9638 13.0241 4.03495 14.0394C4.16293 15.8655 4.70287 18 6.98077 18C9.36923 18 9.46875 15 8.47355 12.5C7.8069 10 9.96637 8.4 9.96637 6C10.1322 4.66667 9.76728 2 6.98077 2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static FOOTER_GITFORK: Icon = Icon {
+    name: "footer-GitFork",
+    view: 24.0,
+    body: r#"<path d="M6 8C7.10457 8 8 7.10457 8 6C8 4.89543 7.10457 4 6 4C4.89543 4 4 4.89543 4 6C4 7.10457 4.89543 8 6 8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 20C13.1046 20 14 19.1046 14 18C14 16.8954 13.1046 16 12 16C10.8954 16 10 16.8954 10 18C10 19.1046 10.8954 20 12 20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 8C19.1046 8 20 7.10457 20 6C20 4.89543 19.1046 4 18 4C16.8954 4 16 4.89543 16 6C16 7.10457 16.8954 8 18 8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.01734 8.74067C6.01734 10.4142 5.77537 12.1995 9.22051 11.9855H12.0053M17.9929 8.57617C18.1259 11.9855 16.9199 11.7648 15.7861 11.9855H12.0053M12.0053 15.7001V11.9855" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static EXPAND: Icon = Icon {
     name: "studio-expand",
     view: 24.0,
@@ -119,7 +135,7 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
     if let Some(state) = state {
         if let Some(source) = &state.handoff_source {
             marks = marks
-                .child(brand_mark(source, t).opacity(0.55))
+                .child(brand_mark(if source == "codex" { "gpt" } else { source }, t).opacity(0.55))
                 .child(label("→", 10.0, 400.0, t.muted).opacity(0.8));
         } else {
             for past in &state.past_providers {
@@ -137,6 +153,10 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
 }
 
 fn connected_avatar(identity: &crate::state::StudioIdentity) -> El {
+    avatar_at(identity, 16.0)
+}
+
+fn avatar_at(identity: &crate::state::StudioIdentity, size: f32) -> El {
     use std::sync::{Arc, OnceLock};
     static IMAGES: OnceLock<rune::ImageCache> = OnceLock::new();
     let cache = IMAGES.get_or_init(|| rune::ImageCache::new(Arc::new(|| {})));
@@ -150,19 +170,19 @@ fn connected_avatar(identity: &crate::state::StudioIdentity) -> El {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data)
                 .ok()?;
-            Some(cache.load_mime(bytes, mime, 16.0, 2.0))
+            Some(cache.load_mime(bytes, mime, size, 2.0))
         }
     });
     let image = avatar
         .filter(|image| image.wait().is_ok())
         .unwrap_or_else(|| {
-            let image = cache.svg(Arc::<[u8]>::from(identity.svg.as_bytes()), 16.0, 2.0);
+            let image = cache.svg(Arc::<[u8]>::from(identity.svg.as_bytes()), size, 2.0);
             let _ = image.wait();
             image
         });
-    el().w(16.0)
-        .h(16.0)
-        .radius(8.0)
+    el().w(size)
+        .h(size)
+        .radius(size / 2.0)
         .pixels_fit(image.pixels(), rune::SurfaceFit::Fill)
 }
 
@@ -2140,56 +2160,70 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             )
         };
     let mut transcript = col().w_full().max_w(720.0).self_center().gap(24.0).py(24.0);
+    let last_user = s.studio.items.iter().rposition(|item| item.kind == "user");
+    let mut exchange: Option<El> = None;
     for (index, item) in s.studio.items.iter().enumerate() {
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
         let line = match item.kind.as_str() {
-            "user" => col()
+            "user" => row()
                 .w_full()
+                .center_y()
+                .child(el().w(13.0))
+                .child(el().grow(1.0).h(1.0).fill(t.line))
                 .child(
-                    row()
-                        .w_full()
-                        .center_y()
-                        .child(el().w(13.0))
-                        .child(el().grow(1.0).h(1.0).fill(t.line))
-                        .child(
-                            label(item.text.clone(), 14.0, 400.0, t.ink)
-                                .max_w(576.0)
-                                .px(15.0)
-                                .py(10.0)
-                                .radius(16.0)
-                                .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
-                        ),
+                    label(item.text.clone(), 14.0, 400.0, t.ink)
+                        .max_w(576.0)
+                        .px(15.0)
+                        .py(10.0)
+                        .radius(16.0)
+                        .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
                 )
                 .child(
-                    row()
-                        .w_full()
-                        .child(el().w(13.0))
-                        .child(el().w(1.0).h(28.0).fill(t.line)),
+                    el().pin(Some(13.0), Some(20.0), None, None)
+                        .w(1.0)
+                        .h(32.0)
+                        .fill(t.line),
                 ),
-            "compaction" | "setting_mark" | "handoff_mark" => row()
+            "compaction" => row().w_full().justify_center().child(label(
+                if s.studio.conversation_fixture.is_some() {
+                    format!("{} · 8:53 AM", item.text)
+                } else {
+                    item.text.clone()
+                },
+                14.0,
+                400.0,
+                t.ink,
+            )),
+            "setting_mark" => row()
                 .w_full()
+                .center_y()
                 .justify_center()
-                .child(label(item.text.clone(), 12.0, 400.0, t.muted)),
+                .gap(4.0)
+                .child(icon(&PICKER_BRAIN, 13.0).color(rune::color::hex("#00bd8b").unwrap()))
+                .child(icon(&PICKER_BRAIN, 13.0).color(rune::color::hex("#00bd8b").unwrap()))
+                .child(label("Medium", 12.0, 400.0, t.ink_soft))
+                .child(label("›", 15.0, 400.0, t.muted))
+                .child(icon(&PICKER_BRAIN, 13.0).color(rune::color::hex("#706bff").unwrap()))
+                .child(icon(&PICKER_BRAIN, 13.0).color(rune::color::hex("#706bff").unwrap()))
+                .child(icon(&PICKER_BRAIN, 13.0).color(rune::color::hex("#706bff").unwrap()))
+                .child(label("High", 12.0, 400.0, t.ink_soft)),
+            "handoff_mark" => row()
+                .w_full()
+                .center_y()
+                .justify_center()
+                .gap(5.0)
+                .child(label("Handed from", 12.0, 400.0, t.muted))
+                .child(brand_mark_size("gpt", 13.0, t))
+                .child(label("GPT 5.4", 12.0, 400.0, t.ink_soft)),
             "assistant_text" => {
                 let mut turn = col().w_full().gap(10.0);
-                if !s.studio.items[index + 1..]
-                    .iter()
-                    .any(|next| next.kind == "assistant_text")
-                {
-                    turn = turn.min_h(620.0);
-                }
                 let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
                 if first {
                     let mut head = row().center_y().gap(8.0);
                     if let Some(identity) = &s.studio.connected_identity {
-                        head = head.child(
-                            el().w(26.0)
-                                .h(26.0)
-                                .center()
-                                .child(connected_avatar(identity)),
-                        );
+                        head = head.child(avatar_at(identity, 26.0));
                         head = head.child(label(identity.name.clone(), 13.0, 400.0, t.ink_soft));
                     } else {
                         head = head.child(label("Assistant", 13.0, 400.0, t.ink_soft));
@@ -2198,27 +2232,32 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 }
                 turn = turn.child(super::studio_markdown::render(&item.text, t));
                 let copy = item.text.clone();
-                turn.child(
-                    row()
-                        .center_y()
-                        .gap(12.0)
-                        .child(label(
-                            if s.studio.conversation_fixture.is_some() {
-                                "8:53 AM"
-                            } else {
-                                ""
-                            },
-                            11.0,
-                            400.0,
-                            t.muted,
-                        ))
-                        .child(
-                            label("▢", 14.0, 400.0, t.muted)
-                                .on_press_tx(move |_: &mut AppState, tx| tx.copy(copy.clone())),
-                        )
-                        .child(label("⑂", 14.0, 400.0, t.muted))
-                        .child(label("⑃", 14.0, 400.0, t.muted)),
-                )
+                let block_id = item.block_id.clone();
+                let mut footer = row()
+                    .center_y()
+                    .gap(10.0)
+                    .child(
+                        text(if s.studio.conversation_fixture.is_some() {
+                            "8:53 AM"
+                        } else {
+                            ""
+                        })
+                        .font(TextStyle::new(11.0, 400.0).mono())
+                        .color(t.muted),
+                    )
+                    .child(
+                        icon(&FOOTER_COPY01, 14.0)
+                            .color(t.muted)
+                            .on_press_tx(move |_: &mut AppState, tx| tx.copy(copy.clone())),
+                    )
+                    .child(icon(&FOOTER_FOOTPRINTS, 14.0).color(t.muted));
+                if let Some(block_id) = block_id {
+                    footer =
+                        footer.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
+                            move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
+                        ));
+                }
+                turn.child(footer)
             }
             _ => label(
                 if item.kind == "tool_call" {
@@ -2232,7 +2271,36 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             )
             .w_full(),
         };
-        transcript = transcript.child(line);
+        if item.kind == "user" {
+            if let Some(previous) = exchange.take() {
+                transcript = transcript.child(previous);
+            }
+            let mut group = col().w_full().gap(20.0);
+            if Some(index) == last_user {
+                let height = if s.studio_viewport.1 > 0.0 {
+                    s.studio_viewport.1
+                } else {
+                    854.0
+                };
+                group = group.min_h((height * 0.72).min(620.0));
+            }
+            exchange = Some(group.child(line));
+        } else if matches!(
+            item.kind.as_str(),
+            "compaction" | "setting_mark" | "handoff_mark"
+        ) {
+            if let Some(previous) = exchange.take() {
+                transcript = transcript.child(previous);
+            }
+            transcript = transcript.child(line);
+        } else if let Some(group) = exchange.take() {
+            exchange = Some(group.child(line));
+        } else {
+            transcript = transcript.child(line);
+        }
+    }
+    if let Some(group) = exchange {
+        transcript = transcript.child(group);
     }
     if let Some(error) = &s.studio.error {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
@@ -2293,19 +2361,27 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         .w_full()
         .grow(1.0)
         .shrink()
+        .min_h(0.0)
         .child(
             col()
                 .key("studio-transcript")
                 .w_full()
                 .grow(1.0)
                 .shrink()
+                .min_h(0.0)
                 .scroll(ScrollSpec { stick_bottom: true })
-                .clip_fade_linear(0.0, 18.0, 0.0, 40.0)
+                .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
                 .child(art)
-                .child(transcript),
+                .child(transcript)
+                .child(el().h(155.0)),
         )
-        .child(row().w_full().px(16.0).justify_center().child(dock))
-        .child(el().h(22.0))
+        .child(
+            row()
+                .pin(Some(0.0), None, Some(0.0), Some(22.0))
+                .px(16.0)
+                .justify_center()
+                .child(dock),
+        )
 }
 
 #[cfg(test)]

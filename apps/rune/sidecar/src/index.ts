@@ -251,9 +251,9 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       return method === "agent.send" ? dispatcher.sendThreadTurn(input) : dispatcher.steerThreadTurn(input);
     }
     case "agent.sideChat": case "agent.handoff": {
-      const base = z.object({ sourceThreadId: z.string().min(1), target: z.object({ provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]), model: z.string().optional(), effort: z.string().optional() }).optional() }).parse(params);
+      const base = z.object({ sourceThreadId: z.string().min(1), throughBlockId: z.string().min(1).optional(), target: z.object({ provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]), model: z.string().optional(), effort: z.string().optional() }).optional() }).parse(params);
       const input = { requestId: randomUUID(), threadId: randomUUID(), sourceThreadId: base.sourceThreadId };
-      const result = method === "agent.sideChat" ? createSidechatThread(input) : createHandoffThread({ ...input, kind: "handoff", target: base.target ?? (() => { throw new Error("A handoff target is required"); })() });
+      const result = method === "agent.sideChat" ? createSidechatThread(input) : createHandoffThread({ ...input, ...(base.throughBlockId ? { kind: "branch" as const, throughBlockId: base.throughBlockId } : { kind: "handoff" as const }), target: base.target ?? (() => { throw new Error("A handoff target is required"); })() });
       if (result.status === "created") broadcast({ type: method === "agent.sideChat" ? "thread.sidechat-created" : "thread.handoff-created", threadId: result.threadId, provider: result.provider, at: Date.now(), source: "kone.store", sourceThreadId: result.sourceThreadId, requestId: result.requestId });
       return result;
     }
