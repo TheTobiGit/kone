@@ -5,7 +5,7 @@ use crate::{
     theme::Palette,
 };
 
-static FOOTER_COPY01: Icon = Icon {
+pub(super) static FOOTER_COPY01: Icon = Icon {
     name: "footer-Copy01",
     view: 24.0,
     body: r#"<path d="M9 15C9 12.1716 9 10.7574 9.87868 9.87868C10.7574 9 12.1716 9 15 9L16 9C18.8284 9 20.2426 9 21.1213 9.87868C22 10.7574 22 12.1716 22 15V16C22 18.8284 22 20.2426 21.1213 21.1213C20.2426 22 18.8284 22 16 22H15C12.1716 22 10.7574 22 9.87868 21.1213C9 20.2426 9 18.8284 9 16L9 15Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.9999 9C16.9975 6.04291 16.9528 4.51121 16.092 3.46243C15.9258 3.25989 15.7401 3.07418 15.5376 2.90796C14.4312 2 12.7875 2 9.5 2C6.21252 2 4.56878 2 3.46243 2.90796C3.25989 3.07417 3.07418 3.25989 2.90796 3.46243C2 4.56878 2 6.21252 2 9.5C2 12.7875 2 14.4312 2.90796 15.5376C3.07417 15.7401 3.25989 15.9258 3.46243 16.092C4.51121 16.9528 6.04291 16.9975 9 16.9999" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
@@ -19,6 +19,12 @@ static FOOTER_GITFORK: Icon = Icon {
     name: "footer-GitFork",
     view: 24.0,
     body: r#"<path d="M6 8C7.10457 8 8 7.10457 8 6C8 4.89543 7.10457 4 6 4C4.89543 4 4 4.89543 4 6C4 7.10457 4.89543 8 6 8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 20C13.1046 20 14 19.1046 14 18C14 16.8954 13.1046 16 12 16C10.8954 16 10 16.8954 10 18C10 19.1046 10.8954 20 12 20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 8C19.1046 8 20 7.10457 20 6C20 4.89543 19.1046 4 18 4C16.8954 4 16 4.89543 16 6C16 7.10457 16.8954 8 18 8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.01734 8.74067C6.01734 10.4142 5.77537 12.1995 9.22051 11.9855H12.0053M17.9929 8.57617C18.1259 11.9855 16.9199 11.7648 15.7861 11.9855H12.0053M12.0053 15.7001V11.9855" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static CONNECTOR_CORNER: Icon = Icon {
+    name: "conversation-connector-corner",
+    view: 12.0,
+    body: r#"<path d="M12 0 Q0 0 0 12" fill="none" stroke="currentColor" stroke-width="1"/>"#,
 };
 
 static EXPAND: Icon = Icon {
@@ -100,7 +106,7 @@ static STUDIO_PROVIDER_CLAUDE: Icon = Icon {
 static PICKER_BRAIN: Icon = Icon {
     name: "studio-picker-brain",
     view: 24.0,
-    body: r#"<path d="M12 5c-1-3-5-2-5 1-3-1-5 2-3 4-3 2-1 5 1 5-1 3 2 5 4 3 1 3 4 2 4-1V6m-1-1c1-3 5-2 5 1 3-1 5 2 3 4 3 2 1 5-1 5 1 3-2 5-4 3-1 3-4 2-4-1M7 9c1 0 2 1 2 2m-3 4c1-1 2-1 3 0m8-6c-1 0-2 1-2 2m3 4c-1-1-2-1-3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M7 4.5C5.34315 4.5 4 5.84315 4 7.5C4 8.06866 4.15822 8.60037 4.43304 9.0535C3.04727 9.31855 2 10.537 2 12C2 13.463 3.04727 14.6814 4.43304 14.9465M7 4.5C7 3.11929 8.11929 2 9.5 2C10.8807 2 12 3.11929 12 4.5V19.5C12 20.8807 10.8807 22 9.5 22C8.11929 22 7 20.8807 7 19.5C5.34315 19.5 4 18.1569 4 16.5C4 15.9313 4.15822 15.3996 4.43304 14.9465M7 4.5C7 5.31791 7.39278 6.04408 8 6.50018M4.43304 14.9465C4.78948 14.3588 5.34207 13.9032 6 13.6707" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 19.4999C18.6569 19.4999 20 18.1567 20 16.4999C20 15.9312 19.8418 15.3995 19.567 14.9464C20.9527 14.6813 22 13.4629 22 11.9999C22 10.5369 20.9527 9.31843 19.567 9.05338M17 19.4999C17 20.8806 15.8807 21.9999 14.5 21.9999C13.1193 21.9999 12 20.8806 12 19.4999L12 4.49988C12 3.11917 13.1193 1.99988 14.5 1.99988C15.8807 1.99988 17 3.11917 17 4.49988C18.6569 4.49988 20 5.84302 20 7.49988C20 8.06854 19.8418 8.60024 19.567 9.05338M17 19.4999C17 18.682 16.6072 17.9558 16 17.4997M19.567 9.05338C19.2105 9.64109 18.6579 10.0966 18 10.3292" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static PICKER_SEARCH: Icon = Icon {
     name: "studio-picker-search",
@@ -2170,7 +2176,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             "user" => row()
                 .w_full()
                 .center_y()
-                .child(el().w(13.0))
+                .child(el().w(25.0))
                 .child(el().grow(1.0).h(1.0).fill(t.line))
                 .child(
                     label(item.text.clone(), 14.0, 400.0, t.ink)
@@ -2180,10 +2186,16 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         .radius(16.0)
                         .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
                 )
+                .child(icon(&CONNECTOR_CORNER, 12.0).color(t.line).pin(
+                    Some(13.0),
+                    Some(20.0),
+                    None,
+                    None,
+                ))
                 .child(
-                    el().pin(Some(13.0), Some(20.0), None, None)
+                    el().pin(Some(13.0), Some(32.0), None, None)
                         .w(1.0)
-                        .h(32.0)
+                        .h(56.0)
                         .fill(t.line),
                 ),
             "compaction" => row().w_full().justify_center().child(label(
@@ -2275,7 +2287,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let mut group = col().w_full().gap(20.0);
+            let mut group = col().w_full().gap(56.0);
             if Some(index) == last_user {
                 let height = if s.studio_viewport.1 > 0.0 {
                     s.studio_viewport.1
@@ -2292,7 +2304,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            transcript = transcript.child(line);
+            let previous_was_mark = index > 0
+                && matches!(
+                    s.studio.items[index - 1].kind.as_str(),
+                    "compaction" | "setting_mark" | "handoff_mark"
+                );
+            transcript = transcript.child(line.mt(if previous_was_mark { -14.0 } else { -20.0 }));
         } else if let Some(group) = exchange.take() {
             exchange = Some(group.child(line));
         } else {
@@ -2373,7 +2390,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
                 .child(art)
                 .child(transcript)
-                .child(el().h(155.0)),
+                .child(el().h(181.0)),
         )
         .child(
             row()

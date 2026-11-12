@@ -267,6 +267,7 @@ pub struct StudioQuestionEntry {
 pub struct StudioItem {
     pub id: String,
     pub block_id: Option<String>,
+    pub at: Option<u64>,
     pub kind: String,
     pub text: String,
     pub name: String,
@@ -287,6 +288,168 @@ pub struct StudioModel {
     pub label: String,
     pub efforts: Vec<String>,
     pub default_effort: Option<String>,
+}
+
+fn token_count(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    if n < 10_000 {
+        return format!("{:.1}", n as f64 / 1_000.0)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+            + "k";
+    }
+    if n < 1_000_000 {
+        return format!("{:.0}k", n as f64 / 1_000.0);
+    }
+    format!("{:.1}", n as f64 / 1_000_000.0)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
+        + "m"
+}
+
+fn compaction_item(value: &serde_json::Value) -> StudioItem {
+    let mut text = "Context compacted".to_owned();
+    if let (Some(before), Some(after)) = (
+        value["beforeTokens"].as_u64(),
+        value["afterTokens"].as_u64(),
+    ) {
+        text.push_str(&format!(
+            " · {} → {}",
+            token_count(before),
+            token_count(after)
+        ));
+    }
+    StudioItem {
+        kind: "compaction".into(),
+        text,
+        at: value["at"].as_u64(),
+        ..Default::default()
+    }
+}
+
+fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
+    let mut marks: Vec<StudioItem> = result["compactions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(compaction_item)
+        .collect();
+    let fork = &result["forkContext"];
+    if matches!(fork["forkKind"].as_str(), Some("branch" | "handoff")) {
+        let verb = if fork["forkKind"] == "branch" {
+            "Forked from"
+        } else {
+            "Handed from"
+        };
+        let provider = fork["sourceProvider"].as_str().unwrap_or("");
+        let label = fork["sourceModel"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(if provider.is_empty() {
+                "another provider"
+            } else {
+                provider
+            });
+        marks.push(StudioItem {
+            kind: "handoff_mark".into(),
+            text: format!("{verb} {label}"),
+            name: provider.into(),
+            status: fork["sourceThreadId"].as_str().unwrap_or("").into(),
+            at: fork["importedAt"].as_u64(),
+            ..Default::default()
+        });
+    }
+    for link in result["continuations"].as_array().into_iter().flatten() {
+        let provider = link["provider"].as_str().unwrap_or("");
+        let label = link["model"].as_str().unwrap_or(provider);
+        let verb = if link["kind"] == "branch" {
+            "Forked to"
+        } else {
+            "Handed to"
+        };
+        marks.push(StudioItem {
+            kind: "handoff_mark".into(),
+            text: format!("{verb} {label}"),
+            name: provider.into(),
+            status: link["threadId"].as_str().unwrap_or("").into(),
+            at: link["handedAt"].as_u64(),
+            ..Default::default()
+        });
+    }
+    marks.sort_by_key(|m| m.at.unwrap_or(u64::MAX));
+    let mut marks = marks.into_iter().peekable();
+    let mut out = Vec::new();
+    let (mut effort, mut model): (Option<String>, Option<String>) = (None, None);
+    for block in result["blocks"].as_array().into_iter().flatten() {
+        let at = block["at"].as_u64();
+        // Markers attach to the next request (exchange), never split a reply.
+        if block["role"] == "user" {
+            while marks
+                .peek()
+                .is_some_and(|m| m.at.unwrap_or(u64::MAX) <= at.unwrap_or(u64::MAX))
+            {
+                out.push(marks.next().unwrap());
+            }
+            let next_effort = block["effort"].as_str().filter(|s| !s.is_empty());
+            let next_model = block["model"]
+                .as_str()
+                .filter(|s| !s.is_empty() && *s != "default");
+            let mut from = Vec::new();
+            let mut to = Vec::new();
+            if let (Some(old), Some(new)) = (&model, next_model)
+                && old != new
+            {
+                from.push(old.clone());
+                to.push(new.to_owned());
+            }
+            if let (Some(old), Some(new)) = (&effort, next_effort)
+                && old != new
+            {
+                from.push(old.clone());
+                to.push(new.to_owned());
+            }
+            if !from.is_empty() {
+                out.push(StudioItem {
+                    kind: "setting_mark".into(),
+                    text: format!("{} › {}", from.join(" · "), to.join(" · ")),
+                    at,
+                    ..Default::default()
+                });
+            }
+            if let Some(v) = next_effort {
+                effort = Some(v.to_owned());
+            }
+            if let Some(v) = next_model {
+                model = Some(v.to_owned());
+            }
+            out.push(StudioItem {
+                id: block["id"].as_str().unwrap_or("").into(),
+                kind: "user".into(),
+                text: block["text"].as_str().unwrap_or("").into(),
+                at,
+                ..Default::default()
+            });
+        } else {
+            for item in block["items"].as_array().into_iter().flatten() {
+                out.push(StudioItem {
+                    id: item["itemId"].as_str().unwrap_or("").into(),
+                    block_id: block["id"].as_str().map(str::to_owned),
+                    at,
+                    kind: item["kind"].as_str().unwrap_or("").into(),
+                    text: item["text"].as_str().unwrap_or("").into(),
+                    name: item["name"].as_str().unwrap_or("").into(),
+                    status: item["status"].as_str().unwrap_or("").into(),
+                    tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
+                });
+            }
+        }
+    }
+    out.extend(marks);
+    out
 }
 
 impl AppState {
@@ -1343,30 +1506,7 @@ impl AppState {
                 {
                     self.select_provider(index);
                 }
-                self.studio.items.clear();
-                for block in result["blocks"].as_array().into_iter().flatten() {
-                    if block["role"] == "user" {
-                        self.studio.items.push(StudioItem {
-                            id: block["id"].as_str().unwrap_or("").to_owned(),
-                            kind: "user".into(),
-                            text: block["text"].as_str().unwrap_or("").to_owned(),
-                            name: String::new(),
-                            ..Default::default()
-                        });
-                    } else {
-                        for item in block["items"].as_array().into_iter().flatten() {
-                            self.studio.items.push(StudioItem {
-                                id: item["itemId"].as_str().unwrap_or("").to_owned(),
-                                block_id: block["id"].as_str().map(str::to_owned),
-                                kind: item["kind"].as_str().unwrap_or("").to_owned(),
-                                text: item["text"].as_str().unwrap_or("").to_owned(),
-                                name: item["name"].as_str().unwrap_or("").to_owned(),
-                                status: item["status"].as_str().unwrap_or("").to_owned(),
-                                tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
-                            });
-                        }
-                    }
-                }
+                self.studio.items = history_items(result);
                 return;
             }
             if self.launcher.completion_request_id == Some(id) {
@@ -1601,6 +1741,7 @@ impl AppState {
                 self.studio.context_input = None;
                 self.studio.context_output = None;
                 self.studio.context_total = None;
+                self.studio.items.push(compaction_item(event));
             }
             "thread.token-usage.updated" => {
                 let usage = &event["usage"];
@@ -1624,6 +1765,7 @@ impl AppState {
                     block_id: event["turnId"]
                         .as_str()
                         .map(|turn| format!("{}::{turn}", self.studio.thread_id)),
+                    at: event["at"].as_u64(),
                     kind: item["kind"].as_str().unwrap_or("").to_owned(),
                     text: item["text"].as_str().unwrap_or("").to_owned(),
                     name: item["name"].as_str().unwrap_or("").to_owned(),
@@ -1638,7 +1780,9 @@ impl AppState {
                     tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
                 };
                 if let Some(existing) = self.studio.items.iter_mut().find(|i| i.id == id) {
+                    let at = existing.at.or(value.at);
                     *existing = value;
+                    existing.at = at;
                 } else {
                     self.studio.items.push(value);
                 }

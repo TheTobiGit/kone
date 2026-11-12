@@ -1,4 +1,4 @@
-use rune::{El, Link, Span, TextStyle, col, el, row, text};
+use rune::{El, Link, Span, TextStyle, col, el, icon, row, text};
 
 use crate::{
     state::AppState,
@@ -39,12 +39,14 @@ fn inline(source: &str, t: Palette) -> El {
             let url = &after[end + 2..end + 2 + close];
             if url.starts_with("https://") || url.starts_with("http://") {
                 let icon_start = output.len();
-                output.push_str("▣ ");
+                output.push_str("M↓");
                 spans.push(
                     Span::new(icon_start, output.len())
-                        .size(12.0)
-                        .color(t.accent),
+                        .size(8.0)
+                        .color(rune::color::hex("#ffffff").unwrap())
+                        .bg(rune::color::hex("#00a8d5").unwrap(), 3.0),
                 );
+                output.push(' ');
             }
             let start = output.len();
             output.push_str(&after[..end]);
@@ -187,10 +189,16 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
                 )
                 .child(el().grow(1.0))
                 .child(
-                    text("▢ Copy")
+                    row()
+                        .center_y()
+                        .gap(4.0)
                         .group_opacity(0.0, 1.0)
-                        .font(TextStyle::new(11.0, 400.0).mono())
-                        .color(t.muted)
+                        .child(icon(&super::studio::FOOTER_COPY01, 14.0).color(t.muted))
+                        .child(
+                            text("Copy")
+                                .font(TextStyle::new(11.0, 400.0).mono())
+                                .color(t.muted),
+                        )
                         .on_press_tx(move |_: &mut AppState, tx| tx.copy(copied.clone())),
                 ),
         )
@@ -198,7 +206,7 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
             el().w_full()
                 .clip_rounded(0.0)
                 .scroll_x()
-                .pb(13.0)
+                .pb(33.0)
                 .child(content.px(14.0)),
         )
 }

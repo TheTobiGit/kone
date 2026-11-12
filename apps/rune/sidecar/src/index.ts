@@ -309,7 +309,7 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       return deleted;
     }
     case "history.latest": return store.latestThreadMeta(z.object({ projectPath: z.string() }).parse(params).projectPath);
-    case "history.thread": { const { threadId } = thread.parse(params); const value = store.loadThread(threadId); return value ? { ...projectStoredThreadForIpc(value), identity: threadIdentity(threadId) } : null; }
+    case "history.thread": { const { threadId } = thread.parse(params); const value = store.loadThread(threadId); return value ? { ...projectStoredThreadForIpc(value), identity: threadIdentity(threadId), compactions: store.listCompactions(threadId), continuations: store.continuationsFromSource(threadId) } : null; }
     case "history.page": {
       const input = z.object({ threadId: z.string(), limit: z.number().int().positive().optional(), cursor: z.string().optional() }).parse(params);
       const value = store.loadThreadPage(input.threadId, { limit: input.limit, cursor: input.cursor });

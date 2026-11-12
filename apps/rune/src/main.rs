@@ -403,6 +403,7 @@ fn studio_conversation(s: &mut AppState, scene: &str) {
     s.studio.project_path = "/review/kone".into();
     s.studio.title = "Conversation review".into();
     s.studio.worktree_path = None;
+    s.studio.context_usage = None;
     s.studio.items.clear();
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../assets/fixtures/studio-conversation.json"))
