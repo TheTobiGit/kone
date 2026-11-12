@@ -92,6 +92,10 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
+            ("studio-column-head-info", |s| {
+                studio_column_head(s);
+                s.studio.title_info_open = true;
+            }),
             ("studio-column-head-hover", |s| {
                 studio_column_head(s);
                 s.studio_column_hover = Some("review-one".into());

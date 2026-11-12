@@ -165,6 +165,15 @@ pub struct StudioState {
     pub context_auto_compact: bool,
     pub context_open: bool,
     pub title_info_open: bool,
+    pub title_editing: bool,
+    pub title_draft: TextEdit,
+    pub title_rename_request: Option<(u64, String)>,
+    pub export_json: bool,
+    pub export_request: Option<u64>,
+    pub export_status: Option<String>,
+    pub continuation_request: Option<u64>,
+    pub handoff_picker: bool,
+    pub handoff_selection: Option<(usize, Vec<StudioModel>, usize, String)>,
     pub compact_request: Option<u64>,
     pub compact_error: Option<String>,
     pub dormant: bool,
@@ -620,6 +629,10 @@ impl AppState {
         }
         if event.key == rune::Key::Escape {
             if s.studio.title_info_open {
+                if s.studio.title_editing {
+                    s.studio.title_editing = false;
+                    return true;
+                }
                 s.studio.title_info_open = false;
                 return true;
             }
@@ -631,6 +644,7 @@ impl AppState {
                 return true;
             }
             if s.studio.picker_open || s.studio.mode_picker_open || s.studio.effort_picker_open {
+                s.cancel_handoff_picker();
                 s.studio.picker_open = false;
                 s.studio.mode_picker_open = false;
                 s.studio.effort_picker_open = false;
@@ -907,7 +921,9 @@ impl AppState {
     }
 
     pub fn select_provider(&mut self, index: usize) {
-        if index >= self.studio.providers.len() || self.studio.started {
+        if index >= self.studio.providers.len()
+            || (self.studio.started && !self.studio.handoff_picker)
+        {
             return;
         }
         self.studio.provider_index = index;
@@ -916,6 +932,73 @@ impl AppState {
         let provider = self.studio.providers[index].id.clone();
         self.studio.models_request =
             self.request("agent.models", serde_json::json!({"provider": provider}));
+    }
+
+    pub fn open_handoff_picker(&mut self) {
+        if self.studio.busy {
+            self.studio.error = Some(
+                "This thread is still working — let it finish (or stop it) before handing off."
+                    .into(),
+            );
+            return;
+        }
+        self.studio.handoff_selection = Some((
+            self.studio.provider_index,
+            self.studio.models.clone(),
+            self.studio.model_index,
+            self.studio.effort.clone(),
+        ));
+        self.studio.handoff_picker = true;
+        self.studio.composer_open = true;
+        self.studio.picker_open = true;
+    }
+
+    fn cancel_handoff_picker(&mut self) {
+        if let Some((provider, models, model, effort)) = self.studio.handoff_selection.take() {
+            self.studio.provider_index = provider;
+            self.studio.models = models;
+            self.studio.model_index = model;
+            self.studio.effort = effort;
+            self.studio.models_request = None;
+        }
+        self.studio.handoff_picker = false;
+    }
+
+    pub fn create_continuation(&mut self, handoff: bool) {
+        if self.studio.continuation_request.is_some() || self.studio.thread_id.is_empty() {
+            return;
+        }
+        if handoff && self.studio.busy {
+            self.studio.error = Some(
+                "This thread is still working — let it finish (or stop it) before handing off."
+                    .into(),
+            );
+            return;
+        }
+        let mut params = serde_json::json!({"sourceThreadId": self.studio.thread_id});
+        if handoff {
+            let Some(provider) = self.studio.providers.get(self.studio.provider_index) else {
+                return;
+            };
+            let mut target = serde_json::json!({"provider": provider.id});
+            if let Some(model) = self.studio.models.get(self.studio.model_index) {
+                target["model"] = model.id.clone().into();
+            }
+            if !self.studio.effort.is_empty() {
+                target["effort"] = self.studio.effort.clone().into();
+            }
+            params["target"] = target;
+        }
+        self.cancel_handoff_picker();
+        self.studio.picker_open = false;
+        self.studio.continuation_request = self.request(
+            if handoff {
+                "agent.handoff"
+            } else {
+                "agent.sideChat"
+            },
+            params,
+        );
     }
 
     pub fn send_studio(&mut self, tx: &mut rune::Tx) {
@@ -1079,6 +1162,9 @@ impl AppState {
                 event_thread == Some(thread.as_str())
                     || response_id.is_some_and(|id| {
                         [
+                            state.title_rename_request.as_ref().map(|(id, _)| *id),
+                            state.export_request,
+                            state.continuation_request,
                             state.compact_request,
                             state.history_request,
                             state.start_request,
@@ -1113,6 +1199,40 @@ impl AppState {
                 self.studio_layout_ready = true;
                 if self.page == Page::Studio {
                     self.enter_studio();
+                }
+                return;
+            }
+            if self.studio.continuation_request == Some(id) {
+                self.studio.continuation_request = None;
+                if let Some(error) = message["error"]["message"].as_str() {
+                    self.studio.error = Some(error.to_owned());
+                    return;
+                }
+                if let Some(thread) = message["result"]["threadId"].as_str() {
+                    let source = self.studio.thread_id.clone();
+                    let path = self.studio.project_path.clone();
+                    let position = self.studio_layout["rows"]
+                        .as_array()
+                        .and_then(|rows| rows.iter().find(|r| r["projectPath"] == path))
+                        .and_then(|row| row["panes"].as_array())
+                        .and_then(|panes| {
+                            panes.iter().position(|p| p["anchor"]["threadId"] == source)
+                        })
+                        .map(|i| i + 1);
+                    self.open_studio_thread(thread.to_owned());
+                    if let Some(at) = position {
+                        if let Some(panes) = self.studio_layout["rows"]
+                            .as_array_mut()
+                            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+                            .and_then(|r| r["panes"].as_array_mut())
+                            && let Some(index) =
+                                panes.iter().position(|p| p["anchor"]["threadId"] == thread)
+                        {
+                            let pane = panes.remove(index);
+                            panes.insert(at.min(panes.len()), pane);
+                        }
+                        self.persist_studio_layout();
+                    }
                 }
                 return;
             }
@@ -1244,6 +1364,36 @@ impl AppState {
                 } else if let Some(error) = message["error"]["message"].as_str() {
                     self.studio.error = Some(error.to_owned());
                 }
+                return;
+            }
+            if self
+                .studio
+                .title_rename_request
+                .as_ref()
+                .is_some_and(|(request, _)| *request == id)
+            {
+                let (_, previous) = self.studio.title_rename_request.take().unwrap();
+                if message.get("error").is_some() || message["result"] != true {
+                    self.studio.title = previous;
+                    self.studio.error = Some("Could not rename thread.".into());
+                }
+                return;
+            }
+            if self.studio.export_request == Some(id) {
+                self.studio.export_request = None;
+                self.studio.export_status = Some(if message.get("error").is_some() {
+                    message["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Export failed")
+                        .to_owned()
+                } else if message["result"]["ok"] == true {
+                    "Thread exported.".into()
+                } else {
+                    message["result"]["message"]
+                        .as_str()
+                        .unwrap_or("Export failed")
+                        .to_owned()
+                });
                 return;
             }
             if self.studio.compact_request == Some(id) {

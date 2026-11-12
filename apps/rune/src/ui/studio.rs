@@ -195,6 +195,46 @@ fn fork_tool(
     button
 }
 
+fn head_tip(
+    mut control: El,
+    tip: String,
+    state: Option<&StudioState>,
+    right: bool,
+    t: Palette,
+) -> El {
+    let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip.as_str());
+    let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
+    if shown {
+        control = control.child(
+            el().absolute(
+                if right {
+                    20.0 - width
+                } else {
+                    (20.0 - width) / 2.0
+                },
+                -26.0,
+            )
+            .w(width)
+            .h(20.0)
+            .center()
+            .radius(6.0)
+            .fill(t.ink)
+            .child(label(tip.clone(), 11.0, 500.0, t.ground)),
+        );
+    }
+    control
+        .hover_group_focus()
+        .on_hover_focus_change(move |s: &mut AppState, over, tx| {
+            s.studio.head_tooltip = None;
+            s.studio.head_tooltip_pending = if over {
+                tx.wake_after(std::time::Duration::from_millis(300));
+                Some((tip.clone(), std::time::Instant::now()))
+            } else {
+                None
+            };
+        })
+}
+
 static METER_TRACK: Icon = Icon {
     name: "studio-meter-track",
     view: 20.0,
@@ -389,7 +429,20 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         }
         meter = meter.child(card.absolute(-245.0, 23.0));
     }
-    meter
+    let mut tip = format!(
+        "{} used · {} of {} tokens",
+        format_percent(fraction),
+        format_tokens(used),
+        format_tokens(window)
+    );
+    if state.context_auto_compact {
+        tip.push_str(&format!(". Auto-compacts at ~{}.", format_tokens(window)));
+    }
+    if state.context_open {
+        meter
+    } else {
+        head_tip(meter, tip, Some(state), false, t)
+    }
 }
 
 fn format_tokens(value: u64) -> String {
@@ -483,7 +536,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio.title_info_open = false),
             );
-            title = title.child(thread_info_panel(state, t).absolute(-120.0, 25.0));
+            title = title.child(thread_info_panel(state, t).absolute(-120.0, 25.0).raise());
         }
     }
     title
@@ -510,11 +563,40 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .get(state.model_index)
         .map(|m| m.label.clone())
         .unwrap_or_else(|| "Default".into());
+    let name_row = if state.title_editing {
+        row().w_full().h(28.0).center_y().justify_between()
+            .child(label("Name", 11.5, 400.0, t.muted))
+            .child(text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
+                .key("studio-title-draft").w(180.0).h(24.0).color(t.ink)
+                .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
+                .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
+                    let title: String = s.studio.title_draft.text.trim().chars().take(120).collect();
+                    s.studio.title_editing = false;
+                    if !title.is_empty() && title != s.studio.title {
+                        let previous = std::mem::replace(&mut s.studio.title, title.clone());
+                        if !s.studio.thread_id.is_empty() {
+                            s.studio.title_rename_request = s.request("history.rename", serde_json::json!({"threadId": s.studio.thread_id, "title": title})).map(|id| (id, previous));
+                        }
+                    }
+                }))
+    } else {
+        info_row("Name", title_of(state))
+            .key("studio-title-edit")
+            .role("button")
+            .label("Rename thread")
+            .focusable(true)
+            .on_press(|s: &mut AppState| {
+                s.studio.title_draft = rune::TextEdit::new(s.studio.title.clone());
+                s.studio.title_draft.anchor = 0;
+                s.studio.title_editing = true;
+                s.studio.title_draft.focused = true;
+            })
+    };
     let mut rows = col()
         .w_full()
         .px(15.0)
         .py(8.0)
-        .child(info_row("Name", title_of(state)))
+        .child(name_row)
         .child(info_row("Provider", provider))
         .child(info_row("Model", model))
         .child(info_row("Reasoning", state.effort.clone()));
@@ -552,6 +634,39 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 short_thread_id(&state.thread_id)
             },
         ));
+    rows = rows.child(label("EXPORT", 10.0, 600.0, t.muted).mt(10.0))
+        .child(row().w_full().h(32.0).center_y().justify_between()
+            .child(label("Format", 11.5, 400.0, t.muted))
+            .child(row().gap(12.0)
+                .child(el().key("studio-export-markdown").focusable(true).role("radio")
+                    .child(label("Markdown", 12.5, 500.0, if state.export_json { t.muted } else { t.ink }))
+                    .on_press(|s: &mut AppState| s.studio.export_json = false))
+                .child(el().key("studio-export-json").focusable(true).role("radio")
+                    .child(label("JSON", 12.5, 500.0, if state.export_json { t.ink } else { t.muted }))
+                    .on_press(|s: &mut AppState| s.studio.export_json = true))))
+        .child(row().w_full().justify_end().child(
+            el().key("studio-export").role("button").focusable(true).px(12.0).h(30.0).center()
+                .radius(8.0).border(1.0, t.line)
+                .child(label("↓  Export thread", 12.5, 550.0, t.ink))
+                .on_press_tx(|s: &mut AppState, tx: &mut rune::Tx| {
+                    if s.studio.busy || s.studio.export_request.is_some() { return; }
+                    let format = if s.studio.export_json { "json" } else { "markdown" };
+                    let ext = if s.studio.export_json { "json" } else { "md" };
+                    let options = rune::FileDialogOptions { title: "Export thread".into(), file_name: Some(format!("thread.{ext}")), ..Default::default() };
+                    let thread = s.studio.thread_id.clone();
+                    tx.save_file(options, move |s: &mut AppState, result, _| {
+                        match result {
+                            Ok(Some(path)) => {
+                                s.studio.export_request = s.request("history.export", serde_json::json!({"threadId": thread, "format": format, "path": path}));
+                            }
+                            Ok(None) => s.studio.export_status = Some("Cancelled.".into()),
+                            Err(error) => s.studio.export_status = Some(error.to_string()),
+                        }
+                    });
+                })));
+    if let Some(status) = &state.export_status {
+        rows = rows.child(label(status.clone(), 11.5, 400.0, t.muted).mt(4.0));
+    }
     col()
         .on_press(|_: &mut AppState| {})
         .w(320.0)
@@ -782,11 +897,13 @@ fn studio_row(
                         .opacity(if show_tools { 1.0 } else { 0.0 })
                         .child(if has_thread && !side_chat {
                             fork_tool(&SIDE_CHAT, "Open a side chat", state, t)
+                                .on_press(|s: &mut AppState| s.create_continuation(false))
                         } else {
                             el().w(0.0)
                         })
                         .child(if has_thread && !side_chat {
                             fork_tool(&HANDOFF, "Hand off to another provider", state, t)
+                                .on_press(|s: &mut AppState| s.open_handoff_picker())
                         } else {
                             el().w(0.0)
                         })
@@ -819,7 +936,15 @@ fn studio_row(
                                     && !state.dormant
                                     && state.terminal_command.is_none()
                             }) {
-                                el().w(8.0).child(icon(&WORKTREE, 12.0).color(t.muted))
+                                head_tip(
+                                    el().w(8.0).child(icon(&WORKTREE, 12.0).color(t.muted)),
+                                    state
+                                        .and_then(|s| s.worktree_path.clone())
+                                        .unwrap_or_default(),
+                                    state,
+                                    false,
+                                    t,
+                                )
                             } else {
                                 el().w(0.0)
                             },
@@ -856,7 +981,7 @@ fn studio_row(
                         .justify_end()
                         .center_y()
                         .gap(2.0)
-                        .child(
+                        .child(head_tip(
                             el().key(format!("studio-width-{id}"))
                                 .px(4.0)
                                 .h(20.0)
@@ -884,7 +1009,15 @@ fn studio_row(
                                     s.cycle_studio_width(&width_id);
                                     s.center_studio_column(tx);
                                 }),
-                        )
+                            if zen {
+                                "Maximized".into()
+                            } else {
+                                format!("Width: {width:.0}px")
+                            },
+                            state,
+                            false,
+                            t,
+                        ))
                         .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
                             el().w(20.0)
                                 .h(20.0)
@@ -895,7 +1028,7 @@ fn studio_row(
                         } else {
                             el().w(0.0)
                         })
-                        .child(
+                        .child(head_tip(
                             el().key(format!("studio-zen-{id}"))
                                 .w(20.0)
                                 .h(20.0)
@@ -911,8 +1044,16 @@ fn studio_row(
                                     s.toggle_studio_zen(&zen_id);
                                     s.center_studio_column(tx);
                                 }),
-                        )
-                        .child(
+                            if zen {
+                                "Restore column".into()
+                            } else {
+                                "Maximize column".into()
+                            },
+                            state,
+                            false,
+                            t,
+                        ))
+                        .child(head_tip(
                             el().key(format!("studio-close-{id}"))
                                 .w(20.0)
                                 .h(20.0)
@@ -924,7 +1065,11 @@ fn studio_row(
                                     s.select_studio_project(project_index);
                                     s.close_studio_thread(&close_id);
                                 }),
-                        ),
+                            "Close column".into(),
+                            state,
+                            true,
+                            t,
+                        )),
                 );
             let body = if state.is_some_and(|s| s.dormant) {
                 col()
@@ -976,7 +1121,7 @@ fn studio_row(
                         })
                         .child(
                             el().w(5.0)
-                                .offset(0.0, -17.0)
+                                .offset(0.0, -12.0)
                                 .h(if hovered { 19.44 } else { 18.0 })
                                 .radius(3.0)
                                 .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -1043,7 +1188,7 @@ fn studio_row(
                     })
                     .child(
                         el().w(5.0)
-                            .offset(0.0, -17.0)
+                            .offset(0.0, -12.0)
                             .h(if hovered { 19.44 } else { 18.0 })
                             .radius(3.0)
                             .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -1599,7 +1744,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .default_effort
                                     .clone()
                                     .unwrap_or_default();
-                                s.studio.picker_open = false;
+                                if s.studio.handoff_picker {
+                                    s.create_continuation(true);
+                                } else {
+                                    s.studio.picker_open = false;
+                                }
                             }),
                     );
                 }
@@ -1794,7 +1943,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 .child(transcript),
         )
         .child(row().w_full().px(16.0).justify_center().child(dock))
-        .child(el().h(32.0))
+        .child(el().h(22.0))
 }
 
 #[cfg(test)]

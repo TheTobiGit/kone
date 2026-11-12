@@ -19,7 +19,10 @@ import { createGateway } from "@kone/agent-core/gateway/index.js";
 import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
 import { initSpawnEngine } from "@kone/agent-core/threadSpawn.js";
-import { acceptProviderThreadTitle } from "@kone/agent-core/threadTitle.js";
+import { exportThread } from "@kone/agent-core/threadExport.js";
+import { acceptProviderThreadTitle, truncateThreadTitle } from "@kone/agent-core/threadTitle.js";
+import { createSidechatThread } from "@kone/agent-core/sidechat.js";
+import { createHandoffThread } from "@kone/agent-core/handoff.js";
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
@@ -247,6 +250,13 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       const input = turnSchema.parse(params);
       return method === "agent.send" ? dispatcher.sendThreadTurn(input) : dispatcher.steerThreadTurn(input);
     }
+    case "agent.sideChat": case "agent.handoff": {
+      const base = z.object({ sourceThreadId: z.string().min(1), target: z.object({ provider: z.enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"]), model: z.string().optional(), effort: z.string().optional() }).optional() }).parse(params);
+      const input = { requestId: randomUUID(), threadId: randomUUID(), sourceThreadId: base.sourceThreadId };
+      const result = method === "agent.sideChat" ? createSidechatThread(input) : createHandoffThread({ ...input, kind: "handoff", target: base.target ?? (() => { throw new Error("A handoff target is required"); })() });
+      if (result.status === "created") broadcast({ type: method === "agent.sideChat" ? "thread.sidechat-created" : "thread.handoff-created", threadId: result.threadId, provider: result.provider, at: Date.now(), source: "kone.store", sourceThreadId: result.sourceThreadId, requestId: result.requestId });
+      return result;
+    }
     case "agent.compact": return service.compactThread(thread.parse(params).threadId);
     case "agent.interrupt": return service.interruptTurn(thread.parse(params).threadId);
     case "agent.stop": return service.stopSession(thread.parse(params).threadId);
@@ -272,6 +282,8 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
         return { ...session, identity: threadIdentity(session.threadId) };
       });
     }
+    case "history.rename": { const input = thread.extend({ title: z.string() }).parse(params); const title = truncateThreadTitle(input.title.trim()); return !!title && store.renameThread(input.threadId, title); }
+    case "history.export": { const input = thread.extend({ format: z.enum(["markdown", "json"]), path: z.string() }).parse(params); return exportThread(store, input.threadId, input.format, input.path); }
     case "history.setPinned": { const input = thread.extend({ pinned: z.boolean() }).parse(params); return store.setPinned(input.threadId, input.pinned); }
     case "history.setDone": { const input = thread.extend({ done: z.boolean() }).parse(params); return service.setThreadDone(input.threadId, input.done); }
     case "history.setVisited": { const input = thread.extend({ at: z.number().finite(), force: z.boolean().optional() }).parse(params); return store.setVisited(input.threadId, input.at, input.force); }
