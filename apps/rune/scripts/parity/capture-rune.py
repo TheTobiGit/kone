@@ -14,6 +14,7 @@ parser.add_argument('--scenes', required=True, help='comma-separated Rune scene 
 parser.add_argument('--binary', type=Path, default=ROOT / 'target/debug/kone-rune')
 parser.add_argument('--timeout', type=int, default=180)
 parser.add_argument('--scale', type=int, default=1)
+parser.add_argument('--size', default='1292x854', help='window size in points')
 parser.add_argument('--script', type=Path, help='input events for every capture')
 parser.add_argument('--at', type=float, help='capture time in seconds')
 args = parser.parse_args()
@@ -31,7 +32,7 @@ for scene in scenes:
     for theme in ('light', 'dark'):
         output = args.outdir / f'{scene}-{theme}.png'
         output.unlink(missing_ok=True)
-        command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', '1292x854', '--scale', str(args.scale), '--snap', str(output)]
+        command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', args.size, '--scale', str(args.scale), '--snap', str(output)]
         with tempfile.TemporaryDirectory() as temp:
             if args.script:
                 command += ['--script', str(args.script)]

@@ -216,6 +216,11 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         crate::theme::mix_srgb(t.muted, t.accent, 0.52)
     };
     let mut meter = el()
+        .key("studio-context-meter")
+        .role("button")
+        .label("Context window")
+        .expanded(state.context_open)
+        .focusable(true)
         .w(15.0)
         .h(15.0)
         .center()
@@ -228,6 +233,13 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         )
         .on_press(|s: &mut AppState| s.studio.context_open = !s.studio.context_open);
     if state.context_open {
+        // A transparent backdrop catches presses outside the card. It is added
+        // before the card so the card and its actions remain interactive.
+        meter = meter.child(
+            el().size(8192.0, 8192.0)
+                .absolute(-4096.0, -4096.0)
+                .on_press(|s: &mut AppState| s.studio.context_open = false),
+        );
         let data_row = |name: &str, value: String| {
             row()
                 .w_full()
@@ -259,21 +271,23 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         }
         data = data.child(data_row("Window", format_tokens(window)));
         if state.context_auto_compact {
-            data = data
-                .child(el().w_full().h(1.0).fill(t.line).my(5.0))
-                .child(label(
+            data = data.child(el().w_full().h(1.0).fill(t.line).my(5.0)).child(
+                label(
                     format!("Auto-compacts at ~{}.", format_tokens(window)),
                     11.0,
                     400.0,
                     t.muted,
-                ));
+                )
+                .font(TextStyle::new(11.0, 400.0).mono()),
+            );
         }
         let mut card = col()
+            .on_press(|_: &mut AppState| {})
             .w(260.0)
             .radius(20.0)
             .border(1.0, t.line)
             .fill(t.ground)
-            .shadow(10.0, 28.0, rune::Color::BLACK.alpha(0.18))
+            .shadow(6.0, 18.0, rune::Color::BLACK.alpha(0.10))
             .child(
                 row()
                     .w_full()
@@ -283,7 +297,11 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                     .justify_between()
                     .child(label("Context window", 12.5, 600.0, t.ink_soft))
                     .child(
-                        el().child(label("Cancel", 13.0, 600.0, t.muted))
+                        el().key("studio-context-cancel")
+                            .role("button")
+                            .label("Cancel")
+                            .focusable(true)
+                            .child(label("Cancel", 13.0, 600.0, t.muted))
                             .on_press(|s: &mut AppState| s.studio.context_open = false),
                     ),
             )
@@ -298,6 +316,10 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
                 && state.compact_request.is_none()
                 && state.items.iter().any(|item| item.kind == "user");
             let mut action = el()
+                .key("studio-context-compact")
+                .role("button")
+                .label("Compact context")
+                .focusable(ready)
                 .w_full()
                 .h(34.0)
                 .px(12.0)
@@ -393,17 +415,95 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
     } else {
         t.ink
     };
-    let mut style = TextStyle::new(13.5, 400.0).lh(16.2).tracking(-0.2025);
+    let mut style = TextStyle::new(13.5, 620.0).lh(16.2).tracking(-0.2025);
     if side_chat {
         style = style.italic();
     }
-    el().hover_group().min_w(0.0).child(
+    let mut title = el().hover_group().min_w(0.0).child(
         text(label)
             .font(style)
             .color(base)
             .group_color(hover)
             .truncate(),
-    )
+    );
+    if focused {
+        title = title.on_press(|s: &mut AppState| {
+            s.studio.title_info_open = !s.studio.title_info_open;
+            s.studio.context_open = false;
+        });
+        if let Some(state) = state.filter(|state| state.title_info_open) {
+            title = title.child(thread_info_panel(state, t).absolute(-120.0, 25.0));
+        }
+    }
+    title
+}
+
+fn thread_info_panel(state: &StudioState, t: Palette) -> El {
+    let info_row = |name: &str, value: String| {
+        row()
+            .w_full()
+            .h(28.0)
+            .center_y()
+            .justify_between()
+            .child(label(name, 12.5, 400.0, t.muted))
+            .child(label(value, 12.5, 500.0, t.ink_soft))
+    };
+    let provider = state
+        .providers
+        .get(state.provider_index)
+        .map(|p| p.label.clone())
+        .unwrap_or_default();
+    let model = state
+        .models
+        .get(state.model_index)
+        .map(|m| m.label.clone())
+        .unwrap_or_else(|| "Default".into());
+    let mut rows = col()
+        .w_full()
+        .px(15.0)
+        .py(8.0)
+        .child(info_row("Name", title_of(state)))
+        .child(info_row("Provider", provider))
+        .child(info_row("Model", model))
+        .child(info_row("Reasoning", state.effort.clone()));
+    if let Some(path) = &state.worktree_path {
+        rows = rows.child(info_row("Worktree", path.clone()));
+    }
+    rows = rows.child(label("Usage", 10.5, 500.0, t.muted).mt(10.0));
+    if let Some((used, window)) = state.context_usage {
+        rows = rows.child(info_row(
+            "In context",
+            format!("{} / {}", format_tokens(used), format_tokens(window)),
+        ));
+    } else {
+        rows = rows.child(info_row("Tokens", "Not reported yet".into()));
+    }
+    rows = rows
+        .child(label("Identity", 10.5, 500.0, t.muted).mt(10.0))
+        .child(info_row(
+            "Thread ID",
+            if state.thread_id.is_empty() {
+                "Not started".into()
+            } else {
+                state.thread_id.clone()
+            },
+        ));
+    col()
+        .w(320.0)
+        .radius(18.0)
+        .border(1.0, t.line)
+        .fill(t.ground)
+        .shadow(10.0, 28.0, rune::Color::BLACK.alpha(0.16))
+        .child(
+            row()
+                .w_full()
+                .h(42.0)
+                .px(15.0)
+                .center_y()
+                .fill(t.raised)
+                .child(label("Details", 13.0, 600.0, t.ink_soft)),
+        )
+        .child(rows)
 }
 
 fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -> El {
@@ -411,7 +511,7 @@ fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
-    let mut nav = row().center_y().gap(4.0);
+    let mut nav = row().center_y().gap(4.0).offset(0.0, 10.0);
     for (index, project) in s.projects.iter().enumerate() {
         let has_row = s.studio_layout["rows"]
             .as_array()
@@ -427,16 +527,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                 .center()
                 .radius(8.0)
                 .hover(t.hover)
-                .child(label(
-                    project.name.clone(),
-                    12.0,
-                    500.0,
-                    if Some(index) == s.selected_project {
-                        t.ink
-                    } else {
-                        t.muted
-                    },
-                ))
+                .child(label(project.name.clone(), 12.0, 400.0, t.muted))
                 .on_press_tx(move |s: &mut AppState, tx| {
                     s.select_studio_project(index);
                     tx.scroll_into_view(format!("studio-row-slot-{path}"));
@@ -600,7 +691,7 @@ fn studio_row(
             });
             let side_chat = state.is_some_and(|s| s.side_chat);
             let head = row()
-                .offset(0.0, -5.0)
+                .offset(0.0, -9.0)
                 .w_full()
                 .h(38.0)
                 .center_y()
@@ -1558,22 +1649,18 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
     let art = if let Some(item) = s.studio.items.iter().find(|item| item.kind == "connected") {
-        el().w_full().h(560.0).center().child(
+        el().w_full().h(586.0).center().child(
             col()
                 .items_center()
                 .gap(12.0)
                 .child(label("Today", 11.0, 400.0, t.muted))
                 .child(
-                    row()
-                        .center_y()
-                        .gap(6.0)
-                        .child(connected_avatar())
-                        .child(label(
-                            format!("{} connected", item.text),
-                            12.0,
-                            400.0,
-                            t.muted,
-                        )),
+                    row().center_y().gap(6.0).child(connected_avatar()).child(
+                        row()
+                            .center_y()
+                            .child(label(item.text.clone(), 12.0, 600.0, t.ink_soft))
+                            .child(label(" connected", 12.0, 400.0, t.muted)),
+                    ),
                 )
                 .child(if let Some(source) = &s.studio.handoff_source {
                     row()

@@ -162,6 +162,7 @@ pub struct StudioState {
     pub context_total: Option<u64>,
     pub context_auto_compact: bool,
     pub context_open: bool,
+    pub title_info_open: bool,
     pub compact_request: Option<u64>,
     pub compact_error: Option<String>,
     pub dormant: bool,
@@ -584,6 +585,10 @@ impl AppState {
             return false;
         }
         if event.key == rune::Key::Escape {
+            if s.studio.title_info_open {
+                s.studio.title_info_open = false;
+                return true;
+            }
             if s.studio.context_open {
                 s.studio.context_open = false;
                 return true;
