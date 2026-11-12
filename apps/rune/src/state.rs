@@ -154,8 +154,10 @@ impl AppState {
 #[derive(Default)]
 pub struct StudioState {
     pub title: String,
+    pub connected_identity: Option<StudioIdentity>,
     pub side_chat: bool,
     pub head_tooltip: Option<String>,
+    pub head_tooltip_pending: Option<(String, std::time::Instant)>,
     pub context_usage: Option<(u64, u64)>,
     pub context_input: Option<u64>,
     pub context_output: Option<u64>,
@@ -204,6 +206,23 @@ pub struct StudioState {
     pub approval: Option<StudioApproval>,
     pub question: Option<StudioQuestion>,
     pub answer: TextEdit,
+}
+
+#[derive(Clone, Default)]
+pub struct StudioIdentity {
+    pub name: String,
+    pub svg: String,
+    pub avatar: Option<String>,
+}
+
+impl StudioIdentity {
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            name: value["name"].as_str()?.to_owned(),
+            svg: value["svg"].as_str().unwrap_or("").to_owned(),
+            avatar: value["avatar"].as_str().map(str::to_owned),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -303,6 +322,17 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        let mut tooltip_changed = false;
+        if let Some((tip, at)) = &s.studio.head_tooltip_pending {
+            let elapsed = at.elapsed();
+            if elapsed >= std::time::Duration::from_millis(300) {
+                s.studio.head_tooltip = Some(tip.clone());
+                s.studio.head_tooltip_pending = None;
+                tooltip_changed = true;
+            } else {
+                tx.wake_after(std::time::Duration::from_millis(300) - elapsed);
+            }
+        }
         let animating = s
             .studio_fade
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() < 0.22)
@@ -379,6 +409,7 @@ impl AppState {
         }
         s.sync_project_watches();
         changed
+            || tooltip_changed
             || animating
             || session_motion
             || metric_motion
@@ -560,7 +591,10 @@ impl AppState {
             return;
         }
         let viewport = self.studio_viewport.0;
-        let mut left = 14.0;
+        let first_width = [840.0_f32, 960.0, 1120.0, 1240.0]
+            [(panes[0]["width"].as_u64().unwrap_or(0) as usize).min(3)]
+        .min(viewport);
+        let mut left = 14.0 + ((viewport - first_width) / 2.0 - 14.0).max(0.0);
         for pane in panes {
             let focused = pane["anchor"]["threadId"] == self.studio.thread_id;
             let mut width = [840.0_f32, 960.0, 1120.0, 1240.0]
@@ -1085,6 +1119,7 @@ impl AppState {
             if self.studio.history_request == Some(id) {
                 self.studio.history_request = None;
                 let result = &message["result"];
+                self.studio.connected_identity = StudioIdentity::from_value(&result["identity"]);
                 self.studio.resume = result["conversationId"].as_str().map(str::to_owned);
                 self.studio.restore_model = result["model"].as_str().map(str::to_owned);
                 self.studio.title = result["title"].as_str().unwrap_or("").to_owned();
@@ -1287,6 +1322,7 @@ impl AppState {
             } else if self.studio.start_request == Some(id) {
                 self.studio.start_request = None;
                 self.studio.started = true;
+                self.studio.connected_identity = StudioIdentity::from_value(&result["identity"]);
                 self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
                 if let Some(input) = self.studio.pending_send.take() {
                     self.dispatch_studio_send(input);

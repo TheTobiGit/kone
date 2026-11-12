@@ -123,8 +123,10 @@ fn main() {
             }),
             ("studio-column-head-dormant", |s| {
                 studio_column_head(s);
-                s.studio.dormant = true;
-                s.studio.context_usage = None;
+                s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(serde_json::json!({"id":"review-two","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-two"}}));
+                if let Some(dormant) = s.studio_threads.get_mut("review-two") {
+                    dormant.dormant = true;
+                }
             }),
             ("studio-column-head-terminal-live", |s| {
                 studio_column_head(s);
@@ -334,6 +336,11 @@ fn studio_column_head(s: &mut AppState) {
     s.studio.composer_open = false;
     s.studio.context_usage = Some((40_000, 200_000));
     s.studio.providers[0].id = "gpt".into();
+    s.studio.connected_identity = Some(state::StudioIdentity {
+        name: "Cinder".into(),
+        svg: review::fixture_avatar(),
+        avatar: None,
+    });
     s.studio.items.push(state::StudioItem {
         kind: "connected".into(),
         text: "Cinder".into(),

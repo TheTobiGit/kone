@@ -122,22 +122,33 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
     marks
 }
 
-fn connected_avatar() -> El {
+fn connected_avatar(identity: &crate::state::StudioIdentity) -> El {
     use std::sync::{Arc, OnceLock};
-    static IMAGE: OnceLock<rune::Image> = OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let cache = rune::ImageCache::new(Arc::new(|| {}));
-        let image = cache.svg(
-            Arc::<[u8]>::from(crate::review::fixture_avatar().as_bytes()),
-            15.0,
-            2.0,
-        );
-        let _ = image.wait();
-        image
+    static IMAGES: OnceLock<rune::ImageCache> = OnceLock::new();
+    let cache = IMAGES.get_or_init(|| rune::ImageCache::new(Arc::new(|| {})));
+    let avatar = identity.avatar.as_deref().and_then(|src| {
+        use base64::Engine;
+        if src == "/agents/kone.jpg" {
+            Some(cache.load(include_bytes!("../../../web/public/agents/kone.jpg").as_slice()))
+        } else {
+            let (header, data) = src.strip_prefix("data:")?.split_once(',')?;
+            let mime = header.strip_suffix(";base64")?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .ok()?;
+            Some(cache.load_mime(bytes, mime, 16.0, 2.0))
+        }
     });
-    el().w(15.0)
-        .h(15.0)
-        .radius(7.5)
+    let image = avatar
+        .filter(|image| image.wait().is_ok())
+        .unwrap_or_else(|| {
+            let image = cache.svg(Arc::<[u8]>::from(identity.svg.as_bytes()), 16.0, 2.0);
+            let _ = image.wait();
+            image
+        });
+    el().w(16.0)
+        .h(16.0)
+        .radius(8.0)
         .pixels_fit(image.pixels(), rune::SurfaceFit::Fill)
 }
 
@@ -149,14 +160,25 @@ fn fork_tool(
 ) -> El {
     let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip);
     let mut button = el()
+        .key(format!("studio-tool-{tip}"))
+        .role("button")
+        .label(tip)
+        .focusable(true)
+        .hover_group_focus()
         .w(20.0)
         .h(20.0)
         .center()
         .radius(6.0)
         .hover(t.hover)
         .child(icon(glyph, 13.0).color(t.muted))
-        .on_hover_change(move |s: &mut AppState, over, _| {
-            s.studio.head_tooltip = if over { Some(tip.into()) } else { None };
+        .on_hover_focus_change(move |s: &mut AppState, over, tx| {
+            s.studio.head_tooltip = None;
+            s.studio.head_tooltip_pending = if over {
+                tx.wake_after(std::time::Duration::from_millis(300));
+                Some((tip.into(), std::time::Instant::now()))
+            } else {
+                None
+            };
         });
     if shown {
         button = button.child(
@@ -221,6 +243,14 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         .label("Context window")
         .expanded(state.context_open)
         .focusable(true)
+        .on_key(|s: &mut AppState, event, _| {
+            if event.key == rune::Key::Enter {
+                s.studio.context_open = !s.studio.context_open;
+                true
+            } else {
+                false
+            }
+        })
         .w(15.0)
         .h(15.0)
         .center()
@@ -236,7 +266,8 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
         // A transparent backdrop catches presses outside the card. It is added
         // before the card so the card and its actions remain interactive.
         meter = meter.child(
-            el().size(8192.0, 8192.0)
+            el().key("studio-context-backdrop")
+                .size(8192.0, 8192.0)
                 .absolute(-4096.0, -4096.0)
                 .on_press(|s: &mut AppState| s.studio.context_open = false),
         );
@@ -427,11 +458,31 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
             .truncate(),
     );
     if focused {
-        title = title.on_press(|s: &mut AppState| {
-            s.studio.title_info_open = !s.studio.title_info_open;
-            s.studio.context_open = false;
-        });
+        title = title
+            .key("studio-title-info-trigger")
+            .role("button")
+            .label("Thread info")
+            .expanded(state.is_some_and(|state| state.title_info_open))
+            .focusable(true)
+            .on_key(|s: &mut AppState, event, _| {
+                if event.key == rune::Key::Enter {
+                    s.studio.title_info_open = !s.studio.title_info_open;
+                    s.studio.context_open = false;
+                    true
+                } else {
+                    false
+                }
+            })
+            .on_press(|s: &mut AppState| {
+                s.studio.title_info_open = !s.studio.title_info_open;
+                s.studio.context_open = false;
+            });
         if let Some(state) = state.filter(|state| state.title_info_open) {
+            title = title.child(
+                el().size(8192.0, 8192.0)
+                    .absolute(-4096.0, -4096.0)
+                    .on_press(|s: &mut AppState| s.studio.title_info_open = false),
+            );
             title = title.child(thread_info_panel(state, t).absolute(-120.0, 25.0));
         }
     }
@@ -445,8 +496,9 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .h(28.0)
             .center_y()
             .justify_between()
-            .child(label(name, 12.5, 400.0, t.muted))
-            .child(label(value, 12.5, 500.0, t.ink_soft))
+            .gap(16.0)
+            .child(label(name, 11.5, 400.0, t.muted))
+            .child(label(value, 12.5, 500.0, t.ink).truncate())
     };
     let provider = state
         .providers
@@ -469,7 +521,10 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     if let Some(path) = &state.worktree_path {
         rows = rows.child(info_row("Worktree", path.clone()));
     }
-    rows = rows.child(label("Usage", 10.5, 500.0, t.muted).mt(10.0));
+    if let Some(source) = &state.handoff_source {
+        rows = rows.child(info_row("Handed off", format!("From {source}")));
+    }
+    rows = rows.child(label("USAGE", 10.0, 600.0, t.muted).mt(10.0));
     if let Some((used, window)) = state.context_usage {
         rows = rows.child(info_row(
             "In context",
@@ -478,14 +533,23 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     } else {
         rows = rows.child(info_row("Tokens", "Not reported yet".into()));
     }
+    for (name, value) in [
+        ("Input", state.context_input),
+        ("Output", state.context_output),
+        ("Total", state.context_total),
+    ] {
+        if let Some(value) = value {
+            rows = rows.child(info_row(name, format_tokens(value)));
+        }
+    }
     rows = rows
-        .child(label("Identity", 10.5, 500.0, t.muted).mt(10.0))
+        .child(label("IDENTITY", 10.0, 600.0, t.muted).mt(10.0))
         .child(info_row(
             "Thread ID",
             if state.thread_id.is_empty() {
                 "Not started".into()
             } else {
-                state.thread_id.clone()
+                short_thread_id(&state.thread_id)
             },
         ));
     col()
@@ -504,6 +568,19 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .child(label("Details", 13.0, 600.0, t.ink_soft)),
         )
         .child(rows)
+}
+
+fn short_thread_id(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 16 {
+        id.into()
+    } else {
+        format!(
+            "{}…{}",
+            chars[..8].iter().collect::<String>(),
+            chars[chars.len() - 6..].iter().collect::<String>()
+        )
+    }
 }
 
 fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -> El {
@@ -647,7 +724,7 @@ fn studio_row(
     let panes = saved["panes"].as_array();
     let mut rail = row().h_full();
     let count = panes.map_or(0, Vec::len);
-    if count == 1 {
+    if count >= 1 {
         let pane = &panes.unwrap()[0];
         let width = [840.0_f32, 960.0, 1120.0, 1240.0]
             [(pane["width"].as_u64().unwrap_or(0) as usize).min(3)]
@@ -1015,8 +1092,9 @@ fn studio_row(
                 );
             }
         }
-        bar = bar.child(
-            el().pin(Some(17.0), Some(0.0), None, Some(0.0))
+        bar = bar.child(el().w(24.0)).child(
+            el().absolute((viewport_w - 100.0) / 2.0 - 32.0, 7.0)
+                .w(100.0)
                 .h(20.0)
                 .center()
                 .child(dashes),
@@ -1648,19 +1726,28 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
     if let Some(error) = &s.studio.error {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
-    let art = if let Some(item) = s.studio.items.iter().find(|item| item.kind == "connected") {
+    let art = if let Some(identity) = s
+        .studio
+        .connected_identity
+        .as_ref()
+        .filter(|_| !s.studio.items.is_empty())
+    {
         el().w_full().h(586.0).center().child(
             col()
                 .items_center()
                 .gap(12.0)
                 .child(label("Today", 11.0, 400.0, t.muted))
                 .child(
-                    row().center_y().gap(6.0).child(connected_avatar()).child(
-                        row()
-                            .center_y()
-                            .child(label(item.text.clone(), 12.0, 600.0, t.ink_soft))
-                            .child(label(" connected", 12.0, 400.0, t.muted)),
-                    ),
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .child(connected_avatar(identity))
+                        .child(
+                            row()
+                                .center_y()
+                                .child(label(identity.name.clone(), 12.0, 600.0, t.ink_soft))
+                                .child(label(" connected", 12.0, 400.0, t.muted)),
+                        ),
                 )
                 .child(if let Some(source) = &s.studio.handoff_source {
                     row()
@@ -1716,6 +1803,13 @@ mod tests {
     use crate::state::{Page, Project, StudioItem};
     use rune::{Env, Runtime};
     use serde_json::json;
+
+    #[test]
+    fn thread_info_shortens_long_ids_without_splitting_unicode() {
+        assert_eq!(short_thread_id("abcdefgh123456789xyz"), "abcdefgh…789xyz");
+        assert_eq!(short_thread_id("short"), "short");
+        assert_eq!(short_thread_id("αβγδεζηθικλμνξοπρσ"), "αβγδεζηθ…νξοπρσ");
+    }
 
     #[test]
     fn saved_project_rows_are_mounted_and_clicking_a_row_changes_focus() {
@@ -1828,5 +1922,57 @@ mod tests {
             rt.state.studio_threads["a"].items[0].text,
             "foreground streaming"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_meter_tests {
+    use super::*;
+    use rune::{Env, Key, KeyEvent, Mods, Runtime};
+
+    fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
+        el().w_full().h_full().child(
+            el().pin(Some(300.0), Some(50.0), None, None)
+                .child(context_meter(&s.studio, Palette::new(cx.system_dark()))),
+        )
+    }
+
+    fn click(rt: &mut Runtime<AppState>, x: f32, y: f32) {
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn meter_opens_by_keyboard_and_dismisses_only_outside_card() {
+        let mut state = AppState::default();
+        state.studio.context_usage = Some((40_000, 200_000));
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (500.0, 400.0),
+            Env {
+                system_dark: false,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(rt.state.studio.context_open, "keyboard activates meter");
+        rt.frame(1.0);
+        click(&mut rt, 100.0, 120.0);
+        assert!(rt.state.studio.context_open, "card body does not dismiss");
+        click(&mut rt, 450.0, 300.0);
+        assert!(!rt.state.studio.context_open, "outside press dismisses");
     }
 }

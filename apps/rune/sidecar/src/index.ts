@@ -33,6 +33,22 @@ await mkdir(directory, { recursive: true });
 setUserDataDir(directory);
 const store = getConversationStore();
 const service = new AgentService();
+/** Resolve a named agent or the root thread's deterministic guest identity. */
+function threadIdentity(threadId: string) {
+  let root = store.threadMeta(threadId);
+  const visited = new Set<string>();
+  while (root?.sourceThreadId && !visited.has(root.threadId)) {
+    visited.add(root.threadId);
+    const parent = store.threadMeta(root.sourceThreadId);
+    if (!parent) break;
+    root = parent;
+  }
+  const rootId = root?.threadId ?? threadId;
+  const binding = store.getThreadAgent(threadId) ?? store.getThreadAgent(rootId);
+  const agent = binding?.agentId ? store.getAgent(binding.agentId) : null;
+  return namedIdentity(threadId, agent) ?? agentIdentity(rootId);
+}
+
 const output = process.stdout;
 // Library diagnostics must not corrupt the protocol stream.
 console.log = (...args: unknown[]) => console.error(...args);
@@ -224,7 +240,8 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     case "agent.start": {
       const input = sessionSchema.parse(params);
       await gateway.ready;
-      return dispatcher.startThread(input);
+      const result = await dispatcher.startThread(input);
+      return { ...result, identity: threadIdentity(input.threadId) };
     }
     case "agent.send": case "agent.steer": {
       const input = turnSchema.parse(params);
@@ -252,17 +269,7 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     case "history.list": {
       const input = z.object({ projectPath: z.string(), archived: z.boolean().optional() }).parse(params);
       return store.listThreads(input.projectPath, { archived: input.archived }).map((session) => {
-        let root = session;
-        const visited = new Set<string>();
-        while (root.sourceThreadId && !visited.has(root.threadId)) {
-          visited.add(root.threadId);
-          const parent = store.threadMeta(root.sourceThreadId);
-          if (!parent) break;
-          root = parent;
-        }
-        const binding = store.getThreadAgent(session.threadId) ?? store.getThreadAgent(root.threadId);
-        const agent = binding?.agentId ? store.getAgent(binding.agentId) : null;
-        return { ...session, identity: namedIdentity(session.threadId, agent) ?? agentIdentity(root.threadId) };
+        return { ...session, identity: threadIdentity(session.threadId) };
       });
     }
     case "history.setPinned": { const input = thread.extend({ pinned: z.boolean() }).parse(params); return store.setPinned(input.threadId, input.pinned); }
@@ -290,7 +297,7 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       return deleted;
     }
     case "history.latest": return store.latestThreadMeta(z.object({ projectPath: z.string() }).parse(params).projectPath);
-    case "history.thread": { const value = store.loadThread(thread.parse(params).threadId); return value ? projectStoredThreadForIpc(value) : null; }
+    case "history.thread": { const { threadId } = thread.parse(params); const value = store.loadThread(threadId); return value ? { ...projectStoredThreadForIpc(value), identity: threadIdentity(threadId) } : null; }
     case "history.page": {
       const input = z.object({ threadId: z.string(), limit: z.number().int().positive().optional(), cursor: z.string().optional() }).parse(params);
       const value = store.loadThreadPage(input.threadId, { limit: input.limit, cursor: input.cursor });
