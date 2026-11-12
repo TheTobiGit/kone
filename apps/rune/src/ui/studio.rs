@@ -2760,8 +2760,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     "Read"
                 };
                 let path = item.text.as_str();
-                let short_path = if path.chars().count() > 34 {
-                    format!("{}…", path.chars().take(34).collect::<String>())
+                let short_path = if path.chars().count() > 29 {
+                    format!("{}…", path.chars().take(29).collect::<String>())
                 } else {
                     path.to_owned()
                 };
@@ -2779,94 +2779,90 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 } else {
                     rune::color::hex("#4f9bea").unwrap()
                 };
-                let mut body = col().w_full().gap(1.0).child(
-                    row()
-                        .key(format!("activity-row-{}", item.id))
-                        .w_full()
-                        .h(18.0)
-                        .gap(8.0)
-                        .px(0.0)
-                        .center_y()
-                        .radius(4.0)
-                        .fill(
-                            if s.studio.conversation_fixture.as_deref() == Some("activity-hover")
-                                && item.name == "read_file"
-                            {
-                                t.hover
-                            } else {
-                                t.ground.alpha(0.0)
-                            },
-                        )
-                        .hover(t.hover)
-                        .child(
-                            icon(
-                                step_icon,
-                                if item.name == "edit_file" && s.studio.busy {
-                                    16.0
-                                } else {
-                                    14.0
-                                },
-                            )
-                            .color(step_hue)
-                            .rotate(
-                                if item.name == "edit_file" && s.studio.busy {
-                                    (s.start_actions.clock as f32 * 3.1) % std::f32::consts::TAU
-                                } else {
-                                    0.0
-                                },
-                            ),
-                        )
-                        .child(
-                            text(verb)
-                                .font(TextStyle::new(12.5, 400.0))
-                                .color(t.ink_soft),
-                        )
-                        .child(
-                            el().px(5.0)
-                                .py(2.0)
-                                .radius(4.0)
-                                .fill(t.ink.alpha(0.045))
-                                .child(
-                                    row()
-                                        .center_y()
-                                        .gap(4.0)
-                                        .child(icon(super::file_icons::for_path(path), 13.0))
-                                        .child(
-                                            text(short_path)
-                                                .font(TextStyle::new(11.5, 400.0).mono())
-                                                .color(t.ink_soft),
-                                        ),
-                                ),
-                        )
-                        .child(el().grow(1.0))
-                        .child(if item.name == "edit_file" {
-                            row()
-                                .gap(3.0)
-                                .child(
-                                    text("+4")
-                                        .font(TextStyle::new(10.5, 500.0).mono())
-                                        .color(rune::color::hex("#329b70").unwrap()),
-                                )
-                                .child(
-                                    text("−2")
-                                        .font(TextStyle::new(10.5, 500.0).mono())
-                                        .color(rune::color::hex("#d25c5c").unwrap()),
-                                )
+                let mut activity_row = row()
+                    .key(format!("activity-row-{}", item.id))
+                    .w_full()
+                    .h(18.0)
+                    .gap(7.0)
+                    .center_y()
+                    .radius(4.0)
+                    .fill(
+                        if s.studio.conversation_fixture.as_deref() == Some("activity-hover")
+                            && item.name == "read_file"
+                        {
+                            t.hover
                         } else {
-                            el()
-                        })
-                        .child(text("›").font(TextStyle::new(14.0, 400.0)).color(t.faint))
-                        .on_press({
-                            let row_id = item.id.clone();
-                            move |s: &mut AppState| {
-                                if s.studio.activity_expanded.contains(&row_id) {
-                                    s.studio.activity_expanded.retain(|id| id != &row_id);
-                                } else {
-                                    s.studio.activity_expanded.push(row_id.clone());
-                                }
+                            t.ground.alpha(0.0)
+                        },
+                    )
+                    .hover(t.hover)
+                    .child(if item.name == "edit_file" && s.studio.busy {
+                        icon(&ACTIVITY_THINKING, 14.0)
+                            .color(step_hue)
+                            .rotate((s.start_actions.clock as f32 * 2.6) % std::f32::consts::TAU)
+                    } else {
+                        icon(step_icon, 14.0).color(step_hue)
+                    })
+                    .child(
+                        text(verb)
+                            .font(TextStyle::new(12.5, 400.0))
+                            .color(t.ink_soft),
+                    );
+                if command {
+                    activity_row = activity_row.child(
+                        text(short_path)
+                            .font(TextStyle::new(11.5, 400.0).mono())
+                            .color(t.muted),
+                    );
+                } else {
+                    activity_row = activity_row.child(
+                        el().px(3.0)
+                            .py(1.0)
+                            .radius(3.0)
+                            .fill(t.ink.alpha(0.035))
+                            .child(
+                                row()
+                                    .center_y()
+                                    .gap(3.0)
+                                    .child(icon(super::file_icons::for_path(path), 13.0))
+                                    .child(
+                                        text(short_path)
+                                            .font(TextStyle::new(11.5, 400.0).mono())
+                                            .color(t.ink_soft),
+                                    ),
+                            ),
+                    );
+                }
+                activity_row = activity_row
+                    .child(el().grow(1.0))
+                    .child(if item.name == "edit_file" && !s.studio.busy {
+                        row()
+                            .gap(3.0)
+                            .child(
+                                text("+4")
+                                    .font(TextStyle::new(10.5, 500.0).mono())
+                                    .color(rune::color::hex("#329b70").unwrap()),
+                            )
+                            .child(
+                                text("−2")
+                                    .font(TextStyle::new(10.5, 500.0).mono())
+                                    .color(rune::color::hex("#d25c5c").unwrap()),
+                            )
+                    } else {
+                        el()
+                    })
+                    .child(text("›").font(TextStyle::new(14.0, 400.0)).color(t.faint))
+                    .on_press({
+                        let row_id = item.id.clone();
+                        move |s: &mut AppState| {
+                            if s.studio.activity_expanded.contains(&row_id) {
+                                s.studio.activity_expanded.retain(|id| id != &row_id);
+                            } else {
+                                s.studio.activity_expanded.push(row_id.clone());
                             }
-                        }),
-                );
+                        }
+                    });
+                let mut body = col().w_full().gap(0.0).child(activity_row);
                 if matches!(
                     s.studio.conversation_fixture.as_deref(),
                     Some(
@@ -3240,7 +3236,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let activity_gap = if s.studio.busy { 22.0 } else { 12.0 };
+            let activity_gap = 7.0;
             let mut group = col()
                 .w_full()
                 .gap(if is_activity { activity_gap } else { 54.0 });
