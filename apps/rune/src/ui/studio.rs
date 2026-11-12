@@ -2533,8 +2533,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 ),
             "assistant_text" => {
                 let mut turn = col().w_full().gap(if is_activity { 8.0 } else { 15.0 });
-                if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
-                    turn = turn.mt(10.0);
+                match s.studio.conversation_fixture.as_deref() {
+                    Some("activity-expanded") => turn = turn.mt(10.0),
+                    Some("activity-diff") => turn = turn.mt(18.0),
+                    Some("activity-hover") => turn = turn.mt(13.0),
+                    _ => {}
                 }
                 let first = index == 0 || s.studio.items[index - 1].kind != "assistant_text";
                 if first && !is_activity {
@@ -2816,12 +2819,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .child(
                                     el().w_full()
                                         .px(9.0)
-                                        .py(16.0)
+                                        .py(28.0)
                                         .radius(6.0)
                                         .fill(t.ink.alpha(0.025))
                                         .child(
                                             text(item.detail.clone())
-                                                .font(TextStyle::new(10.5, 400.0).mono().lh(15.0))
+                                                .font(TextStyle::new(10.5, 400.0).mono().lh(17.0))
                                                 .color(t.ink_soft),
                                         ),
                                 );
@@ -3086,7 +3089,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             } else {
                 head = head
                     .mt(43.0)
-                    .mb(if s.studio.activity_open { 30.0 } else { 0.0 });
+                    .mb(if s.studio.activity_open { 5.0 } else { 0.0 });
             }
             head = head.on_press(move |s: &mut AppState| s.studio.activity_open = !open);
             if let Some(group) = exchange.take() {
