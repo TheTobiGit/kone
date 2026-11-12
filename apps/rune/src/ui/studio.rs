@@ -3203,7 +3203,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             }
             let open = s.studio.activity_open;
             if s.studio.busy {
-                head = head.mt(16.0);
+                head = head.mt(34.0);
             } else {
                 head = head
                     .mt(43.0)
@@ -3243,7 +3243,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if let Some(previous) = exchange.take() {
                 transcript = transcript.child(previous);
             }
-            let activity_gap = 0.0;
+            let activity_gap = 7.0;
             let mut group = col()
                 .w_full()
                 .gap(if is_activity { activity_gap } else { 54.0 });
