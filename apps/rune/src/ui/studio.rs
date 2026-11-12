@@ -78,6 +78,32 @@ static REFRESH: Icon = Icon {
     body: r#"<path d="M20.0092 2V5.13219C20.0092 5.42605 19.6418 5.55908 19.4537 5.33333C17.6226 3.2875 14.9617 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22C17.5228 22 22 17.5228 22 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+static ACTIVITY_FILE: Icon = Icon {
+    name: "activity-file",
+    view: 24.0,
+    body: r#"<path d="M8 7L16 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11L12 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 21.5V21C13 18.1716 13 16.7574 13.8787 15.8787C14.7574 15 16.1716 15 19 15H19.5M20 13.3431V10C20 6.22876 20 4.34315 18.8284 3.17157C17.6569 2 15.7712 2 12 2C8.22877 2 6.34315 2 5.17157 3.17157C4 4.34314 4 6.22876 4 10L4 14.5442C4 17.7892 4 19.4117 4.88607 20.5107C5.06508 20.7327 5.26731 20.9349 5.48933 21.1139C6.58831 22 8.21082 22 11.4558 22C12.1614 22 12.5141 22 12.8372 21.886C12.9044 21.8623 12.9702 21.835 13.0345 21.8043C13.3436 21.6564 13.593 21.407 14.0919 20.9081L18.8284 16.1716C19.4065 15.5935 19.6955 15.3045 19.8478 14.9369C20 14.5694 20 14.1606 20 13.3431Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ACTIVITY_COMMAND: Icon = Icon {
+    name: "activity-command",
+    view: 24.0,
+    body: r#"<path d="M14 4H10C6.22876 4 4.34315 4 3.17157 5.17157C2 6.34315 2 8.22876 2 12C2 15.7712 2 17.6569 3.17157 18.8284C4.34315 20 6.22876 20 10 20H14C17.7712 20 19.6569 20 20.8284 18.8284C22 17.6569 22 15.7712 22 12C22 8.22876 22 6.34315 20.8284 5.17157C19.6569 4 17.7712 4 14 4Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 9L8.83981 10.5858C9.61327 11.2525 10 11.5858 10 12C10 12.4142 9.61327 12.7475 8.83981 13.4142L7 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 16H17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ACTIVITY_EDIT: Icon = Icon {
+    name: "activity-edit",
+    view: 24.0,
+    body: r#"<path d="M13 20.8268V22H14.1734C14.5827 22 14.7874 22 14.9715 21.9238C15.1555 21.8475 15.3003 21.7028 15.5897 21.4134L20.4133 16.5894C20.6864 16.3164 20.8229 16.1799 20.8959 16.0327C21.0347 15.7525 21.0347 15.4236 20.8959 15.1434C20.8229 14.9961 20.6864 14.8596 20.4133 14.5866C20.1403 14.3136 20.0038 14.1771 19.8565 14.1041C19.5763 13.9653 19.2473 13.9653 18.9671 14.1041C18.8198 14.1771 18.6833 14.3136 18.4103 14.5866L18.4103 14.5866L13.5867 19.4106C13.2972 19.7 13.1525 19.8447 13.0762 20.0287C13 20.2128 13 20.4174 13 20.8268Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M19 11C19 11 19 9.4306 18.8478 9.06306C18.6955 8.69552 18.4065 8.40649 17.8284 7.82843L13.0919 3.09188C12.593 2.593 12.3436 2.34355 12.0345 2.19575C11.9702 2.165 11.9044 2.13772 11.8372 2.11401C11.5141 2 11.1614 2 10.4558 2C7.21082 2 5.58815 2 4.4894 2.88607C4.26732 3.06508 4.06508 3.26731 3.88607 3.48933C3 4.58831 3 6.21082 3 9.45584V14C3 17.7712 3 19.6569 4.17157 20.8284C5.23467 21.8915 6.8857 21.99 10 21.9991M12 2.5V3C12 5.82843 12 7.24264 12.8787 8.12132C13.7574 9 15.1716 9 18 9H18.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ACTIVITY_THINKING: Icon = Icon {
+    name: "activity-thinking",
+    view: 24.0,
+    body: r#"<path d="M7 4.5C5.34315 4.5 4 5.84315 4 7.5C4 8.06866 4.15822 8.60037 4.43304 9.0535C3.04727 9.31855 2 10.537 2 12C2 13.463 3.04727 14.6814 4.43304 14.9465M7 4.5C7 3.11929 8.11929 2 9.5 2C10.8807 2 12 3.11929 12 4.5V19.5C12 20.8807 10.8807 22 9.5 22C8.11929 22 7 20.8807 7 19.5C5.34315 19.5 4 18.1569 4 16.5C4 15.9313 4.15822 15.3996 4.43304 14.9465M7 4.5C7 5.31791 7.39278 6.04408 8 6.50018M4.43304 14.9465C4.78948 14.3588 5.34207 13.9032 6 13.6707" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 19.4999C18.6569 19.4999 20 18.1567 20 16.4999C20 15.9312 19.8418 15.3995 19.567 14.9464C20.9527 14.6813 22 13.4629 22 11.9999C22 10.5369 20.9527 9.31843 19.567 9.05338M17 19.4999C17 20.8806 15.8807 21.9999 14.5 21.9999C13.1193 21.9999 12 20.8806 12 19.4999L12 4.49988C12 3.11917 13.1193 1.99988 14.5 1.99988C15.8807 1.99988 17 3.11917 17 4.49988C18.6569 4.49988 20 5.84302 20 7.49988C20 8.06854 19.8418 8.60024 19.567 9.05338M17 19.4999C17 18.682 16.6072 17.9558 16 17.4997M19.567 9.05338C19.2105 9.64109 18.6579 10.0966 18 10.3292" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ACTIVITY_CHEVRON: Icon = Icon {
+    name: "activity-chevron",
+    view: 24.0,
+    body: r#"<path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static WORKTREE: Icon = Icon {
     name: "studio-worktree",
     view: 10.0,
@@ -1297,7 +1323,7 @@ fn studio_row(
                         .h(20.0)
                         .center_y()
                         .child(if activity_fixture {
-                            el().w(0.0)
+                            brand_mark_size("gpt", 14.0, t)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             icon(&TERMINAL, 15.0).color(t.muted)
                         } else if state.is_some_and(|s| s.dormant) {
@@ -1840,22 +1866,28 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
         if activity_plan {
             col()
                 .key("activity-tasks-dock")
-                .w(284.0)
-                .gap(14.0)
-                .padding(14.0)
+                .w(288.0)
+                .gap(6.0)
+                .padding(4.0)
                 .radius(18.0)
                 .border(1.0, t.line)
                 .fill(t.raised_high)
                 .child(
                     row()
                         .center_y()
-                        .gap(6.0)
+                        .gap(5.0)
                         .child(label("●", 8.0, 600.0, t.accent))
-                        .child(label("Studio activity reference", 10.5, 550.0, t.ink_soft)),
+                        .child(brand_mark_size("gpt", 14.0, t))
+                        .child(label("Studio activity reference", 12.0, 500.0, t.ink_soft)),
                 )
                 .child(
                     row()
                         .center_y()
+                        .padding(4.0)
+                        .radius(14.0)
+                        .fill(t.ground)
+                        .px(9.0)
+                        .py(7.0)
                         .gap(7.0)
                         .child(label("Changes", 12.0, 550.0, t.ink_soft))
                         .child(el().grow(1.0))
@@ -1871,48 +1903,66 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             500.0,
                             rune::color::hex("#d25c5c").unwrap(),
                         ))
-                        .child(label("⌄", 12.0, 400.0, t.muted)),
+                        .child(
+                            icon(&ACTIVITY_CHEVRON, 14.0)
+                                .color(t.muted)
+                                .rotate(std::f32::consts::FRAC_PI_2),
+                        ),
                 )
                 .child(el().w_full().h(1.0).fill(t.line_soft))
                 .child(
                     row()
                         .center_y()
-                        .gap(7.0)
-                        .child(label("Tasks", 12.0, 600.0, t.ink))
-                        .child(label("1/4", 10.5, 500.0, t.muted))
+                        .padding(4.0)
+                        .radius(14.0)
+                        .fill(t.ground)
+                        .px(9.0)
+                        .py(7.0)
+                        .gap(6.0)
+                        .child(label("Tasks", 12.5, 500.0, t.ink_soft))
                         .child(el().grow(1.0))
-                        .child(label("⌄", 12.0, 400.0, t.muted)),
+                        .child(icon(&FOOTER_COPY01, 13.0).color(t.muted))
+                        .child(label("1/4", 10.5, 500.0, t.muted))
+                        .child(
+                            icon(&ACTIVITY_CHEVRON, 14.0)
+                                .color(t.muted)
+                                .rotate(std::f32::consts::FRAC_PI_2),
+                        ),
                 )
                 .child(
                     col()
                         .w_full()
-                        .gap(14.0)
+                        .padding(4.0)
+                        .radius(14.0)
+                        .fill(t.ground)
+                        .gap(2.0)
                         .child(
                             row()
+                                .px(9.0)
                                 .py(3.0)
                                 .center_y()
-                                .gap(8.0)
+                                .gap(9.0)
                                 .child(
-                                    el().w(12.0)
-                                        .h(12.0)
+                                    el().w(15.0)
+                                        .h(15.0)
                                         .center()
-                                        .radius(3.0)
+                                        .radius(4.0)
                                         .fill(t.accent)
-                                        .child(label("✓", 9.0, 600.0, t.accent_ink)),
+                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
                                 )
                                 .child(
-                                    el().w(205.0)
-                                        .h(30.0)
+                                    el().w(228.0)
+                                        .h(32.0)
                                         .center_y()
                                         .child(
                                             text("Inspect the conversation activity components")
-                                                .font(TextStyle::new(11.5, 400.0).lh(15.0))
+                                                .font(TextStyle::new(12.5, 400.0).lh(16.0))
                                                 .color(t.muted)
                                                 .wrap()
                                                 .w_full(),
                                         )
                                         .child(
-                                            el().w(182.0)
+                                            el().w(196.0)
                                                 .h(1.0)
                                                 .pin(Some(0.0), Some(8.0), None, None)
                                                 .fill(t.muted.alpha(0.4)),
@@ -1921,39 +1971,63 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .child(
                             row()
+                                .px(9.0)
                                 .py(3.0)
                                 .center_y()
-                                .gap(8.0)
-                                .child(label("◉", 12.0, 500.0, t.accent))
+                                .gap(9.0)
+                                .child(
+                                    el().w(15.0)
+                                        .h(15.0)
+                                        .center()
+                                        .radius(4.0)
+                                        .fill(t.accent)
+                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
+                                )
                                 .child(label(
                                     "Implement the turn activity layout",
-                                    11.5,
+                                    12.5,
                                     400.0,
                                     t.ink_soft,
                                 )),
                         )
                         .child(
                             row()
+                                .px(9.0)
                                 .py(3.0)
                                 .center_y()
-                                .gap(8.0)
-                                .child(label("○", 12.0, 400.0, t.muted))
+                                .gap(9.0)
+                                .child(
+                                    el().w(15.0)
+                                        .h(15.0)
+                                        .center()
+                                        .radius(4.0)
+                                        .fill(t.accent)
+                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
+                                )
                                 .child(label(
                                     "Verify light and dark themes",
-                                    11.5,
+                                    12.5,
                                     400.0,
                                     t.ink_soft,
                                 )),
                         )
                         .child(
                             row()
+                                .px(9.0)
                                 .py(3.0)
                                 .center_y()
-                                .gap(8.0)
-                                .child(label("○", 12.0, 400.0, t.muted))
+                                .gap(9.0)
+                                .child(
+                                    el().w(15.0)
+                                        .h(15.0)
+                                        .center()
+                                        .radius(4.0)
+                                        .fill(t.accent)
+                                        .child(label("✓", 10.0, 600.0, t.accent_ink)),
+                                )
                                 .child(label(
                                     "Capture reference screenshots",
-                                    11.5,
+                                    12.5,
                                     400.0,
                                     t.ink_soft,
                                 )),
@@ -1963,7 +2037,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     row()
                         .w_full()
                         .center_y()
-                        .child(label("1 file · 1/4 tasks", 9.5, 400.0, t.muted))
+                        .px(9.0)
+                        .py(4.0)
+                        .child(label("1 file · 1/4 tasks", 10.5, 400.0, t.muted))
                         .child(el().grow(1.0))
                         .child(label("Expand all  ⌄", 10.5, 400.0, t.muted)),
                 )
@@ -2689,13 +2765,27 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 } else {
                     path.to_owned()
                 };
+                let step_icon = if command {
+                    &ACTIVITY_COMMAND
+                } else if item.name == "edit_file" {
+                    &ACTIVITY_EDIT
+                } else {
+                    &ACTIVITY_FILE
+                };
+                let step_hue = if command {
+                    rune::color::hex("#22a06b").unwrap()
+                } else if item.name == "edit_file" {
+                    rune::color::hex("#8b5cf6").unwrap()
+                } else {
+                    rune::color::hex("#4f9bea").unwrap()
+                };
                 let mut body = col().w_full().gap(1.0).child(
                     row()
                         .key(format!("activity-row-{}", item.id))
                         .w_full()
-                        .h(20.0)
-                        .gap(7.0)
-                        .px(2.0)
+                        .h(18.0)
+                        .gap(8.0)
+                        .px(0.0)
                         .center_y()
                         .radius(4.0)
                         .fill(
@@ -2709,21 +2799,20 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .hover(t.hover)
                         .child(
-                            text(if item.name == "edit_file" && s.studio.busy {
-                                "◉"
-                            } else if command {
-                                "›"
-                            } else if item.name == "read_file" {
-                                "▤"
-                            } else {
-                                "✎"
-                            })
-                            .font(TextStyle::new(12.0, 400.0))
-                            .color(
+                            icon(
+                                step_icon,
                                 if item.name == "edit_file" && s.studio.busy {
-                                    t.accent
+                                    16.0
                                 } else {
-                                    t.muted
+                                    14.0
+                                },
+                            )
+                            .color(step_hue)
+                            .rotate(
+                                if item.name == "edit_file" && s.studio.busy {
+                                    (s.start_actions.clock as f32 * 3.1) % std::f32::consts::TAU
+                                } else {
+                                    0.0
                                 },
                             ),
                         )
@@ -2751,9 +2840,18 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         )
                         .child(el().grow(1.0))
                         .child(if item.name == "edit_file" {
-                            text("+4  −2")
-                                .font(TextStyle::new(10.5, 500.0).mono())
-                                .color(t.muted)
+                            row()
+                                .gap(3.0)
+                                .child(
+                                    text("+4")
+                                        .font(TextStyle::new(10.5, 500.0).mono())
+                                        .color(rune::color::hex("#329b70").unwrap()),
+                                )
+                                .child(
+                                    text("−2")
+                                        .font(TextStyle::new(10.5, 500.0).mono())
+                                        .color(rune::color::hex("#d25c5c").unwrap()),
+                                )
                         } else {
                             el()
                         })
@@ -2807,13 +2905,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                         .gap(6.0)
                                         .radius(7.0)
                                         .fill(t.ink.alpha(0.035))
-                                        .child(
-                                            text("▧")
-                                                .font(TextStyle::new(11.0, 400.0))
-                                                .color(t.muted),
-                                        )
+                                        .child(icon(&ACTIVITY_COMMAND, 14.0).color(t.muted))
                                         .child(label("Tool detail", 11.0, 500.0, t.muted))
                                         .child(el().grow(1.0))
+                                        .child(icon(&FOOTER_COPY01, 12.0).color(t.muted))
                                         .child(label("Copy", 10.5, 400.0, t.muted)),
                                 )
                                 .child(
@@ -2842,22 +2937,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .gap(1.0)
                                 .radius(7.0)
                                 .child(
-                                    el().w_full()
-                                        .h(18.0)
-                                        .px(7.0)
-                                        .center_y()
-                                        .fill(t.ink.alpha(0.035))
-                                        .child(
-                                            text("@@ -12,7 +12,8 @@")
-                                                .font(TextStyle::new(9.5, 400.0).mono())
-                                                .color(t.muted),
-                                        ),
-                                )
-                                .child(
                                     row()
                                         .w_full()
-                                        .h(19.0)
+                                        .h(20.0)
                                         .center_y()
+                                        .px(7.0)
                                         .fill(
                                             rune::color::hex(if t.dark {
                                                 "#7f303044"
@@ -2866,18 +2950,24 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                             })
                                             .unwrap(),
                                         )
-                                        .child(label(
-                                            "  12     12  −  const gap = 12;",
-                                            10.0,
-                                            400.0,
-                                            rune::color::hex("#bd5757").unwrap(),
-                                        )),
+                                        .gap(8.0)
+                                        .child(
+                                            text("−")
+                                                .font(TextStyle::new(12.0, 600.0).mono())
+                                                .color(rune::color::hex("#bd5757").unwrap()),
+                                        )
+                                        .child(
+                                            text("const gap = 12;")
+                                                .font(TextStyle::new(12.0, 400.0).mono())
+                                                .color(t.ink_soft),
+                                        ),
                                 )
                                 .child(
                                     row()
                                         .w_full()
-                                        .h(19.0)
+                                        .h(20.0)
                                         .center_y()
+                                        .px(7.0)
                                         .fill(
                                             rune::color::hex(if t.dark {
                                                 "#23594144"
@@ -2886,18 +2976,24 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                             })
                                             .unwrap(),
                                         )
-                                        .child(label(
-                                            "  12     12  +  const gap = 10;",
-                                            10.0,
-                                            400.0,
-                                            rune::color::hex("#32815e").unwrap(),
-                                        )),
+                                        .gap(8.0)
+                                        .child(
+                                            text("+")
+                                                .font(TextStyle::new(12.0, 600.0).mono())
+                                                .color(rune::color::hex("#32815e").unwrap()),
+                                        )
+                                        .child(
+                                            text("const gap = 10;")
+                                                .font(TextStyle::new(12.0, 400.0).mono())
+                                                .color(t.ink_soft),
+                                        ),
                                 )
                                 .child(
                                     row()
                                         .w_full()
-                                        .h(19.0)
+                                        .h(20.0)
                                         .center_y()
+                                        .px(7.0)
                                         .fill(
                                             rune::color::hex(if t.dark {
                                                 "#23594144"
@@ -2906,14 +3002,20 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                             })
                                             .unwrap(),
                                         )
-                                        .child(label(
-                                            "  13     13  +  const reducedMotion = …",
-                                            10.0,
-                                            400.0,
-                                            rune::color::hex("#32815e").unwrap(),
-                                        )),
+                                        .gap(8.0)
+                                        .child(
+                                            text("+")
+                                                .font(TextStyle::new(12.0, 600.0).mono())
+                                                .color(rune::color::hex("#32815e").unwrap()),
+                                        )
+                                        .child(
+                                            text("const reducedMotion = prefersReducedMotion();")
+                                                .font(TextStyle::new(12.0, 400.0).mono())
+                                                .color(t.ink_soft)
+                                                .truncate(),
+                                        ),
                                 )
-                                .child(label("3 more changed lines", 9.5, 400.0, t.muted)),
+                                .child(label("3 more changed lines", 10.5, 400.0, t.muted)),
                         );
                         if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
                             let deleted =
@@ -2933,12 +3035,24 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .center_y()
                                     .px(8.0)
                                     .fill(color.alpha(0.12))
-                                    .child(label(old, 9.0, 400.0, t.muted).w(28.0))
-                                    .child(label(new, 9.0, 400.0, t.muted).w(28.0))
-                                    .child(label(sign, 10.0, 600.0, color).w(14.0))
+                                    .child(
+                                        row()
+                                            .w(34.0)
+                                            .center_y()
+                                            .justify_end()
+                                            .child(label(old, 10.0, 400.0, t.muted)),
+                                    )
+                                    .child(
+                                        row()
+                                            .w(34.0)
+                                            .center_y()
+                                            .justify_end()
+                                            .child(label(new, 10.0, 400.0, t.muted)),
+                                    )
+                                    .child(label(sign, 11.0, 600.0, color).w(14.0))
                                     .child(
                                         text(code.to_owned())
-                                            .font(TextStyle::new(10.5, 400.0).mono())
+                                            .font(TextStyle::new(12.0, 400.0).mono())
                                             .color(t.ink_soft),
                                     )
                             };
@@ -2948,7 +3062,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     .px(8.0)
                                     .center_y()
                                     .fill(t.ink.alpha(0.03))
-                                    .child(label(value, 9.5, 400.0, t.muted))
+                                    .child(label(value, 10.0, 400.0, t.muted))
                             };
                             body = body.child(
                                 col()
@@ -2965,9 +3079,10 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                             .gap(6.0)
                                             .radius(8.0)
                                             .fill(t.ink.alpha(0.04))
-                                            .child(label("▧", 11.0, 400.0, t.muted))
+                                            .child(icon(&ACTIVITY_EDIT, 14.0).color(t.muted))
                                             .child(label("Diff", 11.0, 500.0, t.muted))
                                             .child(el().grow(1.0))
+                                            .child(icon(&FOOTER_COPY01, 12.0).color(t.muted))
                                             .child(label("Copy", 10.5, 400.0, t.muted)),
                                     )
                                     .child(
@@ -3099,9 +3214,26 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             if s.studio.busy
                 && let Some(group) = exchange.take()
             {
-                exchange = Some(group.child(label("◌", 12.0, 400.0, t.muted)));
+                let angle = (s.start_actions.clock as f32 * 2.6) % std::f32::consts::TAU;
+                let status = row()
+                    .key("activity-thinking-status")
+                    .w_full()
+                    .h(22.0)
+                    .center_y()
+                    .child(icon(&ACTIVITY_THINKING, 14.0).color(t.muted).rotate(angle))
+                    .child(el().grow(1.0))
+                    .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
+                exchange = Some(group.child(status));
             } else if activity_rows_open && let Some(group) = exchange.take() {
-                exchange = Some(group.child(label("◉", 11.0, 400.0, t.muted)));
+                let status = row()
+                    .key("activity-thinking-status")
+                    .w_full()
+                    .h(20.0)
+                    .center_y()
+                    .child(icon(&ACTIVITY_THINKING, 14.0).color(t.muted))
+                    .child(el().grow(1.0))
+                    .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
+                exchange = Some(group.child(status));
             }
         }
         if item.kind == "user" {

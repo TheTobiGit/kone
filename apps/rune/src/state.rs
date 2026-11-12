@@ -548,6 +548,10 @@ impl AppState {
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() < 0.22)
             || s.studio_refusal
                 .is_some_and(|at| at.elapsed().as_secs_f32() < 2.8);
+        let activity_motion = s.page == Page::Studio && s.studio.busy;
+        if activity_motion {
+            tx.wake_after(std::time::Duration::from_millis(33));
+        }
         if s.studio_fade
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= 0.22)
         {
@@ -622,6 +626,7 @@ impl AppState {
             || title_blurred
             || tooltip_changed
             || animating
+            || activity_motion
             || session_motion
             || metric_motion
             || holding
