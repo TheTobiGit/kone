@@ -2784,7 +2784,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 };
                 let path = item.text.as_str();
                 let (directory, filename) = path.rsplit_once('/').unwrap_or(("", path));
-                let short_name = if filename.chars().count() > 9 {
+                let short_name = if command {
+                    filename.to_owned()
+                } else if filename.chars().count() > 9 {
                     format!("{}…", filename.chars().take(9).collect::<String>())
                 } else {
                     filename.to_owned()
@@ -2828,7 +2830,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             .child(
                                 el().w(1.5)
                                     .h(22.0)
-                                    .absolute(7.0, -5.25)
+                                    .absolute(7.0, -10.0)
                                     .radius(1.0)
                                     .fill(t.ink.alpha(0.12)),
                             )
@@ -2852,6 +2854,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             .min_w(155.0)
                             .color(t.muted),
                     );
+                } else if item.name == "edit_file" && s.studio.busy {
+                    activity_row = activity_row.child(el());
                 } else {
                     activity_row = activity_row.child(
                         el().px(3.0)
@@ -2923,7 +2927,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     if command && activity_rows_open {
                         let mut detail = col()
                             .w_full()
-                            .pl(25.0)
+                            .pl(24.0)
+                            .pt(3.0)
+                            .pb(1.0)
                             .gap(3.0)
                             .child(
                                 text("✓ No type errors found")
@@ -2943,6 +2949,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                     row()
                                         .w_full()
                                         .h(34.0)
+                                        .mt(1.4)
                                         .px(10.0)
                                         .center_y()
                                         .gap(6.0)
@@ -2962,10 +2969,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                         .fill(t.ink.alpha(0.025))
                                         .child(
                                             text(item.detail.clone())
-                                                .font(TextStyle::new(11.5, 400.0).mono().lh(20.0))
+                                                .font(TextStyle::new(12.0, 400.0).mono().lh(18.6))
                                                 .color(t.ink_soft),
                                         ),
                                 );
+                            detail = detail.mb(4.0);
                         }
                         body = body.child(detail);
                     } else if matches!(
@@ -2976,7 +2984,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     {
                         body = body.child(
                             col()
-                                .pl(25.0)
+                                .pl(24.0)
                                 .gap(1.0)
                                 .radius(7.0)
                                 .child(
@@ -3243,11 +3251,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             }
             let open = s.studio.activity_open;
             if s.studio.busy {
-                head = head.mt(44.0);
+                head = head.mt(47.0);
             } else {
-                head = head
-                    .mt(43.0)
-                    .mb(if s.studio.activity_open { 5.0 } else { 0.0 });
+                head = head.mt(50.0).mb(0.0);
             }
             head = head.on_press(move |s: &mut AppState| s.studio.activity_open = !open);
             if let Some(group) = exchange.take() {
@@ -3261,6 +3267,8 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .key("activity-thinking-status")
                     .w_full()
                     .h(26.0)
+                    .mt(9.0)
+                    .mb(0.0)
                     .center_y()
                     .child(activity_orb(16.0, s.start_actions.clock as f32, t.muted))
                     .child(el().grow(1.0))
@@ -3270,7 +3278,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 let status = row()
                     .key("activity-thinking-status")
                     .w_full()
-                    .h(20.0)
+                    .h(26.0)
+                    .mt(9.0)
+                    .mb(0.0)
                     .center_y()
                     .child(icon(&ACTIVITY_THINKING, 14.0).color(t.muted))
                     .child(el().grow(1.0))
