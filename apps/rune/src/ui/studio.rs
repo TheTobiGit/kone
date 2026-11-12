@@ -2145,14 +2145,29 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
             continue;
         }
         let line = match item.kind.as_str() {
-            "user" => row().w_full().justify_end().child(
-                label(item.text.clone(), 14.0, 400.0, t.ink)
-                    .max_w(576.0)
-                    .px(15.0)
-                    .py(10.0)
-                    .radius(16.0)
-                    .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
-            ),
+            "user" => col()
+                .w_full()
+                .child(
+                    row()
+                        .w_full()
+                        .center_y()
+                        .child(el().w(13.0))
+                        .child(el().grow(1.0).h(1.0).fill(t.line))
+                        .child(
+                            label(item.text.clone(), 14.0, 400.0, t.ink)
+                                .max_w(576.0)
+                                .px(15.0)
+                                .py(10.0)
+                                .radius(16.0)
+                                .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
+                        ),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .child(el().w(13.0))
+                        .child(el().w(1.0).h(28.0).fill(t.line)),
+                ),
             "compaction" | "setting_mark" | "handoff_mark" => row()
                 .w_full()
                 .justify_center()
@@ -2169,7 +2184,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 if first {
                     let mut head = row().center_y().gap(8.0);
                     if let Some(identity) = &s.studio.connected_identity {
-                        head = head.child(connected_avatar(identity));
+                        head = head.child(
+                            el().w(26.0)
+                                .h(26.0)
+                                .center()
+                                .child(connected_avatar(identity)),
+                        );
                         head = head.child(label(identity.name.clone(), 13.0, 400.0, t.ink_soft));
                     } else {
                         head = head.child(label("Assistant", 13.0, 400.0, t.ink_soft));
@@ -2182,7 +2202,16 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     row()
                         .center_y()
                         .gap(12.0)
-                        .child(label("8:53 AM", 11.0, 400.0, t.muted))
+                        .child(label(
+                            if s.studio.conversation_fixture.is_some() {
+                                "8:53 AM"
+                            } else {
+                                ""
+                            },
+                            11.0,
+                            400.0,
+                            t.muted,
+                        ))
                         .child(
                             label("▢", 14.0, 400.0, t.muted)
                                 .on_press_tx(move |_: &mut AppState, tx| tx.copy(copy.clone())),

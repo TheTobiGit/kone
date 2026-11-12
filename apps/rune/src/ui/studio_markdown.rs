@@ -89,7 +89,7 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
                     && boundary(line[end..].chars().next())
                 {
                     spans.push(Span::new(start, end).color(
-                        rune::color::hex(if t.dark { "#c792ea" } else { "#a626a4" }).unwrap(),
+                        rune::color::hex(if t.dark { "#c792b5" } else { "#b600ff" }).unwrap(),
                     ));
                 }
             }
@@ -99,13 +99,13 @@ fn code_block(language: &str, source: &str, t: Palette) -> El {
         {
             spans.push(
                 Span::new(start, start + end + 2)
-                    .color(rune::color::hex(if t.dark { "#c3e88d" } else { "#50a14f" }).unwrap()),
+                    .color(rune::color::hex(if t.dark { "#ce9178" } else { "#c00000" }).unwrap()),
             );
         }
         content = content.child(
             text(if line.is_empty() { " " } else { line }.to_owned())
                 .font(body_style(12.5, 20.0).mono())
-                .color(t.ink)
+                .color(rune::color::hex(if t.dark { "#9cdcfe" } else { "#001080" }).unwrap())
                 .spans(spans),
         );
     }
@@ -162,7 +162,7 @@ pub(super) fn render(source: &str, t: Palette) -> El {
         } else if let Some(heading) = line.strip_prefix("## ") {
             result = result.child(
                 text(heading.to_owned())
-                    .font(body_style(16.0, 21.12))
+                    .font(TextStyle::new(16.0, 600.0))
                     .color(t.ink)
                     .wrap()
                     .w_full()
