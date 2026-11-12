@@ -19,6 +19,13 @@ const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 /// `font-synthesis: none`, so every weight it asks for paints as Regular.
 const REGULAR: f32 = 400.0;
 
+/// Shared home-page chrome. The first-run screen uses the same outer inset
+/// and the same gap under the header as the populated projects list.
+pub(crate) const PAGE_PX: f32 = 64.0;
+pub(crate) const PAGE_PT: f32 = 20.0;
+pub(crate) const PAGE_PB: f32 = 64.0;
+pub(crate) const CONTENT_PT: f32 = 96.0;
+
 static START_PLUS: Icon = Icon {
     name: "start-plus",
     view: 24.0,
@@ -275,23 +282,35 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .fill(t.ground)
         .child(crate::plasma::slot(s, cx, glow))
         .child(
-            row()
+            col()
                 .w_full()
-                .px(64.0)
-                .pt(52.0)
-                .justify_end()
-                .center_y()
-                .child(settings_button(t)),
-        )
-        .child(
-            col().grow(1.0).w_full().center().child(
-                el().key("start-hero")
-                    .opacity(rise)
-                    .opacity_motion(NOW)
-                    .offset(0.0, 8.0 * (1.0 - rise))
-                    .offset_motion(NOW)
-                    .child(actions(t, s, reduced)),
-            ),
+                .h_full()
+                .px(PAGE_PX)
+                .pt(PAGE_PT)
+                .pb(PAGE_PB)
+                .child(
+                    row()
+                        .w_full()
+                        .justify_end()
+                        .center_y()
+                        .child(settings_button(t)),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .grow(1.0)
+                        .min_h(0.0)
+                        .justify_center()
+                        .pt(CONTENT_PT)
+                        .child(
+                            el().key("start-hero")
+                                .opacity(rise)
+                                .opacity_motion(NOW)
+                                .offset(0.0, 8.0 * (1.0 - rise))
+                                .offset_motion(NOW)
+                                .child(actions(t, s, reduced)),
+                        ),
+                ),
         )
 }
 
