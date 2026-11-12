@@ -283,6 +283,7 @@ pub struct StudioItem {
     pub name: String,
     pub status: String,
     pub tasks: Vec<serde_json::Value>,
+    pub detail: String,
 }
 
 #[derive(Clone)]
@@ -454,6 +455,7 @@ fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
                     name: item["name"].as_str().unwrap_or("").into(),
                     status: item["status"].as_str().unwrap_or("").into(),
                     tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
+                    detail: item["detail"].as_str().unwrap_or("").to_owned(),
                 });
             }
         }
@@ -1801,6 +1803,7 @@ impl AppState {
                         })
                         .to_owned(),
                     tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
+                    detail: item["detail"].as_str().unwrap_or("").to_owned(),
                 };
                 if let Some(existing) = self.studio.items.iter_mut().find(|i| i.id == id) {
                     let at = existing.at.or(value.at);

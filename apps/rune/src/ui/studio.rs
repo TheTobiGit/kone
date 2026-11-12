@@ -2402,12 +2402,32 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     }
                     turn = turn.child(head);
                 }
-                turn = turn.child(super::studio_markdown::render(
-                    &item.text,
-                    t,
-                    cb_base,
-                    s.studio.fixture_cb_copy,
-                ));
+                if s.studio
+                    .conversation_fixture
+                    .as_deref()
+                    .is_some_and(|x| x.starts_with("activity-"))
+                {
+                    for para in item.text.split("\n\n") {
+                        turn = turn.child(
+                            text(para.to_owned())
+                                .font(
+                                    TextStyle::new(
+                                        if para.starts_with("## ") { 18.0 } else { 14.0 },
+                                        400.0,
+                                    )
+                                    .lh(22.0),
+                                )
+                                .color(t.ink),
+                        );
+                    }
+                } else {
+                    turn = turn.child(super::studio_markdown::render(
+                        &item.text,
+                        t,
+                        cb_base,
+                        s.studio.fixture_cb_copy,
+                    ));
+                }
                 cb_base += item.text.matches("```").count() / 2;
                 let copy = item.text.clone();
                 let fixture = s.studio.conversation_fixture.is_some();
@@ -2463,6 +2483,83 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 }
                 turn.child(footer)
             }
+            "tool_call"
+                if s.studio
+                    .conversation_fixture
+                    .as_deref()
+                    .is_some_and(|x| x.starts_with("activity-")) =>
+            {
+                let command = item.name == "run_command";
+                let title = match item.name.as_str() {
+                    "read_file" => "Read",
+                    "edit_file" => "Edit",
+                    "run_command" => "Run",
+                    _ => "Tool",
+                };
+                let mut body = col()
+                    .w_full()
+                    .gap(5.0)
+                    .px(12.0)
+                    .py(9.0)
+                    .border(1.0, t.ink.alpha(0.09))
+                    .radius(8.0)
+                    .fill(t.raised);
+                body = body.child(
+                    row()
+                        .center_y()
+                        .gap(8.0)
+                        .child(
+                            text(if command {
+                                "›"
+                            } else if title == "Read" {
+                                "▤"
+                            } else {
+                                "✎"
+                            })
+                            .font(TextStyle::new(14.0, 400.0))
+                            .color(t.muted),
+                        )
+                        .child(
+                            text(format!("{title} {}", item.text))
+                                .font(TextStyle::new(12.5, 450.0))
+                                .color(t.ink_soft),
+                        )
+                        .child(el().grow(1.0))
+                        .child(
+                            text("1s")
+                                .font(TextStyle::new(11.0, 400.0).mono())
+                                .color(t.muted),
+                        ),
+                );
+                if matches!(
+                    s.studio.conversation_fixture.as_deref(),
+                    Some("activity-expanded" | "activity-diff" | "activity-hover")
+                ) && (command || item.name == "edit_file")
+                {
+                    if command {
+                        body = body.child(
+                            el().w_full()
+                                .px(10.0)
+                                .py(8.0)
+                                .radius(6.0)
+                                .fill(t.ground)
+                                .child(
+                                    text(item.detail.clone())
+                                        .font(TextStyle::new(11.0, 400.0).mono().lh(16.0))
+                                        .color(t.ink_soft),
+                                ),
+                        );
+                    } else if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
+                        body = body.child(
+                            text(item.detail.clone())
+                                .font(TextStyle::new(10.5, 400.0).mono().lh(15.0))
+                                .color(t.ink_soft),
+                        );
+                    }
+                }
+                body
+            }
+            "plan_text" => el(),
             _ => label(
                 if item.kind == "tool_call" {
                     format!("{}  {}", item.name, item.text)

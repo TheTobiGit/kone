@@ -1,0 +1,83 @@
+{
+  "blocks": [
+    {
+      "id": "user-activity",
+      "role": "user",
+      "text": "Please review the Studio activity display and prepare the release view.",
+      "at": 1760000000000,
+      "historical": true,
+      "model": "gpt-5.4",
+      "effort": "high"
+    },
+    {
+      "id": "assistant-activity",
+      "role": "assistant",
+      "turnId": "assistant-activity",
+      "at": 1760000001000,
+      "state": "completed",
+      "endedAt": 1760000018000,
+      "historical": true,
+      "items": [
+        {
+          "itemId": "activity-plan",
+          "kind": "plan_text",
+          "status": "in-progress",
+          "text": "",
+          "tasks": [
+            {
+              "id": "task-1",
+              "content": "Inspect the conversation activity components",
+              "status": "completed"
+            },
+            {
+              "id": "task-2",
+              "content": "Implement the turn activity layout",
+              "activeForm": "Implementing the turn activity layout",
+              "status": "in-progress"
+            },
+            {
+              "id": "task-3",
+              "content": "Verify light and dark themes",
+              "status": "pending"
+            },
+            {
+              "id": "task-4",
+              "content": "Capture reference screenshots",
+              "status": "pending"
+            }
+          ]
+        },
+        {
+          "itemId": "activity-read",
+          "kind": "tool_call",
+          "status": "completed",
+          "text": "app/components/turn/TurnWorkFold.vue",
+          "name": "read_file",
+          "detail": "{\"AbsolutePath\":\"/workspace/apps/web/app/components/turn/TurnWorkFold.vue\",\"StartLine\":1,\"EndLine\":42}"
+        },
+        {
+          "itemId": "activity-command",
+          "kind": "tool_call",
+          "status": "completed",
+          "text": "pnpm run check-types",
+          "name": "run_command",
+          "detail": "> kone-web@0.1.0 check-types\n> nuxt typecheck\n\n✔ No type errors found\n\nDone in 4.82s"
+        },
+        {
+          "itemId": "activity-edit",
+          "kind": "tool_call",
+          "status": "completed",
+          "text": "app/components/turn/TurnWorkFold.vue",
+          "name": "edit_file",
+          "detail": "diff --git a/app/components/turn/TurnWorkFold.vue b/app/components/turn/TurnWorkFold.vue\nindex 2a51b9c..77d831e 100644\n--- a/app/components/turn/TurnWorkFold.vue\n+++ b/app/components/turn/TurnWorkFold.vue\n@@ -12,7 +12,8 @@\n-const gap = 12;\n+const gap = 10;\n+const reducedMotion = prefersReducedMotion();\n@@ -41,6 +42,7 @@\n-.fold { transition: all 380ms ease; }\n+.fold { transition: grid-template-rows 380ms cubic-bezier(.22,1,.36,1); }\n+@media (prefers-reduced-motion: reduce) { .fold { transition: none; } }"
+        },
+        {
+          "itemId": "activity-final",
+          "kind": "assistant_text",
+          "status": "completed",
+          "text": "## Activity view ready\n\nThe turn activity is organized into a compact work summary, with expandable details for commands, file reads, and edits. The checklist tracks the remaining review steps."
+        }
+      ]
+    }
+  ]
+}

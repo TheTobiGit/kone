@@ -101,6 +101,14 @@ fn main() {
             }),
             ("studio-convo-marks", |s| studio_conversation(s, "marks")),
             ("studio-convo-code", |s| studio_conversation(s, "code")),
+            ("studio-activity-running", |s| studio_activity(s, "running")),
+            ("studio-activity-folded", |s| studio_activity(s, "folded")),
+            ("studio-activity-expanded", |s| {
+                studio_activity(s, "expanded")
+            }),
+            ("studio-activity-diff", |s| studio_activity(s, "diff")),
+            ("studio-activity-hover", |s| studio_activity(s, "hover")),
+            ("studio-activity-plan", |s| studio_activity(s, "plan")),
             ("studio-column-head-info", |s| {
                 studio_column_head(s);
                 s.studio.title_info_open = true;
@@ -475,6 +483,39 @@ fn studio_conversation(s: &mut AppState, scene: &str) {
     } else {
         None
     };
+}
+
+fn studio_activity(s: &mut AppState, scene: &str) {
+    studio_conversation(s, "mid");
+    s.studio.conversation_fixture = Some(format!("activity-{scene}"));
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/fixtures/studio-activity.json"))
+            .expect("valid activity fixture");
+    s.studio.items.clear();
+    s.studio.items.push(state::StudioItem {
+        kind: "user".into(),
+        text: fixture["blocks"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+        ..Default::default()
+    });
+    for item in fixture["blocks"][1]["items"].as_array().unwrap() {
+        s.studio.items.push(state::StudioItem {
+            id: item["itemId"].as_str().unwrap_or_default().into(),
+            kind: item["kind"].as_str().unwrap_or_default().into(),
+            text: item["text"].as_str().unwrap_or_default().into(),
+            name: item["name"].as_str().unwrap_or_default().into(),
+            status: item["status"].as_str().unwrap_or_default().into(),
+            detail: item["detail"].as_str().unwrap_or_default().into(),
+            tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
+            ..Default::default()
+        });
+    }
+    s.studio.busy = scene == "running";
+    s.studio.turn_started = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(17));
+    s.studio.turn_title = "Review the Studio activity".into();
+    s.studio.conversation_scroll = Some(("studio-speaker-1".into(), 120.0));
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
