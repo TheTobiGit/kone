@@ -65,9 +65,10 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         t.sunken.alpha(0.35)
     };
     let mut frame = el().w_full().h_full();
-    if flat {
+    if flat || s.page == Page::Studio {
         // Capture parity: the page fills the window like the browser capture
-        // does, with no drawn card frame.
+        // does, with no drawn card frame. Studio is also a full-bleed Electron
+        // surface in the live app, so it must not inherit the inset shell.
         return frame.fill(t.ground).window_drag().child(stage);
     }
     if !clear {
