@@ -103,10 +103,20 @@ static ACTIVITY_THINKING: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M7 4.5C5.34315 4.5 4 5.84315 4 7.5C4 8.06866 4.15822 8.60037 4.43304 9.0535C3.04727 9.31855 2 10.537 2 12C2 13.463 3.04727 14.6814 4.43304 14.9465M7 4.5C7 3.11929 8.11929 2 9.5 2C10.8807 2 12 3.11929 12 4.5V19.5C12 20.8807 10.8807 22 9.5 22C8.11929 22 7 20.8807 7 19.5C5.34315 19.5 4 18.1569 4 16.5C4 15.9313 4.15822 15.3996 4.43304 14.9465M7 4.5C7 5.31791 7.39278 6.04408 8 6.50018M4.43304 14.9465C4.78948 14.3588 5.34207 13.9032 6 13.6707" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 19.4999C18.6569 19.4999 20 18.1567 20 16.4999C20 15.9312 19.8418 15.3995 19.567 14.9464C20.9527 14.6813 22 13.4629 22 11.9999C22 10.5369 20.9527 9.31843 19.567 9.05338M17 19.4999C17 20.8806 15.8807 21.9999 14.5 21.9999C13.1193 21.9999 12 20.8806 12 19.4999L12 4.49988C12 3.11917 13.1193 1.99988 14.5 1.99988C15.8807 1.99988 17 3.11917 17 4.49988C18.6569 4.49988 20 5.84302 20 7.49988C20 8.06854 19.8418 8.60024 19.567 9.05338M17 19.4999C17 18.682 16.6072 17.9558 16 17.4997M19.567 9.05338C19.2105 9.64109 18.6579 10.0966 18 10.3292" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
+static ACTIVITY_TOOLS: Icon = Icon {
+    name: "activity-tools",
+    view: 24.0,
+    body: r#"<path d="M13 11L18 6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M19 7L17 5L19.5 3.5L20.5 4.5L19 7Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M4.02513 8.97487C3.01416 7.96391 2.75095 6.48836 3.23548 5.23548L4.65748 6.65748H6.65748V4.65748L5.23548 3.23548C6.48836 2.75095 7.96391 3.01416 8.97487 4.02513C9.98621 5.03647 10.2493 6.51274 9.76398 7.76593L16.2341 14.236C17.4873 13.7507 18.9635 14.0138 19.9749 15.0251C20.9858 16.0361 21.2491 17.5116 20.7645 18.7645L19.3425 17.3425L17.3425 17.3425V19.3425L18.7645 20.7645C17.5116 21.2491 16.0361 20.9858 15.0251 19.9749C14.0145 18.9643 13.7511 17.4895 14.2349 16.2369L7.76312 9.76507C6.51053 10.2489 5.03571 9.98546 4.02513 8.97487Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12.203 14.5L6.59897 20.1041C6.07115 20.6319 5.2154 20.6319 4.68758 20.1041L3.89586 19.3124C3.36805 18.7846 3.36805 17.9288 3.89586 17.401L9.49994 11.7969" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>"#,
+};
 static ACTIVITY_CHEVRON: Icon = Icon {
     name: "activity-chevron",
     view: 24.0,
     body: r#"<path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static ACTIVITY_CHEVRON_DOWN: Icon = Icon {
+    name: "activity-chevron-down",
+    view: 24.0,
+    body: r#"<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 static WORKTREE: Icon = Icon {
@@ -950,6 +960,41 @@ fn trail_branch(body: El, t: Palette) -> El {
                 .pin(Some(7.0), Some(2.0), None, None),
         )
         .child(body)
+}
+
+/// Outer `ActivityStepDetail` card shared by command output and diff panels.
+fn activity_step_detail(glyph: &'static Icon, title: &'static str, body: El, t: Palette) -> El {
+    col()
+        .w_full()
+        .mt(4.0)
+        .mb(8.0)
+        .radius(10.0)
+        .border(1.0, t.line)
+        .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.03))
+        .child(
+            row()
+                .w_full()
+                .h(34.047)
+                .px(10.0)
+                .center_y()
+                .gap(6.0)
+                .fill(t.ink.alpha(0.02))
+                .child(icon(glyph, 13.0).color(t.muted))
+                .child(
+                    text(title)
+                        .font(TextStyle::new(11.5, 400.0).mono())
+                        .color(t.muted),
+                )
+                .child(el().grow(1.0))
+                .child(icon(&FOOTER_COPY01, 12.0).color(t.muted))
+                .child(
+                    text("Copy")
+                        .font(TextStyle::new(11.0, 400.0).mono())
+                        .color(t.muted),
+                ),
+        )
+        .child(el().w_full().h(1.0).fill(t.ink.alpha(0.05)))
+        .child(el().w_full().padding(8.0).child(body))
 }
 
 fn activity_task_row(title: &str, status: &str, t: Palette, time: f32) -> El {
@@ -2759,18 +2804,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .is_some_and(|x| x.starts_with("activity-"))
                 {
                     for para in item.text.split("\n\n") {
+                        let heading = para.starts_with("## ");
                         turn = turn.child(
                             text(para.trim_start_matches("## ").to_owned())
                                 .font(
                                     TextStyle::new(
-                                        if para.starts_with("## ") { 18.0 } else { 14.0 },
-                                        if para.starts_with("## ") {
-                                            600.0
-                                        } else {
-                                            400.0
-                                        },
+                                        if heading { 16.0 } else { 14.0 },
+                                        if heading { 640.0 } else { 400.0 },
                                     )
-                                    .lh(22.0),
+                                    .lh(if heading {
+                                        21.12
+                                    } else {
+                                        22.96
+                                    }),
                                 )
                                 .color(t.ink)
                                 .wrap()
@@ -2839,7 +2885,9 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
                         ));
                 }
-                if is_activity {
+                let hover_scene =
+                    s.studio.conversation_fixture.as_deref() == Some("activity-hover");
+                if is_activity && !hover_scene {
                     turn
                 } else {
                     turn.child(footer)
@@ -2906,15 +2954,6 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .gap(8.0)
                     .center_y()
                     .radius(4.0)
-                    .fill(
-                        if s.studio.conversation_fixture.as_deref() == Some("activity-hover")
-                            && item.name == "read_file"
-                        {
-                            t.hover
-                        } else {
-                            t.ground.alpha(0.0)
-                        },
-                    )
                     .hover(t.hover)
                     .child(
                         el().w(16.0)
@@ -2965,7 +3004,25 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     } else {
                         el()
                     })
-                    .child(text("›").font(TextStyle::new(14.0, 400.0)).color(t.faint))
+                    .child(
+                        icon(
+                            if (is_activity
+                                && ((command
+                                    && s.studio.conversation_fixture.as_deref()
+                                        == Some("activity-expanded"))
+                                    || (item.name == "edit_file"
+                                        && s.studio.conversation_fixture.as_deref()
+                                            == Some("activity-diff"))))
+                                || (!is_activity && activity_row_open)
+                            {
+                                &ACTIVITY_CHEVRON_DOWN
+                            } else {
+                                &ACTIVITY_CHEVRON
+                            },
+                            12.0,
+                        )
+                        .color(t.ink_soft.alpha(0.45)),
+                    )
                     .on_press({
                         let row_id = item.id.clone();
                         move |s: &mut AppState| {
@@ -3009,36 +3066,16 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                         if activity_row_open
                             && s.studio.conversation_fixture.as_deref() == Some("activity-expanded")
                         {
-                            detail = detail
-                                .child(
-                                    row()
-                                        .w_full()
-                                        .h(34.047)
-                                        .mt(4.0)
-                                        .px(10.0)
-                                        .center_y()
-                                        .gap(6.0)
-                                        .radius(7.0)
-                                        .fill(t.ink.alpha(0.035))
-                                        .child(icon(&ACTIVITY_COMMAND, 14.0).color(t.muted))
-                                        .child(label("Tool detail", 11.0, 500.0, t.muted))
-                                        .child(el().grow(1.0))
-                                        .child(icon(&FOOTER_COPY01, 12.0).color(t.muted))
-                                        .child(label("Copy", 10.5, 400.0, t.muted)),
-                                )
-                                .child(
-                                    el().w_full()
-                                        .px(16.0)
-                                        .py(15.9815)
-                                        .radius(6.0)
-                                        .fill(t.ink.alpha(0.025))
-                                        .child(
-                                            text(item.detail.clone())
-                                                .font(TextStyle::new(12.0, 400.0).mono().lh(18.6))
-                                                .color(t.ink_soft),
-                                        ),
-                                );
-                            detail = detail.mb(8.0);
+                            detail = detail.child(activity_step_detail(
+                                &ACTIVITY_TOOLS,
+                                "Tool detail",
+                                el().w_full().px(10.0).py(8.0).child(
+                                    text(item.detail.clone())
+                                        .font(TextStyle::new(12.0, 400.0).mono().lh(18.6))
+                                        .color(t.ink_soft),
+                                ),
+                                t,
+                            ));
                         }
                         body = body.child(detail);
                     } else if matches!(
@@ -3047,202 +3084,140 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     ) && item.name == "edit_file"
                         && activity_row_open
                     {
+                        let diff_add = rune::color::hex("#059669").unwrap();
+                        let diff_del = rune::color::hex("#e11d48").unwrap();
+                        let del_text = crate::theme::mix_srgb(diff_del, t.ink, 0.65);
+                        let preview_line = |sign: &str, code: &str, is_add: bool| {
+                            let tint = if is_add { diff_add } else { diff_del };
+                            row()
+                                .w_full()
+                                .h(20.0)
+                                .center_y()
+                                .pl(6.0)
+                                .pr(8.0)
+                                .radius(4.0)
+                                .fill(tint.alpha(0.07))
+                                .gap(8.0)
+                                .child(
+                                    text(sign.to_owned())
+                                        .font(TextStyle::new(11.5, 600.0).mono())
+                                        .color(tint),
+                                )
+                                .child(
+                                    text(code.to_owned())
+                                        .font(TextStyle::new(11.5, 400.0).mono())
+                                        .color(if is_add { t.ink } else { del_text })
+                                        .truncate(),
+                                )
+                        };
                         body = body.child(trail_branch(
                             col()
                                 .w_full()
                                 .gap(1.0)
-                                .radius(7.0)
-                                .child(
-                                    row()
-                                        .w_full()
-                                        .h(20.0)
-                                        .center_y()
-                                        .px(7.0)
-                                        .fill(
-                                            rune::color::hex(if t.dark {
-                                                "#7f303044"
-                                            } else {
-                                                "#fbe9e9"
-                                            })
-                                            .unwrap(),
-                                        )
-                                        .gap(8.0)
-                                        .child(
-                                            text("−")
-                                                .font(TextStyle::new(12.0, 600.0).mono())
-                                                .color(rune::color::hex("#bd5757").unwrap()),
-                                        )
-                                        .child(
-                                            text("const gap = 12;")
-                                                .font(TextStyle::new(12.0, 400.0).mono())
-                                                .color(t.ink_soft),
-                                        ),
-                                )
-                                .child(
-                                    row()
-                                        .w_full()
-                                        .h(20.0)
-                                        .center_y()
-                                        .px(7.0)
-                                        .fill(
-                                            rune::color::hex(if t.dark {
-                                                "#23594144"
-                                            } else {
-                                                "#e7f3ed"
-                                            })
-                                            .unwrap(),
-                                        )
-                                        .gap(8.0)
-                                        .child(
-                                            text("+")
-                                                .font(TextStyle::new(12.0, 600.0).mono())
-                                                .color(rune::color::hex("#32815e").unwrap()),
-                                        )
-                                        .child(
-                                            text("const gap = 10;")
-                                                .font(TextStyle::new(12.0, 400.0).mono())
-                                                .color(t.ink_soft),
-                                        ),
-                                )
-                                .child(
-                                    row()
-                                        .w_full()
-                                        .h(20.0)
-                                        .center_y()
-                                        .px(7.0)
-                                        .fill(
-                                            rune::color::hex(if t.dark {
-                                                "#23594144"
-                                            } else {
-                                                "#e7f3ed"
-                                            })
-                                            .unwrap(),
-                                        )
-                                        .gap(8.0)
-                                        .child(
-                                            text("+")
-                                                .font(TextStyle::new(12.0, 600.0).mono())
-                                                .color(rune::color::hex("#32815e").unwrap()),
-                                        )
-                                        .child(
-                                            text("const reducedMotion = prefersReducedMotion();")
-                                                .font(TextStyle::new(12.0, 400.0).mono())
-                                                .color(t.ink_soft)
-                                                .truncate(),
-                                        ),
-                                )
-                                .child(label("3 more changed lines", 10.5, 400.0, t.muted)),
+                                .pb(4.0)
+                                .child(preview_line("−", "const gap = 12;", false))
+                                .child(preview_line("+", "const gap = 10;", true))
+                                .child(preview_line(
+                                    "+",
+                                    "const reducedMotion = prefersReducedMotion();",
+                                    true,
+                                ))
+                                .child(label("3 more changed lines", 10.5, 400.0, t.muted).mt(3.0)),
                             t,
                         ));
                         if s.studio.conversation_fixture.as_deref() == Some("activity-diff") {
-                            let deleted =
-                                rune::color::hex(if t.dark { "#7f3030" } else { "#d25c5c" })
-                                    .unwrap();
-                            let added =
-                                rune::color::hex(if t.dark { "#2c6747" } else { "#329b70" })
-                                    .unwrap();
-                            let line = |old: &str,
-                                        new: &str,
-                                        sign: &str,
-                                        code: &str,
-                                        color: rune::Color| {
+                            let gutter_no = |n: &str| {
+                                row().w(28.0).pr(6.0).center_y().justify_end().child(label(
+                                    n,
+                                    10.0,
+                                    400.0,
+                                    t.muted.alpha(0.55),
+                                ))
+                            };
+                            let diff_line =
+                                |old: &str, new: &str, sign: &str, code: &str, is_add: bool| {
+                                    let tint = if is_add { diff_add } else { diff_del };
+                                    row()
+                                        .w_full()
+                                        .h(19.0)
+                                        .center_y()
+                                        .px(8.0)
+                                        .fill(tint.alpha(0.12))
+                                        .child(gutter_no(old))
+                                        .child(gutter_no(new))
+                                        .child(
+                                            row().w(14.0).center().child(
+                                                text(sign.to_owned())
+                                                    .font(TextStyle::new(11.5, 600.0).mono())
+                                                    .color(tint),
+                                            ),
+                                        )
+                                        .child(
+                                            text(code.to_owned())
+                                                .font(TextStyle::new(11.5, 400.0).mono())
+                                                .color(if is_add { t.ink } else { del_text }),
+                                        )
+                                };
+                            let hunk = |value: &str| {
                                 row()
                                     .w_full()
-                                    .h(19.0)
-                                    .center_y()
-                                    .px(8.0)
-                                    .fill(color.alpha(0.12))
-                                    .child(
-                                        row()
-                                            .w(34.0)
-                                            .center_y()
-                                            .justify_end()
-                                            .child(label(old, 10.0, 400.0, t.muted)),
-                                    )
-                                    .child(
-                                        row()
-                                            .w(34.0)
-                                            .center_y()
-                                            .justify_end()
-                                            .child(label(new, 10.0, 400.0, t.muted)),
-                                    )
-                                    .child(label(sign, 11.0, 600.0, color).w(14.0))
-                                    .child(
-                                        text(code.to_owned())
-                                            .font(TextStyle::new(12.0, 400.0).mono())
-                                            .color(t.ink_soft),
-                                    )
-                            };
-                            let hunk = |value: &str| {
-                                el().w_full()
-                                    .h(20.0)
+                                    .h(24.0)
                                     .px(8.0)
                                     .center_y()
                                     .fill(t.ink.alpha(0.03))
-                                    .child(label(value, 10.0, 400.0, t.muted))
-                            };
-                            body = body.child(
-                                col()
-                                    .w_full()
-                                    .pl(25.0)
-                                    .mt(5.0)
-                                    .gap(4.0)
+                                    .child(el().w(28.0))
+                                    .child(el().w(28.0))
+                                    .child(el().w(14.0))
                                     .child(
-                                        row()
-                                            .w_full()
-                                            .h(24.0)
-                                            .px(9.0)
-                                            .center_y()
-                                            .gap(6.0)
-                                            .radius(8.0)
-                                            .fill(t.ink.alpha(0.04))
-                                            .child(icon(&ACTIVITY_EDIT, 14.0).color(t.muted))
-                                            .child(label("Diff", 11.0, 500.0, t.muted))
-                                            .child(el().grow(1.0))
-                                            .child(icon(&FOOTER_COPY01, 12.0).color(t.muted))
-                                            .child(label("Copy", 10.5, 400.0, t.muted)),
+                                        text(value.to_owned())
+                                            .font(TextStyle::new(10.0, 400.0).mono())
+                                            .color(t.muted),
                                     )
-                                    .child(
-                                        col()
-                                            .w_full()
-                                            .padding(4.0)
-                                            .gap(0.0)
-                                            .radius(8.0)
-                                            .fill(t.ink.alpha(0.025))
-                                            .child(hunk("@@ -12,7 +12,8 @@"))
-                                            .child(line("1", "", "−", "const gap = 12;", deleted))
-                                            .child(line("", "1", "+", "const gap = 10;", added))
-                                            .child(line(
-                                                "",
-                                                "2",
-                                                "+",
-                                                "const reducedMotion = prefersReducedMotion();",
-                                                added,
-                                            ))
-                                            .child(hunk("@@ -41,6 +42,7 @@"))
-                                            .child(line(
-                                                "1",
-                                                "",
-                                                "−",
-                                                ".fold { transition: all 380ms ease; }",
-                                                deleted,
-                                            ))
-                                            .child(line(
-                                                "",
-                                                "1",
-                                                "+",
-                                                ".fold { transition: grid-template-rows 380ms cubic-bezier(.22,1,.36,1); }",
-                                                added,
-                                            ))
-                                            .child(line(
-                                                "",
-                                                "2",
-                                                "+",
-                                                "@media (prefers-reduced-motion: reduce)…",
-                                                added,
-                                            )),
-                                    ),
-                            );
+                            };
+                            let diff_table = col()
+                                .w_full()
+                                .py(4.0)
+                                .gap(0.0)
+                                .radius(8.0)
+                                .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.025))
+                                .child(hunk("@@ -12,7 +12,8 @@"))
+                                .child(diff_line("1", "", "−", "const gap = 12;", false))
+                                .child(diff_line("", "1", "+", "const gap = 10;", true))
+                                .child(diff_line(
+                                    "",
+                                    "2",
+                                    "+",
+                                    "const reducedMotion = prefersReducedMotion();",
+                                    true,
+                                ))
+                                .child(hunk("@@ -41,6 +42,7 @@"))
+                                .child(diff_line(
+                                    "2",
+                                    "",
+                                    "−",
+                                    ".fold { transition: all 380ms ease; }",
+                                    false,
+                                ))
+                                .child(diff_line(
+                                    "",
+                                    "3",
+                                    "+",
+                                    ".fold { transition: grid-template-rows 380ms cubic-bezier(.22,1,.36,1); }",
+                                    true,
+                                ))
+                                .child(diff_line(
+                                    "",
+                                    "4",
+                                    "+",
+                                    "@media (prefers-reduced-motion: reduce) { .fold { transition: none; } }",
+                                    true,
+                                ));
+                            body = body.child(el().w_full().pl(24.0).child(activity_step_detail(
+                                &ACTIVITY_EDIT,
+                                "Diff",
+                                diff_table,
+                                t,
+                            )));
                         }
                     }
                 }
@@ -3336,9 +3311,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .mt(9.0)
                     .mb(0.0)
                     .center_y()
-                    .child(activity_orb(22.0, s.start_actions.clock as f32, t.muted))
+                    .child(activity_orb(16.0, s.start_actions.clock as f32, t.ink_soft))
                     .child(el().grow(1.0))
-                    .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
+                    .child(
+                        icon(
+                            if s.studio.activity_open {
+                                &ACTIVITY_CHEVRON_DOWN
+                            } else {
+                                &ACTIVITY_CHEVRON
+                            },
+                            13.0,
+                        )
+                        .color(t.ink_soft.alpha(0.45)),
+                    );
                 exchange = Some(group.child(status));
             } else if activity_rows_open && let Some(group) = exchange.take() {
                 let status = row()
@@ -3348,9 +3333,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .mt(9.0)
                     .mb(0.0)
                     .center_y()
-                    .child(icon(&ACTIVITY_THINKING, 14.0).color(t.muted))
+                    .child(icon(&ACTIVITY_THINKING, 15.0).color(t.ink_soft.alpha(0.78)))
                     .child(el().grow(1.0))
-                    .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
+                    .child(
+                        icon(
+                            if s.studio.activity_open {
+                                &ACTIVITY_CHEVRON_DOWN
+                            } else {
+                                &ACTIVITY_CHEVRON
+                            },
+                            13.0,
+                        )
+                        .color(t.ink_soft.alpha(0.45)),
+                    );
                 exchange = Some(group.child(status));
             }
         }
@@ -3428,7 +3423,19 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             Some("scrolled" | "compaction" | "marks" | "code"),
                         ),
                 })
-                .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
+                .clip_fade_linear(
+                    0.0,
+                    14.0,
+                    0.0,
+                    if matches!(
+                        s.studio.conversation_fixture.as_deref(),
+                        Some("activity-expanded" | "activity-diff")
+                    ) {
+                        264.0
+                    } else {
+                        176.0
+                    },
+                )
                 .child(art)
                 .child(transcript)
                 // The body's 208pt bottom padding (composer overlay clearance).
