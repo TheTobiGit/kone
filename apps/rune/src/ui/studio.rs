@@ -2437,9 +2437,18 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .hover(t.hover)
                                 .child(icon(&FOOTER_FOOTPRINTS, 14.0).color(t.muted)),
                         );
-                // Live replies keep the branch affordance; the Electron
-                // fixture's footers carry only time, note and trace.
-                if !fixture && let Some(block_id) = block_id {
+                // The fixture shows the same affordance as Electron, but the
+                // parity scene leaves it inert. Live replies open the picker.
+                if fixture {
+                    footer = footer.child(
+                        el().w(24.0)
+                            .h(24.0)
+                            .center()
+                            .radius(7.0)
+                            .hover(t.hover)
+                            .child(icon(&FOOTER_GITFORK, 14.0).color(t.muted)),
+                    );
+                } else if let Some(block_id) = block_id {
                     footer =
                         footer.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
                             move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
