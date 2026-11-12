@@ -842,51 +842,82 @@ fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
-/// Small native approximation of TurnOrb's `work` frame. Electron bakes an
-/// icon into 80 points, maps them onto the (p=2, q=3) torus knot, then advances
-/// a brightness head around it. At this UI size the baked silhouette is below
-/// a device pixel; preserving the source knot, spin, yaw, and head motion keeps
-/// the recognizable orbit without rotating a brain glyph.
+/// Native particle approximation of Electron's small working TurnOrb preset:
+/// six tilted paths, twenty dim trail dots and three moving particles on each.
 fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
-    let count = 32usize;
     let tau = std::f32::consts::TAU;
-    let cycle = 5.5 + 1.9 * 2.0;
-    let local = time.rem_euclid(cycle);
-    let morph = if local < 5.5 {
-        0.0
-    } else {
-        0.5 - 0.5 * (std::f32::consts::PI * (local - 5.5) / 1.9).cos()
+    let orbit_count = 6usize;
+    let ghost_count = 20usize;
+    let camera_yaw = time * 3.9 * 0.12;
+    let (sy, cy) = camera_yaw.sin_cos();
+    let (st, ct) = 0.3_f32.sin_cos();
+    let radius = size * 0.5 * 0.82;
+    let radius_scale = (size / 300.0).powf(0.6) * 2.4;
+    let mut points = Vec::with_capacity(orbit_count * (ghost_count + 3));
+    let hash = |a: f32, b: f32| {
+        let h = (a * 12.9898 + b * 78.233).sin() * 43_758.5453;
+        h - h.floor()
     };
-    let spin = time * 0.35;
-    let yaw = 0.4 + 0.3 * (time * 0.26).sin();
-    let tilt: f32 = 0.4;
-    let radius = size * 0.82;
+    let project = |x: f32, y: f32, z: f32| {
+        let x1 = x * cy + z * sy;
+        let z1 = -x * sy + z * cy;
+        let y1 = y * ct - z1 * st;
+        let z2 = y * st + z1 * ct;
+        (size * 0.5 + x1, size * 0.5 - y1, z2)
+    };
+    for orbit in 0..orbit_count {
+        let orb = orbit as f32;
+        let h1 = hash(orb, 1.7);
+        let h2 = hash(orb, 5.2);
+        let h3 = hash(orb, 8.9);
+        let orbit_radius = radius * (0.45 + 0.52 * h1);
+        let theta = h1 * tau;
+        let phi = (2.0 * h2 - 1.0).acos();
+        let (sth, cth) = theta.sin_cos();
+        let (sph, cph) = phi.sin_cos();
+        let nx = sph * cth;
+        let ny = cph;
+        let nz = sph * sth;
+        let ul = (nx * nx + ny * ny).sqrt().max(1.0e-6);
+        let ux = -ny / ul;
+        let uy = nx / ul;
+        let uz = 0.0;
+        let vx = -nz * uy;
+        let vy = nz * ux;
+        let vz = nx * uy - ny * ux;
+        let speed = (0.25 + 0.55 * h3) * if h3 > 0.5 { 1.0 } else { -1.0 };
+        for k in 0..ghost_count {
+            let a = k as f32 / ghost_count as f32 * tau;
+            let (sa, ca) = a.sin_cos();
+            let (x, y, z) = project(
+                (ux * ca + vx * sa) * orbit_radius,
+                (uy * ca + vy * sa) * orbit_radius,
+                (uz * ca + vz * sa) * orbit_radius,
+            );
+            let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
+            let point = 0.9 * radius_scale;
+            points.push((z, x, y, point.max(0.3), 0.5 * (0.4 + 0.6 * depth)));
+        }
+        for particle in 0..3 {
+            let a = time * 3.9 * speed + particle as f32 / 3.0 * tau + h2 * 6.0;
+            let (sa, ca) = a.sin_cos();
+            let (x, y, z) = project(
+                (ux * ca + vx * sa) * orbit_radius,
+                (uy * ca + vy * sa) * orbit_radius,
+                (uz * ca + vz * sa) * orbit_radius,
+            );
+            let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
+            let point = (1.2 + 1.6 * depth) * radius_scale;
+            points.push((z, x, y, point.max(0.3), 0.52 + 0.38 * depth));
+        }
+    }
+    points.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut orb = el().w(size).h(size);
-    let head = (local / 5.5 * count as f32).rem_euclid(count as f32);
-    for i in 0..count {
-        let seat = i as f32 / count as f32;
-        let u = seat * tau * 2.0 + spin;
-        let v = seat * tau * 3.0;
-        let ring = 0.68 + 0.28 * v.cos();
-        let x3 = ring * u.cos();
-        let y3 = ring * u.sin();
-        let z3 = 0.28 * v.sin();
-        let x = x3 * yaw.cos() - z3 * yaw.sin();
-        let z = x3 * yaw.sin() + z3 * yaw.cos();
-        let y = y3 * tilt.cos() - z * tilt.sin();
-        let depth = ((z + 1.0) * 0.5).clamp(0.0, 1.0);
-        let distance = (i as f32 - head)
-            .abs()
-            .min(count as f32 - (i as f32 - head).abs());
-        let bright = (-distance * distance / 3.0).exp();
-        let point_size = 1.5 + 0.5 * depth + 0.4 * bright;
-        let x = size * 0.5 + x * radius - point_size * 0.5;
-        let y = size * 0.5 + y * radius - point_size * 0.5;
-        let alpha = (0.38 + 0.3 * depth + 0.32 * bright + 0.08 * morph).min(0.96);
+    for (_, x, y, point_size, alpha) in points {
         orb = orb.child(
             el().w(point_size)
                 .h(point_size)
-                .absolute(x, y)
+                .absolute(x - point_size * 0.5, y - point_size * 0.5)
                 .radius(point_size * 0.5)
                 .fill(tint.alpha(alpha)),
         );
@@ -3280,7 +3311,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .mt(9.0)
                     .mb(0.0)
                     .center_y()
-                    .child(activity_orb(16.0, s.start_actions.clock as f32, t.muted))
+                    .child(activity_orb(22.0, s.start_actions.clock as f32, t.muted))
                     .child(el().grow(1.0))
                     .child(icon(&ACTIVITY_CHEVRON, 14.0).color(t.faint));
                 exchange = Some(group.child(status));
