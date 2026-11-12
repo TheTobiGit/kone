@@ -98,11 +98,6 @@ static ACTIVITY_EDIT: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M13 20.8268V22H14.1734C14.5827 22 14.7874 22 14.9715 21.9238C15.1555 21.8475 15.3003 21.7028 15.5897 21.4134L20.4133 16.5894C20.6864 16.3164 20.8229 16.1799 20.8959 16.0327C21.0347 15.7525 21.0347 15.4236 20.8959 15.1434C20.8229 14.9961 20.6864 14.8596 20.4133 14.5866C20.1403 14.3136 20.0038 14.1771 19.8565 14.1041C19.5763 13.9653 19.2473 13.9653 18.9671 14.1041C18.8198 14.1771 18.6833 14.3136 18.4103 14.5866L18.4103 14.5866L13.5867 19.4106C13.2972 19.7 13.1525 19.8447 13.0762 20.0287C13 20.2128 13 20.4174 13 20.8268Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M19 11C19 11 19 9.4306 18.8478 9.06306C18.6955 8.69552 18.4065 8.40649 17.8284 7.82843L13.0919 3.09188C12.593 2.593 12.3436 2.34355 12.0345 2.19575C11.9702 2.165 11.9044 2.13772 11.8372 2.11401C11.5141 2 11.1614 2 10.4558 2C7.21082 2 5.58815 2 4.4894 2.88607C4.26732 3.06508 4.06508 3.26731 3.88607 3.48933C3 4.58831 3 6.21082 3 9.45584V14C3 17.7712 3 19.6569 4.17157 20.8284C5.23467 21.8915 6.8857 21.99 10 21.9991M12 2.5V3C12 5.82843 12 7.24264 12.8787 8.12132C13.7574 9 15.1716 9 18 9H18.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
-static ACTIVITY_THINKING: Icon = Icon {
-    name: "activity-thinking",
-    view: 24.0,
-    body: r#"<path d="M7 4.5C5.34315 4.5 4 5.84315 4 7.5C4 8.06866 4.15822 8.60037 4.43304 9.0535C3.04727 9.31855 2 10.537 2 12C2 13.463 3.04727 14.6814 4.43304 14.9465M7 4.5C7 3.11929 8.11929 2 9.5 2C10.8807 2 12 3.11929 12 4.5V19.5C12 20.8807 10.8807 22 9.5 22C8.11929 22 7 20.8807 7 19.5C5.34315 19.5 4 18.1569 4 16.5C4 15.9313 4.15822 15.3996 4.43304 14.9465M7 4.5C7 5.31791 7.39278 6.04408 8 6.50018M4.43304 14.9465C4.78948 14.3588 5.34207 13.9032 6 13.6707" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 19.4999C18.6569 19.4999 20 18.1567 20 16.4999C20 15.9312 19.8418 15.3995 19.567 14.9464C20.9527 14.6813 22 13.4629 22 11.9999C22 10.5369 20.9527 9.31843 19.567 9.05338M17 19.4999C17 20.8806 15.8807 21.9999 14.5 21.9999C13.1193 21.9999 12 20.8806 12 19.4999L12 4.49988C12 3.11917 13.1193 1.99988 14.5 1.99988C15.8807 1.99988 17 3.11917 17 4.49988C18.6569 4.49988 20 5.84302 20 7.49988C20 8.06854 19.8418 8.60024 19.567 9.05338M17 19.4999C17 18.682 16.6072 17.9558 16 17.4997M19.567 9.05338C19.2105 9.64109 18.6579 10.0966 18 10.3292" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
 static ACTIVITY_TOOLS: Icon = Icon {
     name: "activity-tools",
     view: 24.0,
@@ -857,95 +852,189 @@ fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
-/// Native particle approximation of Electron's small working TurnOrb preset:
-/// six tilted paths, twenty dim trail dots and three moving particles on each.
-fn activity_orb(size: f32, time: f32, tint: rune::Color) -> El {
-    let tau = std::f32::consts::TAU;
-    let orbit_count = 6usize;
-    let ghost_count = 20usize;
-    let camera_yaw = time * 3.9 * 0.12;
-    let (sy, cy) = camera_yaw.sin_cos();
-    let (st, ct) = 0.3_f32.sin_cos();
-    let radius = size * 0.5 * 0.82;
-    let radius_scale = (size / 300.0).powf(0.6) * 2.4;
-    let mut points = Vec::with_capacity(orbit_count * (ghost_count + 3));
-    let hash = |a: f32, b: f32| {
-        let h = (a * 12.9898 + b * 78.233).sin() * 43_758.547;
-        h - h.floor()
+#[derive(Clone, Copy)]
+enum TurnOrbKind {
+    Working,
+    Write,
+}
+
+fn turn_orb_beat(time: f32) -> (f32, f32) {
+    let dwell = 5.5_f32;
+    let morph = 1.9_f32;
+    let expo = 0.3_f32;
+    let cycle = dwell + morph * 2.0;
+    let local = time.rem_euclid(cycle);
+    let morph_ease = |x: f32| {
+        let smooth = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+        let expo_in_out = if x <= 0.0 {
+            0.0
+        } else if x >= 1.0 {
+            1.0
+        } else if x < 0.5 {
+            2.0_f32.powf(20.0 * x - 10.0) * 0.5
+        } else {
+            (2.0 - 2.0_f32.powf(-20.0 * x + 10.0)) * 0.5
+        };
+        smooth + (expo_in_out - smooth) * expo
     };
-    let project = |x: f32, y: f32, z: f32| {
-        let x1 = x * cy + z * sy;
-        let z1 = -x * sy + z * cy;
-        let y1 = y * ct - z1 * st;
-        let z2 = y * st + z1 * ct;
-        (size * 0.5 + x1, size * 0.5 - y1, z2)
+    let m = if local < dwell {
+        0.0
+    } else if local - dwell < morph {
+        morph_ease((local - dwell) / morph)
+    } else {
+        morph_ease(1.0 - (local - dwell - morph) / morph)
     };
-    for orbit in 0..orbit_count {
-        let orb = orbit as f32;
-        let h1 = hash(orb, 1.7);
-        let h2 = hash(orb, 5.2);
-        let h3 = hash(orb, 8.9);
-        let orbit_radius = radius * (0.45 + 0.52 * h1);
-        let theta = h1 * tau;
-        let phi = (2.0 * h2 - 1.0).acos();
-        let (sth, cth) = theta.sin_cos();
-        let (sph, cph) = phi.sin_cos();
-        let nx = sph * cth;
-        let ny = cph;
-        let nz = sph * sth;
-        let ul = (nx * nx + ny * ny).sqrt().max(1.0e-6);
-        let ux = -ny / ul;
-        let uy = nx / ul;
-        let uz = 0.0;
-        let vx = -nz * uy;
-        let vy = nz * ux;
-        let vz = nx * uy - ny * ux;
-        let speed = (0.25 + 0.55 * h3) * if h3 > 0.5 { 1.0 } else { -1.0 };
-        for k in 0..ghost_count {
-            let a = k as f32 / ghost_count as f32 * tau;
-            let (sa, ca) = a.sin_cos();
-            let (x, y, z) = project(
-                (ux * ca + vx * sa) * orbit_radius,
-                (uy * ca + vy * sa) * orbit_radius,
-                (uz * ca + vz * sa) * orbit_radius,
-            );
-            let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
-            let point = 0.9 * radius_scale;
-            points.push((z, x, y, point.max(0.3), 0.18 * (0.4 + 0.6 * depth)));
-        }
-        for particle in 0..3 {
-            let a = time * 3.9 * speed + particle as f32 / 3.0 * tau + h2 * 6.0;
-            let (sa, ca) = a.sin_cos();
-            let (x, y, z) = project(
-                (ux * ca + vx * sa) * orbit_radius,
-                (uy * ca + vy * sa) * orbit_radius,
-                (uz * ca + vz * sa) * orbit_radius,
-            );
-            let depth = ((z / orbit_radius + 1.0) * 0.5).clamp(0.0, 1.0);
-            let point = (1.2 + 1.6 * depth) * radius_scale;
-            points.push((z, x, y, point.max(0.3), 0.36 + 0.28 * depth));
-        }
+    let prog = if local < dwell {
+        local / dwell
+    } else if local - dwell < morph {
+        1.0
+    } else {
+        (1.0 - (local - dwell - morph) / morph).clamp(0.0, 1.0)
+    };
+    (m, prog)
+}
+
+fn turn_orb_tint_color(tint: [f32; 3], white: f32, dark: bool, k: f32, alpha: f32) -> rune::Color {
+    let depth = 1.0 - white.clamp(0.0, 1.0);
+    let channel = |c: f32| {
+        let col = if dark {
+            let highlight = (depth - 0.5).max(0.0) * 2.0;
+            let base = 0.72 + 0.28 * depth;
+            (c + (255.0 - c) * 0.28 * highlight) * base
+        } else {
+            let ink = 0.5 + 0.5 * depth;
+            255.0 - (255.0 - c * 0.82) * ink
+        };
+        let grey = if dark {
+            255.0 * (0.6 + 0.4 * depth)
+        } else {
+            255.0 * (1.0 - 0.7 * depth)
+        };
+        let out = (grey + (col - grey) * k).clamp(0.0, 255.0);
+        rune::color::srgb_decode(out / 255.0)
+    };
+    rune::Color {
+        r: channel(tint[0]),
+        g: channel(tint[1]),
+        b: channel(tint[2]),
+        a: alpha.max(0.5),
     }
-    points.sort_by(|a, b| a.0.total_cmp(&b.0));
+}
+
+/// Native GPUI dot projection matching Electron's `TurnOrb` modes (`work` torus
+/// knot for `Working` and `crystal` polyhedron for `Write`) in linear sRGB.
+fn turn_orb(size: f32, time: f32, kind: TurnOrbKind, dark: bool) -> El {
+    let tau = std::f32::consts::TAU;
+    let cx = size * 0.5;
+    let scale = cx * 0.82;
+    let rs = (size / 300.0).powf(0.36);
+    let (m, prog) = turn_orb_beat(time);
+    let c = 1.0 - m;
+
+    let (raw_tint, n): ([f32; 3], usize) = match kind {
+        TurnOrbKind::Working => ([113.0, 113.0, 122.0], 77),
+        TurnOrbKind::Write => ([139.0, 127.0, 240.0], 81),
+    };
+    let lum = (0.2126 * raw_tint[0] + 0.7152 * raw_tint[1] + 0.0722 * raw_tint[2]) / 255.0;
+    let tint = if dark && lum < 0.5 {
+        let f = (0.5 - lum) / (1.0 - lum);
+        [
+            (raw_tint[0] + (255.0 - raw_tint[0]) * f).round(),
+            (raw_tint[1] + (255.0 - raw_tint[1]) * f).round(),
+            (raw_tint[2] + (255.0 - raw_tint[2]) * f).round(),
+        ]
+    } else if !dark && lum > 0.55 {
+        let f = (lum - 0.55) / lum;
+        [
+            (raw_tint[0] * (1.0 - f)).round(),
+            (raw_tint[1] * (1.0 - f)).round(),
+            (raw_tint[2] * (1.0 - f)).round(),
+        ]
+    } else {
+        raw_tint
+    };
+
+    let (yaw, tilt) = match kind {
+        TurnOrbKind::Working => (0.4 + 0.3 * (time * 0.26).sin() * c, 0.4 * c),
+        TurnOrbKind::Write => (0.5 + 0.24 * (time * 0.32).sin() * c, 0.2 * c),
+    };
+    let (syaw, cyaw) = yaw.sin_cos();
+    let (stilt, ctilt) = tilt.sin_cos();
+    let project = |x: f32, y: f32, z: f32| {
+        let x1 = x * cyaw + z * syaw;
+        let z1 = -x * syaw + z * cyaw;
+        let y2 = y * ctilt - z1 * stilt;
+        let z2 = y * stilt + z1 * ctilt;
+        (cx + x1 * scale, cx - y2 * scale, z2)
+    };
+
+    let n_f = n as f32;
+    let head = prog * n_f;
+    let mut dots = Vec::with_capacity(n);
+    for seat in 0..n {
+        let s = seat as f32;
+        let phi = (1.0 - 2.0 * (s + 0.5) / n_f).acos();
+        let theta = std::f32::consts::PI * (1.0 + 5.0_f32.sqrt()) * s;
+        let (fx, fy, fz) = (phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin());
+
+        let (wx, wy, wz) = match kind {
+            TurnOrbKind::Working => {
+                let u = (s / n_f) * tau * 2.0 + time * 0.35;
+                let v = (s / n_f) * tau * 3.0;
+                let rad = 0.68 + 0.28 * v.cos();
+                (rad * u.cos(), rad * u.sin(), 0.28 * v.sin())
+            }
+            TurnOrbKind::Write => {
+                let manhattan = fx.abs() + fy.abs() + fz.abs();
+                let denom = if manhattan == 0.0 { 1.0 } else { manhattan };
+                let (ux, uy, uz) = (fx / denom * 0.94, fy / denom * 0.94, fz / denom * 0.94);
+                let (ss, cs) = (time * 0.3).sin_cos();
+                (ux * cs + uz * ss, uy, -ux * ss + uz * cs)
+            }
+        };
+        let (x, y, z3) = (fx + (wx - fx) * c, fy + (wy - fy) * c, fz + (wz - fz) * c);
+        let (px, py, z) = project(x, y, z3);
+        let zx = ((z + 1.0) * 0.5).clamp(0.0, 1.0);
+        let dist = s - head;
+        let (feather, head_w, head_r, dim_unstitched) = match kind {
+            TurnOrbKind::Working => ((n_f * 0.04).max(1.0), (n_f * 0.015).max(1.0), 0.55, 0.0),
+            TurnOrbKind::Write => ((n_f * 0.03).max(1.0), (n_f * 0.012).max(1.0), 0.50, 0.3),
+        };
+        let bright_head = (-(dist * dist) / (head_w * head_w)).exp();
+        let passed = if dist > 0.0 {
+            (-(dist * dist) / (feather * feather)).exp()
+        } else {
+            1.0
+        };
+        let factor = m + c * passed;
+        let (r, white, a, k) = match kind {
+            TurnOrbKind::Working => (
+                ((0.75 + 1.2 * zx + head_r * bright_head * c) * factor * rs).max(0.75),
+                (0.6 - 0.5 * zx) - 0.3 * bright_head * c,
+                factor,
+                1.0,
+            ),
+            TurnOrbKind::Write => (
+                ((0.75 + 1.2 * zx + head_r * bright_head * c) * rs).max(0.75),
+                (0.6 - 0.5 * zx) - 0.3 * bright_head * c + dim_unstitched * (1.0 - factor) * c,
+                1.0,
+                factor,
+            ),
+        };
+        dots.push((z, px, py, r, turn_orb_tint_color(tint, white, dark, k, a)));
+    }
+    dots.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut orb = el().w(size).h(size);
-    for (_, x, y, point_size, alpha) in points {
+    for (_, x, y, r, color) in dots {
         orb = orb.child(
-            el().w(point_size)
-                .h(point_size)
-                .absolute(x - point_size * 0.5, y - point_size * 0.5)
-                .radius(point_size * 0.5)
-                .fill(tint.alpha(alpha)),
+            el().w(r * 2.0)
+                .h(r * 2.0)
+                .absolute(x - r, y - r)
+                .radius(r)
+                .fill(color),
         );
     }
     orb
-}
-
-fn activity_busy_icon(glyph: &'static Icon, tint: rune::Color, time: f32) -> El {
-    el().w(16.0)
-        .h(16.0)
-        .center()
-        .child(activity_orb(16.0, time, tint.alpha(0.6)))
-        .child(icon(glyph, 14.0).color(tint.alpha(0.8)))
 }
 
 /// Wraps an inline step body with the rounded elbow branching from the step rail.
@@ -2977,10 +3066,11 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             )
                             .child(el().w(16.0).h(16.0).center().fill(t.ground).child(
                                 if item.name == "edit_file" && s.studio.busy {
-                                    activity_busy_icon(
-                                        step_icon,
-                                        step_hue,
+                                    turn_orb(
+                                        16.0,
                                         s.start_actions.clock as f32,
+                                        TurnOrbKind::Write,
+                                        t.dark,
                                     )
                                 } else {
                                     icon(step_icon, 14.0).color(step_hue)
@@ -3314,9 +3404,14 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                 exchange = Some(group.child(head));
             }
             activity_head = true;
-            if s.studio.busy
+            if (s.studio.busy || activity_rows_open)
                 && let Some(group) = exchange.take()
             {
+                let orb_time = if s.studio.busy {
+                    s.start_actions.clock as f32
+                } else {
+                    4.2
+                };
                 let status = row()
                     .key("activity-thinking-status")
                     .w_full()
@@ -3324,33 +3419,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     .mt(9.0)
                     .mb(0.0)
                     .center_y()
-                    .child(activity_busy_icon(
-                        &ACTIVITY_THINKING,
-                        t.ink_soft,
-                        s.start_actions.clock as f32,
-                    ))
-                    .child(el().grow(1.0))
-                    .child(
-                        icon(
-                            if s.studio.activity_open {
-                                &ACTIVITY_CHEVRON_DOWN
-                            } else {
-                                &ACTIVITY_CHEVRON
-                            },
-                            13.0,
-                        )
-                        .color(t.ink_soft.alpha(0.45)),
-                    );
-                exchange = Some(group.child(status));
-            } else if activity_rows_open && let Some(group) = exchange.take() {
-                let status = row()
-                    .key("activity-thinking-status")
-                    .w_full()
-                    .h(26.0)
-                    .mt(9.0)
-                    .mb(0.0)
-                    .center_y()
-                    .child(icon(&ACTIVITY_THINKING, 15.0).color(t.ink_soft.alpha(0.78)))
+                    .child(turn_orb(16.0, orb_time, TurnOrbKind::Working, t.dark))
                     .child(el().grow(1.0))
                     .child(
                         icon(
