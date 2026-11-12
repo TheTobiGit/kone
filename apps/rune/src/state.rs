@@ -1088,7 +1088,7 @@ impl AppState {
                 let kind = fork["forkKind"].as_str();
                 self.studio.side_chat = result["relationshipToParent"] == "side_chat"
                     || (fork.is_object() && !matches!(kind, Some("edit" | "handoff")));
-                self.studio.handoff_source = if matches!(kind, Some("handoff" | "branch")) {
+                self.studio.handoff_source = if matches!(kind, Some("handoff")) {
                     fork["sourceProvider"].as_str().map(str::to_owned)
                 } else {
                     None

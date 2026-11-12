@@ -117,6 +117,9 @@ fn main() {
                 studio_column_head(s);
                 s.studio.context_usage = Some((40_000, 200_000));
                 s.studio.context_open = true;
+                s.studio.context_auto_compact = true;
+                s.studio.providers[0].supports_compaction = false;
+                s.studio_column_hover = Some("review-one".into());
             }),
             ("studio-column-head-dormant", |s| {
                 studio_column_head(s);
@@ -333,11 +336,11 @@ fn studio_column_head(s: &mut AppState) {
     s.studio.providers[0].id = "gpt".into();
     s.studio.items.push(state::StudioItem {
         kind: "connected".into(),
-        text: "Clay".into(),
+        text: "Cinder".into(),
         ..Default::default()
     });
     s.studio.title = "Review thread".into();
-    s.studio.worktree_path = Some("/demo/worktree".into());
+    s.studio.worktree_path = Some("/tmp/kone-review-worktree".into());
 }
 
 fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {

@@ -122,6 +122,25 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
     marks
 }
 
+fn connected_avatar() -> El {
+    use std::sync::{Arc, OnceLock};
+    static IMAGE: OnceLock<rune::Image> = OnceLock::new();
+    let image = IMAGE.get_or_init(|| {
+        let cache = rune::ImageCache::new(Arc::new(|| {}));
+        let image = cache.svg(
+            Arc::<[u8]>::from(crate::review::fixture_avatar().as_bytes()),
+            15.0,
+            2.0,
+        );
+        let _ = image.wait();
+        image
+    });
+    el().w(15.0)
+        .h(15.0)
+        .radius(7.5)
+        .pixels_fit(image.pixels(), rune::SurfaceFit::Fill)
+}
+
 fn fork_tool(
     glyph: &'static Icon,
     tip: &'static str,
@@ -141,7 +160,8 @@ fn fork_tool(
         });
     if shown {
         button = button.child(
-            el().absolute(0.0, 22.0)
+            el().absolute(-75.0, -26.0)
+                .w(170.0)
                 .px(7.0)
                 .h(20.0)
                 .center()
@@ -580,7 +600,7 @@ fn studio_row(
             });
             let side_chat = state.is_some_and(|s| s.side_chat);
             let head = row()
-                .offset(0.0, -9.0)
+                .offset(0.0, -5.0)
                 .w_full()
                 .h(38.0)
                 .center_y()
@@ -1547,7 +1567,7 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                     row()
                         .center_y()
                         .gap(6.0)
-                        .child(el().w(15.0).h(15.0).radius(7.5).fill(t.accent))
+                        .child(connected_avatar())
                         .child(label(
                             format!("{} connected", item.text),
                             12.0,
