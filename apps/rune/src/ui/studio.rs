@@ -553,6 +553,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             },
         ));
     col()
+        .on_press(|_: &mut AppState| {})
         .w(320.0)
         .radius(18.0)
         .border(1.0, t.line)
@@ -1974,5 +1975,57 @@ mod context_meter_tests {
         assert!(rt.state.studio.context_open, "card body does not dismiss");
         click(&mut rt, 450.0, 300.0);
         assert!(!rt.state.studio.context_open, "outside press dismisses");
+    }
+}
+
+#[cfg(test)]
+mod title_info_tests {
+    use super::*;
+    use rune::{Env, Key, KeyEvent, Mods, Runtime};
+
+    fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
+        el().w_full()
+            .h_full()
+            .child(
+                el().pin(Some(300.0), Some(50.0), None, None)
+                    .child(column_title(
+                        Some(&s.studio),
+                        true,
+                        Palette::new(cx.system_dark()),
+                    )),
+            )
+    }
+
+    fn click(rt: &mut Runtime<AppState>, x: f32, y: f32) {
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn title_info_opens_by_keyboard_and_dismisses_only_outside_panel() {
+        let state = AppState::default();
+        let mut rt = Runtime::new(state, view, (600.0, 500.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(rt.state.studio.title_info_open, "keyboard activates title");
+        rt.frame(1.0);
+        click(&mut rt, 220.0, 120.0);
+        assert!(
+            rt.state.studio.title_info_open,
+            "panel body does not dismiss"
+        );
+        click(&mut rt, 550.0, 400.0);
+        assert!(!rt.state.studio.title_info_open, "outside press dismisses");
     }
 }
