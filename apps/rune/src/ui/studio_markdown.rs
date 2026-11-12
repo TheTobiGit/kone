@@ -22,9 +22,16 @@ fn inline(source: &str, t: Palette) -> El {
             && let Some(end) = after.find('`')
         {
             let start = output.len();
+            // Chromium's inline-code rule has horizontal padding. Text spans
+            // cannot paint CSS padding, so include a space at each edge of
+            // the highlighted range; the source's own surrounding spaces stay
+            // outside the pill.
+            output.push(' ');
+            let padded_start = start;
             output.push_str(&after[..end]);
+            output.push(' ');
             spans.push(
-                Span::new(start, output.len())
+                Span::new(padded_start, output.len())
                     .mono()
                     .size(11.97)
                     .bg(t.hover, 4.55),
@@ -38,6 +45,7 @@ fn inline(source: &str, t: Palette) -> El {
         {
             let url = &after[end + 2..end + 2 + close];
             if url.starts_with("https://") || url.starts_with("http://") {
+                output.push_str("\u{00a0}\u{00a0}");
                 let icon_start = output.len();
                 output.push_str("M↓");
                 spans.push(
@@ -46,7 +54,7 @@ fn inline(source: &str, t: Palette) -> El {
                         .color(rune::color::hex("#ffffff").unwrap())
                         .bg(rune::color::hex("#00a8d5").unwrap(), 3.0),
                 );
-                output.push(' ');
+                output.push_str("\u{00a0}\u{00a0}");
             }
             let start = output.len();
             output.push_str(&after[..end]);

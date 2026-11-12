@@ -10,11 +10,6 @@ pub(super) static FOOTER_COPY01: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M9 15C9 12.1716 9 10.7574 9.87868 9.87868C10.7574 9 12.1716 9 15 9L16 9C18.8284 9 20.2426 9 21.1213 9.87868C22 10.7574 22 12.1716 22 15V16C22 18.8284 22 20.2426 21.1213 21.1213C20.2426 22 18.8284 22 16 22H15C12.1716 22 10.7574 22 9.87868 21.1213C9 20.2426 9 18.8284 9 16L9 15Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.9999 9C16.9975 6.04291 16.9528 4.51121 16.092 3.46243C15.9258 3.25989 15.7401 3.07418 15.5376 2.90796C14.4312 2 12.7875 2 9.5 2C6.21252 2 4.56878 2 3.46243 2.90796C3.25989 3.07417 3.07418 3.25989 2.90796 3.46243C2 4.56878 2 6.21252 2 9.5C2 12.7875 2 14.4312 2.90796 15.5376C3.07417 15.7401 3.25989 15.9258 3.46243 16.092C4.51121 16.9528 6.04291 16.9975 9 16.9999" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
-static FOOTER_NOTE01: Icon = Icon {
-    name: "footer-Note01",
-    view: 24.0,
-    body: r#"<path d="M16.5 2V5M7.5 2V5M12 2V5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3.5H11C7.70017 3.5 6.05025 3.5 5.02513 4.52513C4 5.55025 4 7.20017 4 10.5V15C4 18.2998 4 19.9497 5.02513 20.9749C6.05025 22 7.70017 22 11 22H13C16.2998 22 17.9497 22 18.9749 20.9749C20 19.9497 20 18.2998 20 15V10.5C20 7.20017 20 5.55025 18.9749 4.52512C17.9497 3.5 16.2998 3.5 13 3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 15H12M8 11H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
-};
 static FOOTER_FOOTPRINTS: Icon = Icon {
     name: "footer-Footprints",
     view: 24.0,
@@ -24,7 +19,7 @@ static FOOTER_FOOTPRINTS: Icon = Icon {
 static CONNECTOR_CORNER: Icon = Icon {
     name: "conversation-connector-corner",
     view: 12.0,
-    body: r#"<path d="M12 0 Q0 0 0 12" fill="none" stroke="currentColor" stroke-width="1"/>"#,
+    body: r#"<path d="M12 0 Q0 0 0 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>"#,
 };
 
 static SETTING_ARROW: Icon = Icon {
@@ -2291,12 +2286,12 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                             .corners([16.0, 16.0, 5.0, 16.0])
                             .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
                     )
-                    .child(
-                        icon(&CONNECTOR_CORNER, 12.0)
-                            .color(rail)
-                            .shadow(1.0, 1.0, connector_shadow)
-                            .pin(Some(13.0), Some(21.33), None, None),
-                    )
+                    .child(icon(&CONNECTOR_CORNER, 12.0).color(rail).pin(
+                        Some(13.0),
+                        Some(21.33),
+                        None,
+                        None,
+                    ))
                     .child(
                         el().pin(Some(13.0), Some(33.33), None, None)
                             .w(1.0)
@@ -2440,14 +2435,6 @@ fn focused_body(s: &AppState, name: &str, t: Palette, mark: u32) -> El {
                                 .child(icon(&FOOTER_COPY01, 14.0).color(t.muted).on_press_tx(
                                     move |_: &mut AppState, tx| tx.copy(copy.clone()),
                                 )),
-                        )
-                        .child(
-                            el().w(24.0)
-                                .h(24.0)
-                                .center()
-                                .radius(7.0)
-                                .hover(t.hover)
-                                .child(icon(&FOOTER_NOTE01, 14.0).color(t.muted)),
                         )
                         .child(
                             el().w(24.0)
