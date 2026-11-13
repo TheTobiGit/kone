@@ -188,7 +188,14 @@ async function captureStudioHead(page, scene) {
       });
       await parkPointer(page);
     } else if (scene.endsWith('-hover')) {
-      await hoverHead(page);
+      // Column tools reveal while the pointer is over the pane body; hovering
+      // the header itself deliberately keeps the title clear in Electron.
+      const body = page.locator('.terminal').first();
+      const box = await body.boundingBox();
+      if (box) {
+        await page.mouse.move(box.x + 125, box.y + 90);
+        await page.waitForTimeout(500);
+      }
     } else if (scene.endsWith('-selection')) {
       const body = page.locator('.terminal').first();
       if (await body.count()) {

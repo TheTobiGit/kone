@@ -1,4 +1,4 @@
-use rune::{Cx, El, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row, text, text_input};
+use rune::{Cx, El, Family, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row, text, text_input};
 
 use crate::{
     state::{AppState, StudioState},
@@ -129,7 +129,7 @@ static ARCHIVE: Icon = Icon {
 static TERMINAL: Icon = Icon {
     name: "studio-terminal",
     view: 24.0,
-    body: r#"<path d="M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5M11.5 12.5H15.5M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.5 12.5H15.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 static REFRESH: Icon = Icon {
@@ -1413,7 +1413,15 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                 .center()
                 .radius(8.0)
                 .hover(t.hover)
-                .child(label(project.name.clone(), 12.0, 400.0, t.muted))
+                .child(
+                    text(project.name.clone())
+                        .font(
+                            TextStyle::new(12.5, 500.0)
+                                .family(Family::Named("Geist"))
+                                .tracking(-0.125),
+                        )
+                        .color(t.muted),
+                )
                 .on_press_tx(move |s: &mut AppState, tx| {
                     s.select_studio_project(index);
                     tx.scroll_into_view(format!("studio-row-slot-{path}"));
@@ -2168,7 +2176,13 @@ fn studio_row(
                         .child(if state.is_some_and(|s| s.dormant) {
                             label("New thread", 13.5, 400.0, t.ink)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
-                            label("Terminal", 13.5, 400.0, t.ink)
+                            text("Terminal")
+                                .font(
+                                    TextStyle::new(13.5, 620.0)
+                                        .family(Family::Named("Geist"))
+                                        .tracking(-0.2025),
+                                )
+                                .color(t.ink)
                         } else {
                             column_title(state, focused, t)
                         })
@@ -2185,14 +2199,19 @@ fn studio_row(
                                     .radius(999.0)
                                     .fill(t.ink.alpha(0.05))
                                     .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
-                                    .child(label(
-                                        state
-                                            .and_then(|s| s.terminal_child.clone())
-                                            .unwrap_or_else(|| command.clone()),
-                                        10.0,
-                                        620.0,
-                                        t.muted,
-                                    ))
+                                    .child(
+                                        text(
+                                            state
+                                                .and_then(|s| s.terminal_child.clone())
+                                                .unwrap_or_else(|| command.clone()),
+                                        )
+                                        .font(
+                                            TextStyle::new(10.0, 620.0)
+                                                .family(Family::Named("Geist"))
+                                                .tracking(0.1),
+                                        )
+                                        .color(t.muted),
+                                    )
                             } else {
                                 el().w(0.0)
                             }
@@ -2226,16 +2245,18 @@ fn studio_row(
                                 .center()
                                 .radius(6.0)
                                 .hover(t.hover)
-                                .child(label(
-                                    if zen {
+                                .child(
+                                    text(if zen {
                                         "max".into()
                                     } else {
                                         format!("{width:.0}")
-                                    },
-                                    10.0,
-                                    650.0,
-                                    t.muted,
-                                ))
+                                    })
+                                    .font(
+                                        TextStyle::new(10.0, 650.0)
+                                            .family(Family::Named("Geist")),
+                                    )
+                                    .color(t.muted),
+                                )
                                 .on_press_tx(move |s: &mut AppState, tx| {
                                     if zen {
                                         return;
