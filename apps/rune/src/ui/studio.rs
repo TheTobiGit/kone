@@ -1565,7 +1565,9 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
     let mut card = col()
         .w(384.0)
         .radius(22.0)
-        .fill(t.raised)
+        // Electron's --band is color-mix(--ground 98%, --ink 2%). The list
+        // remains --raised, leaving the rail and handoff strip slightly inset.
+        .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
         .border(1.0, t.line_soft)
         .child(row().child(rail).child(content))
         .child(
@@ -2759,24 +2761,12 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 let copy = item.text.clone();
                 let fixture = s.studio.conversation_fixture.is_some();
                 let block_id = item.block_id.clone();
-                let mut footer =
+                let mut actions =
                     row()
                         .center_y()
-                        // Electron's settled footer stays at 0.92 opacity;
-                        // the picker scrim provides the remaining dimming.
-                        .opacity(if fixture { 0.92 } else { 1.0 })
                         .gap(0.0)
-                        .mt(if is_activity { 0.0 } else { -7.0 })
-                        .min_h(24.0)
                         .child(
-                            text(if fixture { "8:53 AM" } else { "" })
-                                .font(TextStyle::new(12.0, 400.0).mono().lh(18.6))
-                                .color(t.muted)
-                                .opacity(0.92)
-                                .mr(8.0),
-                        )
-                        .child(
-                            // `.act`: a 24×24 button with the 14px icon centred.
+                            // Electron's `.act` is a 24×24 button with a 14px icon.
                             el().w(24.0)
                                 .h(24.0)
                                 .center()
@@ -2797,7 +2787,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 // The fixture shows the same affordance as Electron, but the
                 // parity scene leaves it inert. Live replies open the picker.
                 if fixture {
-                    footer = footer.child(
+                    actions = actions.child(
                         el().w(24.0)
                             .h(24.0)
                             .center()
@@ -2806,11 +2796,28 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                             .child(icon(&FOOTER_GITFORK, 14.0).color(t.muted)),
                     );
                 } else if let Some(block_id) = block_id {
-                    footer =
-                        footer.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
+                    actions =
+                        actions.child(icon(&FOOTER_GITFORK, 14.0).color(t.muted).on_press(
                             move |s: &mut AppState| s.open_branch_picker(block_id.clone()),
                         ));
                 }
+                let footer = row()
+                    .center_y()
+                    // Electron's settled footer stays at 0.92 opacity;
+                    // the picker scrim provides the remaining dimming.
+                    .opacity(if fixture { 0.92 } else { 1.0 })
+                    // `.foot` uses a 2px gap; its action group itself is gapless.
+                    .gap(2.0)
+                    .mt(if is_activity { 0.0 } else { -7.0 })
+                    .min_h(22.0)
+                    .child(
+                        text(if fixture { "8:53 AM" } else { "" })
+                            .font(TextStyle::new(12.0, 400.0).mono().lh(18.6))
+                            .color(t.muted)
+                            .opacity(0.92)
+                            .mr(8.0),
+                    )
+                    .child(actions);
                 let hover_scene =
                     s.studio.conversation_fixture.as_deref() == Some("activity-hover");
                 let composer_fixture = s
