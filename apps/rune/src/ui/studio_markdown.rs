@@ -12,7 +12,7 @@ fn body_style(size: f32, line_height: f32) -> TextStyle {
 }
 
 // Preserve text as a single wrapped layout, while styling inline code and links.
-fn inline(source: &str, t: Palette) -> El {
+fn inline(source: &str, t: Palette, key: String) -> El {
     let mut output = String::new();
     let mut spans = Vec::new();
     let mut links = Vec::new();
@@ -75,8 +75,10 @@ fn inline(source: &str, t: Palette) -> El {
         rest = &rest[ch.len_utf8()..];
     }
     let mut rendered = text(output)
+        .key(key)
         .font(body_style(14.0, 22.96))
         .color(t.ink)
+        .selectable(true)
         .spans(spans)
         .wrap()
         .w_full()
@@ -251,7 +253,13 @@ enum Block {
 /// `global_copy`: the 0-based index of the code block whose Copy button the
 /// fixture pins visible, in the thread-wide count; `None` hides all of them at
 /// rest (live threads show Copy under the pointer via the hover group).
-pub(super) fn render(source: &str, t: Palette, cb_base: usize, global_copy: Option<usize>) -> El {
+pub(super) fn render(
+    source: &str,
+    t: Palette,
+    cb_base: usize,
+    global_copy: Option<usize>,
+    key_prefix: &str,
+) -> El {
     let force = |local_index: usize| Some(cb_base + local_index) == global_copy;
     let mut blocks: Vec<Block> = Vec::new();
     let mut lines = source.lines().peekable();
@@ -306,8 +314,12 @@ pub(super) fn render(source: &str, t: Palette, cb_base: usize, global_copy: Opti
         if index == last {
             match block {
                 Block::Heading(heading) => result = result.child(heading_el(heading, t, 0.0, 0.0)),
-                Block::Paragraph(paragraph) => result = result.child(inline(paragraph, t)),
-                Block::List(items) => result = result.child(list_el(items, t, 0.0)),
+                Block::Paragraph(paragraph) => {
+                    result = result.child(inline(paragraph, t, format!("{key_prefix}-{index}")))
+                }
+                Block::List(items) => {
+                    result = result.child(list_el(items, t, 0.0, key_prefix, index))
+                }
                 Block::Code { language, source } => {
                     let forced = force(code_index);
                     code_index += 1;
@@ -325,8 +337,11 @@ pub(super) fn render(source: &str, t: Palette, cb_base: usize, global_copy: Opti
                     8.0,
                 ))
             }
-            Block::Paragraph(paragraph) => result = result.child(inline(paragraph, t).mb(12.0)),
-            Block::List(items) => result = result.child(list_el(items, t, 12.0)),
+            Block::Paragraph(paragraph) => {
+                result =
+                    result.child(inline(paragraph, t, format!("{key_prefix}-{index}")).mb(12.0))
+            }
+            Block::List(items) => result = result.child(list_el(items, t, 12.0, key_prefix, index)),
             Block::Code { language, source } => {
                 let forced = force(code_index);
                 code_index += 1;
@@ -344,26 +359,27 @@ fn heading_el(heading: &str, t: Palette, mt: f32, mb: f32) -> El {
         .key(format!("md-h-{}", slug(heading)))
         .font(style)
         .color(t.ink)
+        .selectable(true)
         .wrap()
         .w_full()
         .mt(mt)
         .mb(mb)
 }
 
-fn list_el(items: &[String], t: Palette, mb: f32) -> El {
+fn list_el(items: &[String], t: Palette, mb: f32, key_prefix: &str, index: usize) -> El {
     // `ul` has no padding; each `li` wraps a `p` whose 12px bottom margin
     // collapses with the li's 4px, so the pitch is lh + 12 and the first li
     // sits at the ul's top. The 5pt disc marker's left edge lands at 7.5 with
     // its centre on the first line's midline; text at 27.
     let mut list = col().w_full().gap(12.0);
-    for item in items {
+    for (item_index, item) in items.iter().enumerate() {
         list = list.child(
             row()
                 .w_full()
                 .pl(7.5)
                 .gap(14.5)
                 .child(el().w(5.0).h(5.0).corners([2.5; 4]).fill(t.muted).mt(8.98))
-                .child(inline(item, t).grow(1.0)),
+                .child(inline(item, t, format!("{key_prefix}-{index}-{item_index}")).grow(1.0)),
         );
     }
     list.mb(mb)

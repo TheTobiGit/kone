@@ -4,7 +4,7 @@
     {
       "id": "user-composer-1",
       "role": "user",
-      "text": "Could you summarize the resting orb and composer states before we finalize Studio?",
+      "text": "Inspect model, commands, project files, and hand-off choices in the composer.",
       "at": 1760000000000,
       "historical": true,
       "model": "gpt-5.4",

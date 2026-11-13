@@ -132,6 +132,7 @@ fn main() {
                     id: "question-dock-1".into(),
                     questions: vec![state::StudioQuestionEntry {
                         id: "scope".into(),
+                        header: "Which files should I include?".into(),
                         prompt: "Choose the files to include in the change.".into(),
                         options: vec!["Only the Rune UI".into(), "Rune UI and fixtures".into()],
                         multi: false,
@@ -176,6 +177,7 @@ fn main() {
                 studio_composer(s, "open");
                 s.studio.archive_notice =
                     Some("This thread is still working and cannot be archived.".into());
+                s.studio.selection_fixture_pending = true;
             }),
             ("studio-picker-model", |s| {
                 studio_composer(s, "picker-model");

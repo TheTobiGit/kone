@@ -246,6 +246,10 @@ pub struct StudioState {
     pub subagents: Vec<(String, String, String)>,
     pub subagents_expanded: bool,
     pub archive_notice: Option<String>,
+    /// Text selected in the focused thread, shown in the selection actions toolbar.
+    pub selection_text: Option<String>,
+    /// Fixture-only request to select a stable excerpt on first layout.
+    pub selection_fixture_pending: bool,
     pub start_request: Option<u64>,
     pub send_request: Option<u64>,
     pub discover_request: Option<u64>,
@@ -299,6 +303,7 @@ pub struct StudioQuestion {
 #[derive(Clone)]
 pub struct StudioQuestionEntry {
     pub id: String,
+    pub header: String,
     pub prompt: String,
     pub options: Vec<String>,
     pub multi: bool,
@@ -1049,6 +1054,11 @@ impl AppState {
                 s.answer_approval("reject-once");
                 return true;
             }
+        }
+        if event.key == rune::Key::Escape && s.studio.selection_text.is_some() {
+            s.studio.selection_text = None;
+            tx.clear_text_selection();
+            return true;
         }
         if s.studio.handoff_picker
             && matches!(
@@ -2435,6 +2445,7 @@ impl AppState {
                     .flatten()
                     .map(|q| StudioQuestionEntry {
                         id: q["id"].as_str().unwrap_or("").to_owned(),
+                        header: q["header"].as_str().unwrap_or("").to_owned(),
                         prompt: q["question"].as_str().unwrap_or("").to_owned(),
                         options: q["options"]
                             .as_array()

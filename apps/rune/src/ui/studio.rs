@@ -59,6 +59,16 @@ static CLOSE: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M18 6L6.00081 17.9992M17.9992 18L6 6.00085" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
+static STUDIO_NOTICE_WARNING: Icon = Icon {
+    name: "studio-notice-warning",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v4m.125 3.75H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+};
+static SELECTION_ADD: Icon = Icon {
+    name: "studio-selection-add",
+    view: 24.0,
+    body: r#"<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
 
 static SIDE_CHAT: Icon = Icon {
     name: "studio-side-chat",
@@ -1197,6 +1207,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let t = Palette::new(cx.system_dark());
+    let selection_rects = cx.selection_rects();
     if s.selected_project.is_none() {
         let mut choices = col().w(300.0).gap(4.0);
         for (index, project) in s.projects.iter().enumerate() {
@@ -1296,19 +1307,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(
                     row()
                         .px(14.0)
-                        .h(36.0)
+                        .py(9.0)
+                        .gap(8.0)
+                        .max_w(520.0)
                         .center_y()
                         .radius(999.0)
-                        .border(1.0, t.line)
+                        .border(1.0, t.line.alpha(0.7))
                         .fill(t.sunken)
-                        .shadow(4.0, 18.0, rune::Color::BLACK.alpha(0.12))
+                        .shadow(4.0, 14.0, rune::Color::BLACK.alpha(0.12))
+                        .child(icon(&STUDIO_NOTICE_WARNING, 14.0).color(t.warn))
                         .child(label(notice.clone(), 12.5, 400.0, t.ink_soft)),
                 ),
         )
     } else {
         plane
     };
-    if s.studio.picker_open {
+    let plane = if s.studio.picker_open {
         let scrim_progress = s.studio.picker_opened_at.map_or(1.0, |opened| {
             super::start_motion::bezier(
                 [0.22, 1.0, 0.36, 1.0],
@@ -1336,7 +1350,113 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         plane.child(handoff_picker(s, t))
     } else {
         plane
+    };
+    if let Some(selected) = s.studio.selection_text.as_ref()
+        && !s.studio.picker_open
+        && !s.studio.handoff_picker
+        && !selection_rects.is_empty()
+    {
+        let left = selection_rects
+            .iter()
+            .map(|rect| rect[0])
+            .fold(f32::INFINITY, f32::min);
+        let right = selection_rects
+            .iter()
+            .map(|rect| rect[0] + rect[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = selection_rects
+            .iter()
+            .map(|rect| rect[1] + rect[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let (viewport_w, viewport_h) = s.studio_viewport;
+        let toolbar_x = ((left + right) / 2.0 - 115.0).clamp(8.0, (viewport_w - 250.0).max(8.0));
+        let toolbar_y = (bottom + 8.0).min((viewport_h - 38.0).max(8.0));
+        plane.child(selection_actions(selected, toolbar_x, toolbar_y, t))
+    } else {
+        plane
     }
+}
+
+fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
+    let copy_text = selected.to_owned();
+    let composer_text = selected.to_owned();
+    let thread_text = selected.to_owned();
+    let button = |glyph: &'static Icon,
+                  title: &'static str,
+                  action: fn(&mut AppState, &str, &mut rune::Tx),
+                  text: String| {
+        row()
+            .h(28.0)
+            .px(8.0)
+            .gap(5.0)
+            .center_y()
+            .radius(999.0)
+            .hover(t.hover)
+            .child(icon(glyph, 12.0).color(t.ink_soft))
+            .child(label(title, 12.0, 500.0, t.ink_soft))
+            .on_press_tx(move |s: &mut AppState, tx| action(s, &text, tx))
+    };
+    row()
+        .key("studio-selection-actions")
+        .pin(Some(left), Some(top), None, None)
+        .padding(3.0)
+        .gap(2.0)
+        .center_y()
+        .radius(999.0)
+        .border(1.0, t.line.alpha(0.14))
+        .fill(t.ground.alpha(0.92))
+        .shadow(0.0, 10.0, rune::Color::BLACK.alpha(0.12))
+        .keeps_text_selection()
+        .on_key(|s: &mut AppState, event, tx| {
+            if event.key == rune::Key::Escape {
+                s.studio.selection_text = None;
+                tx.clear_text_selection();
+                true
+            } else {
+                false
+            }
+        })
+        .child(button(&FOOTER_COPY01, "Copy", copy_selection, copy_text))
+        .child(button(
+            &SELECTION_ADD,
+            "Add to Composer",
+            add_selection_to_composer,
+            composer_text,
+        ))
+        .child(button(
+            &SIDE_CHAT,
+            "New Thread",
+            new_thread_from_selection,
+            thread_text,
+        ))
+}
+
+fn copy_selection(s: &mut AppState, text: &str, tx: &mut rune::Tx) {
+    tx.copy(text.to_owned());
+    s.studio.selection_text = None;
+    tx.clear_text_selection();
+}
+
+fn add_selection_to_composer(s: &mut AppState, text: &str, tx: &mut rune::Tx) {
+    if !s.composer.text.is_empty() {
+        s.composer.text.push('\n');
+    }
+    s.composer.text.push_str(text);
+    s.composer.focus = s.composer.text.len();
+    s.composer.anchor = s.composer.focus;
+    s.open_composer();
+    s.studio.selection_text = None;
+    tx.clear_text_selection();
+}
+
+fn new_thread_from_selection(s: &mut AppState, text: &str, tx: &mut rune::Tx) {
+    s.new_studio_thread();
+    s.composer.text = text.to_owned();
+    s.composer.focus = s.composer.text.len();
+    s.composer.anchor = s.composer.focus;
+    s.open_composer();
+    s.studio.selection_text = None;
+    tx.clear_text_selection();
 }
 
 fn stage_handoff_model(
@@ -2358,20 +2478,55 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
         let cancel_id = id.clone();
         let edit_id = id.clone();
         let edit_input = input.clone();
-        strip = strip.child(row().key(format!("queue-{id}")).w_full().h(24.0).center_y().gap(7.0)
-            .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08)).child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
-            .child(label(input.clone(), 11.5, 450.0, t.ink).grow(1.0).shrink())
-            .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
-                .child(label("Edit", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
-                    s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
-                    s.composer.text = edit_input.clone();
-                    s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
-                    s.open_composer();
-                }))
-            .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
-                .child(label("Stop", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
-                    s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": cancel_id}));
-                })));
+        let send_now_id = id.clone();
+        let send_now_input = input.clone();
+        let up_index = index;
+        let down_index = index;
+        strip = strip.child(
+            row()
+                .key(format!("queue-{id}"))
+                .w_full()
+                .h(26.0)
+                .center_y()
+                .gap(6.0)
+                .child(label("⠿", 11.0, 500.0, t.faint))
+                .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
+                    .child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
+                .child(label(input.clone(), 11.5, 450.0, t.ink).grow(1.0).shrink())
+                .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.muted))
+                .child(el().key(format!("queue-up-{id}")).px(4.0).h(20.0).center().hover(t.hover)
+                    .child(label("↑", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                        if up_index > 0 {
+                            s.studio.queued_turns.swap(up_index, up_index - 1);
+                            let queue_ids = s.studio.queued_turns.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
+                            s.request("agent.queueReorder", serde_json::json!({"threadId": s.studio.thread_id, "queueIds": queue_ids}));
+                        }
+                    }))
+                .child(el().key(format!("queue-down-{id}")).px(4.0).h(20.0).center().hover(t.hover)
+                    .child(label("↓", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                        if down_index + 1 < s.studio.queued_turns.len() {
+                            s.studio.queued_turns.swap(down_index, down_index + 1);
+                            let queue_ids = s.studio.queued_turns.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
+                            s.request("agent.queueReorder", serde_json::json!({"threadId": s.studio.thread_id, "queueIds": queue_ids}));
+                        }
+                    }))
+                .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
+                    .child(label("Send now", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                        s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": send_now_id}));
+                        s.request("agent.steer", serde_json::json!({"threadId": s.studio.thread_id, "input": send_now_input, "dispatchMode": "steer"}));
+                    }))
+                .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
+                    .child(label("Edit", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                        s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
+                        s.composer.text = edit_input.clone();
+                        s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
+                        s.open_composer();
+                    }))
+                .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
+                    .child(label("Stop", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                        s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": cancel_id}));
+                    })),
+        );
     }
     strip
 }
@@ -2501,18 +2656,22 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             )
     } else if let Some(approval) = &s.studio.approval {
         col()
-            .w_full()
-            .max_w(384.0)
+            .w(512.0)
+            .min_w(512.0)
             .gap(0.0)
             .radius(18.0)
+            .clip_rounded(18.0)
             .border(1.0, t.line)
             .fill(t.ground)
-            .child(row().w_full().h(34.0).px(16.0).center_y().child(label(
-                "⚒  Tool call",
-                12.0,
-                600.0,
-                t.ink_soft,
-            )))
+            .child(
+                row()
+                    .w_full()
+                    .h(36.0)
+                    .px(16.0)
+                    .center_y()
+                    .fill(t.sunken)
+                    .child(label("⚒  Tool call", 12.0, 600.0, t.ink_soft)),
+            )
             .child(
                 col()
                     .w_full()
@@ -2530,6 +2689,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .px(14.0)
                     .center_y()
                     .gap(10.0)
+                    .fill(t.sunken)
                     .child(
                         el().key("approval-reject")
                             .px(4.0)
@@ -2572,14 +2732,54 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     } else if let Some(request) = &s.studio.question {
         let question = &request.questions[request.index];
         let mut card = col()
-            .w_full()
-            .max_w(384.0)
-            .padding(18.0)
-            .gap(12.0)
-            .radius(20.0)
+            .w(512.0)
+            .min_w(512.0)
+            .gap(0.0)
+            .radius(18.0)
+            .clip_rounded(18.0)
             .border(1.0, t.line)
-            .fill(t.raised_high)
-            .child(label(question.prompt.clone(), 14.0, 600.0, t.ink));
+            .fill(t.ground)
+            .child(
+                row()
+                    .w_full()
+                    .h(40.0)
+                    .px(14.0)
+                    .center_y()
+                    .fill(t.sunken)
+                    .child(
+                        label(
+                            if question.header.is_empty() {
+                                question.prompt.clone()
+                            } else {
+                                question.header.clone()
+                            },
+                            13.0,
+                            500.0,
+                            t.ink_soft,
+                        )
+                        .grow(1.0),
+                    )
+                    .child(
+                        el().px(8.0)
+                            .h(26.0)
+                            .center()
+                            .radius(7.0)
+                            .hover(t.hover)
+                            .child(label("Cancel", 11.5, 450.0, t.muted))
+                            .on_press(|s: &mut AppState| {
+                                s.studio.question = None;
+                                s.studio.answer.text.clear();
+                            }),
+                    ),
+            )
+            .child(
+                col()
+                    .w_full()
+                    .padding(12.0)
+                    .gap(5.0)
+                    .fill(t.raised_high)
+                    .child(label(question.prompt.clone(), 13.0, 450.0, t.ink)),
+            );
         for (index, option) in question.options.iter().enumerate() {
             let answer = option.clone();
             let multi = question.multi;
@@ -2595,12 +2795,25 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             card = card.child(
                 el().key(format!("question-option-{index}"))
                     .w_full()
-                    .h(32.0)
-                    .px(8.0)
+                    .h(31.0)
+                    .px(6.0)
                     .center_y()
                     .radius(8.0)
                     .hover(t.hover)
-                    .child(label(format!("{prefix}{option}"), 13.0, 500.0, t.ink_soft))
+                    .gap(7.0)
+                    .child(
+                        el().w(14.0)
+                            .h(14.0)
+                            .center()
+                            .radius(7.0)
+                            .border(1.0, t.ink.alpha(0.22))
+                            .child(if request.selected.contains(option) {
+                                el().w(6.0).h(6.0).radius(3.0).fill(t.accent)
+                            } else {
+                                el()
+                            }),
+                    )
+                    .child(label(format!("{prefix}{option}"), 12.5, 450.0, t.ink_soft))
                     .on_press(move |s: &mut AppState| {
                         if multi {
                             s.toggle_question_option(answer.clone());
@@ -2610,6 +2823,22 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     }),
             );
         }
+        card = card.child(
+            row()
+                .w_full()
+                .h(31.0)
+                .px(6.0)
+                .center_y()
+                .gap(7.0)
+                .child(
+                    el().w(14.0)
+                        .h(14.0)
+                        .center()
+                        .radius(7.0)
+                        .border(1.0, t.ink.alpha(0.22)),
+                )
+                .child(label("Write your own…", 12.5, 450.0, t.muted)),
+        );
         if question.multi {
             card.child(
                 el().key("question-submit")
@@ -2631,17 +2860,32 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             )
         } else {
             card.child(
-                text_input(&s.studio.answer, TextStyle::new(14.0, 400.0))
-                    .key("studio-answer")
+                row()
                     .w_full()
-                    .h(38.0)
-                    .placeholder("Your answer…", t.placeholder)
-                    .color(t.ink)
-                    .on_edit(|s: &mut AppState| &mut s.studio.answer)
-                    .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
-                        let answer = s.studio.answer.text.clone();
-                        s.answer_question(answer.into());
-                    }),
+                    .h(42.0)
+                    .px(12.0)
+                    .center_y()
+                    .gap(8.0)
+                    .fill(t.sunken)
+                    .child(label("♧", 13.0, 400.0, t.muted).grow(1.0))
+                    .child(
+                        el().px(12.0)
+                            .h(28.0)
+                            .center()
+                            .radius(8.0)
+                            .fill(t.ink.alpha(0.05))
+                            .child(label("Send answer", 11.5, 500.0, t.muted))
+                            .on_press(|s: &mut AppState| {
+                                let answer = s
+                                    .studio
+                                    .question
+                                    .as_ref()
+                                    .and_then(|q| q.selected.first())
+                                    .cloned()
+                                    .unwrap_or_else(|| s.studio.answer.text.clone());
+                                s.answer_question(answer.into());
+                            }),
+                    ),
             )
         }
     } else if s.studio.composer_open || show_closing {
@@ -2769,6 +3013,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .child(
                         text(item.text.clone())
                             .key(format!("studio-user-text-{user_count}"))
+                            .selectable(true)
                             .font(TextStyle::new(14.0, 400.0).lh(22.68))
                             .color(t.ink)
                             .max_w(576.0)
@@ -2932,6 +3177,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                         t,
                         cb_base,
                         s.studio.fixture_cb_copy,
+                        &item.id,
                     ));
                 }
                 cb_base += item.text.matches("```").count() / 2;
@@ -3503,6 +3749,16 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     if let Some(error) = &s.studio.error {
         transcript = transcript.child(label(error.clone(), 12.5, 400.0, t.accent));
     }
+    transcript =
+        transcript
+            .selection_group(true)
+            .on_selection_change(|s: &mut AppState, change, _| {
+                let text = change
+                    .selection()
+                    .map(|selection| selection.text().to_owned())
+                    .filter(|text| text.trim().chars().count() > 2);
+                s.studio.selection_text = if change.dragging() { None } else { text };
+            });
     // Only an empty thread keeps the codegolf art; a populated thread's head
     // carries the day and connected marks instead.
     let art = if s.studio.items.is_empty() {
@@ -3534,6 +3790,12 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                             matches!(f, "scrolled" | "compaction" | "marks" | "code")
                                 || f.starts_with("composer-")
                         }),
+                })
+                .on_layout_tx(|s: &mut AppState, _, tx| {
+                    if s.studio.selection_fixture_pending {
+                        s.studio.selection_fixture_pending = false;
+                        tx.select_text("composer-reply-1-0", 0..83);
+                    }
                 })
                 .clip_fade_linear(
                     0.0,
