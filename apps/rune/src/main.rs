@@ -140,7 +140,8 @@ fn main() {
             }),
             ("studio-picker-handoff", |s| {
                 use state::{StudioModel, StudioProvider};
-                studio_column_head(s);
+                studio_composer(s, "picker-handoff");
+                s.studio.composer_open = false;
                 s.studio.providers = [
                     ("codex", "Codex"),
                     ("claudeAgent", "Claude"),
@@ -164,6 +165,10 @@ fn main() {
                     })
                     .collect();
                 s.open_handoff_picker();
+                if let Some((_, models, _, _)) = &mut s.studio.handoff_selection {
+                    models[0].id = "default".into();
+                    models[0].label = "default model".into();
+                }
             }),
             ("studio-column-head-info", |s| {
                 studio_column_head(s);
@@ -616,6 +621,7 @@ fn studio_composer(s: &mut AppState, scene: &str) {
         .collect();
         s.studio.provider_index = 0;
         s.studio.model_index = 0;
+        s.studio.worktree_path = Some("/tmp/calm-agent-ui-continuation".into());
     }
     s.studio.mode = "accept-edits".into();
     s.studio.effort = "medium".into();

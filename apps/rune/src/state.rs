@@ -223,6 +223,7 @@ pub struct StudioState {
     pub workspace_heading: String,
     pub workspace_tray_open: bool,
     pub picker_open: bool,
+    pub picker_opened_at: Option<std::time::Instant>,
     pub composer_menu_marker: Option<char>,
     pub composer_menu_index: usize,
     pub effort_picker_open: bool,
@@ -1235,6 +1236,7 @@ impl AppState {
                         Some('/') if selected_command == Some("/model") => {
                             s.composer.clear();
                             s.studio.picker_open = true;
+                            s.studio.picker_opened_at = Some(std::time::Instant::now());
                             s.studio.handoff_query.text.clear();
                         }
                         Some('/') if selected_command == Some("/new") => {
@@ -1302,6 +1304,7 @@ impl AppState {
             if s.studio.picker_open || s.studio.mode_picker_open || s.studio.effort_picker_open {
                 s.cancel_handoff_picker();
                 s.studio.picker_open = false;
+                s.studio.picker_opened_at = None;
                 s.studio.mode_picker_open = false;
                 s.studio.effort_picker_open = false;
                 return true;
@@ -1682,6 +1685,7 @@ impl AppState {
         self.studio.model_index = model_index;
         self.studio.effort = effort;
         self.studio.picker_open = false;
+        self.studio.picker_opened_at = None;
     }
 
     pub fn open_handoff_picker(&mut self) {

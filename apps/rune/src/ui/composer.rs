@@ -32,24 +32,11 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     let mut menu = col()
         .key("composer-trigger-menu")
         .w_full()
-        .mb(12.0)
+        .mb(18.0)
         .padding(8.0)
         .radius(18.0)
         .fill(t.field)
-        .border(1.0, t.line)
-        .box_shadow(Shadow {
-            x: 0.0,
-            y: 8.0,
-            blur: 28.0,
-            spread: 0.0,
-            color: Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: if t.dark { 0.34 } else { 0.12 },
-            },
-            inset: false,
-        });
+        .border(1.0, t.ink.alpha(0.08));
     let title = if marker == '/' {
         "Commands"
     } else {
@@ -104,20 +91,17 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
             item = item.fill(t.accent.alpha(0.12));
         }
         if marker == '@' {
-            let (mark, color) = if name.ends_with(".vue") {
-                ("V", "#42b883")
-            } else if name.ends_with(".css") {
-                ("▦", "#a855f7")
-            } else if name.ends_with(".json") {
-                ("{}", "#e34f26")
+            let path = if detail.is_empty() {
+                name.clone()
             } else {
-                ("TS", "#3182ce")
+                format!("{detail}/{name}")
             };
             item = item
                 .child(
-                    el().w(15.0)
+                    el().w(17.0)
+                        .h(17.0)
                         .center()
-                        .child(label(mark, 9.0, 700.0, hex(color).unwrap())),
+                        .child(icon(super::file_icons::for_path(&path), 15.0)),
                 )
                 .child(label(name.clone(), 13.0, 500.0, t.ink))
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
@@ -137,6 +121,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
                 if name == "/model" {
                     s.composer.clear();
                     s.studio.picker_open = true;
+                    s.studio.picker_opened_at = Some(std::time::Instant::now());
                     s.studio.handoff_query.text.clear();
                 } else if name == "/new" {
                     s.composer.clear();
@@ -282,15 +267,7 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
                 } else {
                     0.48
                 })
-                .child(brand_mark_size(
-                    if provider.id == "codex" {
-                        "gpt"
-                    } else {
-                        &provider.id
-                    },
-                    20.0,
-                    t,
-                ))
+                .child(brand_mark_size(&provider.id, 20.0, t))
                 .on_press(move |s: &mut AppState| {
                     if index != s.studio.provider_index {
                         s.select_provider(index);
@@ -342,35 +319,23 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
             }
         }
     }
-    let has_current = entries.iter().any(|(provider, model, _, _)| {
-        *provider == s.studio.provider_index && *model == s.studio.model_index
-    });
-    let first_entry = entries
-        .first()
-        .map(|(provider, model, _, _)| (*provider, *model));
     let mut models = col().w_full().padding(14.0);
     let mut count = 0;
     for (provider_index, model_index, provider, model) in entries {
         count += 1;
-        let selected = (provider_index == s.studio.provider_index
-            && model_index == s.studio.model_index)
-            || (!has_current && first_entry == Some((provider_index, model_index)));
         let mut item = row()
             .key(format!(
                 "composer-picker-model-{provider_index}-{model_index}"
             ))
             .w_full()
             .px(10.0)
-            .py(9.0)
+            .h(41.25)
             .gap(10.0)
             .center_y()
             .radius(11.0)
             .hover(t.hover)
             .cursor(Cursor::Pointer)
-            .opacity(if selected { 1.0 } else { 0.72 });
-        if selected {
-            item = item.fill(t.ink.alpha(0.04));
-        }
+            .opacity(0.72);
         item = item.child(el().w(22.0).center().child(brand_mark_size(
             if provider.id == "codex" {
                 "gpt"
@@ -384,7 +349,10 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
             item = item.child(label(provider.label.clone(), 11.0, 400.0, t.muted));
         }
         item = item.child(label(model.label.clone(), 15.0, 400.0, t.ink));
-        let effort = if selected && !s.studio.effort.is_empty() {
+        let effort = if provider_index == s.studio.provider_index
+            && model_index == s.studio.model_index
+            && !s.studio.effort.is_empty()
+        {
             Some(s.studio.effort.as_str())
         } else {
             model
@@ -812,9 +780,17 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
             .on_press(|s: &mut AppState| {
                 s.studio.picker_open = !s.studio.picker_open;
                 if s.studio.picker_open {
+                    s.studio.picker_opened_at = Some(std::time::Instant::now());
                     s.studio.handoff_query.text.clear();
+                } else {
+                    s.studio.picker_opened_at = None;
                 }
             });
+        if s.studio.picker_open {
+            btn = btn
+                .opacity(1.0)
+                .border(1.0, hex("#4285f4").unwrap().alpha(0.72));
+        }
         if let Some(p) = provider {
             let text_label = model
                 .map(|m| m.label.as_str())

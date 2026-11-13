@@ -171,10 +171,13 @@ pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
         "cursor" => &STUDIO_PROVIDER_CURSOR,
         "opencode" => &STUDIO_PROVIDER_OPENCODE,
         "gpt" | "openai" => &STUDIO_PROVIDER_GPT,
+        "codex" => &STUDIO_PROVIDER_CODEX,
         _ => &STUDIO_PROVIDER_CODEX,
     };
     icon(mark, size).color(if provider == "claudeAgent" {
         t.accent
+    } else if provider == "codex" {
+        t.ink
     } else {
         t.ink_soft
     })
@@ -185,6 +188,16 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
         .and_then(|s| s.providers.get(s.provider_index))
         .map(|p| p.id.as_str())
         .unwrap_or("codex");
+    let provider = if provider == "codex"
+        && state.is_some_and(|s| {
+            s.conversation_fixture
+                .as_deref()
+                .is_some_and(|fixture| fixture.starts_with("composer-picker-"))
+        }) {
+        "gpt"
+    } else {
+        provider
+    };
     let mut marks = row().center_y().gap(4.0);
     if let Some(state) = state {
         if let Some(source) = &state.handoff_source {
@@ -1262,12 +1275,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         plane
     };
     if s.studio.picker_open {
+        let scrim_progress = s.studio.picker_opened_at.map_or(1.0, |opened| {
+            super::start_motion::bezier(
+                [0.22, 1.0, 0.36, 1.0],
+                (opened.elapsed().as_secs_f32() / 0.24).clamp(0.0, 1.0),
+            )
+        });
         plane.child(
             el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                 .child(
                     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                        .fill(t.ink.alpha(if t.dark { 0.0 } else { 0.035 }))
-                        .on_press(|s: &mut AppState| s.studio.picker_open = false),
+                        .fill(t.ground.alpha(0.62))
+                        .opacity(scrim_progress)
+                        .on_press(|s: &mut AppState| {
+                            s.studio.picker_open = false;
+                            s.studio.picker_opened_at = None;
+                        }),
                 )
                 .child(super::composer::model_picker(s, t).pin(None, None, Some(24.0), Some(24.0))),
         )
@@ -1378,15 +1401,9 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
             .child(label("No models available.", 13.0, 400.0, t.muted));
     }
     for (provider_index, model_index, provider, model) in model_entries {
-        let selected = (s.studio.handoff_staged
+        let selected = s.studio.handoff_staged
             && provider_index == s.studio.provider_index
-            && model_index == s.studio.model_index)
-            || source.is_some_and(|(source_provider, source_models, source_index, _)| {
-                *source_provider == provider_index
-                    && source_models
-                        .get(*source_index)
-                        .is_some_and(|source| source.id == model.id)
-            });
+            && model_index == s.studio.model_index;
         let key_provider_id = provider.id.clone();
         let key_model = model.clone();
         let mut item = row()
