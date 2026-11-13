@@ -1064,8 +1064,11 @@ fn terminal_line(value: &str, t: Palette) -> El {
         spans.push(span);
     }
     let mut line = text(output)
-        // Match xterm's measured 13px macOS glyphs and 18.5px cell pitch.
-        .font(TextStyle::new(13.0, 400.0).mono().lh(18.5))
+        // Chromium resolves ui-monospace to Menlo on macOS; the reference
+        // measures 13px glyphs on an 18px xterm cell pitch.
+        .font(TextStyle::new(13.0, 400.0)
+            .family(if cfg!(target_os = "macos") { Family::Named("Menlo") } else { Family::SystemMono })
+            .lh(18.0))
         .color(t.ink)
         .selectable(true)
         // xterm receives the Oklab 24% accent value from `--term-selection`, but its
@@ -2198,6 +2201,7 @@ fn studio_row(
                                     .gap(5.0)
                                     .px(8.0)
                                     .h(20.0)
+                                    .offset(0.0, -0.5)
                                     .radius(999.0)
                                     .fill(t.ink.alpha(0.05))
                                     .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
@@ -2255,9 +2259,11 @@ fn studio_row(
                                     })
                                     .font(
                                         TextStyle::new(10.0, 400.0)
-                                            .family(Family::Named("Geist")),
+                                            .family(Family::Named("Geist"))
+                                            .features("'tnum' 1"),
                                     )
-                                    .color(t.muted),
+                                    .color(t.muted)
+                                    .offset(0.5, -0.5),
                                 )
                                 .on_press_tx(move |s: &mut AppState, tx| {
                                     if zen {
@@ -2431,8 +2437,8 @@ fn studio_row(
                             .w_full()
                             .grow(1.0)
                             .min_h(0.0)
-                            .px(11.0)
-                            .pt(7.5)
+                            .px(10.5)
+                            .pt(8.0)
                             .scroll(ScrollSpec { stick_bottom: true })
                             .child(output)
                             .on_layout(|s: &mut AppState, bounds| {
