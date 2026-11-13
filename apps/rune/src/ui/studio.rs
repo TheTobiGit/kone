@@ -59,15 +59,50 @@ static CLOSE: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M18 6L6.00081 17.9992M17.9992 18L6 6.00085" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
+static QUEUE_GRIP: Icon = Icon {
+    name: "studio-queue-grip",
+    view: 24.0,
+    body: r#"<path d="M8.5 19.5V20M9.5 20C9.5 20.5523 9.05228 21 8.5 21C7.94772 21 7.5 20.5523 7.5 20C7.5 19.4477 7.94772 19 8.5 19C9.05228 19 9.5 19.4477 9.5 20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 19.5V20M16.5 20C16.5 20.5523 16.0523 21 15.5 21C14.9477 21 14.5 20.5523 14.5 20C14.5 19.4477 14.9477 19 15.5 19C16.0523 19 16.5 19.4477 16.5 20Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 3.5V4M9.5 4C9.5 4.55228 9.05228 5 8.5 5C7.94772 5 7.5 4.55228 7.5 4C7.5 3.44772 7.94772 3 8.5 3C9.05228 3 9.5 3.44772 9.5 4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 11.5V12M9.5 12C9.5 12.5523 9.05228 13 8.5 13C7.94772 13 7.5 12.5523 7.5 12C7.5 11.4477 7.94772 11 8.5 11C9.05228 11 9.5 11.4477 9.5 12Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 3.5V4M16.5 4C16.5 4.55228 16.0523 5 15.5 5C14.9477 5 14.5 4.55228 14.5 4C14.5 3.44772 14.9477 3 15.5 3C16.0523 3 16.5 3.44772 16.5 4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 11.5V12M16.5 12C16.5 12.5523 16.0523 13 15.5 13C14.9477 13 14.5 12.5523 14.5 12C14.5 11.4477 14.9477 11 15.5 11C16.0523 11 16.5 11.4477 16.5 12Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static QUEUE_SEND: Icon = Icon {
+    name: "studio-queue-send",
+    view: 24.0,
+    body: r#"<path d="M12 16.0351V7.9649C12 6.0377 12 5.0741 12.5918 4.80895C13.1837 4.54379 13.9003 5.18631 15.3336 6.47136L19.8342 10.5065C20.6116 11.2035 21.0003 11.552 21.0003 12C21.0003 12.448 20.6116 12.7965 19.8342 13.4935L15.3336 17.5286C13.9003 18.8137 13.1837 19.4562 12.5918 19.1911C12 18.9259 12 17.9623 12 16.0351Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 16.0351V7.9649C3 6.0377 3 5.0741 3.59183 4.80895C4.18366 4.54379 4.9003 5.18631 6.33359 6.47136L10.8342 10.5065C11.6116 11.2035 12.0003 11.552 12.0003 12C12.0003 12.448 11.6116 12.7965 10.8342 13.4935L6.33359 17.5286C4.9003 18.8137 4.18366 19.4562 3.59183 19.1911C3 18.9259 3 17.9623 3 16.0351Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static QUEUE_EDIT: Icon = Icon {
+    name: "studio-queue-edit",
+    view: 24.0,
+    body: r#"<path d="M16.4249 4.60509L17.4149 3.6151C18.2351 2.79497 19.5648 2.79497 20.3849 3.6151C21.205 4.43524 21.205 5.76493 20.3849 6.58507L19.3949 7.57506M16.4249 4.60509L9.76558 11.2644C9.25807 11.772 8.89804 12.4078 8.72397 13.1041L8 16L10.8959 15.276C11.5922 15.102 12.228 14.7419 12.7356 14.2344L19.3949 7.57506M16.4249 4.60509L19.3949 7.57506" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.9999 13.5C18.9999 16.7875 18.9999 18.4312 18.092 19.5376C17.9258 19.7401 17.7401 19.9258 17.5375 20.092C16.4312 21 14.7874 21 11.4999 21H11C7.22876 21 5.34316 21 4.17159 19.8284C3.00003 18.6569 3 16.7712 3 13V12.5C3 9.21252 3 7.56879 3.90794 6.46244C4.07417 6.2599 4.2599 6.07417 4.46244 5.90794C5.56879 5 7.21252 5 10.5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 static STUDIO_NOTICE_WARNING: Icon = Icon {
     name: "studio-notice-warning",
     view: 24.0,
-    body: r#"<rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v4m.125 3.75H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+    body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16V12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.125 8.25H12M12.25 8.25C12.25 8.11193 12.1381 8 12 8C11.8619 8 11.75 8.11193 11.75 8.25C11.75 8.38807 11.8619 8.5 12 8.5C12.1381 8.5 12.25 8.38807 12.25 8.25Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static DOCK_CHEVRON: Icon = Icon {
+    name: "dock_chevron",
+    view: 24.0,
+    body: r#"<path d="M17.9998 15C17.9998 15 13.5809 9.00001 11.9998 9C10.4187 8.99999 5.99985 15 5.99985 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static DOCK_EDIT: Icon = Icon {
+    name: "dock_edit",
+    view: 24.0,
+    body: r#"<path d="M13 20.8268V22H14.1734C14.5827 22 14.7874 22 14.9715 21.9238C15.1555 21.8475 15.3003 21.7028 15.5897 21.4134L20.4133 16.5894C20.6864 16.3164 20.8229 16.1799 20.8959 16.0327C21.0347 15.7525 21.0347 15.4236 20.8959 15.1434C20.8229 14.9961 20.6864 14.8596 20.4133 14.5866C20.1403 14.3136 20.0038 14.1771 19.8565 14.1041C19.5763 13.9653 19.2473 13.9653 18.9671 14.1041C18.8198 14.1771 18.6833 14.3136 18.4103 14.5866L18.4103 14.5866L13.5867 19.4106C13.2972 19.7 13.1525 19.8447 13.0762 20.0287C13 20.2128 13 20.4174 13 20.8268Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 11C19 11 19 9.4306 18.8478 9.06306C18.6955 8.69552 18.4065 8.40649 17.8284 7.82843L13.0919 3.09188C12.593 2.593 12.3436 2.34355 12.0345 2.19575C11.9702 2.165 11.9044 2.13772 11.8372 2.11401C11.5141 2 11.1614 2 10.4558 2C7.21082 2 5.58831 2 4.48933 2.88607C4.26731 3.06508 4.06508 3.26731 3.88607 3.48933C3 4.58831 3 6.21082 3 9.45584V14C3 17.7712 3 19.6569 4.17157 20.8284C5.23467 21.8915 6.8857 21.99 10 21.9991M12 2.5V3C12 5.82843 12 7.24264 12.8787 8.12132C13.7574 9 15.1716 9 18 9H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static DOCK_TASKS: Icon = Icon {
+    name: "dock_tasks",
+    view: 24.0,
+    body: r#"<path d="M11 6L21 6" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 12L21 12" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 18L21 18" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 7.39286C3 7.39286 4 8.04466 4.5 9C4.5 9 6 5.25 8 4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 18.3929C3 18.3929 4 19.0447 4.5 20C4.5 20 6 16.25 8 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static DOCK_AGENTS: Icon = Icon {
+    name: "dock_agents",
+    view: 24.0,
+    body: r#"<path d="M13 11C13 8.79086 11.2091 7 9 7C6.79086 7 5 8.79086 5 11C5 13.2091 6.79086 15 9 15C11.2091 15 13 13.2091 13 11Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.0386 7.55773C11.0131 7.37547 11 7.18927 11 7C11 4.79086 12.7909 3 15 3C17.2091 3 19 4.79086 19 7C19 9.20914 17.2091 11 15 11C14.2554 11 13.5584 10.7966 12.9614 10.4423" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 21C15 17.6863 12.3137 15 9 15C5.68629 15 3 17.6863 3 21" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 17C21 13.6863 18.3137 11 15 11" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static STUDIO_ATTACH: Icon = Icon {
-    name: "studio-attach",
+    name: "studio_attach",
     view: 24.0,
-    body: r#"<path d="m8.5 12.5 5.7-5.7a3 3 0 0 1 4.2 4.2l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l8.5-8.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M5.82338 12L4.27922 10.4558C2.57359 8.75022 2.57359 5.98485 4.27922 4.27922C5.98485 2.57359 8.75022 2.57359 10.4558 4.27922L19.7208 13.5442C21.4264 15.2498 21.4264 18.0152 19.7208 19.7208C18.0152 21.4264 15.2498 21.4264 13.5442 19.7208L10.0698 16.2464C9.00379 15.1804 9.00379 13.4521 10.0698 12.386C11.1358 11.32 12.8642 11.32 13.9302 12.386L15.8604 14.3162" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static SELECTION_ADD: Icon = Icon {
     name: "studio-selection-add",
@@ -205,20 +240,15 @@ pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
 
 pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
     let picker_fixture = state.is_some_and(|s| {
-        s.conversation_fixture
-            .as_deref()
-            .is_some_and(|fixture| fixture.starts_with("composer-picker-"))
+        s.conversation_fixture.as_deref().is_some_and(|fixture| {
+            fixture.starts_with("composer-picker-") || fixture.starts_with("composer-dock-")
+        })
     });
     let provider = state
         .and_then(|s| s.providers.get(s.provider_index))
         .map(|p| p.id.as_str())
         .unwrap_or("codex");
-    let provider = if provider == "codex"
-        && state.is_some_and(|s| {
-            s.conversation_fixture
-                .as_deref()
-                .is_some_and(|fixture| fixture.starts_with("composer-picker-"))
-        }) {
+    let provider = if provider == "codex" && picker_fixture {
         "gpt"
     } else {
         provider
@@ -1312,14 +1342,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(
                     row()
                         .px(14.0)
+                        .h(37.5)
                         .py(9.0)
                         .gap(8.0)
                         .max_w(520.0)
                         .center_y()
-                        .radius(12.0)
+                        .radius(999.0)
+                        .border(1.0, t.ink.alpha(0.0713725))
                         .fill(t.sunken)
                         .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.12))
-                        .child(icon(&STUDIO_NOTICE_WARNING, 14.0).color(t.warn))
+                        .child(icon(&STUDIO_NOTICE_WARNING, 15.0).color(t.warn))
                         .child(label(notice.clone(), 12.5, 400.0, t.ink_soft)),
                 ),
         )
@@ -1390,7 +1422,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             } else {
                 left.clamp(8.0, (viewport_w - 320.0).max(8.0))
             };
-        let toolbar_y = (top - 42.0).max(8.0).min((viewport_h - 42.0).max(8.0));
+        let toolbar_y = (top - 38.5).max(8.0).min((viewport_h - 42.0).max(8.0));
         let _ = (right, bottom);
         plane.child(selection_actions(selected, toolbar_x, toolbar_y, t))
     } else {
@@ -1407,11 +1439,11 @@ fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
                   action: fn(&mut AppState, &str, &mut rune::Tx),
                   text: String| {
         row()
-            .h(32.0)
+            .h(24.0)
             .px(8.0)
             .gap(6.0)
             .center_y()
-            .radius(999.0)
+            .radius(8.0)
             .hover(t.hover)
             .child(icon(glyph, 12.0).color(t.ink_soft))
             .child(label(title, 12.0, 500.0, t.ink_soft))
@@ -1419,14 +1451,18 @@ fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
     };
     row()
         .key("studio-selection-actions")
+        .w(308.65625)
         .pin(Some(left), Some(top), None, None)
         .padding(4.0)
         .gap(2.0)
         .center_y()
-        .radius(999.0)
-        .border(1.0, t.ink.alpha(0.14))
-        .fill(t.raised_high)
-        .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.16))
+        .radius(12.0)
+        .fill(if t.dark {
+            rune::color::hex("#18181a").unwrap()
+        } else {
+            t.raised
+        })
+        .shadow(0.0, 2.0, rune::Color::BLACK.alpha(0.06))
         .keeps_text_selection()
         .on_key(|s: &mut AppState, event, tx| {
             if event.key == rune::Key::Escape {
@@ -2409,6 +2445,26 @@ fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
         .child(transcript)
 }
 
+fn interaction_outline(t: Palette, header: f32) -> El {
+    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), None)
+                .h(header)
+                .corners([18.0, 18.0, 0.0, 0.0])
+                .border_sides([1.0, 1.0, 0.0, 1.0], t.line),
+        )
+        .child(
+            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
+                .h(41.7)
+                .corners([0.0, 0.0, 18.0, 18.0])
+                .border_sides([0.0, 1.0, 1.0, 1.0], t.line),
+        )
+}
+
+fn interaction_band(t: Palette) -> rune::Color {
+    rune::color::hex(if t.dark { "#0c0c0d" } else { "#f2f1ef" }).unwrap()
+}
+
 fn subagent_dock(s: &AppState, t: Palette) -> El {
     let dock_fixture = s.studio.conversation_fixture.as_deref() == Some("composer-dock-subagent");
     let running = s
@@ -2418,27 +2474,17 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
         .filter(|row| matches!(row.2.as_str(), "starting" | "running"))
         .count();
     let mut card = col()
-        .w(if dock_fixture { 300.0 } else { 288.0 })
-        .padding(if dock_fixture { 6.0 } else { 4.0 })
-        .gap(if dock_fixture { 4.0 } else { 0.0 })
-        .radius(if dock_fixture { 14.0 } else { 20.0 })
-        .border(if dock_fixture { 0.0 } else { 1.0 }, t.ink.alpha(0.08))
+        .w(288.0)
+        .padding(if dock_fixture { 0.0 } else { 4.0 })
+        .gap(if dock_fixture { 5.0 } else { 0.0 })
+        .radius(20.0)
+        .border(1.0, t.ink.alpha(0.08))
         .shadow(
             0.0,
             18.0,
             rune::Color::BLACK.alpha(if dock_fixture { 0.0 } else { 0.18 }),
         )
-        .fill(if dock_fixture {
-            if t.dark {
-                t.raised
-            } else {
-                crate::theme::mix_srgb(t.ground, t.sunken, 0.16)
-            }
-        } else if t.dark {
-            t.raised
-        } else {
-            crate::theme::mix_srgb(t.ground, t.sunken, 0.16)
-        });
+        .fill(interaction_band(t));
     let count = if running > 0 {
         format!("{running}/{}", s.studio.subagents.len())
     } else {
@@ -2448,174 +2494,205 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
         card = card.child(
             row()
                 .w_full()
-                .h(35.0)
-                .px(10.0)
+                .h(35.4)
+                .mb(-5.0)
+                .offset(0.0, 2.0)
+                .px(12.8)
                 .center_y()
                 .gap(7.0)
                 .radius(10.0)
-                .fill(t.raised_high)
                 .child(el().w(6.0).h(6.0).radius(3.0).fill(t.accent))
                 .child(brand_mark_size("gpt", 15.0, t))
-                .child(label("Composer review", 13.0, 500.0, t.ink_soft)),
+                .child(label("Composer review", 12.5, 400.0, t.ink_soft)),
         );
         card = card.child(
             col()
-                .w_full()
-                .padding(5.0)
-                .radius(14.0)
-                .fill(t.raised_high)
-                .gap(2.0)
+                .w(286.0)
+                .self_center()
+                .padding(4.0)
+                .radius(18.0)
+                .border(if t.dark { 0.0 } else { 1.0 }, t.ink.alpha(0.08))
+                .shadow(
+                    0.0,
+                    2.0,
+                    rune::Color::BLACK.alpha(if t.dark { 0.0 } else { 0.04 }),
+                )
+                .fill(t.raised)
+                .gap(0.0)
                 .child(
                     row()
                         .w_full()
-                        .h(28.0)
-                        .px(8.0)
+                        .h(33.4)
+                        .px(8.8)
                         .center_y()
-                        .child(label("Changes", 12.0, 500.0, t.ink_soft))
+                        .child(label("Changes", 12.5, 400.0, t.ink).offset(0.0, 2.0))
                         .child(el().grow(1.0))
                         .child(label(
                             "+18",
-                            10.0,
-                            500.0,
+                            11.0,
+                            400.0,
                             rune::color::hex("#329b70").unwrap(),
                         ))
+                        .gap(6.0)
                         .child(label(
                             "−4",
-                            10.0,
-                            500.0,
+                            11.0,
+                            400.0,
                             rune::color::hex("#d25c5c").unwrap(),
                         ))
-                        .child(
-                            icon(&ACTIVITY_CHEVRON, 14.0)
-                                .color(t.muted)
-                                .rotate(std::f32::consts::FRAC_PI_2),
-                        ),
+                        .child(icon(&DOCK_CHEVRON, 14.0).color(t.ink_soft)),
                 )
                 .child(
                     row()
                         .w_full()
-                        .h(32.0)
-                        .px(8.0)
+                        .h(35.5)
+                        .px(8.8)
                         .center_y()
-                        .child(icon(&FOOTER_GITFORK, 13.0).color(t.muted))
-                        .child(label("main.rs", 12.0, 450.0, t.ink_soft))
+                        .gap(8.8)
+                        .child(icon(super::file_icons::for_path("main.rs"), 16.0))
+                        .child(label("main.rs", 12.5, 400.0, t.ink_soft))
                         .child(el().grow(1.0))
-                        .child(label("+18  −4", 10.0, 500.0, t.muted)),
+                        .child(label(
+                            "+18",
+                            11.0,
+                            400.0,
+                            rune::color::hex("#00a878").unwrap(),
+                        ))
+                        .child(label("−4", 11.0, 400.0, t.danger)),
                 ),
         );
         card = card.child(
             col()
-                .w_full()
-                .padding(5.0)
-                .radius(14.0)
-                .fill(t.raised_high)
-                .gap(2.0)
+                .w(286.0)
+                .self_center()
+                .padding(4.0)
+                .radius(18.0)
+                .border(if t.dark { 0.0 } else { 1.0 }, t.ink.alpha(0.08))
+                .shadow(
+                    0.0,
+                    2.0,
+                    rune::Color::BLACK.alpha(if t.dark { 0.0 } else { 0.04 }),
+                )
+                .fill(t.raised)
+                .gap(0.0)
                 .child(
                     row()
                         .w_full()
-                        .h(28.0)
-                        .px(8.0)
+                        .h(33.4)
+                        .px(8.8)
                         .center_y()
-                        .child(label("Tasks", 12.0, 500.0, t.ink_soft))
+                        .child(label("Tasks", 12.5, 400.0, t.ink).offset(0.0, 2.0))
                         .child(el().grow(1.0))
-                        .child(label("○", 12.0, 500.0, t.muted))
-                        .child(label("0/2", 11.0, 500.0, t.muted))
-                        .child(
-                            icon(&ACTIVITY_CHEVRON, 14.0)
-                                .color(t.muted)
-                                .rotate(std::f32::consts::FRAC_PI_2),
-                        ),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
                         .gap(8.0)
-                        .child(icon(&FOOTER_GITFORK, 12.0).color(t.muted))
-                        .child(label("Building dock rail", 12.0, 450.0, t.ink_soft)),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
-                        .gap(8.0)
+                        .child(icon(&FOOTER_COPY01, 14.0).color(t.muted))
+                        .child(el().w(4.0))
                         .child(
-                            el().w(12.0)
-                                .h(12.0)
-                                .radius(3.0)
-                                .border(1.0, t.muted.alpha(0.7)),
+                            label("0/2", 11.0, 400.0, t.ink_soft)
+                                .font(TextStyle::new(11.0, 400.0).mono()),
                         )
-                        .child(label("Match the composer stack", 12.0, 450.0, t.ink_soft)),
+                        .child(icon(&DOCK_CHEVRON, 14.0).color(t.ink_soft)),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .h(30.8)
+                        .px(8.8)
+                        .center_y()
+                        .gap(8.0)
+                        .child(
+                            el().w(15.0)
+                                .h(15.0)
+                                .center()
+                                .child(super::dock_orb::working_mark(14.0, t.dark)),
+                        )
+                        .child(label("Building dock rail", 12.5, 400.0, t.ink_soft)),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .h(30.8)
+                        .px(8.8)
+                        .center_y()
+                        .gap(8.0)
+                        .child(el().w(15.0).h(15.0).radius(3.0).fill(t.ink.alpha(0.04)))
+                        .child(label("Match the composer stack", 12.5, 400.0, t.ink_soft)),
                 ),
         );
     }
     card = card.child(
         col()
-            .w_full()
-            .padding(if dock_fixture { 5.0 } else { 0.0 })
-            .radius(if dock_fixture { 14.0 } else { 0.0 })
-            .fill(if dock_fixture {
-                t.raised_high
-            } else {
-                t.ground
-            })
+            .w(if dock_fixture { 286.0 } else { 288.0 })
+            .self_center()
+            .padding(if dock_fixture { 4.0 } else { 0.0 })
+            .radius(if dock_fixture { 18.0 } else { 0.0 })
+            .border(
+                if dock_fixture && !t.dark { 1.0 } else { 0.0 },
+                t.ink.alpha(0.08),
+            )
+            .fill(if dock_fixture { t.raised } else { t.ground })
             .child(
                 row()
                     .key("subagents-toggle")
                     .w_full()
-                    .h(34.0)
-                    .px(8.0)
+                    .h(33.4)
+                    .px(8.8)
                     .center_y()
                     .gap(8.0)
                     .radius(12.0)
                     .hover(t.hover)
-                    .child(label("Subagents", 12.5, 550.0, t.ink_soft))
+                    .child(label("Subagents", 12.5, 400.0, t.ink).offset(0.0, 2.0))
                     .child(el().grow(1.0))
-                    .child(label(count, 11.0, 500.0, t.muted))
-                    .child(label(
+                    .child(
+                        label(count, 11.0, 400.0, t.ink_soft)
+                            .font(TextStyle::new(11.0, 400.0).mono()),
+                    )
+                    .child(icon(&DOCK_CHEVRON, 14.0).color(t.ink_soft).rotate(
                         if s.studio.subagents_expanded {
-                            "⌄"
+                            0.0
                         } else {
-                            "›"
+                            std::f32::consts::FRAC_PI_2
                         },
-                        14.0,
-                        500.0,
-                        t.muted,
                     ))
                     .on_press(|s: &mut AppState| {
                         s.studio.subagents_expanded = !s.studio.subagents_expanded
                     }),
             )
             .child(if s.studio.subagents_expanded {
-                let mut list = col().w_full().gap(2.0);
+                let mut list = col()
+                    .w_full()
+                    .gap(0.0)
+                    .pt(if dock_fixture { 1.6 } else { 0.0 })
+                    .pb(if dock_fixture { 2.4 } else { 0.0 });
                 for (id, title, status) in &s.studio.subagents {
                     let live = matches!(status.as_str(), "starting" | "running");
                     list = list.child(
                         row()
                             .key(format!("subagent-{id}"))
                             .w_full()
-                            .min_h(if dock_fixture { 52.0 } else { 38.0 })
-                            .px(8.0)
-                            .center_y()
+                            .min_h(if dock_fixture { 51.6 } else { 38.0 })
+                            .px(8.8)
+                            .py(7.2)
+                            .items_start()
                             .gap(8.0)
                             .child(if live {
-                                icon(&ACTIVITY_SPINNER, 12.0).color(t.muted)
-                            } else if dock_fixture {
-                                el().w(14.0)
-                                    .h(14.0)
+                                el().w(16.0)
+                                    .h(16.0)
                                     .center()
-                                    .radius(7.0)
-                                    .fill(rune::color::hex("#35b982").unwrap())
-                                    .child(label(
-                                        "✓",
-                                        10.0,
-                                        700.0,
-                                        rune::color::hex("#ffffff").unwrap(),
-                                    ))
+                                    .child(super::dock_orb::working_mark(14.0, t.dark))
+                            } else if dock_fixture {
+                                el().w(15.0)
+                                    .h(15.0)
+                                    .center()
+                                    .radius(4.0)
+                                    .fill(
+                                        rune::color::hex(if t.dark {
+                                            "#2db98b"
+                                        } else {
+                                            "#20a67f"
+                                        })
+                                        .unwrap(),
+                                    )
+                                    .child(label("✓", 10.0, 700.0, t.accent_ink))
                             } else {
                                 label(
                                     if status == "failed" { "×" } else { "✓" },
@@ -2628,22 +2705,51 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                                 col()
                                     .grow(1.0)
                                     .shrink()
-                                    .child(label(title.clone(), 12.0, 500.0, t.ink_soft))
-                                    .child(label(
-                                        if dock_fixture && live {
-                                            "Default model · Reading Vue and CSS so…".into()
-                                        } else if dock_fixture {
-                                            "Default model · Finished reference measurements".into()
-                                        } else {
-                                            status.clone()
-                                        },
-                                        11.5,
-                                        400.0,
-                                        t.muted,
-                                    )),
+                                    .gap(3.2)
+                                    .child(
+                                        label(
+                                            title.clone(),
+                                            12.5,
+                                            400.0,
+                                            if live { t.ink } else { t.muted },
+                                        )
+                                        .font(
+                                            TextStyle::new(12.5, 400.0).lh(16.25).tracking(-0.125),
+                                        ),
+                                    )
+                                    .child(if dock_fixture {
+                                        row()
+                                            .w_full()
+                                            .center_y()
+                                            .gap(4.8)
+                                            .child(label("Default model", 11.5, 400.0, t.muted))
+                                            .child(label("·", 11.0, 400.0, t.muted))
+                                            .child(
+                                                label(
+                                                    if live {
+                                                        "Reading Vue and CSS sources"
+                                                    } else {
+                                                        "Finished reference measurements"
+                                                    },
+                                                    11.0,
+                                                    400.0,
+                                                    t.ink_soft,
+                                                )
+                                                .grow(1.0)
+                                                .shrink()
+                                                .clip_rounded(0.0),
+                                            )
+                                    } else {
+                                        label(status.clone(), 11.5, 400.0, t.muted)
+                                    }),
                             )
                             .child(if dock_fixture && live {
-                                label("●", 9.0, 600.0, t.accent)
+                                el().w(18.0).h(18.0).self_center().center().child(
+                                    el().w(9.0)
+                                        .h(9.0)
+                                        .radius(3.0)
+                                        .border(1.0, t.muted.alpha(0.5)),
+                                )
                             } else {
                                 el()
                             }),
@@ -2656,46 +2762,55 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
     );
     if dock_fixture {
         card = card.child(
-            col()
-                .w_full()
-                .child(el().w_full().h(1.0).fill(t.line))
-                .child(
-                    row()
-                        .w_full()
-                        .h(29.0)
-                        .px(10.0)
-                        .center_y()
-                        .child(label("1 file · 0/2 tasks · 1 agent…", 10.0, 400.0, t.muted))
-                        .child(el().grow(1.0))
-                        .child(label("Collapse all", 10.0, 400.0, t.muted)),
-                ),
+            col().w_full().child(
+                row()
+                    .w_full()
+                    .h(30.4)
+                    .px(12.8)
+                    .center_y()
+                    .gap(12.0)
+                    .child(
+                        text("1 file · 0/2 tasks · 1 agent running")
+                            .font(TextStyle::new(10.5, 400.0).mono())
+                            .color(t.muted)
+                            .grow(1.0)
+                            .shrink()
+                            .truncate(),
+                    )
+                    .child(label("Collapse all", 12.5, 400.0, t.muted)),
+            ),
         );
     }
     card
 }
 
 fn dock_rail_tile(glyph: &'static str, count: &str, t: Palette) -> El {
+    let mark = match glyph {
+        "◫" => &DOCK_EDIT,
+        "☷" => &DOCK_TASKS,
+        _ => &DOCK_AGENTS,
+    };
     col()
         .w(38.0)
         .h(40.0)
         .radius(11.0)
-        .fill(t.raised_high)
+        .border(1.0, t.ink.alpha(0.06))
+        .fill(t.raised)
+        .items_center()
+        .justify_center()
+        .gap(2.0)
+        .child(icon(mark, 15.0).color(t.ink_soft))
         .child(
-            row()
-                .w_full()
-                .h_full()
-                .items_center()
-                .justify_center()
-                .gap(3.0)
-                .child(label(glyph, 12.0, 500.0, t.ink_soft))
-                .child(label(count.to_owned(), 9.0, 500.0, t.muted)),
+            text(count.to_owned())
+                .font(TextStyle::new(9.5, 400.0).mono())
+                .color(t.muted),
         )
         .child(
-            el().pin(Some(3.0), Some(3.0), None, None)
-                .w(5.0)
-                .h(5.0)
+            el().pin(None, Some(3.0), Some(3.0), None)
+                .w(6.0)
+                .h(6.0)
                 .radius(3.0)
-                .fill(t.danger),
+                .fill(t.accent.alpha(0.65)),
         )
 }
 
@@ -2703,7 +2818,8 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
     let mut strip = col()
         .w((width - 26.0).max(0.0))
         .padding(8.0)
-        .pb(16.0)
+        .pt(6.0)
+        .pb(20.0)
         .radius(18.0)
         .fill(t.sunken)
         .gap(2.0);
@@ -2713,50 +2829,33 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
         let edit_input = input.clone();
         let send_now_id = id.clone();
         let send_now_input = input.clone();
-        let up_index = index;
-        let down_index = index;
         strip = strip.child(
             row()
                 .key(format!("queue-{id}"))
                 .w_full()
                 .h(26.0)
                 .center_y()
-                .gap(6.0)
-                .child(label("⠿", 11.0, 500.0, t.faint))
+                .px(6.0)
+                .gap(7.0)
+                .child(icon(&QUEUE_GRIP, 12.0).color(t.faint))
                 .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
-                    .child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
-                .child(label(input.clone(), 11.5, 450.0, t.ink_soft.alpha(0.62)).grow(1.0).shrink())
-                .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.muted))
-                .child(el().key(format!("queue-up-{id}")).px(4.0).h(20.0).center().hover(t.hover)
-                    .child(label("↑", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
-                        if up_index > 0 {
-                            s.studio.queued_turns.swap(up_index, up_index - 1);
-                            let queue_ids = s.studio.queued_turns.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
-                            s.request("agent.queueReorder", serde_json::json!({"threadId": s.studio.thread_id, "queueIds": queue_ids}));
-                        }
-                    }))
-                .child(el().key(format!("queue-down-{id}")).px(4.0).h(20.0).center().hover(t.hover)
-                    .child(label("↓", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
-                        if down_index + 1 < s.studio.queued_turns.len() {
-                            s.studio.queued_turns.swap(down_index, down_index + 1);
-                            let queue_ids = s.studio.queued_turns.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
-                            s.request("agent.queueReorder", serde_json::json!({"threadId": s.studio.thread_id, "queueIds": queue_ids}));
-                        }
-                    }))
-                .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
-                    .child(label("↗ Send now", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                    .child(text((index + 1).to_string()).font(TextStyle::new(10.0, 700.0).mono()).color(t.muted)))
+                .child(label(input.clone(), 11.5, 400.0, t.ink).grow(1.0).shrink())
+                .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.faint))
+                .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
+                    .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": send_now_id}));
                         s.request("agent.steer", serde_json::json!({"threadId": s.studio.thread_id, "input": send_now_input, "dispatchMode": "steer"}));
                     }))
-                .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
-                    .child(label("✎ Edit", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                .child(el().ml(-4.0).key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
+                    .w(45.921875).gap(3.5).child(icon(&QUEUE_EDIT, 12.0).color(t.muted)).child(label("Edit", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
                         s.composer.text = edit_input.clone();
                         s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
                         s.open_composer();
                     }))
-                .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
-                    .child(label("× Stop", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                .child(el().ml(-4.0).key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
+                    .w(50.078125).gap(3.5).child(icon(&CLOSE, 12.0).color(t.muted)).child(label("Stop", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": cancel_id}));
                     })),
         );
@@ -2894,89 +2993,96 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .gap(0.0)
             .radius(18.0)
             .clip_rounded(18.0)
-            .border(1.0, t.line)
             .fill(t.ground)
             .child(
                 row()
                     .w_full()
-                    .h(42.0)
+                    .h(40.14)
                     .px(16.0)
                     .center_y()
-                    .gap(7.0)
-                    .fill(t.sunken)
-                    .child(icon(&ACTIVITY_TOOLS, 16.0).color(t.ink_soft))
-                    .child(label("Tool call", 13.0, 600.0, t.ink_soft)),
+                    .gap(8.0)
+                    .fill(interaction_band(t))
+                    .child(icon(&ACTIVITY_TOOLS, 14.0).color(t.ink_soft))
+                    .child(label("Tool call", 13.0, 400.0, t.ink_soft)),
             )
             .child(
                 col()
                     .w_full()
-                    .padding(24.0)
-                    .pb(16.0)
-                    .gap(8.0)
+                    .padding(16.0)
+                    .pb(8.0)
+                    .gap(12.0)
                     .radius(14.0)
                     .fill(t.raised)
-                    .child(label(approval.title.clone(), 14.0, 500.0, t.ink))
-                    .child(label(
-                        if s.studio.conversation_fixture.as_deref()
-                            == Some("composer-dock-approval")
-                        {
-                            approval
-                                .detail
-                                .replace(" keyboard handling", " keyboard\nhandling")
-                        } else {
-                            approval.detail.clone()
-                        },
-                        13.0,
-                        400.0,
-                        t.ink_soft,
-                    )),
+                    .child(
+                        text(approval.title.clone())
+                            .font(TextStyle::new(14.5, 400.0).lh(20.3).tracking(-0.145))
+                            .color(t.ink),
+                    )
+                    .child(
+                        label(
+                            if s.studio.conversation_fixture.as_deref()
+                                == Some("composer-dock-approval")
+                            {
+                                approval
+                                    .detail
+                                    .replace(" keyboard handling", " keyboard\nhandling")
+                            } else {
+                                approval.detail.clone()
+                            },
+                            13.0,
+                            400.0,
+                            t.ink_soft,
+                        )
+                        .font(TextStyle::new(13.0, 400.0).lh(18.85)),
+                    ),
             )
             .child(
                 row()
                     .w_full()
-                    .h(42.0)
+                    .h(41.7)
                     .px(16.0)
                     .center_y()
-                    .gap(10.0)
-                    .fill(t.sunken)
+                    .gap(20.0)
+                    .fill(interaction_band(t))
                     .child(
                         el().key("approval-reject")
-                            .px(4.0)
+                            .px(0.0)
                             .h(28.0)
                             .center()
                             .hover(t.hover)
-                            .child(label("Reject", 12.0, 600.0, t.danger))
+                            .child(label("Reject", 14.0, 400.0, t.danger))
                             .on_press(|s: &mut AppState| s.answer_approval("reject-once")),
                     )
                     .child(
                         el().key("approval-reject-stop")
-                            .px(4.0)
+                            .px(0.0)
                             .h(28.0)
                             .center()
                             .hover(t.hover)
-                            .child(label("Reject and stop", 12.0, 600.0, t.danger))
+                            .child(label("Reject and stop", 14.0, 400.0, t.danger))
                             .on_press(|s: &mut AppState| s.answer_approval("reject-and-stop")),
                     )
                     .child(el().grow(1.0))
                     .child(
                         el().key("approval-allow-always")
-                            .px(4.0)
+                            .px(0.0)
                             .h(28.0)
                             .center()
                             .hover(t.hover)
-                            .child(label("Always allow", 12.0, 600.0, t.muted))
+                            .child(label("Always allow", 14.0, 400.0, t.muted))
                             .on_press(|s: &mut AppState| s.answer_approval("allow-always")),
                     )
                     .child(
                         el().key("approval-allow")
-                            .px(4.0)
+                            .px(0.0)
                             .h(28.0)
                             .center()
                             .hover(t.hover)
-                            .child(label("Allow", 12.0, 600.0, t.ink))
+                            .child(label("Allow", 14.0, 400.0, t.ink))
                             .on_press(|s: &mut AppState| s.answer_approval("allow-once")),
                     ),
             )
+            .child(interaction_outline(t, 40.14))
     } else if let Some(request) = &s.studio.question {
         let question = &request.questions[request.index];
         let card = col()
@@ -2985,19 +3091,14 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .gap(0.0)
             .radius(18.0)
             .clip_rounded(18.0)
-            .border(1.0, t.line)
             .fill(t.ground)
             .child(
                 row()
                     .w_full()
-                    .h(42.0)
-                    .px(14.0)
+                    .h(41.7)
+                    .px(16.0)
                     .center_y()
-                    .fill(if t.dark {
-                        t.sunken
-                    } else {
-                        crate::theme::mix_srgb(t.raised, t.sunken, 0.75)
-                    })
+                    .fill(interaction_band(t))
                     .child(
                         label(
                             if question.header.is_empty() {
@@ -3012,12 +3113,12 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                         .grow(1.0),
                     )
                     .child(
-                        el().px(8.0)
+                        el().px(0.0)
                             .h(26.0)
                             .center()
                             .radius(7.0)
                             .hover(t.hover)
-                            .child(label("Cancel", 11.5, 450.0, t.muted))
+                            .child(label("Cancel", 14.0, 400.0, t.muted))
                             .on_press(|s: &mut AppState| {
                                 s.studio.question = None;
                                 s.studio.answer.text.clear();
@@ -3030,8 +3131,12 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .padding(16.0)
                     .pb(8.0)
                     .gap(10.0)
+                    .radius(14.0)
                     .fill(t.raised)
-                    .child(label(question.prompt.clone(), 15.0, 500.0, t.ink))
+                    .child(
+                        label(question.prompt.clone(), 15.0, 400.0, t.ink)
+                            .font(TextStyle::new(15.0, 400.0).lh(20.25).tracking(-0.15)),
+                    )
                     .child({
                         let mut options = col().w_full().gap(4.0);
                         for (index, option) in question.options.iter().enumerate() {
@@ -3039,6 +3144,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                             let multi = question.multi;
                             options = options.child(
                                 el().key(format!("question-option-{index}"))
+                                    .offset(0.0, -2.0)
                                     .w_full()
                                     .h(35.0)
                                     .px(10.0)
@@ -3048,17 +3154,18 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                     .gap(10.0)
                                     .child(
                                         el().w(18.0)
+                                            .offset(0.0, 2.0)
                                             .h(18.0)
                                             .center()
                                             .radius(9.0)
-                                            .border(1.0, t.ink.alpha(0.22))
+                                            .border(1.5, t.ink.alpha(0.22))
                                             .child(if request.selected.contains(option) {
                                                 el().w(7.0).h(7.0).radius(4.0).fill(t.accent)
                                             } else {
                                                 el()
                                             }),
                                     )
-                                    .child(label(option.clone(), 14.0, 400.0, t.ink_soft))
+                                    .child(label(option.clone(), 14.0, 400.0, t.ink))
                                     .on_press(move |s: &mut AppState| {
                                         if multi {
                                             s.toggle_question_option(answer.clone());
@@ -3081,17 +3188,18 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                             .h(18.0)
                                             .center()
                                             .radius(9.0)
-                                            .border(1.0, t.ink.alpha(0.22)),
+                                            .border(1.5, t.ink.alpha(0.22)),
                                     )
-                                    .child(label("Write your own…", 14.0, 450.0, t.muted)),
+                                    .child(label("Write your own…", 14.0, 400.0, t.muted)),
                             )
                             .child(
-                                row()
-                                    .w_full()
-                                    .h(26.0)
-                                    .mt(6.0)
-                                    .gap(8.0)
-                                    .child(icon(&STUDIO_ATTACH, 12.0).color(t.muted)),
+                                row().w_full().h(26.0).mt(6.0).gap(8.0).child(
+                                    el().w(26.0)
+                                        .h(26.0)
+                                        .center()
+                                        .child(icon(&STUDIO_ATTACH, 15.0).color(t.muted))
+                                        .color(t.muted),
+                                ),
                             )
                     }),
             );
@@ -3118,19 +3226,18 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             card.child(
                 row()
                     .w_full()
-                    .h(42.0)
+                    .h(41.7)
                     .px(12.0)
                     .center_y()
                     .gap(8.0)
-                    .fill(t.sunken)
-                    .child(label("♧", 13.0, 400.0, t.muted).grow(1.0))
+                    .fill(interaction_band(t))
+                    .child(el().grow(1.0))
                     .child(
-                        el().px(12.0)
+                        el().px(4.0)
                             .h(28.0)
                             .center()
                             .radius(8.0)
-                            .fill(t.ink.alpha(0.05))
-                            .child(label("Send answer", 12.5, 500.0, t.muted))
+                            .child(label("Send answer", 14.0, 400.0, t.muted))
                             .on_press(|s: &mut AppState| {
                                 let answer = s
                                     .studio
@@ -3143,6 +3250,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                             }),
                     ),
             )
+            .child(interaction_outline(t, 41.7))
         }
     } else if s.studio.composer_open || show_closing {
         col()
@@ -3151,7 +3259,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(if s.studio.queued_turns.is_empty() {
                 el()
             } else {
-                queue_strip(s, track_w, t).mb(-10.0)
+                queue_strip(s, track_w, t).mb(-14.0)
             })
             .child(super::composer::composer_dock(s, name, track_w, t))
     } else {
@@ -3246,7 +3354,13 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
         let line = match item.kind.as_str() {
             "user" => {
                 user_count += 1;
-                let rail = if s.studio.busy {
+                let rail = if s.studio.busy
+                    && !s
+                        .studio
+                        .conversation_fixture
+                        .as_deref()
+                        .is_some_and(|f| f.starts_with("composer-dock-"))
+                {
                     crate::theme::mix_srgb(t.ink, t.accent, 0.87).alpha(0.516)
                 } else {
                     t.ink.alpha(0.11)
@@ -3350,7 +3464,16 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                         .color(t.ink_soft),
                 ),
             "assistant_text" => {
-                let mut turn = col().w_full().gap(if is_activity { 8.0 } else { 15.0 });
+                let mut turn = col()
+                    .w_full()
+                    .gap(if is_activity { 8.0 } else { 15.0 })
+                    .opacity(
+                        if s.studio.conversation_fixture.as_deref() == Some("composer-dock-queue") {
+                            0.4
+                        } else {
+                            1.0
+                        },
+                    );
                 match s.studio.conversation_fixture.as_deref() {
                     Some("activity-folded" | "activity-plan") => turn = turn.mt(10.5),
                     Some("activity-expanded") => turn = turn.mt(13.5),
@@ -4091,8 +4214,9 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 .child(
                     row()
                         .center_y()
-                        .gap(6.0)
+                        .gap(10.0)
                         .offset(0.0, 0.0)
+                        .items_end()
                         .child(subagent_dock(s, t))
                         .child(
                             col()
@@ -4101,14 +4225,10 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                 .gap(4.0)
                                 .radius(14.0)
                                 .border(1.0, t.line)
-                                .fill(t.ground)
+                                .fill(interaction_band(t))
                                 .child(dock_rail_tile("◫", "1", t))
                                 .child(dock_rail_tile("☷", "0/2", t))
-                                .child(dock_rail_tile(
-                                    "♙",
-                                    &s.studio.subagents.len().to_string(),
-                                    t,
-                                )),
+                                .child(dock_rail_tile("♙", "1", t)),
                         ),
                 )
         } else {
@@ -4118,7 +4238,14 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             if s.studio.approval.is_some() || s.studio.question.is_some() {
                 el().key("approval-page-scrim")
                     .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                    .fill(t.ground.alpha(0.80))
+                    .fill(
+                        if t.dark {
+                            t.ground
+                        } else {
+                            rune::color::hex("#f7f5f3").unwrap()
+                        }
+                        .alpha(0.80),
+                    )
             } else {
                 el()
             },

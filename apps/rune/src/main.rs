@@ -144,7 +144,7 @@ fn main() {
             }),
             ("studio-dock-subagent", |s| {
                 studio_composer(s, "dock-subagent");
-                s.studio.busy = true;
+                s.studio.busy = false;
                 s.studio.subagents = vec![
                     (
                         "delegate-running".into(),

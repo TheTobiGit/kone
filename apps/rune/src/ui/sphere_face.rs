@@ -251,7 +251,7 @@ pub fn sample_face(t: f64, size: f32, aim: Option<Aim>) -> FaceFrame {
 }
 
 fn color_hex(c: Color) -> String {
-    let q = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let q = |x: f32| (rune::color::srgb_encode(x.clamp(0.0, 1.0)) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}", q(c.r), q(c.g), q(c.b))
 }
 

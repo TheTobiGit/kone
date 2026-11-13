@@ -234,7 +234,7 @@ static SEED_ARROW: Icon = Icon {
 static SEED_STOP: Icon = Icon {
     name: "composer-seed-stop",
     view: 18.0,
-    body: r#"<rect x="5" y="5" width="8" height="8" rx="2" fill="currentColor"/>"#,
+    body: r#"<rect x="2" y="2" width="14" height="14" rx="3" fill="currentColor"/>"#,
 };
 
 fn mode_meta(mode: &str) -> (&'static str, &'static str, &'static Icon) {
@@ -1011,7 +1011,6 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .self_center()
         .mb(26.0 * tray_alpha)
         .radius(corner_r)
-        .border(1.0, t.line)
         .fill(t.field)
         .box_shadow(Shadow {
             x: 0.0,
@@ -1037,6 +1036,11 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
                 .fill(t.field)
                 .child(field_box)
                 .child(bar),
+        )
+        .child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .radius(corner_r)
+                .border(1.0, t.line),
         );
 
     let mut dock = col().w(track_w).items_center().opacity(card_alpha);

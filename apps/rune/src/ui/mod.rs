@@ -1,4 +1,5 @@
 mod composer;
+mod dock_orb;
 mod empty;
 mod file_icons;
 mod icon_motion;
