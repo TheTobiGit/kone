@@ -931,11 +931,11 @@ pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: run
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
-fn terminal_line(value: &str, t: Palette) -> El {
+fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
     let mut output = String::with_capacity(value.len());
     let bytes = value.as_bytes();
     let mut cursor = 0;
-    let mut active = None;
+    let mut active: Option<(Option<rune::Color>, bool, Option<rune::Color>)> = None;
     let mut range_start = 0;
     let mut spans = Vec::new();
     while cursor < bytes.len() {
@@ -946,20 +946,65 @@ fn terminal_line(value: &str, t: Palette) -> El {
                     end += 1;
                 }
                 if end < bytes.len() && bytes[end] == b'm' {
-                    if let Some(color) = active.take()
+                    if let Some((color, bold, background)) = active.take()
                         && range_start < output.len()
                     {
-                        spans.push(Span::new(range_start, output.len()).color(color));
+                        let mut span = Span::new(range_start, output.len());
+                        if let Some(color) = color {
+                            span = span.color(color);
+                        }
+                        if bold {
+                            span = span.bold();
+                        }
+                        if let Some(background) = background {
+                            span = span.bg(background, 0.0);
+                        }
+                        spans.push(span);
                     }
                     let codes = std::str::from_utf8(&bytes[cursor + 2..end]).unwrap_or("");
-                    for code in codes.split(';').filter_map(|x| x.parse::<u8>().ok()) {
-                        active = match code {
-                            0 | 39 => None,
-                            30..=37 => Some(ansi_color(code - 30, t)),
-                            90..=97 => Some(ansi_color(code - 90 + 8, t)),
-                            _ => active,
-                        };
+                    let mut style = active.unwrap_or((None, false, None));
+                    let mut parts = codes
+                        .split(';')
+                        .filter_map(|x| x.parse::<u16>().ok())
+                        .peekable();
+                    while let Some(code) = parts.next() {
+                        match code {
+                            0 => style = (None, false, None),
+                            1 => style.1 = true,
+                            22 => style.1 = false,
+                            39 => style.0 = None,
+                            49 => style.2 = None,
+                            30..=37 => style.0 = Some(ansi_color((code - 30) as u8, t)),
+                            90..=97 => style.0 = Some(ansi_color((code - 90 + 8) as u8, t)),
+                            40..=47 => style.2 = Some(ansi_color((code - 40) as u8, t)),
+                            100..=107 => style.2 = Some(ansi_color((code - 100 + 8) as u8, t)),
+                            38 | 48 => {
+                                let foreground = code == 38;
+                                let color = match parts.next() {
+                                    Some(5) => parts.next().map(|n| ansi256_color(n as u8, t)),
+                                    Some(2) => {
+                                        let r = parts.next().unwrap_or(0).min(255) as u8;
+                                        let g = parts.next().unwrap_or(0).min(255) as u8;
+                                        let b = parts.next().unwrap_or(0).min(255) as u8;
+                                        Some(
+                                            rune::color::hex(&format!("#{r:02x}{g:02x}{b:02x}"))
+                                                .unwrap_or(t.ink_soft),
+                                        )
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(color) = color {
+                                    if foreground {
+                                        style.0 = Some(color);
+                                    } else {
+                                        style.2 = Some(color);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
+                    active = (style != (None, false, None)).then_some(style);
                     range_start = output.len();
                 }
                 cursor = (end + 1).min(bytes.len());
@@ -976,19 +1021,54 @@ fn terminal_line(value: &str, t: Palette) -> El {
         }
         cursor += ch.len_utf8();
     }
-    if let Some(color) = active
+    if let Some((color, bold, background)) = active
         && range_start < output.len()
     {
-        spans.push(Span::new(range_start, output.len()).color(color));
+        let mut span = Span::new(range_start, output.len());
+        if let Some(color) = color {
+            span = span.color(color);
+        }
+        if bold {
+            span = span.bold();
+        }
+        if let Some(background) = background {
+            span = span.bg(background, 0.0);
+        }
+        spans.push(span);
+    }
+    if show_cursor {
+        let cursor_start = output.len();
+        output.push('▏');
+        spans.push(Span::new(cursor_start, output.len()).color(t.accent));
     }
     let mut line = text(output)
-        .font(TextStyle::new(12.5, 400.0).mono().lh(15.0))
-        .color(t.ink_soft)
+        .font(TextStyle::new(13.0, 400.0).mono().lh(16.5))
+        .color(t.ink)
         .w_full();
     if !spans.is_empty() {
         line = line.spans(spans);
     }
     line
+}
+
+fn ansi256_color(index: u8, t: Palette) -> rune::Color {
+    if index < 16 {
+        return ansi_color(index, t);
+    }
+    let hex = if index < 232 {
+        let value = index - 16;
+        let channel = |n: u8| if n == 0 { 0 } else { 55 + n * 40 };
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            channel(value / 36),
+            channel((value / 6) % 6),
+            channel(value % 6)
+        )
+    } else {
+        let gray = 8 + (index - 232) * 10;
+        format!("#{gray:02x}{gray:02x}{gray:02x}")
+    };
+    rune::color::hex(&hex).unwrap_or(t.ink_soft)
 }
 
 fn ansi_color(index: u8, t: Palette) -> rune::Color {
@@ -2162,18 +2242,21 @@ fn studio_row(
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0);
-                for line in terminal
+                let normalized_output = terminal
                     .terminal_output
                     .replace("\r\n", "\n")
-                    .replace('\r', "\n")
+                    .replace('\r', "\n");
+                let lines = normalized_output
                     .lines()
                     .rev()
                     .take(300)
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                {
-                    output = output.child(terminal_line(line, t));
+                    .collect::<Vec<_>>();
+                let last_line = lines.len().saturating_sub(1);
+                for (index, line) in lines.into_iter().enumerate() {
+                    output = output.child(terminal_line(line, t, focused && index == last_line));
                 }
                 if let Some(code) = terminal.terminal_exit_code {
                     output = output.child(
@@ -2237,8 +2320,8 @@ fn studio_row(
                             .w_full()
                             .grow(1.0)
                             .min_h(0.0)
-                            .px(18.0)
-                            .pt(14.0)
+                            .px(11.0)
+                            .pt(9.0)
                             .scroll(ScrollSpec { stick_bottom: true })
                             .child(output)
                             .on_layout(|s: &mut AppState, bounds| {

@@ -316,11 +316,17 @@ fn main() {
                 s.studio.terminal_command = Some("npm run dev".into());
                 s.studio.terminal_running = true;
                 s.studio.terminal_child = Some("npm run dev".into());
-                s.studio_column_hover = Some("review-one".into());
+                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
             }),
             ("studio-column-head-terminal-idle", |s| {
                 studio_column_head(s);
                 s.studio.terminal_command = Some(String::new());
+                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
+            }),
+            ("studio-column-head-terminal-hover", |s| {
+                studio_column_head(s);
+                s.studio.terminal_command = Some(String::new());
+                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
                 s.studio_column_hover = Some("review-one".into());
             }),
             ("studio-column-head-handoff", |s| {
