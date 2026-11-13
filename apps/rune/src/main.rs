@@ -117,7 +117,7 @@ fn main() {
             ("studio-composer-text", |s| studio_composer(s, "text")),
             ("studio-composer-running", |s| studio_composer(s, "running")),
             ("studio-dock-approval", |s| {
-                studio_composer(s, "open");
+                studio_composer(s, "dock-approval");
                 s.studio.busy = true;
                 s.studio.approval = Some(state::StudioApproval {
                     id: "approval-dock-1".into(),
@@ -126,7 +126,7 @@ fn main() {
                 });
             }),
             ("studio-dock-question", |s| {
-                studio_composer(s, "open");
+                studio_composer(s, "dock-question");
                 s.studio.busy = true;
                 s.studio.question = Some(state::StudioQuestion {
                     id: "question-dock-1".into(),
@@ -143,7 +143,7 @@ fn main() {
                 });
             }),
             ("studio-dock-subagent", |s| {
-                studio_composer(s, "open");
+                studio_composer(s, "dock-subagent");
                 s.studio.busy = true;
                 s.studio.subagents = vec![
                     (
@@ -160,7 +160,7 @@ fn main() {
                 s.studio.subagents_expanded = true;
             }),
             ("studio-dock-queue", |s| {
-                studio_composer(s, "open");
+                studio_composer(s, "dock-queue");
                 s.studio.busy = true;
                 s.studio.queued_turns = vec![
                     (
@@ -174,7 +174,8 @@ fn main() {
                 ];
             }),
             ("studio-dock-selection", |s| {
-                studio_composer(s, "open");
+                studio_composer(s, "dock-selection");
+                s.studio.composer_open = false;
                 s.studio.archive_notice =
                     Some("This thread is still working and cannot be archived.".into());
                 s.studio.selection_fixture_pending = true;
@@ -676,7 +677,7 @@ fn studio_composer(s: &mut AppState, scene: &str) {
         default_effort: Some(effort.into()),
     })
     .collect();
-    if scene.starts_with("picker-") {
+    if scene.starts_with("picker-") || scene.starts_with("dock-") {
         s.studio.providers = [
             ("codex", "Codex"),
             ("claudeAgent", "Claude"),
@@ -698,7 +699,7 @@ fn studio_composer(s: &mut AppState, scene: &str) {
     s.studio.effort = "medium".into();
     s.studio.fast_tier = true;
     s.studio.fast_mode = false;
-    s.studio_column_hover = if scene == "orb-hover" {
+    s.studio_column_hover = if scene == "orb-hover" || scene.starts_with("dock-") {
         Some(s.studio.thread_id.clone())
     } else {
         None
@@ -711,8 +712,9 @@ fn studio_composer(s: &mut AppState, scene: &str) {
     } else {
         None
     };
-    s.studio.composer_open =
-        matches!(scene, "open" | "text" | "running") || scene.starts_with("picker-");
+    s.studio.composer_open = matches!(scene, "open" | "text" | "running")
+        || scene.starts_with("picker-")
+        || scene.starts_with("dock-");
     s.studio.composer_opened_at = None;
     s.studio.composer_closing_at = None;
     s.studio.busy = scene == "running";

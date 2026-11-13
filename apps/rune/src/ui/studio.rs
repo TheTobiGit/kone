@@ -541,7 +541,7 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
             .child(
                 row()
                     .w_full()
-                    .h(36.0)
+                    .h(42.0)
                     .px(13.0)
                     .center_y()
                     .justify_between()
@@ -2107,7 +2107,17 @@ fn studio_row(
                         tx.scroll_into_view(format!("studio-row-slot-{project_path}"));
                         s.center_studio_column(tx);
                     })
-                    .child(head)
+                    .child(head.opacity(
+                        if focused
+                            && state.is_some_and(|state| {
+                                state.approval.is_some() || state.question.is_some()
+                            })
+                        {
+                            0.2
+                        } else {
+                            1.0
+                        },
+                    ))
                     .child(body),
             );
             let seam_key = format!("{path}-{}", i + 1);
@@ -2396,6 +2406,79 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
     } else {
         s.studio.subagents.len().to_string()
     };
+    let dock_fixture = s.studio.conversation_fixture.as_deref() == Some("composer-dock-subagent");
+    if dock_fixture {
+        card = card.child(
+            row()
+                .w_full()
+                .h(30.0)
+                .px(10.0)
+                .center_y()
+                .gap(7.0)
+                .child(el().w(6.0).h(6.0).radius(3.0).fill(t.accent))
+                .child(provider_mark(Some(&s.studio), t))
+                .child(label("Composer review", 12.5, 500.0, t.ink_soft)),
+        );
+        card = card.child(
+            col()
+                .w_full()
+                .padding(5.0)
+                .radius(14.0)
+                .fill(t.ground)
+                .gap(2.0)
+                .child(
+                    row()
+                        .w_full()
+                        .h(28.0)
+                        .px(8.0)
+                        .center_y()
+                        .child(label("Changes", 12.0, 500.0, t.ink_soft))
+                        .child(el().grow(1.0))
+                        .child(label(
+                            "+18",
+                            10.0,
+                            500.0,
+                            rune::color::hex("#329b70").unwrap(),
+                        ))
+                        .child(label(
+                            "−4",
+                            10.0,
+                            500.0,
+                            rune::color::hex("#d25c5c").unwrap(),
+                        )),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .h(32.0)
+                        .px(8.0)
+                        .center_y()
+                        .child(label("◉  main.rs", 12.0, 450.0, t.ink_soft))
+                        .child(el().grow(1.0))
+                        .child(label("+18  −4", 10.0, 500.0, t.muted)),
+                ),
+        );
+        card = card.child(
+            col()
+                .w_full()
+                .padding(5.0)
+                .radius(14.0)
+                .fill(t.ground)
+                .gap(2.0)
+                .child(
+                    row()
+                        .w_full()
+                        .h(28.0)
+                        .px(8.0)
+                        .center_y()
+                        .child(label("Tasks", 12.0, 500.0, t.ink_soft))
+                        .child(el().grow(1.0))
+                        .child(label("0/2", 11.0, 500.0, t.muted)),
+                )
+                .child(activity_task_row("Building dock rail", "in-progress", t))
+                .child(activity_task_row("Match the composer stack", "pending", t)),
+        );
+    }
     card = card.child(
         row()
             .key("subagents-toggle")
@@ -2436,7 +2519,7 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 row()
                     .key(format!("subagent-{id}"))
                     .w_full()
-                    .min_h(38.0)
+                    .min_h(if dock_fixture { 48.0 } else { 38.0 })
                     .px(8.0)
                     .center_y()
                     .gap(8.0)
@@ -2457,7 +2540,18 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                             .grow(1.0)
                             .shrink()
                             .child(label(title.clone(), 12.0, 500.0, t.ink_soft))
-                            .child(label(status.clone(), 10.5, 400.0, t.muted)),
+                            .child(label(
+                                if dock_fixture && live {
+                                    "Default model · Reading Vue and CSS sources".into()
+                                } else if dock_fixture {
+                                    "Default model · Finished reference measurements".into()
+                                } else {
+                                    status.clone()
+                                },
+                                if dock_fixture { 9.5 } else { 10.5 },
+                                400.0,
+                                t.muted,
+                            )),
                     ),
             );
         }
@@ -2666,16 +2760,19 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(
                 row()
                     .w_full()
-                    .h(36.0)
+                    .h(42.0)
                     .px(16.0)
                     .center_y()
+                    .gap(7.0)
                     .fill(t.sunken)
-                    .child(label("⚒  Tool call", 12.0, 600.0, t.ink_soft)),
+                    .child(icon(&ACTIVITY_TOOLS, 14.0).color(t.ink_soft))
+                    .child(label("Tool call", 13.0, 600.0, t.ink_soft)),
             )
             .child(
                 col()
                     .w_full()
-                    .padding(12.0)
+                    .padding(16.0)
+                    .pb(8.0)
                     .gap(8.0)
                     .radius(14.0)
                     .fill(t.raised_high)
@@ -2685,8 +2782,8 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(
                 row()
                     .w_full()
-                    .h(38.0)
-                    .px(14.0)
+                    .h(42.0)
+                    .px(16.0)
                     .center_y()
                     .gap(10.0)
                     .fill(t.sunken)
@@ -2720,18 +2817,17 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     )
                     .child(
                         el().key("approval-allow")
-                            .px(10.0)
+                            .px(4.0)
                             .h(28.0)
                             .center()
-                            .radius(7.0)
-                            .fill(t.accent)
-                            .child(label("Allow", 12.0, 600.0, t.accent_ink))
+                            .hover(t.hover)
+                            .child(label("Allow", 12.0, 600.0, t.ink))
                             .on_press(|s: &mut AppState| s.answer_approval("allow-once")),
                     ),
             )
     } else if let Some(request) = &s.studio.question {
         let question = &request.questions[request.index];
-        let mut card = col()
+        let card = col()
             .w(512.0)
             .min_w(512.0)
             .gap(0.0)
@@ -2742,7 +2838,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(
                 row()
                     .w_full()
-                    .h(40.0)
+                    .h(42.0)
                     .px(14.0)
                     .center_y()
                     .fill(t.sunken)
@@ -2775,70 +2871,74 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(
                 col()
                     .w_full()
-                    .padding(12.0)
-                    .gap(5.0)
+                    .padding(16.0)
+                    .pb(8.0)
+                    .gap(10.0)
                     .fill(t.raised_high)
-                    .child(label(question.prompt.clone(), 13.0, 450.0, t.ink)),
-            );
-        for (index, option) in question.options.iter().enumerate() {
-            let answer = option.clone();
-            let multi = question.multi;
-            let prefix = if multi {
-                if request.selected.contains(option) {
-                    "☑  "
-                } else {
-                    "□  "
-                }
-            } else {
-                ""
-            };
-            card = card.child(
-                el().key(format!("question-option-{index}"))
-                    .w_full()
-                    .h(31.0)
-                    .px(6.0)
-                    .center_y()
-                    .radius(8.0)
-                    .hover(t.hover)
-                    .gap(7.0)
-                    .child(
-                        el().w(14.0)
-                            .h(14.0)
-                            .center()
-                            .radius(7.0)
-                            .border(1.0, t.ink.alpha(0.22))
-                            .child(if request.selected.contains(option) {
-                                el().w(6.0).h(6.0).radius(3.0).fill(t.accent)
-                            } else {
-                                el()
-                            }),
-                    )
-                    .child(label(format!("{prefix}{option}"), 12.5, 450.0, t.ink_soft))
-                    .on_press(move |s: &mut AppState| {
-                        if multi {
-                            s.toggle_question_option(answer.clone());
-                        } else {
-                            s.answer_question(answer.clone().into());
+                    .child(label(question.prompt.clone(), 15.0, 450.0, t.ink))
+                    .child({
+                        let mut options = col().w_full().gap(4.0);
+                        for (index, option) in question.options.iter().enumerate() {
+                            let answer = option.clone();
+                            let multi = question.multi;
+                            options = options.child(
+                                el().key(format!("question-option-{index}"))
+                                    .w_full()
+                                    .h(35.0)
+                                    .px(10.0)
+                                    .center_y()
+                                    .radius(8.0)
+                                    .hover(t.hover)
+                                    .gap(10.0)
+                                    .child(
+                                        el().w(18.0)
+                                            .h(18.0)
+                                            .center()
+                                            .radius(9.0)
+                                            .border(1.0, t.ink.alpha(0.22))
+                                            .child(if request.selected.contains(option) {
+                                                el().w(7.0).h(7.0).radius(4.0).fill(t.accent)
+                                            } else {
+                                                el()
+                                            }),
+                                    )
+                                    .child(label(option.clone(), 14.0, 450.0, t.ink_soft))
+                                    .on_press(move |s: &mut AppState| {
+                                        if multi {
+                                            s.toggle_question_option(answer.clone());
+                                        } else {
+                                            s.answer_question(answer.clone().into());
+                                        }
+                                    }),
+                            );
                         }
+                        options
+                            .child(
+                                row()
+                                    .w_full()
+                                    .h(35.0)
+                                    .px(10.0)
+                                    .center_y()
+                                    .gap(10.0)
+                                    .child(
+                                        el().w(18.0)
+                                            .h(18.0)
+                                            .center()
+                                            .radius(9.0)
+                                            .border(1.0, t.ink.alpha(0.22)),
+                                    )
+                                    .child(label("Write your own…", 14.0, 450.0, t.muted)),
+                            )
+                            .child(
+                                row()
+                                    .w_full()
+                                    .h(26.0)
+                                    .mt(6.0)
+                                    .gap(8.0)
+                                    .child(label("⌁", 13.0, 400.0, t.muted)),
+                            )
                     }),
             );
-        }
-        card = card.child(
-            row()
-                .w_full()
-                .h(31.0)
-                .px(6.0)
-                .center_y()
-                .gap(7.0)
-                .child(
-                    el().w(14.0)
-                        .h(14.0)
-                        .center()
-                        .radius(7.0)
-                        .border(1.0, t.ink.alpha(0.22)),
-                )
-                .child(label("Write your own…", 12.5, 450.0, t.muted)),
-        );
         if question.multi {
             card.child(
                 el().key("question-submit")
@@ -2874,7 +2974,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                             .center()
                             .radius(8.0)
                             .fill(t.ink.alpha(0.05))
-                            .child(label("Send answer", 11.5, 500.0, t.muted))
+                            .child(label("Send answer", 12.5, 500.0, t.muted))
                             .on_press(|s: &mut AppState| {
                                 let answer = s
                                     .studio
@@ -3833,11 +3933,56 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     Some(if s.studio.composer_open { 230.0 } else { 12.0 }),
                 )
                 .px(12.0)
-                .justify_end()
-                .child(subagent_dock(s, t))
+                .justify_center()
+                .child(
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .offset(-190.0, 0.0)
+                        .child(subagent_dock(s, t))
+                        .child(
+                            col()
+                                .w(38.0)
+                                .padding(3.0)
+                                .gap(4.0)
+                                .radius(14.0)
+                                .border(1.0, t.line)
+                                .fill(t.ground)
+                                .child(
+                                    el().w(30.0)
+                                        .h(30.0)
+                                        .center()
+                                        .radius(10.0)
+                                        .fill(t.raised_high)
+                                        .child(label("♧", 13.0, 500.0, t.ink_soft)),
+                                )
+                                .child(
+                                    el().w(30.0)
+                                        .h(18.0)
+                                        .center()
+                                        .radius(999.0)
+                                        .fill(t.ink.alpha(0.06))
+                                        .child(label(
+                                            s.studio.subagents.len().to_string(),
+                                            10.0,
+                                            600.0,
+                                            t.muted,
+                                        )),
+                                ),
+                        ),
+                )
         } else {
             el()
         })
+        .child(
+            if s.studio.approval.is_some() || s.studio.question.is_some() {
+                el().key("approval-page-scrim")
+                    .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .fill(t.ground.alpha(0.80))
+            } else {
+                el()
+            },
+        )
         .child(if activity_plan {
             row()
                 .pin(Some(0.0), None, Some(0.0), Some(14.0))
