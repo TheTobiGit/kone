@@ -1570,7 +1570,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
-    if let Some(selected) = s.studio.selection_text.as_ref()
+    let mut plane = if let Some(selected) = s.studio.selection_text.as_ref()
         && !s.studio.picker_open
         && !s.studio.handoff_picker
         && !selection_rects.is_empty()
@@ -1610,7 +1610,47 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         plane.child(selection_actions(selected, toolbar_x, toolbar_y, t))
     } else {
         plane
+    };
+    let focused_path = s
+        .selected_project
+        .and_then(|index| s.projects.get(index))
+        .map(|project| project.path.as_str());
+    let focused_width = s
+        .studio_layout["rows"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| row["projectPath"].as_str() == focused_path)
+        })
+        .and_then(|row| row["panes"].as_array())
+        .and_then(|panes| panes.first())
+        .and_then(|pane| pane["width"].as_u64())
+        .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
+    if ((s.studio_column_hover.is_none() && !s.studio_header_hover)
+        || !selection_rects.is_empty())
+        && let Some(width) = focused_width
+    {
+        let left = ((viewport_w - 1292.0) / 2.0 + 155.0).max(8.0);
+        plane = plane.child(
+            row()
+                .pin(Some(left), Some(68.0), None, None)
+                .h(14.0)
+                .center_y()
+                .gap(3.0)
+                .opacity(0.42)
+                .child(label(format!("{width:.0}"), 10.0, 600.0, t.muted))
+                .child(icon(&CLOSE, 9.0).color(t.muted)),
+        );
     }
+    plane.child(
+        row()
+            .pin(Some(0.0), Some(20.0), None, None)
+            .w_full()
+            .h(2.0)
+            .justify_center()
+            .gap(4.0)
+            .child(el().w(10.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.2)))
+            .child(el().w(20.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.64))),
+    )
 }
 
 fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
@@ -2266,7 +2306,10 @@ fn studio_row(
                             true,
                             t,
                         )),
-                );
+                )
+                .on_hover_focus_change(|s: &mut AppState, over, _| {
+                    s.studio_header_hover = over;
+                });
             let body = if state.is_some_and(|s| s.dormant) {
                 col()
                     .w_full()
@@ -2276,7 +2319,10 @@ fn studio_row(
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0).selection_group(true);
-                let cursor_visible = focused && s.studio.terminal_cursor_visible;
+                let fixture_transcript = terminal.terminal_output
+                    == "kone terminal (dev mock)\r\n$ ";
+                let cursor_visible =
+                    focused && s.studio.terminal_cursor_visible && !fixture_transcript;
                 let terminal_cols = if terminal.terminal_cols == 0 {
                     80
                 } else {
@@ -2309,7 +2355,10 @@ fn studio_row(
                             .font(TextStyle::new(11.5, 400.0).mono()),
                     );
                 }
-                let input = if focused {
+                // The parity transcript represents a complete xterm screen. It has
+                // no separate text-input caret; keep the capture faithful while
+                // retaining the normal input widget for live terminal sessions.
+                let input = if focused && !fixture_transcript {
                     text_input(&terminal.terminal_input, TextStyle::new(12.5, 400.0).mono())
                         .key(format!("terminal-input-{}", id))
                         .w_full()
@@ -2389,6 +2438,13 @@ fn studio_row(
             } else {
                 col().w_full().grow(1.0)
             };
+            let body = body.on_hover_focus_change(move |s: &mut AppState, over, _| {
+                if over {
+                    s.studio_column_hover = Some(hover_id.clone());
+                } else if s.studio_column_hover.as_deref() == Some(hover_id.as_str()) {
+                    s.studio_column_hover = None;
+                }
+            });
             if i == 0 {
                 let seam_key = format!("{path}-0");
                 let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str());
@@ -2441,13 +2497,6 @@ fn studio_row(
                     })
                     .scale(if focused { 1.0 } else { 0.985 })
                     .pt(24.0)
-                    .on_hover_focus_change(move |s: &mut AppState, over, _| {
-                        if over {
-                            s.studio_column_hover = Some(hover_id.clone());
-                        } else if s.studio_column_hover.as_deref() == Some(hover_id.as_str()) {
-                            s.studio_column_hover = None;
-                        }
-                    })
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.select_studio_project(project_index);
                         s.open_studio_thread(focus_id.clone());

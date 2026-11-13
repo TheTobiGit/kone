@@ -322,13 +322,11 @@ fn main() {
             }),
             ("studio-column-head-terminal-hover", |s| {
                 studio_column_head(s);
-                studio_terminal_fixture(s, false);
-                s.studio_column_hover = Some("review-one".into());
+                studio_terminal_fixture(s, true);
             }),
             ("studio-column-head-terminal-selection", |s| {
                 studio_column_head(s);
-                studio_terminal_fixture(s, false);
-                s.studio.selection_fixture_pending = true;
+                studio_terminal_fixture(s, true);
             }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);

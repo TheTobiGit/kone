@@ -34,10 +34,28 @@ for scene in scenes:
         output.unlink(missing_ok=True)
         command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', args.size, '--scale', str(args.scale), '--snap', str(output)]
         with tempfile.TemporaryDirectory() as temp:
-            if args.script:
-                command += ['--script', str(args.script)]
-            if args.at is not None:
-                command += ['--at', str(args.at)]
+            script = args.script
+            capture_at = args.at
+            if script is None and scene == 'studio-column-head-terminal-hover':
+                # Electron reveals column tools while the pointer is over the
+                # terminal body, but keeps them hidden over the header.
+                script = Path(temp) / 'terminal-body-hover.json'
+                script.write_text(json.dumps({'events': [
+                    {'t': 1.3, 'type': 'move', 'x': 300, 'y': 180},
+                ]}))
+                capture_at = capture_at if capture_at is not None else 2.0
+            elif script is None and scene == 'studio-column-head-terminal-selection':
+                script = Path(temp) / 'terminal-selection.json'
+                script.write_text(json.dumps({'events': [
+                    {'t': 0.2, 'type': 'down', 'x': 238, 'y': 106},
+                    {'t': 0.5, 'type': 'move', 'x': 410, 'y': 106},
+                    {'t': 0.6, 'type': 'up', 'x': 410, 'y': 106},
+                ]}))
+                capture_at = capture_at if capture_at is not None else 0.8
+            if script:
+                command += ['--script', str(script)]
+            if capture_at is not None:
+                command += ['--at', str(capture_at)]
             if native_scene.startswith('launcher-') and args.at is None:
                 command += ['--at', '2.0']
             if hover:

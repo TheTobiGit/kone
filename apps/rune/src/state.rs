@@ -103,6 +103,7 @@ pub struct AppState {
     pub studio_viewport: (f32, f32),
     pub studio_scroll_row: Option<String>,
     pub studio_column_hover: Option<String>,
+    pub studio_header_hover: bool,
     pub studio_seam_hover: Option<String>,
     pub studio_seam_bounds: std::collections::HashMap<String, [f32; 4]>,
     pub studio_insert_menu: Option<(String, usize, [f32; 4])>,
