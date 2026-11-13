@@ -53,6 +53,9 @@ pub struct TextSpec {
     pub(crate) selection_offset: [f32; 2],
     /// Extra highlight coverage on either side of the selected range, in points.
     pub(crate) selection_padding: [f32; 2],
+    pub(crate) selection_pixel_snap: bool,
+    /// See [`El::quarter_pixel_glyphs`](crate::El::quarter_pixel_glyphs).
+    pub(crate) quarter_pixel_glyphs: bool,
     /// See [`El::uncopied`](crate::El::uncopied): byte ranges of `content`, sorted.
     pub(crate) uncopied: Vec<(u32, u32)>,
     /// Inset border rings `(start, end, color, width)` on rounded span backgrounds.

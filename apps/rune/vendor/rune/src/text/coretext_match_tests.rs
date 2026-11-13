@@ -99,3 +99,14 @@ fn a_handler_switches_font_smoothing_at_run_time() {
     assert!(rt.update_if(|_, tx| { tx.set_font_smoothing(FontSmoothing::On); false }));
     assert_eq!(rt.srgb_blend(), srgb, "blending is separate from the mode");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unsmoothed_macos_grayscale_does_not_apply_linux_text_gamma() {
+    let mut text = TextSystem::default();
+    text.set_font_smoothing(FontSmoothing::Off);
+    for ink in [crate::Color::BLACK, crate::Color::WHITE, crate::Color::WHITE.alpha(0.5)] {
+        let fill = [ink.r * ink.a, ink.g * ink.a, ink.b * ink.a, ink.a];
+        assert_eq!(text.coverage_exponent(fill), 1.0);
+    }
+}

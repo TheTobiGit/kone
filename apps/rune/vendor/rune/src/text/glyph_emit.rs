@@ -119,7 +119,8 @@ impl TextSystem {
         let direct_write = self.direct_write();
         let radius = if direct_write { 0.0 } else { self.apple.radius(ink, font_size) };
         let gamma = self.windows.bucket(ink);
-        let ([fx, fy], [subpx, subpy]) = place(at, font_size, self.glide, direct_write);
+        let quarter_pixels = direct_write || self.quarter_pixel_glyphs;
+        let ([fx, fy], [subpx, subpy]) = place(at, font_size, self.glide, quarter_pixels);
         let key = GlyphKey {
             font: font.data.id(),
             index: font.index,

@@ -519,12 +519,24 @@ impl El {
         if let Some(t) = &mut self.text { t.selection = color; }
         self
     }
+    /// Places glyphs at the nearest quarter device pixel, as Skia canvas text does.
+    /// This changes raster phase only; layout, advances and selection stay unchanged.
+    /// False uses the platform's normal glyph placement.
+    pub fn quarter_pixel_glyphs(mut self, enabled: bool) -> Self {
+        if let Some(t) = &mut self.text { t.quarter_pixel_glyphs = enabled; }
+        self
+    }
     /// Translates selectable text highlights in points without moving the glyphs.
     /// Useful for cell-based text whose highlight follows a different baseline.
     pub fn selection_offset(mut self, x: f32, y: f32) -> Self {
         if let Some(t) = &mut self.text {
             t.selection_offset = [x, y].map(|v| if v.is_finite() { v } else { 0.0 });
         }
+        self
+    }
+    /// Snaps highlight edges to device pixels, matching cell-based canvas selections.
+    pub fn selection_pixel_snap(mut self, enabled: bool) -> Self {
+        if let Some(t) = &mut self.text { t.selection_pixel_snap = enabled; }
         self
     }
     /// Expands a selectable text highlight horizontally and vertically in points.

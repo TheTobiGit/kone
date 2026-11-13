@@ -148,3 +148,23 @@ fn a_new_entry_grows_into_the_room_of_one_that_went() {
     ts.begin_frame();
     assert!(ts.glyph_cache.spare.is_none(), "room nobody took goes");
 }
+
+/// Canvas-style phases must survive cache reuse when the same layout is also
+/// painted with native placement, including fractional origins and motion.
+#[test]
+fn quarter_pixel_placement_replays_like_a_fresh_walk() {
+    let mut ts = TextSystem::default();
+    let layout = paragraph(&mut ts);
+    ts.set_glyph_inks(Color::WHITE, &[]);
+    let all = f32::NEG_INFINITY..f32::INFINITY;
+    for quarter in [false, true, false, true] {
+        ts.quarter_pixel_glyphs = quarter;
+        for origin in [[0.13, 0.0], [12.37, 30.5], [-5.6, 90.4]] {
+            for glide in [[0.0, 0.0], [0.25, 0.5]] {
+                ts.set_glide(glide);
+                let want = direct(&mut ts, &layout, origin, 1.0, true, all.clone());
+                assert_eq!(cached(&mut ts, &layout, origin, 1.0, true, all.clone()), want);
+            }
+        }
+    }
+}

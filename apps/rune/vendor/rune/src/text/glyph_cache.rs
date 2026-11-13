@@ -288,7 +288,7 @@ impl TextSystem {
             }
             let at = if k == 1.0 { [origin[0] + g.rel + g.x, baseline + g.y] }
                 else { [origin[0] + (g.rel + g.x) * k, baseline + g.y * k] };
-            let ([fx, fy], sub) = place(at, size, self.glide, skia);
+            let ([fx, fy], sub) = place(at, size, self.glide, skia || self.quarter_pixel_glyphs);
             if g.sub == sub && g.state == PLACED {
                 self.atlas.touch(g.mask.page, g.mask.w * g.mask.h);
                 out.push(atlas_quad(g.mask, fx, fy, f.0.ink, g.byte));

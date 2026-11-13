@@ -1070,6 +1070,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
             .family(if cfg!(target_os = "macos") { Family::Named("Menlo") } else { Family::SystemMono })
             .lh(18.0))
         .color(t.ink)
+        .quarter_pixel_glyphs(cfg!(target_os = "macos"))
         .selectable(true)
         // xterm receives the Oklab 24% accent value from `--term-selection`, but its
         // canvas selection paint falls back to a 30% white overlay when it cannot parse
@@ -1077,6 +1078,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
         .selection_color(rune::color::hex(if t.dark { "#525253" } else { "#f9f8f7" }).unwrap())
         .selection_offset(0.0, 0.5)
         .selection_padding(0.5, 0.0)
+        .selection_pixel_snap(true)
         .selection_radius(0.0)
         .w_full();
     if !spans.is_empty() {
@@ -1641,21 +1643,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     if s.studio_column_hover.is_none() && !s.studio_header_hover
         && let Some(width) = focused_width
     {
-        let left = ((viewport_w - 1292.0) / 2.0 + 155.0).max(8.0);
+        let left = ((viewport_w - 1292.0) / 2.0 + 156.0).max(8.0);
         plane = plane.child(
             row()
-                .pin(Some(left), Some(68.0), None, None)
+                .pin(Some(left), Some(64.0), None, None)
                 .h(14.0)
                 .center_y()
-                .gap(3.0)
+                .gap(8.0)
                 .opacity(0.42)
-                .child(label(format!("{width:.0}"), 10.0, 600.0, t.muted))
-                .child(icon(&CLOSE, 9.0).color(t.muted)),
+                .child(label(format!("{width:.0}"), 10.0, 400.0, t.muted))
+                .child(icon(&CLOSE, 13.0).color(t.muted).offset(0.0, 1.0)),
         );
     }
     plane.child(
         row()
             .pin(Some(0.0), Some(27.2), None, None)
+            .offset(0.5, 0.0)
             .w_full()
             .h(2.0)
             .justify_center()
@@ -4673,6 +4676,8 @@ mod tests {
             rt.pointer_up(322.0, 106.0);
             rt.frame(1.0 / 60.0);
             assert_eq!(rt.selected_text().as_deref(), Some("ermin"));
+            assert!(rt.instances.iter().any(|instance| instance.rect == [566.0, 196.0, 80.0, 36.0]),
+                "the highlight must occupy the same device-pixel cells as xterm");
         }
     }
 

@@ -77,7 +77,12 @@ impl<S: 'static> Runtime<S> {
         for (bb, _) in crate::text::range_boxes(layout, a, b, true) {
             let (x0, y0) = (ox + bb.x0 as f32 / s + spec.selection_offset[0], oy + bb.y0 as f32 / s + spec.selection_offset[1]);
             let [px, py] = spec.selection_padding;
-            out.push([x0 - px, y0 - py, (bb.x1 - bb.x0) as f32 / s + px * 2.0, (bb.y1 - bb.y0) as f32 / s + py * 2.0]);
+            let rect = [x0 - px, y0 - py, (bb.x1 - bb.x0) as f32 / s + px * 2.0, (bb.y1 - bb.y0) as f32 / s + py * 2.0];
+            out.push(if spec.selection_pixel_snap {
+                let [x, y, w, h] = rect;
+                let (left, top) = ((x * s).round() / s, (y * s).round() / s);
+                [left, top, ((x + w) * s).round() / s - left, ((y + h) * s).round() / s - top]
+            } else { rect });
         }
     }
 

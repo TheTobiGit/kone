@@ -197,6 +197,7 @@ pub struct TextSystem {
     pub(crate) glyph_cache: glyph_cache::GlyphCache,
     /// Device px `[x, y]` the next glyphs glide from their resting pixel ([`Self::set_glide`]).
     glide: [f32; 2],
+    pub(crate) quarter_pixel_glyphs: bool,
 }
 
 impl Default for TextSystem {
@@ -323,6 +324,7 @@ impl TextSystem {
             windows: Default::default(),
             glyph_cache: Default::default(),
             glide: [0.0; 2],
+            quarter_pixel_glyphs: false,
         };
         text.load_installed(families.0);
         text.load_installed(families.1);

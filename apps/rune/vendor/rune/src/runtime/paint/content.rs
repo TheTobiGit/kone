@@ -389,10 +389,11 @@ impl<S: 'static> Runtime<S> {
             if spec.selectable && let Some((a, b)) = selectable::range_in(sel_ranges, i) {
                 let (a, b) = n.elided.map_or((a, b), |e| e.range(a, b));
                 let selection_origin = [origin[0] + spec.selection_offset[0] * s * tk, origin[1] + spec.selection_offset[1] * s * tk];
-                selectable::push_selection(&mut self.instances, layout, a, b, selection_origin, tk, premul(spec.selection, o, srgb), s, spec.selection_radius, spec.selection_padding.map(|v| v * s * tk), clip, fade);
+                selectable::push_selection(&mut self.instances, layout, a, b, selection_origin, tk, premul(spec.selection, o, srgb), s, spec.selection_radius, spec.selection_padding.map(|v| v * s * tk), spec.selection_pixel_snap, clip, fade);
             }
             self.glyph_scratch.clear();
             self.text.set_glyph_inks(color, &spec.spans);
+            self.text.quarter_pixel_glyphs = spec.quarter_pixel_glyphs;
             let origin = rest_origin;
             self.text.set_glide(glide);
             let r_origin = if scale_motion == ScaleMotion::Still { origin } else { [0.0, 0.0] };
@@ -423,6 +424,7 @@ impl<S: 'static> Runtime<S> {
                 tk / raster
             };
             self.text.set_glide([0.0; 2]);
+            self.text.quarter_pixel_glyphs = false;
             let base = premul(color, o, srgb);
             let lands = self.flights.iter().any(|f| f.lands(&n.path, n.key.as_deref()));
             for q in if lands { &[][..] } else { &self.glyph_scratch[..] } {
