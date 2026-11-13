@@ -28,6 +28,9 @@ cp -R "$SDK_ROOT" "$APP/Contents/Resources/sidecar/node_modules/@anthropic-ai/cl
 cp -R "$(CDPATH= cd -- "$(dirname "$SDK_ROOT")/claude-agent-sdk-darwin-$PLATFORM" && pwd -P)" "$APP/Contents/Resources/sidecar/node_modules/@anthropic-ai/"
 cp -R "$AST_ROOT" "$APP/Contents/Resources/sidecar/node_modules/@ast-grep/napi"
 cp -R "$(CDPATH= cd -- "$(dirname "$AST_ROOT")/napi-darwin-$PLATFORM" && pwd -P)" "$APP/Contents/Resources/sidecar/node_modules/@ast-grep/"
+cp -R "$ROOT/node_modules/node-pty" "$APP/Contents/Resources/sidecar/node_modules/node-pty"
+cp -R "$ROOT/node_modules/node-addon-api" "$APP/Contents/Resources/sidecar/node_modules/node-addon-api"
+chmod +x "$APP/Contents/Resources/sidecar/node_modules/node-pty/prebuilds/darwin-$PLATFORM/spawn-helper"
 cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
 #!/bin/sh
 CONTENTS=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)

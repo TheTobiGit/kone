@@ -201,6 +201,15 @@ pub struct StudioState {
     pub compact_error: Option<String>,
     pub dormant: bool,
     pub terminal_command: Option<String>,
+    pub terminal_session_id: Option<String>,
+    pub terminal_output: String,
+    pub terminal_input: TextEdit,
+    pub terminal_running: bool,
+    pub terminal_child: Option<String>,
+    pub terminal_exit_code: Option<i64>,
+    pub terminal_error: Option<String>,
+    pub terminal_cols: u16,
+    pub terminal_rows: u16,
     pub worktree_path: Option<String>,
     pub handoff_source: Option<String>,
     pub past_providers: Vec<String>,
@@ -984,6 +993,19 @@ impl AppState {
             .filter(|(id, _)| id != &self.studio.thread_id && !self.studio_threads.contains_key(id))
             .collect();
         for (thread, path) in threads {
+            if thread.starts_with("terminal:") {
+                self.studio_threads.insert(
+                    thread.clone(),
+                    StudioState {
+                        thread_id: thread,
+                        project_path: path,
+                        thread_open: true,
+                        terminal_command: Some(String::new()),
+                        ..Default::default()
+                    },
+                );
+                continue;
+            }
             let request = self.request("history.thread", serde_json::json!({"threadId": thread}));
             self.studio_threads.insert(
                 thread.clone(),
@@ -1428,6 +1450,21 @@ impl AppState {
 
     pub fn close_studio_thread(&mut self, thread: &str) {
         let path = self.studio.project_path.clone();
+        let terminal_id = self
+            .studio_threads
+            .get(thread)
+            .and_then(|s| s.terminal_session_id.clone())
+            .or_else(|| {
+                (self.studio.thread_id == thread)
+                    .then(|| self.studio.terminal_session_id.clone())
+                    .flatten()
+            });
+        if let Some(terminal_id) = terminal_id {
+            self.request(
+                "terminal.close",
+                serde_json::json!({"terminalId": terminal_id}),
+            );
+        }
         let mut next = None;
         if let Some(row) = self.studio_layout["rows"]
             .as_array_mut()
@@ -1517,11 +1554,35 @@ impl AppState {
             self.studio.thread_id = thread.clone();
             self.studio.project_path = project_path;
             self.studio.thread_open = true;
-            self.studio.composer_open = true;
-            self.studio.history_request =
-                self.request("history.thread", serde_json::json!({"threadId": thread}));
+            if thread.starts_with("terminal:") {
+                self.studio.terminal_command = Some(String::new());
+                self.studio.composer_open = false;
+            } else {
+                self.studio.composer_open = true;
+                self.studio.history_request =
+                    self.request("history.thread", serde_json::json!({"threadId": thread}));
+            }
         }
+        self.ensure_terminal_open(&thread);
         self.save_studio_layout();
+    }
+
+    fn ensure_terminal_open(&mut self, thread: &str) {
+        let Some(terminal_id) = thread.strip_prefix("terminal:") else {
+            return;
+        };
+        if self.studio.terminal_session_id.as_deref() == Some(terminal_id) {
+            return;
+        }
+        self.studio.terminal_command = Some(String::new());
+        self.studio.terminal_session_id = Some(terminal_id.to_owned());
+        self.studio.terminal_input.focused = true;
+        self.studio.terminal_error = None;
+        let cwd = self.studio.project_path.clone();
+        self.request(
+            "terminal.open",
+            serde_json::json!({"terminalId": terminal_id, "cwd": cwd, "cols": 80, "rows": 24}),
+        );
     }
 
     pub fn new_studio_thread(&mut self) {
@@ -1620,6 +1681,79 @@ impl AppState {
             panes.insert(at.min(panes.len()), pane);
             self.persist_studio_layout();
         }
+    }
+
+    pub fn insert_studio_terminal(&mut self, at: usize) {
+        if !self.studio_layout_ready {
+            return;
+        }
+        let path = self.studio.project_path.clone();
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let terminal_id = format!("{}-{time}", std::process::id());
+        let thread = format!("terminal:{terminal_id}");
+        self.park_studio_thread();
+        if let Some(panes) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+        {
+            panes.insert(at.min(panes.len()), serde_json::json!({"id": thread, "kind":"terminal", "anchor":{"kind":"thread","threadId":thread}, "width":0}));
+        }
+        if let Some(row) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+        {
+            row["focusedId"] = thread.clone().into();
+        }
+        self.studio.thread_id = thread.clone();
+        self.studio.project_path = path;
+        self.studio.thread_open = true;
+        self.studio.terminal_command = Some(String::new());
+        self.studio.terminal_input.focused = true;
+        self.studio.composer_open = false;
+        self.ensure_terminal_open(&thread);
+        self.persist_studio_layout();
+    }
+
+    pub fn terminal_write(&mut self, input: String) {
+        let Some(terminal_id) = self.studio.terminal_session_id.clone() else {
+            return;
+        };
+        self.request(
+            "terminal.write",
+            serde_json::json!({"terminalId": terminal_id, "data": input}),
+        );
+    }
+
+    pub fn resize_terminal(&mut self, cols: u16, rows: u16) {
+        let Some(terminal_id) = self.studio.terminal_session_id.clone() else {
+            return;
+        };
+        let cols = cols.clamp(2, 1000);
+        let rows = rows.clamp(1, 500);
+        if self.studio.terminal_cols == cols && self.studio.terminal_rows == rows {
+            return;
+        }
+        self.studio.terminal_cols = cols;
+        self.studio.terminal_rows = rows;
+        self.request(
+            "terminal.resize",
+            serde_json::json!({"terminalId": terminal_id, "cols": cols, "rows": rows}),
+        );
+    }
+
+    pub fn submit_terminal_input(&mut self, tx: &mut rune::Tx) {
+        let input = self.studio.terminal_input.text.clone();
+        self.studio.terminal_input.clear();
+        self.studio.terminal_input.focused = true;
+        if !input.is_empty() {
+            self.terminal_write(input);
+        }
+        self.terminal_write("\r".into());
+        tx.wake_after(std::time::Duration::ZERO);
     }
 
     fn save_studio_layout(&mut self) {
@@ -1950,6 +2084,52 @@ impl AppState {
     }
 
     pub(crate) fn studio_message(&mut self, message: serde_json::Value) {
+        if let Some(method) = message["method"]
+            .as_str()
+            .filter(|method| method.starts_with("terminal."))
+        {
+            let params = &message["params"];
+            let id = params["terminalId"].as_str();
+            let update = |state: &mut StudioState| {
+                if state.terminal_session_id.as_deref() != id {
+                    return;
+                }
+                match method {
+                    "terminal.output" => {
+                        if let Some(data) = params["data"].as_str() {
+                            state.terminal_output.push_str(data);
+                            if state.terminal_output.len() > 512 * 1024 {
+                                let mut cut = state.terminal_output.len() - 512 * 1024;
+                                while !state.terminal_output.is_char_boundary(cut) {
+                                    cut += 1;
+                                }
+                                state.terminal_output.drain(..cut);
+                            }
+                        }
+                    }
+                    "terminal.activity" => {
+                        state.terminal_running =
+                            params["hasRunningSubprocess"].as_bool().unwrap_or(false);
+                        state.terminal_child =
+                            params["childCommandLabel"].as_str().map(str::to_owned);
+                    }
+                    "terminal.exited" => {
+                        state.terminal_running = false;
+                        state.terminal_child = None;
+                        state.terminal_exit_code = params["exitCode"].as_i64();
+                    }
+                    "terminal.error" => {
+                        state.terminal_error = params["error"].as_str().map(str::to_owned);
+                    }
+                    _ => {}
+                }
+            };
+            update(&mut self.studio);
+            for state in self.studio_threads.values_mut() {
+                update(state);
+            }
+            return;
+        }
         if message["method"] == "projects.cloneProgress" {
             crate::launcher::progress(self, &message["params"]);
             return;
@@ -2527,6 +2707,31 @@ mod tests {
             .map(|pane| pane["anchor"]["threadId"].as_str().unwrap())
             .collect();
         assert_eq!(ids, ["source", "child", "other"]);
+    }
+
+    #[test]
+    fn restored_terminal_columns_stay_dormant_until_focused() {
+        let mut s = AppState::default();
+        s.projects = vec![Project {
+            name: "Project".into(),
+            path: "/p".into(),
+        }];
+        s.selected_project = Some(0);
+        s.studio_layout_ready = true;
+        s.studio.project_path = "/p".into();
+        s.studio.thread_id = "thread-one".into();
+        s.studio_layout = json!({"version":2,"focusedRow":"/p","rows":[{"projectPath":"/p","focusedId":"thread-one","panes":[
+            {"id":"thread-one","kind":"thread","anchor":{"kind":"thread","threadId":"thread-one"}},
+            {"id":"terminal:pty-one","kind":"terminal","anchor":{"kind":"thread","threadId":"terminal:pty-one"}}
+        ]}]});
+
+        s.load_visible_studio_threads();
+        let terminal = &s.studio_threads["terminal:pty-one"];
+        assert!(terminal.terminal_command.is_some());
+        assert!(terminal.terminal_session_id.is_none());
+
+        s.open_studio_thread("terminal:pty-one".into());
+        assert_eq!(s.studio.terminal_session_id.as_deref(), Some("pty-one"));
     }
 
     #[test]

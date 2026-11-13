@@ -2,6 +2,8 @@ import { sessionSchema, turnSchema, studioLayoutSchema } from "./protocol.js";
 import { collectSubtreeWorktrees, removeCollectedWorktrees } from "../../../desktop/src/modules/git/worktreeCleanup.js";
 import { agentIdentity, namedIdentity } from "./identity.js";
 import { randomUUID } from "node:crypto";
+import * as pty from "node-pty";
+import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -36,6 +38,48 @@ await mkdir(directory, { recursive: true });
 setUserDataDir(directory);
 const store = getConversationStore();
 const service = new AgentService();
+type TerminalSession = { terminal: pty.IPty; history: string; sequence: number; running: boolean; child: string | null };
+const terminals = new Map<string, TerminalSession>();
+const terminalCap = 512 * 1024;
+function terminalSnapshot(session: TerminalSession) {
+  return { history: session.history, sequence: session.sequence, status: "ready", hasRunningSubprocess: session.running, childCommandLabel: session.child };
+}
+function killTerminal(session: TerminalSession) {
+  if (process.platform !== "win32") {
+    try { process.kill(-session.terminal.pid, "SIGHUP"); } catch { /* The shell may already have exited. */ }
+  }
+  try { session.terminal.kill(); } catch { /* The PTY may already be closed. */ }
+}
+function processTree(root: number): Array<{ pid: number; ppid: number; pgid: number; command: string }> {
+  try {
+    const rows = String(execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,command="], { encoding: "utf8" })).trim().split("\n");
+    const all = rows.map((line) => { const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/); return m ? { pid: +m[1]!, ppid: +m[2]!, pgid: +m[3]!, command: m[4]! } : null; }).filter((x): x is { pid: number; ppid: number; pgid: number; command: string } => !!x);
+    const foreground = Number(String(execFileSync("ps", ["-o", "tpgid=", "-p", String(root)], { encoding: "utf8" })).trim());
+    if (Number.isFinite(foreground) && foreground > 0) {
+      const active = all.filter((item) => item.pgid === foreground && item.pid !== root);
+      if (active.length) return [active.find((item) => item.pid === item.pgid) ?? active[0]!];
+      const shell = all.find((item) => item.pid === root);
+      if (shell?.pgid === foreground) return [];
+    }
+    const descendants: typeof all = [];
+    const parents = new Set([root]);
+    for (let pass = 0; pass < 8; pass++) for (const item of all) if (item && parents.has(item.ppid) && !parents.has(item.pid)) { parents.add(item.pid); if (item.ppid !== root || !/[zb]sh$/.test(item.command)) descendants.push(item); }
+    return descendants.filter((x): x is { pid: number; ppid: number; pgid: number; command: string } => !!x);
+  } catch { return []; }
+}
+function watchTerminal(terminalId: string, session: TerminalSession) {
+  const timer = setInterval(() => {
+    if (terminals.get(terminalId) !== session) { clearInterval(timer); return; }
+    const children = processTree(session.terminal.pid);
+    const nextChild = children.at(-1)?.command.split("/").at(-1)?.replace(/\.app$/, "") ?? null;
+    const running = children.length > 0;
+    if (running !== session.running || nextChild !== session.child) {
+      session.running = running; session.child = nextChild;
+      notify("terminal.activity", { terminalId, hasRunningSubprocess: running, childCommandLabel: nextChild });
+    }
+  }, 350);
+  timer.unref();
+}
 /** Resolve a named agent or the root thread's deterministic guest identity. */
 function threadIdentity(threadId: string) {
   let root = store.threadMeta(threadId);
@@ -236,6 +280,53 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       const input = z.object({ layout: studioLayoutSchema }).parse(params);
       return store.saveStudio(input.layout);
     }
+    case "terminal.open": {
+      const input = z.object({ terminalId: z.string().min(1), cwd: z.string().min(1), cols: z.number().int().min(2).max(1000).optional(), rows: z.number().int().min(1).max(500).optional() }).parse(params);
+      if (!path.isAbsolute(input.cwd)) throw new Error("Terminal working directory must be absolute");
+      const previous = terminals.get(input.terminalId);
+      if (previous) return terminalSnapshot(previous);
+      const shell = process.env.SHELL || (process.platform === "win32" ? "powershell.exe" : "/bin/sh");
+      let processHandle: pty.IPty;
+      try {
+        processHandle = pty.spawn(shell, ["-l"], { name: "xterm-256color", cols: input.cols ?? 80, rows: input.rows ?? 24, cwd: input.cwd, env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as { [key: string]: string } });
+      } catch (error) {
+        notify("terminal.error", { terminalId: input.terminalId, error: error instanceof Error ? error.message : "Could not start the shell" });
+        throw error;
+      }
+      const session: TerminalSession = {
+        terminal: processHandle,
+        history: "", sequence: Date.now(), running: false, child: null,
+      };
+      terminals.set(input.terminalId, session);
+      session.terminal.onData((data) => {
+        session.history = (session.history + data).slice(-terminalCap);
+        notify("terminal.output", { terminalId: input.terminalId, data });
+      });
+      session.terminal.onExit(({ exitCode }) => {
+        terminals.delete(input.terminalId);
+        notify("terminal.exited", { terminalId: input.terminalId, exitCode });
+      });
+      watchTerminal(input.terminalId, session);
+      return terminalSnapshot(session);
+    }
+    case "terminal.write": {
+      const input = z.object({ terminalId: z.string().min(1), data: z.string().max(65536) }).parse(params);
+      const session = terminals.get(input.terminalId);
+      if (!session) throw new Error("Terminal session is not running");
+      session.terminal.write(input.data);
+      return { ok: true };
+    }
+    case "terminal.resize": {
+      const input = z.object({ terminalId: z.string().min(1), cols: z.number().int().min(2).max(1000), rows: z.number().int().min(1).max(500) }).parse(params);
+      terminals.get(input.terminalId)?.terminal.resize(input.cols, input.rows);
+      return { ok: true };
+    }
+    case "terminal.close": {
+      const input = z.object({ terminalId: z.string().min(1) }).parse(params);
+      const session = terminals.get(input.terminalId);
+      if (session) { terminals.delete(input.terminalId); killTerminal(session); }
+      return { ok: true };
+    }
     case "agent.surface": return service.cachedSurface();
     case "agent.warm": return service.warm();
     case "agent.discover": return service.discover();
@@ -344,6 +435,8 @@ lines.on("line", (line) => {
 lines.on("close", () => {
   cancelAllClones();
   stopSummaryWatches();
+  for (const session of terminals.values()) killTerminal(session);
+  terminals.clear();
   void (async () => {
     await Promise.allSettled(pending);
     try {

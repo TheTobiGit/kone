@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -48,10 +48,12 @@ test("project and Studio state survive a sidecar restart", async () => {
         child.stdin.end();
         assert.equal(await ended, 0);
       },
+      abort() { child.kill(); },
     };
   }
+  let app;
   try {
-    let app = await open();
+    app = await open();
     const created = await app.call("projects.create", { parent: directory, name: "project", git: true, readme: true });
     assert.equal(created.path, path.join(directory, "project"));
     const listing = await app.call("projects.listDirectories", { path: directory });
@@ -63,7 +65,7 @@ test("project and Studio state survive a sidecar restart", async () => {
     assert.ok(overview.repository);
     assert.ok(overview.readme);
     const summary = await app.call("projects.summary", { path: created.path });
-    assert.equal(summary.root, created.path);
+    assert.equal(summary.root, await realpath(created.path));
     assert.ok(Array.isArray(summary.changes));
     assert.equal(await app.call("projects.summary", { path: directory }), null);
     await app.call("projects.watchSummaries", { paths: [created.path] });
@@ -85,7 +87,7 @@ test("project and Studio state survive a sidecar restart", async () => {
     assert.equal(list[0].pinned, true);
     assert.deepEqual(await app.call("studio.load"), { version: 2, rows: [], focusedRow: null });
     await app.close();
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { app?.abort(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("invalid frames preserve the stream and requests retain their IDs", async () => {
@@ -113,6 +115,57 @@ test("requires an isolated absolute data directory", async () => {
   const child = spawn(node, [script], { env: { ...process.env, KONE_RUNE_DATA_DIR: "relative" }, stdio: ["ignore", "ignore", "pipe"] });
   const code = await new Promise((resolve) => child.once("close", resolve));
   assert.notEqual(code, 0);
+});
+
+test("PTY sessions stream shell output, accept input, report foreground children, and close", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "kone-rune-pty-"));
+  const child = spawn(node, [script], { env: { ...process.env, KONE_RUNE_DATA_DIR: directory }, stdio: ["pipe", "pipe", "pipe"] });
+  const notifications = [];
+  const waiters = [];
+  const responses = new Map();
+  const responseWaiters = new Map();
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.id != null) { responses.set(message.id, message); responseWaiters.get(message.id)?.(message); }
+    if (message.method?.startsWith("terminal.")) {
+      notifications.push(message);
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (waiters[i].match(message)) { const [waiter] = waiters.splice(i, 1); waiter.resolve(message); }
+      }
+    }
+  });
+  const waitFor = (match) => {
+    const existing = notifications.find(match);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const waiter = { match, resolve, reject };
+      waiters.push(waiter);
+      setTimeout(() => { const index = waiters.indexOf(waiter); if (index >= 0) waiters.splice(index, 1); reject(new Error("PTY event timed out")); }, 5000);
+    });
+  };
+  let next = 0;
+  const call = (method, params) => {
+    const id = ++next;
+    const result = new Promise((resolve, reject) => responseWaiters.set(id, (message) => message.error ? reject(new Error(message.error.message)) : resolve(message.result)));
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    return result;
+  };
+  try {
+    const terminalId = "pty-smoke";
+    const opened = await call("terminal.open", { terminalId, cwd: directory, cols: 80, rows: 24 });
+    assert.equal(opened.status, "ready");
+    await call("terminal.write", { terminalId, data: "printf '\\033[31m__RUNE_PTY_OK__\\033[0m\\n'; sleep 2\r" });
+    await waitFor((event) => event.method === "terminal.output" && event.params.terminalId === terminalId && event.params.data.includes("__RUNE_PTY_OK__"));
+    const activity = await waitFor((event) => event.method === "terminal.activity" && event.params.terminalId === terminalId && event.params.hasRunningSubprocess);
+    assert.ok(activity.params.childCommandLabel);
+    await call("terminal.resize", { terminalId, cols: 100, rows: 30 });
+    await call("terminal.close", { terminalId });
+    await waitFor((event) => event.method === "terminal.exited" && event.params.terminalId === terminalId);
+  } finally {
+    child.stdin.end();
+    await new Promise((resolve) => child.once("close", resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 

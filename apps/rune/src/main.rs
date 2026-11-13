@@ -314,6 +314,14 @@ fn main() {
             ("studio-column-head-terminal-live", |s| {
                 studio_column_head(s);
                 s.studio.terminal_command = Some("npm run dev".into());
+                s.studio.terminal_running = true;
+                s.studio.terminal_child = Some("npm run dev".into());
+                s.studio_column_hover = Some("review-one".into());
+            }),
+            ("studio-column-head-terminal-idle", |s| {
+                studio_column_head(s);
+                s.studio.terminal_command = Some(String::new());
+                s.studio_column_hover = Some("review-one".into());
             }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);

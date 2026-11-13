@@ -931,6 +931,75 @@ pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: run
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
+fn terminal_line(value: &str, t: Palette) -> El {
+    let mut output = String::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut cursor = 0;
+    let mut active = None;
+    let mut range_start = 0;
+    let mut spans = Vec::new();
+    while cursor < bytes.len() {
+        if bytes[cursor] == 0x1b {
+            if cursor + 1 < bytes.len() && bytes[cursor + 1] == b'[' {
+                let mut end = cursor + 2;
+                while end < bytes.len() && !(0x40..=0x7e).contains(&bytes[end]) {
+                    end += 1;
+                }
+                if end < bytes.len() && bytes[end] == b'm' {
+                    if let Some(color) = active.take()
+                        && range_start < output.len()
+                    {
+                        spans.push(Span::new(range_start, output.len()).color(color));
+                    }
+                    let codes = std::str::from_utf8(&bytes[cursor + 2..end]).unwrap_or("");
+                    for code in codes.split(';').filter_map(|x| x.parse::<u8>().ok()) {
+                        active = match code {
+                            0 | 39 => None,
+                            30..=37 => Some(ansi_color(code - 30, t)),
+                            90..=97 => Some(ansi_color(code - 90 + 8, t)),
+                            _ => active,
+                        };
+                    }
+                    range_start = output.len();
+                }
+                cursor = (end + 1).min(bytes.len());
+                continue;
+            }
+            cursor += 1;
+            continue;
+        }
+        let Some(ch) = value[cursor..].chars().next() else {
+            break;
+        };
+        if !ch.is_control() || ch == '\t' {
+            output.push(ch);
+        }
+        cursor += ch.len_utf8();
+    }
+    if let Some(color) = active
+        && range_start < output.len()
+    {
+        spans.push(Span::new(range_start, output.len()).color(color));
+    }
+    let mut line = text(output)
+        .font(TextStyle::new(12.5, 400.0).mono().lh(15.0))
+        .color(t.ink_soft)
+        .w_full();
+    if !spans.is_empty() {
+        line = line.spans(spans);
+    }
+    line
+}
+
+fn ansi_color(index: u8, t: Palette) -> rune::Color {
+    const COLORS: [&str; 16] = [
+        "#1c1c1c", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+        "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
+    ];
+    let color = COLORS[index.min(15) as usize];
+    rune::color::hex(color).unwrap_or(t.ink_soft)
+}
+
 #[derive(Clone, Copy)]
 enum TurnOrbKind {
     Working,
@@ -1949,8 +2018,11 @@ fn studio_row(
                         } else {
                             column_title(state, focused, t)
                         })
-                        .child(
-                            if let Some(command) = state.and_then(|s| s.terminal_command.as_ref()) {
+                        .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                            if let Some(command) = state
+                                .and_then(|s| s.terminal_command.as_ref())
+                                .filter(|_| state.is_some_and(|s| s.terminal_running))
+                            {
                                 row()
                                     .center_y()
                                     .gap(5.0)
@@ -1959,13 +2031,22 @@ fn studio_row(
                                     .radius(999.0)
                                     .fill(t.ink.alpha(0.05))
                                     .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
-                                    .child(label(command.clone(), 10.0, 620.0, t.muted))
-                            } else if let Some(state) = state.filter(|_| !activity_fixture) {
-                                context_meter(state, t)
+                                    .child(label(
+                                        state
+                                            .and_then(|s| s.terminal_child.clone())
+                                            .unwrap_or_else(|| command.clone()),
+                                        10.0,
+                                        620.0,
+                                        t.muted,
+                                    ))
                             } else {
                                 el().w(0.0)
-                            },
-                        ),
+                            }
+                        } else if let Some(state) = state.filter(|_| !activity_fixture) {
+                            context_meter(state, t)
+                        } else {
+                            el().w(0.0)
+                        }),
                 )
                 .child(
                     row()
@@ -2079,8 +2160,95 @@ fn studio_row(
                     .items_center()
                     .pt(40.0)
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
-            } else if state.is_some_and(|s| s.terminal_command.is_some()) {
-                col().w_full().grow(1.0)
+            } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
+                let mut output = col().w_full().gap(0.0);
+                for line in terminal
+                    .terminal_output
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
+                    .lines()
+                    .rev()
+                    .take(300)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                {
+                    output = output.child(terminal_line(line, t));
+                }
+                if let Some(code) = terminal.terminal_exit_code {
+                    output = output.child(
+                        label(format!("[process exited: {code}]"), 11.5, 400.0, t.muted)
+                            .font(TextStyle::new(11.5, 400.0).mono()),
+                    );
+                }
+                if let Some(error) = terminal.terminal_error.as_deref() {
+                    output = output.child(
+                        label(format!("[terminal error: {error}]"), 11.5, 400.0, t.danger)
+                            .font(TextStyle::new(11.5, 400.0).mono()),
+                    );
+                }
+                let input = if focused {
+                    text_input(&terminal.terminal_input, TextStyle::new(12.5, 400.0).mono())
+                        .key(format!("terminal-input-{}", id))
+                        .w_full()
+                        .h(24.0)
+                        .color(t.ink)
+                        .on_edit(|s: &mut AppState| &mut s.studio.terminal_input)
+                        .on_submit(AppState::submit_terminal_input)
+                        .on_key(|s: &mut AppState, ev, tx| {
+                            let sequence = match ev.key {
+                                rune::Key::Up => Some("\x1b[A"),
+                                rune::Key::Down => Some("\x1b[B"),
+                                rune::Key::Right => Some("\x1b[C"),
+                                rune::Key::Left => Some("\x1b[D"),
+                                rune::Key::Home => Some("\x1b[H"),
+                                rune::Key::End => Some("\x1b[F"),
+                                rune::Key::PageUp => Some("\x1b[5~"),
+                                rune::Key::PageDown => Some("\x1b[6~"),
+                                rune::Key::Tab => Some("\t"),
+                                rune::Key::Escape => Some("\x1b"),
+                                rune::Key::Delete => Some("\x1b[3~"),
+                                _ => None,
+                            };
+                            if let Some(sequence) = sequence {
+                                s.terminal_write(sequence.into());
+                                tx.live_only();
+                                return true;
+                            }
+                            if ev.mods.ctrl
+                                && let rune::Key::Text(text) = &ev.key
+                                && let Some(ch) = text.chars().next()
+                            {
+                                let control = (ch.to_ascii_lowercase() as u8 & 0x1f) as char;
+                                s.terminal_write(control.to_string());
+                                return true;
+                            }
+                            false
+                        })
+                } else {
+                    el().w_full().h(40.0)
+                };
+                col()
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(
+                        col()
+                            .w_full()
+                            .grow(1.0)
+                            .min_h(0.0)
+                            .px(18.0)
+                            .pt(14.0)
+                            .scroll(ScrollSpec { stick_bottom: true })
+                            .child(output)
+                            .on_layout(|s: &mut AppState, bounds| {
+                                s.resize_terminal(
+                                    ((bounds[2] - 36.0) / 7.5) as u16,
+                                    ((bounds[3] - 14.0) / 15.0) as u16,
+                                );
+                            }),
+                    )
+                    .child(el().w_full().px(14.0).py(8.0).child(input))
             } else if focused {
                 focused_body(
                     s,
@@ -2310,6 +2478,12 @@ fn studio_row(
                     s.new_studio_thread();
                     s.center_studio_column(tx);
                 });
+            } else if index == 1 {
+                action = action.on_press_tx(move |s: &mut AppState, tx| {
+                    s.select_studio_project(project_index);
+                    s.insert_studio_terminal(0);
+                    s.center_studio_column(tx);
+                });
             }
             let offset = s.chooser_magnet.offsets[index];
             let active = s.chooser_magnet.active[index];
@@ -2401,6 +2575,15 @@ fn studio_row(
                         s.studio_insert_menu = None;
                         s.select_studio_project(project_index);
                         s.insert_studio_thread(index);
+                        s.center_studio_column(tx);
+                    });
+            } else if row_index == 1 {
+                action = action
+                    .hover(t.hover)
+                    .on_press_tx(move |s: &mut AppState, tx| {
+                        s.studio_insert_menu = None;
+                        s.select_studio_project(project_index);
+                        s.insert_studio_terminal(index);
                         s.center_studio_column(tx);
                     });
             } else {

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts --target=node --outfile dist/index.mjs --external @anthropic-ai/claude-agent-sdk --external @ast-grep/napi && cp ../../../packages/agent-core/src/gateway/stdioProxy.mjs dist/stdioProxy.mjs",
+    "build": "bun build src/index.ts --target=node --outfile dist/index.mjs --external @anthropic-ai/claude-agent-sdk --external @ast-grep/napi --external node-pty && cp ../../../packages/agent-core/src/gateway/stdioProxy.mjs dist/stdioProxy.mjs",
     "check-types": "tsc --noEmit",
     "test": "node --test test/sidecar.test.mjs"
   },
