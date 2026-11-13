@@ -1064,8 +1064,8 @@ fn terminal_line(value: &str, t: Palette) -> El {
         spans.push(span);
     }
     let mut line = text(output)
-        // xterm uses fontSize 13 × lineHeight 1.2 (15.6 CSS px).
-        .font(TextStyle::new(13.0, 400.0).mono().lh(18.2))
+        // Match the Electron terminal's 12px monospace font and 1.2 row pitch.
+        .font(TextStyle::new(12.0, 400.0).mono().lh(14.4))
         .color(t.ink)
         .selectable(true)
         // xterm receives the Oklab 24% accent value from `--term-selection`, but its

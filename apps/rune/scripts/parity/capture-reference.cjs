@@ -16,6 +16,9 @@ const studioHeadScenes = [
   'studio-column-head-handoff',
   'studio-column-head-dormant',
   'studio-column-head-terminal-live',
+  'studio-column-head-terminal-idle',
+  'studio-column-head-terminal-hover',
+  'studio-column-head-terminal-selection',
 ];
 const supported = [...startScenes, ...studioHeadScenes];
 if (!piece || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(piece) || !sceneArg || sceneArg.split(',').some((s) => !supported.includes(s))) {
@@ -170,9 +173,36 @@ async function captureStart(page, scene) {
 
 async function captureStudioHead(page, scene) {
   await openStudio(page);
-  if (scene === 'studio-column-head-terminal-live') {
+  if (scene.startsWith('studio-column-head-terminal-')) {
     await injectTerminalLive(page);
-    await parkPointer(page);
+    if (scene.endsWith('-idle')) {
+      await page.evaluate(() => {
+        const col = document.querySelector('.col');
+        let row = col && col.__vueParentComponent;
+        while (row && row.type?.__name !== 'StudioRow') row = row.parent;
+        const sessions = row.setupState.terminal?.sessions;
+        const arr = sessions && 'value' in sessions ? sessions.value : sessions;
+        for (const s of arr || []) { s.hasRunningSubprocess = false; s.childCommandLabel = ''; }
+        const entries = row.setupState.studio.entries;
+        entries.value = entries.value.map((e) => ({ ...e }));
+      });
+      await parkPointer(page);
+    } else if (scene.endsWith('-hover')) {
+      await hoverHead(page);
+    } else if (scene.endsWith('-selection')) {
+      const body = page.locator('.terminal').first();
+      if (await body.count()) {
+        const box = await body.boundingBox();
+        if (box) {
+          await page.mouse.move(box.x + 12, box.y + 10);
+          await page.mouse.down();
+          await page.mouse.move(box.x + 180, box.y + 10, { steps: 8 });
+          await page.mouse.up();
+        }
+      }
+    } else {
+      await parkPointer(page);
+    }
     return;
   }
   const meter = {

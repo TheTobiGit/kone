@@ -314,24 +314,21 @@ fn main() {
             }),
             ("studio-column-head-terminal-live", |s| {
                 studio_column_head(s);
-                s.studio.terminal_command = Some("npm run dev".into());
-                s.studio.terminal_running = true;
-                s.studio.terminal_child = Some("npm run dev".into());
-                s.studio.terminal_cursor_visible = true;
-                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[1;32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
+                studio_terminal_fixture(s, true);
             }),
             ("studio-column-head-terminal-idle", |s| {
                 studio_column_head(s);
-                s.studio.terminal_command = Some(String::new());
-                s.studio.terminal_cursor_visible = true;
-                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[1;32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
+                studio_terminal_fixture(s, false);
             }),
             ("studio-column-head-terminal-hover", |s| {
                 studio_column_head(s);
-                s.studio.terminal_command = Some(String::new());
-                s.studio.terminal_cursor_visible = true;
-                s.studio.terminal_output = "kone terminal (dev mock)\r\n$ $ echo 'Kone terminal parity'\r\nKone terminal parity\r\nANSI: \x1b[1;31merror\x1b[0m  \x1b[1;32mready\x1b[0m  \x1b[38;5;81m256-color\x1b[0m\r\nBackground: \x1b[48;5;236m slate \x1b[0m  wrap follows on the next row\r\n$ ".into();
+                studio_terminal_fixture(s, false);
                 s.studio_column_hover = Some("review-one".into());
+            }),
+            ("studio-column-head-terminal-selection", |s| {
+                studio_column_head(s);
+                studio_terminal_fixture(s, false);
+                s.studio.selection_fixture_pending = true;
             }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);
@@ -549,6 +546,21 @@ fn studio_column_head(s: &mut AppState) {
     });
     s.studio.title = "Review thread".into();
     s.studio.worktree_path = Some("/tmp/kone-review-worktree".into());
+}
+
+fn studio_terminal_fixture(s: &mut AppState, running: bool) {
+    s.studio.terminal_command = Some(if running { "npm run dev".into() } else { String::new() });
+    s.studio.terminal_running = running;
+    s.studio.terminal_child = running.then(|| "npm run dev".into());
+    s.studio.terminal_cursor_visible = false;
+    s.studio.terminal_output = "kone terminal (dev mock)\r\n$ ".into();
+    if let Some(pane) = s.studio_threads.get_mut("review-one") {
+        pane.terminal_command = s.studio.terminal_command.clone();
+        pane.terminal_running = s.studio.terminal_running;
+        pane.terminal_child = s.studio.terminal_child.clone();
+        pane.terminal_cursor_visible = false;
+        pane.terminal_output = s.studio.terminal_output.clone();
+    }
 }
 
 /// Conversation captures share the exact block text used by the Electron fixture.
