@@ -1565,7 +1565,7 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
     let mut card = col()
         .w(384.0)
         .radius(22.0)
-        .fill(if t.dark { t.ground } else { t.sunken })
+        .fill(t.raised)
         .border(1.0, t.line_soft)
         .child(row().child(rail).child(content))
         .child(
@@ -2762,8 +2762,10 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 let mut footer =
                     row()
                         .center_y()
-                        .opacity(if fixture { 0.4 } else { 1.0 })
-                        .gap(2.0)
+                        // Electron's settled footer stays at 0.92 opacity;
+                        // the picker scrim provides the remaining dimming.
+                        .opacity(if fixture { 0.92 } else { 1.0 })
+                        .gap(0.0)
                         .mt(if is_activity { 0.0 } else { -7.0 })
                         .min_h(24.0)
                         .child(
