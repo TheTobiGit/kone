@@ -931,7 +931,7 @@ pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: run
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
-fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
+fn terminal_line(value: &str, t: Palette) -> El {
     let mut output = String::with_capacity(value.len());
     let bytes = value.as_bytes();
     let mut cursor = 0;
@@ -1015,7 +1015,11 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
         let Some(ch) = value[cursor..].chars().next() else {
             break;
         };
-        if !ch.is_control() || ch == '\t' {
+        if ch == '\u{f8ff}' {
+            let cursor_start = output.len();
+            output.push('▏');
+            spans.push(Span::new(cursor_start, output.len()).color(t.accent));
+        } else if !ch.is_control() || ch == '\t' {
             output.push(ch);
         }
         cursor += ch.len_utf8();
@@ -1034,11 +1038,6 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
             span = span.bg(background, 0.0);
         }
         spans.push(span);
-    }
-    if show_cursor {
-        let cursor_start = output.len();
-        output.push('▏');
-        spans.push(Span::new(cursor_start, output.len()).color(t.accent));
     }
     let mut line = text(output)
         // xterm uses fontSize 13 × lineHeight 1.2 (15.6 CSS px).
@@ -2249,18 +2248,15 @@ fn studio_row(
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0).selection_group(true);
+                let cursor_visible = focused && s.studio.terminal_cursor_visible;
                 let lines = crate::terminal::screen_lines(
                     &terminal.terminal_output,
                     terminal.terminal_cols.max(80) as usize,
                     300,
+                    cursor_visible,
                 );
-                let last_line = lines.len().saturating_sub(1);
-                for (index, line) in lines.into_iter().enumerate() {
-                    output = output.child(terminal_line(
-                        &line,
-                        t,
-                        focused && index == last_line && s.studio.terminal_cursor_visible,
-                    ));
+                for line in lines {
+                    output = output.child(terminal_line(&line, t));
                 }
                 if let Some(code) = terminal.terminal_exit_code {
                     output = output.child(

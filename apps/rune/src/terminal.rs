@@ -9,7 +9,12 @@ struct Cell {
 }
 
 /// Materialize a terminal's scrollback as rows, applying VT cursor and erase commands.
-pub fn screen_lines(input: &str, columns: usize, limit: usize) -> Vec<String> {
+pub fn screen_lines(
+    input: &str,
+    columns: usize,
+    limit: usize,
+    cursor_visible: bool,
+) -> Vec<String> {
     let columns = columns.clamp(2, 1000);
     let mut rows = vec![vec![Cell::default(); columns]];
     let (mut x, mut y, mut saved_x, mut saved_y) = (0usize, 0usize, 0usize, 0usize);
@@ -241,13 +246,19 @@ pub fn screen_lines(input: &str, columns: usize, limit: usize) -> Vec<String> {
             };
             let mut out = String::new();
             let mut style = String::new();
-            for cell in row.into_iter().take(end) {
+            for (column, cell) in row.into_iter().take(end).enumerate() {
+                if cursor_visible && row_index == y && column == x {
+                    out.push('\u{f8ff}');
+                }
                 if cell.sgr != style {
                     out.push_str("\x1b[0m");
                     out.push_str(&cell.sgr);
                     style = cell.sgr;
                 }
                 out.push(if cell.ch == '\0' { ' ' } else { cell.ch });
+            }
+            if cursor_visible && row_index == y && x >= end {
+                out.push('\u{f8ff}');
             }
             if !style.is_empty() {
                 out.push_str("\x1b[0m");
@@ -263,17 +274,25 @@ mod tests {
 
     #[test]
     fn carriage_return_and_erase_rewrite_the_current_row() {
-        assert_eq!(screen_lines("hello\r\x1b[Kready", 20, 20), ["ready"]);
+        assert_eq!(screen_lines("hello\r\x1b[Kready", 20, 20, false), ["ready"]);
     }
 
     #[test]
     fn cursor_addressing_and_cell_wrapping_are_applied() {
-        assert_eq!(screen_lines("ab\x1b[1;4HXY", 4, 20), ["ab X", "Y"]);
+        assert_eq!(screen_lines("ab\x1b[1;4HXY", 4, 20, false), ["ab X", "Y"]);
+    }
+
+    #[test]
+    fn cursor_is_rendered_at_the_vt_column() {
+        assert_eq!(
+            screen_lines("hello\x1b[1;2H", 20, 20, true),
+            ["h\u{f8ff}ello"]
+        );
     }
 
     #[test]
     fn sgr_is_retained_per_cell_and_reset_for_later_text() {
-        let rows = screen_lines("\x1b[1;31mred\x1b[0;32mgreen", 20, 20);
+        let rows = screen_lines("\x1b[1;31mred\x1b[0;32mgreen", 20, 20, false);
         assert_eq!(rows, ["\x1b[0m\x1b[1;31mred\x1b[0m\x1b[32mgreen\x1b[0m"]);
     }
 }
