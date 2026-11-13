@@ -1,4 +1,6 @@
-use rune::{Cx, El, Family, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row, text, text_input};
+use rune::{
+    Curve, Cx, El, Family, Icon, ScrollSpec, Span, TextStyle, col, el, icon, row, text, text_input,
+};
 
 use crate::{
     state::{AppState, StudioState},
@@ -215,6 +217,26 @@ static PICKER_SEARCH: Icon = Icon {
     name: "studio-picker-search",
     view: 24.0,
     body: r#"<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
+static INSERT_THREAD: Icon = Icon {
+    name: "studio-insert-thread",
+    view: 24.0,
+    body: r#"<path d="M7 18.5L4.5 20V6.5C4.5 5.11929 5.61929 4 7 4H17C18.3807 4 19.5 5.11929 19.5 6.5V15C19.5 16.3807 18.3807 17.5 17 17.5H8.5L7 18.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8H16M8 12H13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+};
+static INSERT_TERMINAL: Icon = Icon {
+    name: "studio-insert-terminal",
+    view: 24.0,
+    body: r#"<path d="M4 5.5C4 4.67157 4.67157 4 5.5 4H18.5C19.3284 4 20 4.67157 20 5.5V18.5C20 19.3284 19.3284 20 18.5 20H5.5C4.67157 20 4 19.3284 4 18.5V5.5Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.5 9L10 11L7.5 13M12 14H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+static INSERT_SCRATCHPAD: Icon = Icon {
+    name: "studio-insert-scratchpad",
+    view: 24.0,
+    body: r#"<path d="M7 3.5H15L19 7.5V19C19 20.1046 18.1046 21 17 21H7C5.89543 21 5 20.1046 5 19V5.5C5 4.39543 5.89543 3.5 7 3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14.5 4V8H18.5M8 12H16M8 16H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+};
+static ARROW_RIGHT: Icon = Icon {
+    name: "studio-arrow-right",
+    view: 24.0,
+    body: r#"<path d="M5 12H19M13 6L19 12L13 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 fn brand_mark(provider: &str, t: Palette) -> El {
@@ -788,7 +810,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .models
         .get(state.model_index)
         .map(|m| m.label.clone())
-        .unwrap_or_else(|| "Default".into());
+        .unwrap_or_else(|| "Default model".into());
     let name_row = if state.title_editing {
         row()
             .w_full()
@@ -833,6 +855,17 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     }
     if let Some(source) = &state.handoff_source {
         rows = rows.child(info_row("Handed off", format!("From {source}")));
+    }
+    if !state.project_path.is_empty() {
+        let repo = std::path::Path::new(&state.project_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&state.project_path)
+            .to_owned();
+        rows = rows
+            .child(label("PROJECT", 10.0, 600.0, t.muted).mt(10.0))
+            .child(info_row("Repo", repo.clone()))
+            .child(info_row("Folder", repo));
     }
     rows = rows.child(label("USAGE", 10.0, 600.0, t.muted).mt(10.0));
     if let Some((used, window)) = state.context_usage {
@@ -899,17 +932,30 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .on_press(|_: &mut AppState| {})
         .w(320.0)
         .radius(18.0)
-        .border(1.0, t.line)
+        .border(1.0, t.ink.alpha(0.08))
         .fill(t.ground)
-        .shadow(10.0, 28.0, rune::Color::BLACK.alpha(0.16))
+        .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.16))
+        .offset_motion(Curve::tween(
+            0.18,
+            rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+        ))
         .child(
             row()
                 .w_full()
                 .h(42.0)
                 .px(15.0)
                 .center_y()
+                .gap(12.0)
                 .fill(t.raised)
-                .child(label("Details", 13.0, 600.0, t.ink_soft)),
+                .child(label("Details", 13.0, 600.0, t.ink_soft))
+                .child(label("Inbox", 13.0, 400.0, t.muted).grow(1.0))
+                .child(if let Some(status) = &state.info_status {
+                    label(format!("● {status}"), 11.5, 500.0, t.accent)
+                } else if state.busy {
+                    label("● Working", 11.5, 500.0, t.accent)
+                } else {
+                    el()
+                }),
         )
         .child(rows)
 }
@@ -1066,9 +1112,15 @@ fn terminal_line(value: &str, t: Palette) -> El {
     let mut line = text(output)
         // Chromium resolves ui-monospace to Menlo on macOS; the reference
         // measures 13px glyphs on an 18px xterm cell pitch.
-        .font(TextStyle::new(13.0, 400.0)
-            .family(if cfg!(target_os = "macos") { Family::Named("Menlo") } else { Family::SystemMono })
-            .lh(18.0))
+        .font(
+            TextStyle::new(13.0, 400.0)
+                .family(if cfg!(target_os = "macos") {
+                    Family::Named("Menlo")
+                } else {
+                    Family::SystemMono
+                })
+                .lh(18.0),
+        )
         .color(t.ink)
         .quarter_pixel_glyphs(cfg!(target_os = "macos"))
         .selectable(true)
@@ -1404,36 +1456,129 @@ fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
-    let mut nav = row().center_y().gap(4.0).offset(8.0, 12.0);
-    for (index, project) in s.projects.iter().enumerate() {
-        let has_row = s.studio_layout["rows"]
-            .as_array()
-            .is_some_and(|rows| rows.iter().any(|r| r["projectPath"] == project.path));
-        if !has_row && Some(index) != s.selected_project {
-            continue;
-        }
-        let path = project.path.clone();
+    let current = s.selected_project.unwrap_or(0);
+    let project = s.projects.get(current);
+    let mut nav = row().w_full().h(32.0).px(32.0).justify_end().center_y();
+    if let Some(project) = project {
+        let name = project.name.clone();
+        let has_destinations = s.projects.len() > 1;
         nav = nav.child(
-            el().key(format!("studio-row-{index}"))
-                .px(8.0)
-                .h(26.0)
-                .center()
-                .radius(8.0)
+            row()
+                .key("studio-project-switch-trigger")
+                .h(25.0)
+                .px(7.0)
+                .center_y()
+                .radius(6.0)
                 .hover(t.hover)
                 .child(
-                    text(project.name.clone())
-                        .font(
-                            TextStyle::new(12.5, 400.0)
-                                .family(Family::Named("Geist"))
-                                .tracking(-0.125),
-                        )
-                        .color(t.muted),
+                    text(name)
+                        .font(TextStyle::new(12.5, 500.0).tracking(-0.125))
+                        .color(if s.studio_project_menu_open {
+                            t.ink
+                        } else {
+                            t.muted
+                        }),
                 )
-                .on_press_tx(move |s: &mut AppState, tx| {
-                    s.select_studio_project(index);
-                    tx.scroll_into_view(format!("studio-row-slot-{path}"));
+                .on_hover_change(|s: &mut AppState, over, _| {
+                    if over {
+                        s.studio_project_menu_open = true;
+                    }
+                })
+                .on_press(move |s: &mut AppState| {
+                    if has_destinations {
+                        s.studio_project_menu_open = true;
+                        s.studio_project_selection = 0;
+                    }
                 }),
         );
+        if s.studio_project_menu_open {
+            let mut menu = col()
+                .key("studio-project-switch-menu")
+                .w(176.0)
+                .px(4.0)
+                .py(4.0)
+                .gap(1.0)
+                .radius(12.0)
+                .border(1.0, t.ink.alpha(0.07))
+                .fill(t.ground)
+                .shadow(8.0, 24.0, rune::Color::BLACK.alpha(0.14))
+                .offset_motion(Curve::tween(
+                    0.18,
+                    rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+                ));
+            for (position, (index, destination)) in s
+                .projects
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != current)
+                .enumerate()
+            {
+                let target = index;
+                let project_path = destination.path.clone();
+                let pane_count = s.studio_layout["rows"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|entry| entry["projectPath"] == destination.path)
+                    .and_then(|entry| entry["panes"].as_array())
+                    .map_or(0, Vec::len);
+                let row = row()
+                    .key(format!("studio-project-switch-{index}"))
+                    .w_full()
+                    .h(34.0)
+                    .px(10.0)
+                    .center_y()
+                    .radius(8.0)
+                    .hover(t.hover)
+                    .fill(if s.studio_project_selection == position {
+                        t.hover
+                    } else {
+                        t.ground
+                    })
+                    .child(
+                        label(destination.name.clone(), 12.5, 500.0, t.ink)
+                            .truncate()
+                            .grow(1.0),
+                    )
+                    .child(label(
+                        if pane_count == 0 {
+                            "—".into()
+                        } else {
+                            pane_count.to_string()
+                        },
+                        10.0,
+                        400.0,
+                        t.muted,
+                    ))
+                    .on_hover_change(move |s: &mut AppState, over, _| {
+                        if over {
+                            s.studio_project_selection = position;
+                        }
+                    })
+                    .on_press(move |s: &mut AppState| {
+                        s.studio_project_menu_open = false;
+                        s.select_studio_project(target);
+                        let focused = s.studio_layout["rows"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|row| row["projectPath"] == project_path)
+                            .and_then(|row| row["focusedId"].as_str())
+                            .map(str::to_owned);
+                        if let Some(thread) = focused {
+                            s.open_studio_thread(thread);
+                        }
+                    });
+                menu = menu.child(row);
+            }
+            let menu_x = (s.studio_viewport.0 - 240.0).max(8.0);
+            nav = nav.child(
+                el().size(8192.0, 8192.0)
+                    .absolute(-4096.0, -4096.0)
+                    .on_press(|s: &mut AppState| s.studio_project_menu_open = false),
+            );
+            nav = nav.child(menu.absolute(menu_x, 31.0).raise());
+        }
     }
     nav
 }
@@ -1630,17 +1775,18 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .selected_project
         .and_then(|index| s.projects.get(index))
         .map(|project| project.path.as_str());
-    let focused_width = s
-        .studio_layout["rows"]
+    let focused_width = s.studio_layout["rows"]
         .as_array()
         .and_then(|rows| {
-            rows.iter().find(|row| row["projectPath"].as_str() == focused_path)
+            rows.iter()
+                .find(|row| row["projectPath"].as_str() == focused_path)
         })
         .and_then(|row| row["panes"].as_array())
         .and_then(|panes| panes.first())
         .and_then(|pane| pane["width"].as_u64())
         .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
-    if s.studio_column_hover.is_none() && !s.studio_header_hover
+    if s.studio_column_hover.is_none()
+        && !s.studio_header_hover
         && let Some(width) = focused_width
     {
         let left = ((viewport_w - 1292.0) / 2.0 + 156.0).max(8.0);
@@ -1655,7 +1801,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(icon(&CLOSE, 13.0).color(t.muted).offset(0.0, 1.0)),
         );
     }
-    plane.child(
+    let mut output = plane.child(
         row()
             .pin(Some(0.0), Some(27.2), None, None)
             .offset(0.5, 0.0)
@@ -1665,7 +1811,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .gap(6.0)
             .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
             .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
-    )
+    );
+    if s.conversation_search_open {
+        output = output.child(conversation_search_modal(s, t));
+    }
+    output
 }
 
 fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
@@ -2106,7 +2256,14 @@ fn studio_row(
             });
             let activity_hover = s.studio.conversation_fixture.as_deref() == Some("activity-hover");
             let head = row()
-                .offset(0.0, if state.is_some_and(|s| s.terminal_command.is_some()) { 0.5 } else { 0.0 })
+                .offset(
+                    0.0,
+                    if state.is_some_and(|s| s.terminal_command.is_some()) {
+                        0.5
+                    } else {
+                        0.0
+                    },
+                )
                 .w_full()
                 .px(6.4)
                 .h(33.59)
@@ -2150,7 +2307,11 @@ fn studio_row(
                 )
                 .child(
                     row()
-                        .gap(if state.is_some_and(|s| s.terminal_command.is_some()) { 0.0 } else { 8.0 })
+                        .gap(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                            0.0
+                        } else {
+                            8.0
+                        })
                         .h(20.0)
                         .center_y()
                         .child(if activity_fixture {
@@ -2185,7 +2346,11 @@ fn studio_row(
                             label("New thread", 13.5, 400.0, t.ink)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             text("Terminal")
-                                .mr(if state.is_some_and(|s| s.terminal_running) { 8.0 } else { 0.0 })
+                                .mr(if state.is_some_and(|s| s.terminal_running) {
+                                    8.0
+                                } else {
+                                    0.0
+                                })
                                 .font(
                                     TextStyle::new(13.5, 400.0)
                                         .family(Family::Named("Geist"))
@@ -2352,8 +2517,8 @@ fn studio_row(
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0).selection_group(true);
-                let fixture_transcript = terminal.terminal_output
-                    == "kone terminal (dev mock)\r\n$ ";
+                let fixture_transcript =
+                    terminal.terminal_output == "kone terminal (dev mock)\r\n$ ";
                 let cursor_visible =
                     focused && s.studio.terminal_cursor_visible && !fixture_transcript;
                 let terminal_cols = if terminal.terminal_cols == 0 {
@@ -2508,6 +2673,7 @@ fn studio_row(
                                 .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
                         )
                         .on_press(move |s: &mut AppState| {
+                            s.studio_insert_selection = 0;
                             s.studio_insert_menu = s
                                 .studio_seam_bounds
                                 .get(&press_key)
@@ -2578,6 +2744,7 @@ fn studio_row(
                             .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
                     )
                     .on_press(move |s: &mut AppState| {
+                        s.studio_insert_selection = 0;
                         s.studio_insert_menu = s
                             .studio_seam_bounds
                             .get(&press_key)
@@ -2743,6 +2910,12 @@ fn studio_row(
     if let Some((menu_path, index, bounds)) = &s.studio_insert_menu
         && *menu_path == path
     {
+        let blank_thread_open = count == 1
+            && !s
+                .studio
+                .items
+                .iter()
+                .any(|item| item.kind == "user" && !item.text.trim().is_empty());
         let index = *index;
         let x = if index == 0 {
             bounds[0] + bounds[2] + 8.0
@@ -2750,18 +2923,37 @@ fn studio_row(
             bounds[0] - 192.0
         };
         let y = bounds[1] + bounds[3] / 2.0 - 75.0;
-        let mut menu = col().w(184.0).radius(18.0).fill(t.raised).child(
-            el().w_full()
-                .h(38.0)
-                .px(16.0)
-                .center_y()
-                .fill(t.sunken)
-                .child(label("Insert", 13.0, 400.0, t.ink_soft)),
+        result = result.child(
+            el().size(8192.0, 8192.0)
+                .absolute(-4096.0, -4096.0)
+                .on_press(|s: &mut AppState| s.studio_insert_menu = None),
         );
-        for (row_index, (symbol, title)) in
-            [("◯", "New thread"), ("›_", "Terminal"), ("▤", "Scratchpad")]
-                .into_iter()
-                .enumerate()
+        let mut menu = col()
+            .key("studio-thread-insert-menu")
+            .w(184.0)
+            .radius(18.0)
+            .border(1.0, t.ink.alpha(0.08))
+            .fill(t.raised)
+            .shadow(0.0, 10.0, rune::Color::BLACK.alpha(0.14))
+            .offset_motion(Curve::tween(
+                0.18,
+                rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+            ))
+            .child(
+                el().w_full()
+                    .h(38.0)
+                    .px(16.0)
+                    .center_y()
+                    .fill(t.sunken)
+                    .child(label("Insert", 13.0, 600.0, t.ink_soft)),
+            );
+        for (row_index, (glyph, title)) in [
+            (&INSERT_THREAD, "New thread"),
+            (&INSERT_TERMINAL, "Terminal"),
+            (&INSERT_SCRATCHPAD, "Scratchpad"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let mut action = row()
                 .w_full()
@@ -2769,12 +2961,21 @@ fn studio_row(
                 .px(12.0)
                 .gap(8.0)
                 .center_y()
-                .child(label(symbol, 14.0, 400.0, t.muted))
-                .child(label(title, 13.0, 400.0, t.ink_soft).grow(1.0))
-                .child(label("›", 14.0, 400.0, t.muted));
-            if row_index == 0 && !(count == 1 && s.studio.items.is_empty()) {
+                .child(icon(glyph, 14.0).color(t.muted))
+                .child(label(title, 13.0, 500.0, t.ink_soft).grow(1.0))
+                .child(icon(&ARROW_RIGHT, 11.0).color(t.muted));
+            action = action.on_hover_change(move |s: &mut AppState, over, _| {
+                if over {
+                    s.studio_insert_selection = row_index;
+                }
+            });
+            if row_index == 0 && !blank_thread_open {
                 action = action
                     .hover(t.hover)
+                    .hover_motion(
+                        Curve::tween(0.18, rune::Easing::cubic(0.22, 1.0, 0.36, 1.0)),
+                        Curve::tween(0.18, rune::Easing::cubic(0.22, 1.0, 0.36, 1.0)),
+                    )
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.studio_insert_menu = None;
                         s.select_studio_project(project_index);
@@ -2784,6 +2985,10 @@ fn studio_row(
             } else if row_index == 1 {
                 action = action
                     .hover(t.hover)
+                    .hover_motion(
+                        Curve::tween(0.18, rune::Easing::cubic(0.22, 1.0, 0.36, 1.0)),
+                        Curve::tween(0.18, rune::Easing::cubic(0.22, 1.0, 0.36, 1.0)),
+                    )
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.studio_insert_menu = None;
                         s.select_studio_project(project_index);
@@ -2793,11 +2998,137 @@ fn studio_row(
             } else {
                 action = action.opacity(0.38);
             }
+            if s.studio_insert_selection == row_index
+                && row_index < 2
+                && !(row_index == 0 && blank_thread_open)
+            {
+                action = action.fill(t.hover);
+            }
             menu = menu.child(action);
         }
         result = result.child(menu.absolute(x.max(0.0), y.max(0.0)));
     }
     result
+}
+
+fn conversation_search_modal(s: &AppState, t: Palette) -> El {
+    let query = s.conversation_search.text.trim().to_lowercase();
+    let mut matches: Vec<(String, String, String)> = Vec::new();
+    for (id, thread) in std::iter::once((&s.studio.thread_id, &s.studio))
+        .chain(s.studio_threads.iter())
+        .filter(|_| !query.is_empty())
+    {
+        let title = if thread.title.is_empty() {
+            "New thread"
+        } else {
+            &thread.title
+        };
+        for item in &thread.items {
+            if item.text.is_empty()
+                || (!query.is_empty() && !item.text.to_lowercase().contains(&query))
+            {
+                continue;
+            }
+            matches.push((id.clone(), title.to_owned(), item.text.clone()));
+        }
+    }
+    let mut card = col()
+        .key("conversation-search-card")
+        .w(512.0)
+        .radius(16.0)
+        .border(1.0, t.ink.alpha(0.08))
+        .fill(t.raised)
+        .shadow(0.0, 28.0, rune::Color::BLACK.alpha(0.2))
+        .child(
+            row()
+                .w_full()
+                .h(50.0)
+                .px(16.0)
+                .center_y()
+                .gap(12.0)
+                .child(icon(&PICKER_SEARCH, 18.0).color(t.muted))
+                .child(
+                    text_input(&s.conversation_search, TextStyle::new(14.0, 400.0))
+                        .key("conversation-search-input")
+                        .w(390.0)
+                        .h(40.0)
+                        .color(t.ink)
+                        .placeholder("Search across all conversations…", t.muted)
+                        .on_edit(|s: &mut AppState| &mut s.conversation_search),
+                )
+                .child(
+                    el().key("conversation-search-close")
+                        .w(24.0)
+                        .h(24.0)
+                        .center()
+                        .radius(6.0)
+                        .hover(t.hover)
+                        .child(icon(&CLOSE, 14.0).color(t.muted))
+                        .on_press(|s: &mut AppState| s.conversation_search_open = false),
+                ),
+        )
+        .child(el().w_full().h(1.0).fill(t.line));
+    if query.is_empty() {
+        card = card.child(el().w_full().h(64.0).px(18.0).center_y().child(label(
+            "Type to search every conversation — prompts and replies.",
+            12.5,
+            400.0,
+            t.muted,
+        )));
+    } else if matches.is_empty() {
+        card = card.child(el().w_full().h(64.0).px(18.0).center_y().child(label(
+            "No matching messages",
+            12.5,
+            400.0,
+            t.muted,
+        )));
+    } else {
+        for (index, (thread_id, title, snippet)) in matches.iter().take(5).enumerate() {
+            let id = thread_id.clone();
+            card = card.child(
+                col()
+                    .key(format!("conversation-search-result-{index}"))
+                    .w_full()
+                    .h(58.0)
+                    .px(16.0)
+                    .py(8.0)
+                    .gap(4.0)
+                    .radius(9.0)
+                    .hover(t.hover)
+                    .fill(if index == s.conversation_search_selection {
+                        t.hover
+                    } else {
+                        t.raised
+                    })
+                    .child(label(title.clone(), 11.5, 550.0, t.muted))
+                    .child(label(snippet.clone(), 12.5, 400.0, t.ink_soft).truncate())
+                    .on_press(move |s: &mut AppState| {
+                        s.open_studio_thread(id.clone());
+                        s.conversation_search_open = false;
+                    }),
+            );
+        }
+    }
+    let card = card
+        .offset_motion(Curve::tween(
+            0.18,
+            rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+        ))
+        .child(
+            row().w_full().h(32.0).px(16.0).center_y().gap(12.0).child(
+                text("↑↓ navigate   ↵ open   esc close")
+                    .font(
+                        TextStyle::new(11.0, 400.0)
+                            .family(Family::SystemMono)
+                            .tracking(0.0),
+                    )
+                    .color(t.muted),
+            ),
+        );
+    el().key("conversation-search-overlay")
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .fill(rune::Color::BLACK.alpha(0.0))
+        .child(col().w_full().h_full().pt(102.0).items_center().child(card))
 }
 
 fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
@@ -4668,7 +4999,8 @@ mod tests {
             crate::studio_column_head(&mut state);
             crate::studio_terminal_fixture(&mut state, false);
             let fonts = rune::text::TextSystem::new(crate::FONTS, ("Geist", "Geist Mono"));
-            let mut rt = Runtime::with_text(state, view, (1292.0, 854.0), Env::new(dark, 2.0), fonts);
+            let mut rt =
+                Runtime::with_text(state, view, (1292.0, 854.0), Env::new(dark, 2.0), fonts);
             rt.frame(0.0);
             rt.frame(1.0 / 60.0);
             rt.pointer_down(283.0, 106.0);
@@ -4676,8 +5008,12 @@ mod tests {
             rt.pointer_up(322.0, 106.0);
             rt.frame(1.0 / 60.0);
             assert_eq!(rt.selected_text().as_deref(), Some("ermin"));
-            assert!(rt.instances.iter().any(|instance| instance.rect == [566.0, 196.0, 80.0, 36.0]),
-                "the highlight must occupy the same device-pixel cells as xterm");
+            assert!(
+                rt.instances
+                    .iter()
+                    .any(|instance| instance.rect == [566.0, 196.0, 80.0, 36.0]),
+                "the highlight must occupy the same device-pixel cells as xterm"
+            );
         }
     }
 
@@ -4706,6 +5042,7 @@ mod tests {
             },
         ];
         s.selected_project = Some(0);
+        s.studio_project_menu_open = true;
         s.studio.project_path = "/first".into();
         s.studio.thread_id = "a".into();
         s.studio.thread_open = true;
@@ -4726,7 +5063,7 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.find("studio-row-slot-/first").is_some());
         assert!(rt.find("studio-row-slot-/second").is_some());
-        let (x, y) = rt.find("studio-row-1").unwrap();
+        let (x, y) = rt.find("studio-project-switch-1").unwrap();
         rt.pointer_move(x, y);
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);

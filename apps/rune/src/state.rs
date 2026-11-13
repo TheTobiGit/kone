@@ -107,6 +107,12 @@ pub struct AppState {
     pub studio_seam_hover: Option<String>,
     pub studio_seam_bounds: std::collections::HashMap<String, [f32; 4]>,
     pub studio_insert_menu: Option<(String, usize, [f32; 4])>,
+    pub studio_insert_selection: usize,
+    pub studio_project_menu_open: bool,
+    pub studio_project_selection: usize,
+    pub conversation_search_open: bool,
+    pub conversation_search: TextEdit,
+    pub conversation_search_selection: usize,
     pub studio_under_page: Page,
     pub studio_fade: Option<(std::time::Instant, bool)>,
     pub studio_refusal: Option<std::time::Instant>,
@@ -174,6 +180,7 @@ pub struct StudioState {
     /// button is frozen visible there (see the per-scene setup in `main`).
     pub fixture_cb_copy: Option<usize>,
     pub title: String,
+    pub info_status: Option<String>,
     pub connected_identity: Option<StudioIdentity>,
     pub side_chat: bool,
     pub head_tooltip: Option<String>,
@@ -1105,6 +1112,111 @@ impl AppState {
             tx.clear_text_selection();
             return true;
         }
+        if s.conversation_search_open {
+            match event.key {
+                rune::Key::Escape => {
+                    s.conversation_search_open = false;
+                    s.conversation_search.clear();
+                    return true;
+                }
+                rune::Key::Up | rune::Key::Down => {
+                    let delta = if event.key == rune::Key::Down { 1 } else { -1 };
+                    s.conversation_search_selection = s
+                        .conversation_search_selection
+                        .saturating_add_signed(delta)
+                        .min(4);
+                    return true;
+                }
+                rune::Key::Enter => {
+                    let query = s.conversation_search.text.trim().to_lowercase();
+                    let selected = std::iter::once((&s.studio.thread_id, &s.studio))
+                        .chain(s.studio_threads.iter())
+                        .flat_map(|(id, thread)| {
+                            thread
+                                .items
+                                .iter()
+                                .filter(|item| {
+                                    !item.text.is_empty()
+                                        && item.text.to_lowercase().contains(&query)
+                                })
+                                .map(move |_| id.clone())
+                        })
+                        .nth(s.conversation_search_selection);
+                    if let Some(thread) = selected {
+                        s.open_studio_thread(thread);
+                    }
+                    s.conversation_search_open = false;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        if s.studio_project_menu_open {
+            match event.key {
+                rune::Key::Escape => {
+                    s.studio_project_menu_open = false;
+                    return true;
+                }
+                rune::Key::Up | rune::Key::Down => {
+                    let len = s.projects.len().saturating_sub(1);
+                    if len > 0 {
+                        s.studio_project_selection = if event.key == rune::Key::Down {
+                            (s.studio_project_selection + 1) % len
+                        } else {
+                            (s.studio_project_selection + len - 1) % len
+                        };
+                    }
+                    return true;
+                }
+                rune::Key::Enter => {
+                    let current = s.selected_project.unwrap_or(0);
+                    let target = (0..s.projects.len())
+                        .filter(|index| *index != current)
+                        .nth(s.studio_project_selection);
+                    s.studio_project_menu_open = false;
+                    if let Some(index) = target {
+                        s.select_studio_project(index);
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if s.studio_insert_menu.is_some() {
+            match event.key {
+                rune::Key::Up | rune::Key::Down => {
+                    s.studio_insert_selection = if event.key == rune::Key::Down {
+                        (s.studio_insert_selection + 1) % 3
+                    } else {
+                        (s.studio_insert_selection + 2) % 3
+                    };
+                    return true;
+                }
+                rune::Key::Enter => {
+                    if let Some((_, index, _)) = s.studio_insert_menu.take() {
+                        let blank_thread_open =
+                            s.studio_layout["rows"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|row| row["projectPath"] == s.studio.project_path)
+                                .and_then(|row| row["panes"].as_array())
+                                .is_some_and(|panes| panes.len() == 1)
+                                && !s.studio.items.iter().any(|item| {
+                                    item.kind == "user" && !item.text.trim().is_empty()
+                                });
+                        match s.studio_insert_selection {
+                            0 if !blank_thread_open => s.insert_studio_thread(index),
+                            1 => s.insert_studio_terminal(index),
+                            _ => {}
+                        }
+                    }
+                    s.studio_insert_selection = 0;
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if s.studio.handoff_picker
             && matches!(
                 event.key,
@@ -1366,6 +1478,15 @@ impl AppState {
             }
             if s.studio.context_open {
                 s.studio.context_open = false;
+                return true;
+            }
+            if s.conversation_search_open {
+                s.conversation_search_open = false;
+                s.conversation_search.clear();
+                return true;
+            }
+            if s.studio_project_menu_open {
+                s.studio_project_menu_open = false;
                 return true;
             }
             if s.studio_insert_menu.take().is_some() {
@@ -3165,6 +3286,57 @@ mod start_actions_tests {
         assert!(s.studio.composer_open);
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
         assert!(!s.studio.composer_open);
+    }
+
+    #[test]
+    fn studio_overlay_escape_closes_only_the_top_layer() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            ..Default::default()
+        };
+        s.studio.title_info_open = true;
+        s.conversation_search_open = true;
+        let esc = rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.conversation_search_open);
+        assert!(s.studio.title_info_open);
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.studio.title_info_open);
+    }
+
+    #[test]
+    fn studio_insert_menu_uses_arrow_selection_and_enter() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            ..Default::default()
+        };
+        s.projects.push(super::Project {
+            name: "kone".into(),
+            path: "/demo".into(),
+        });
+        s.selected_project = Some(0);
+        s.studio_layout_ready = true;
+        s.studio.project_path = "/demo".into();
+        s.studio_layout = serde_json::json!({"version":2,"rows":[{"projectPath":"/demo","focusedId":"thread","panes":[]}]});
+        s.studio_insert_menu = Some(("/demo".into(), 0, [20.0, 20.0, 14.0, 28.0]));
+        let down = rune::KeyEvent {
+            key: rune::Key::Down,
+            mods: rune::Mods::default(),
+        };
+        let enter = rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &down, &mut tx));
+        assert_eq!(s.studio_insert_selection, 1);
+        assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
+        assert!(s.studio_insert_menu.is_none());
+        assert_eq!(s.studio_layout["rows"][0]["panes"][0]["kind"], "terminal");
     }
 
     #[test]

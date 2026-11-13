@@ -93,6 +93,34 @@ fn main() {
             }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
+            ("studio-insert-menu", |s| {
+                studio_menus(s);
+                s.studio.composer_open = false;
+                s.studio_insert_menu = Some(("/demo".into(), 1, [1060.0, 419.0, 14.0, 28.0]));
+            }),
+            ("studio-project-switch", |s| {
+                studio_menus(s);
+                s.projects.push(state::Project {
+                    name: "nova".into(),
+                    path: "/review/nova".into(),
+                });
+                s.studio_project_menu_open = true;
+            }),
+            ("studio-thread-info", |s| {
+                studio_menus(s);
+                s.studio.title_info_open = true;
+            }),
+            ("studio-thread-info-rename", |s| {
+                studio_menus(s);
+                s.studio.title_info_open = true;
+                s.studio.title_editing = true;
+                s.studio.title_draft = rune::TextEdit::new(s.studio.title.clone());
+                s.studio.title_draft.focused = true;
+            }),
+            ("studio-conversation-search", |s| {
+                studio_menus(s);
+                s.conversation_search_open = true;
+            }),
             ("studio-convo-mid", |s| studio_conversation(s, "mid")),
             ("studio-convo-scrolled", |s| {
                 studio_conversation(s, "scrolled")
@@ -331,7 +359,6 @@ fn main() {
             ("studio-column-head-terminal-selection", |s| {
                 studio_column_head(s);
                 studio_terminal_fixture(s, false);
-
             }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);
@@ -551,8 +578,29 @@ fn studio_column_head(s: &mut AppState) {
     s.studio.worktree_path = Some("/tmp/kone-review-worktree".into());
 }
 
+fn studio_menus(s: &mut AppState) {
+    studio_column_head(s);
+    s.studio.title = "Studio menus review".into();
+    s.studio.project_path = "/Users/you/Developer/kone".into();
+    s.studio.worktree_path = None;
+    s.studio.models.clear();
+    s.studio.model_index = 0;
+    s.studio.effort = "Medium".into();
+    s.studio.info_status = Some("Working".into());
+    s.studio.context_usage = None;
+    s.studio.thread_id = "fc18a38a1234567890b551d7".into();
+    s.studio_layout["rows"][0]["focusedId"] = serde_json::json!(s.studio.thread_id);
+    s.studio_layout["rows"][0]["panes"][0]["id"] = serde_json::json!(s.studio.thread_id);
+    s.studio_layout["rows"][0]["panes"][0]["anchor"]["threadId"] =
+        serde_json::json!(s.studio.thread_id);
+}
+
 fn studio_terminal_fixture(s: &mut AppState, running: bool) {
-    s.studio.terminal_command = Some(if running { "npm run dev".into() } else { String::new() });
+    s.studio.terminal_command = Some(if running {
+        "npm run dev".into()
+    } else {
+        String::new()
+    });
     s.studio.terminal_running = running;
     s.studio.terminal_child = running.then(|| "npm run dev".into());
     s.studio.terminal_cursor_visible = false;
@@ -818,6 +866,12 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
     }
     if s.launcher.mode.is_some() {
         return false;
+    }
+    if s.page == Page::Studio && event.is_command('f') {
+        s.conversation_search_open = !s.conversation_search_open;
+        s.conversation_search.clear();
+        s.conversation_search_selection = 0;
+        return true;
     }
     if s.page == Page::Studio && AppState::studio_key(s, event, tx) {
         return true;
