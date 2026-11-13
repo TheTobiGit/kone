@@ -242,6 +242,10 @@ pub struct StudioState {
     pub turn_interrupted: bool,
     pub turn_title: String,
     pub pending_send: Option<String>,
+    pub queued_turns: Vec<(String, String)>,
+    pub subagents: Vec<(String, String, String)>,
+    pub subagents_expanded: bool,
+    pub archive_notice: Option<String>,
     pub start_request: Option<u64>,
     pub send_request: Option<u64>,
     pub discover_request: Option<u64>,
@@ -1036,6 +1040,16 @@ impl AppState {
         if s.page != Page::Studio {
             return false;
         }
+        if s.studio.approval.is_some() {
+            if event.key == rune::Key::Enter {
+                s.answer_approval("allow-once");
+                return true;
+            }
+            if event.key == rune::Key::Escape {
+                s.answer_approval("reject-once");
+                return true;
+            }
+        }
         if s.studio.handoff_picker
             && matches!(
                 event.key,
@@ -1777,7 +1791,14 @@ impl AppState {
 
     pub fn send_studio(&mut self, tx: &mut rune::Tx) {
         let input = self.composer.text.trim().to_owned();
-        if input.is_empty() || self.studio.busy {
+        if input.is_empty() {
+            return;
+        }
+        if self.studio.busy {
+            if self.studio.started {
+                self.dispatch_studio_send(input);
+                self.composer.clear();
+            }
             return;
         }
         if !self.studio_layout_ready {
@@ -2307,6 +2328,40 @@ impl AppState {
             return;
         }
         match event["type"].as_str().unwrap_or("") {
+            "subagent.started" | "subagent.updated" | "subagent.completed" => {
+                let run = &event["subagent"];
+                if let Some(id) = run["toolUseId"].as_str() {
+                    let title = run["description"]
+                        .as_str()
+                        .or_else(|| run["agentType"].as_str())
+                        .unwrap_or("Subagent")
+                        .to_owned();
+                    let status = run["status"].as_str().unwrap_or("running").to_owned();
+                    if let Some(row) = self.studio.subagents.iter_mut().find(|row| row.0 == id) {
+                        *row = (id.to_owned(), title, status);
+                    } else {
+                        self.studio.subagents.push((id.to_owned(), title, status));
+                        self.studio.subagents_expanded = true;
+                    }
+                }
+            }
+            "turn.queued" => {
+                if let Some(id) = event["queueId"].as_str() {
+                    self.studio.queued_turns.retain(|row| row.0 != id);
+                    self.studio.queued_turns.push((
+                        id.to_owned(),
+                        event["input"]
+                            .as_str()
+                            .unwrap_or("Queued message")
+                            .to_owned(),
+                    ));
+                }
+            }
+            "turn.promoted" | "turn.queued-cancelled" => {
+                if let Some(id) = event["queueId"].as_str() {
+                    self.studio.queued_turns.retain(|row| row.0 != id);
+                }
+            }
             "thread.state.changed" if event["state"] == "compacted" => {
                 self.studio.context_usage = None;
                 self.studio.context_input = None;

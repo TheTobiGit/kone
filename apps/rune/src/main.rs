@@ -116,6 +116,67 @@ fn main() {
             ("studio-composer-open", |s| studio_composer(s, "open")),
             ("studio-composer-text", |s| studio_composer(s, "text")),
             ("studio-composer-running", |s| studio_composer(s, "running")),
+            ("studio-dock-approval", |s| {
+                studio_composer(s, "open");
+                s.studio.busy = true;
+                s.studio.approval = Some(state::StudioApproval {
+                    id: "approval-dock-1".into(),
+                    title: "Apply patch to src/main.rs".into(),
+                    detail: "The agent wants to update the Studio dock rendering and add keyboard handling.".into(),
+                });
+            }),
+            ("studio-dock-question", |s| {
+                studio_composer(s, "open");
+                s.studio.busy = true;
+                s.studio.question = Some(state::StudioQuestion {
+                    id: "question-dock-1".into(),
+                    questions: vec![state::StudioQuestionEntry {
+                        id: "scope".into(),
+                        prompt: "Choose the files to include in the change.".into(),
+                        options: vec!["Only the Rune UI".into(), "Rune UI and fixtures".into()],
+                        multi: false,
+                    }],
+                    index: 0,
+                    answers: Default::default(),
+                    selected: Vec::new(),
+                });
+            }),
+            ("studio-dock-subagent", |s| {
+                studio_composer(s, "open");
+                s.studio.busy = true;
+                s.studio.subagents = vec![
+                    (
+                        "delegate-running".into(),
+                        "Inspect dock implementation".into(),
+                        "running".into(),
+                    ),
+                    (
+                        "delegate-done".into(),
+                        "Measure composer alignment".into(),
+                        "completed".into(),
+                    ),
+                ];
+                s.studio.subagents_expanded = true;
+            }),
+            ("studio-dock-queue", |s| {
+                studio_composer(s, "open");
+                s.studio.busy = true;
+                s.studio.queued_turns = vec![
+                    (
+                        "queued-1".into(),
+                        "Add approval shortcuts to the overlay.".into(),
+                    ),
+                    (
+                        "queued-2".into(),
+                        "Check stacked thread docks after that.".into(),
+                    ),
+                ];
+            }),
+            ("studio-dock-selection", |s| {
+                studio_composer(s, "open");
+                s.studio.archive_notice =
+                    Some("This thread is still working and cannot be archived.".into());
+            }),
             ("studio-picker-model", |s| {
                 studio_composer(s, "picker-model");
                 s.studio.picker_open = true;
@@ -696,7 +757,7 @@ fn studio_composer(s: &mut AppState, scene: &str) {
             ..Default::default()
         });
     }
-    if scene.starts_with("picker-")
+    if (scene.starts_with("picker-") || scene.starts_with("dock-"))
         && let Some(user) = s.studio.items.iter_mut().find(|item| item.kind == "user")
     {
         user.text =

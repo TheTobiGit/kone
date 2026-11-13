@@ -1288,6 +1288,26 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
+    let plane = if let Some(notice) = &s.studio.archive_notice {
+        plane.child(
+            row()
+                .pin(Some(0.0), Some(18.0), Some(0.0), None)
+                .justify_center()
+                .child(
+                    row()
+                        .px(14.0)
+                        .h(36.0)
+                        .center_y()
+                        .radius(999.0)
+                        .border(1.0, t.line)
+                        .fill(t.sunken)
+                        .shadow(4.0, 18.0, rune::Color::BLACK.alpha(0.12))
+                        .child(label(notice.clone(), 12.5, 400.0, t.ink_soft)),
+                ),
+        )
+    } else {
+        plane
+    };
     if s.studio.picker_open {
         let scrim_progress = s.studio.picker_opened_at.map_or(1.0, |opened| {
             super::start_motion::bezier(
@@ -2238,6 +2258,124 @@ fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
         .child(transcript)
 }
 
+fn subagent_dock(s: &AppState, t: Palette) -> El {
+    let running = s
+        .studio
+        .subagents
+        .iter()
+        .filter(|row| matches!(row.2.as_str(), "starting" | "running"))
+        .count();
+    let mut card = col()
+        .w(288.0)
+        .padding(4.0)
+        .radius(18.0)
+        .border(1.0, t.ink.alpha(0.08))
+        .fill(t.raised_high);
+    let count = if running > 0 {
+        format!("{running}/{}", s.studio.subagents.len())
+    } else {
+        s.studio.subagents.len().to_string()
+    };
+    card = card.child(
+        row()
+            .key("subagents-toggle")
+            .w_full()
+            .h(34.0)
+            .px(10.0)
+            .center_y()
+            .gap(8.0)
+            .radius(12.0)
+            .hover(t.hover)
+            .child(label("Subagents", 12.5, 550.0, t.ink_soft))
+            .child(el().grow(1.0))
+            .child(label(count, 11.0, 500.0, t.muted))
+            .child(label(
+                if s.studio.subagents_expanded {
+                    "⌄"
+                } else {
+                    "›"
+                },
+                14.0,
+                500.0,
+                t.muted,
+            ))
+            .on_press(|s: &mut AppState| {
+                s.studio.subagents_expanded = !s.studio.subagents_expanded
+            }),
+    );
+    if s.studio.subagents_expanded {
+        let mut list = col()
+            .w_full()
+            .padding(4.0)
+            .radius(14.0)
+            .fill(t.ground)
+            .gap(2.0);
+        for (id, title, status) in &s.studio.subagents {
+            let live = matches!(status.as_str(), "starting" | "running");
+            list = list.child(
+                row()
+                    .key(format!("subagent-{id}"))
+                    .w_full()
+                    .min_h(38.0)
+                    .px(8.0)
+                    .center_y()
+                    .gap(8.0)
+                    .child(label(
+                        if live {
+                            "●"
+                        } else if status == "failed" {
+                            "×"
+                        } else {
+                            "✓"
+                        },
+                        11.0,
+                        600.0,
+                        if live { t.accent } else { t.muted },
+                    ))
+                    .child(
+                        col()
+                            .grow(1.0)
+                            .shrink()
+                            .child(label(title.clone(), 12.0, 500.0, t.ink_soft))
+                            .child(label(status.clone(), 10.5, 400.0, t.muted)),
+                    ),
+            );
+        }
+        card = card.child(list);
+    }
+    card
+}
+
+fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
+    let mut strip = col()
+        .w((width - 26.0).max(0.0))
+        .padding(8.0)
+        .pb(16.0)
+        .radius(18.0)
+        .fill(t.sunken)
+        .gap(2.0);
+    for (index, (id, input)) in s.studio.queued_turns.iter().enumerate() {
+        let cancel_id = id.clone();
+        let edit_id = id.clone();
+        let edit_input = input.clone();
+        strip = strip.child(row().key(format!("queue-{id}")).w_full().h(24.0).center_y().gap(7.0)
+            .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08)).child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
+            .child(label(input.clone(), 11.5, 450.0, t.ink).grow(1.0).shrink())
+            .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
+                .child(label("Edit", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                    s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
+                    s.composer.text = edit_input.clone();
+                    s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
+                    s.open_composer();
+                }))
+            .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
+                .child(label("Stop", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                    s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": cancel_id}));
+                })));
+    }
+    strip
+}
+
 fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32) -> El {
     let activity_plan = s.studio.conversation_fixture.as_deref() == Some("activity-plan");
     let show_closing = s.studio.composer_closing_at.is_some();
@@ -2364,36 +2502,70 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     } else if let Some(approval) = &s.studio.approval {
         col()
             .w_full()
-            .max_w(680.0)
-            .padding(18.0)
-            .gap(12.0)
-            .radius(20.0)
+            .max_w(384.0)
+            .gap(0.0)
+            .radius(18.0)
             .border(1.0, t.line)
-            .fill(t.raised_high)
-            .child(label("Approval requested", 12.0, 600.0, t.muted))
-            .child(label(approval.title.clone(), 14.0, 600.0, t.ink))
-            .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft))
+            .fill(t.ground)
+            .child(row().w_full().h(34.0).px(16.0).center_y().child(label(
+                "⚒  Tool call",
+                12.0,
+                600.0,
+                t.ink_soft,
+            )))
+            .child(
+                col()
+                    .w_full()
+                    .padding(12.0)
+                    .gap(8.0)
+                    .radius(14.0)
+                    .fill(t.raised_high)
+                    .child(label(approval.title.clone(), 14.0, 600.0, t.ink))
+                    .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft)),
+            )
             .child(
                 row()
-                    .gap(8.0)
+                    .w_full()
+                    .h(38.0)
+                    .px(14.0)
+                    .center_y()
+                    .gap(10.0)
                     .child(
                         el().key("approval-reject")
-                            .px(14.0)
-                            .h(32.0)
+                            .px(4.0)
+                            .h(28.0)
                             .center()
-                            .radius(9.0)
                             .hover(t.hover)
-                            .child(label("Decline", 12.5, 500.0, t.ink_soft))
+                            .child(label("Reject", 12.0, 600.0, t.danger))
                             .on_press(|s: &mut AppState| s.answer_approval("reject-once")),
                     )
                     .child(
-                        el().key("approval-allow")
-                            .px(14.0)
-                            .h(32.0)
+                        el().key("approval-reject-stop")
+                            .px(4.0)
+                            .h(28.0)
                             .center()
-                            .radius(9.0)
+                            .hover(t.hover)
+                            .child(label("Reject and stop", 12.0, 600.0, t.danger))
+                            .on_press(|s: &mut AppState| s.answer_approval("reject-and-stop")),
+                    )
+                    .child(el().grow(1.0))
+                    .child(
+                        el().key("approval-allow-always")
+                            .px(4.0)
+                            .h(28.0)
+                            .center()
+                            .hover(t.hover)
+                            .child(label("Always allow", 12.0, 600.0, t.muted))
+                            .on_press(|s: &mut AppState| s.answer_approval("allow-always")),
+                    )
+                    .child(
+                        el().key("approval-allow")
+                            .px(10.0)
+                            .h(28.0)
+                            .center()
+                            .radius(7.0)
                             .fill(t.accent)
-                            .child(label("Allow once", 12.5, 500.0, t.accent_ink))
+                            .child(label("Allow", 12.0, 600.0, t.accent_ink))
                             .on_press(|s: &mut AppState| s.answer_approval("allow-once")),
                     ),
             )
@@ -2401,7 +2573,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
         let question = &request.questions[request.index];
         let mut card = col()
             .w_full()
-            .max_w(680.0)
+            .max_w(384.0)
             .padding(18.0)
             .gap(12.0)
             .radius(20.0)
@@ -2476,6 +2648,11 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
         col()
             .w(track_w)
             .items_center()
+            .child(if s.studio.queued_turns.is_empty() {
+                el()
+            } else {
+                queue_strip(s, track_w, t).mb(-10.0)
+            })
             .child(super::composer::composer_dock(s, name, track_w, t))
     } else {
         wake_orb()
@@ -3382,6 +3559,20 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 .px(16.0)
                 .justify_center()
                 .child(wake_orb())
+        } else {
+            el()
+        })
+        .child(if !activity_plan && !s.studio.subagents.is_empty() {
+            row()
+                .pin(
+                    Some(0.0),
+                    None,
+                    Some(0.0),
+                    Some(if s.studio.composer_open { 230.0 } else { 12.0 }),
+                )
+                .px(12.0)
+                .justify_end()
+                .child(subagent_dock(s, t))
         } else {
             el()
         })
