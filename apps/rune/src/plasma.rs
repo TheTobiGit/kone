@@ -138,6 +138,7 @@ pub fn slot(s: &AppState, cx: &rune::Cx<AppState>, glow: f32) -> rune::El {
     let art = rune::effect(0x504c)
         .effect_data([if cx.system_dark() { 1.0 } else { 0.0 }, glow, 0.0, 0.0])
         .h(height)
+        .offset(0.0, 36.0)
         .pin(Some(0.0), None, Some(0.0), Some(0.0));
     if s.art_focused {
         // The shader changes its pixels; this clock only schedules bounded GPU frames.

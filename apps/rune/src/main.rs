@@ -96,10 +96,13 @@ fn main() {
             ("studio-insert-menu", |s| {
                 studio_menus(s);
                 s.studio.composer_open = false;
-                s.studio_insert_menu = Some(("/demo".into(), 1, [1060.0, 419.0, 14.0, 28.0]));
+                s.studio_insert_menu =
+                    Some(("/demo".into(), usize::MAX, [1060.0, 419.0, 14.0, 28.0]));
             }),
             ("studio-project-switch", |s| {
                 studio_menus(s);
+                s.studio_column_hover = Some(s.studio.thread_id.clone());
+                s.studio_project_selection = usize::MAX;
                 s.projects.push(state::Project {
                     name: "nova".into(),
                     path: "/review/nova".into(),
@@ -581,6 +584,8 @@ fn studio_column_head(s: &mut AppState) {
 
 fn studio_menus(s: &mut AppState) {
     studio_column_head(s);
+    // The browser reference keeps ClosingPlasma animating while Studio is open.
+    s.art_focused = true;
     s.studio.title = "Studio menus review".into();
     s.studio.project_path = "/Users/you/Developer/kone".into();
     s.studio.worktree_path = None;

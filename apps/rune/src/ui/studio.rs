@@ -803,7 +803,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio.title_info_open = false),
             );
-            title = title.child(thread_info_panel(state, t).absolute(-104.0, 25.0).raise());
+            title = title.child(thread_info_panel(state, t).absolute(-104.0, 23.0).raise());
         }
     }
     title
@@ -869,7 +869,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     let mut rows = col()
         .w_full()
         .px(15.0)
-        .py(8.0)
+        .py(10.0)
         .child(name_row)
         .child(
             row()
@@ -1022,11 +1022,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .px(15.0)
                 .center_y()
                 .gap(12.0)
-                .fill(if t.dark {
-                    t.ground
-                } else {
-                    rune::color::hex("#faf9f5").unwrap()
-                })
+                .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
                 .child(label("Details", 13.0, 600.0, t.ink_soft))
                 .child(label("Inbox", 13.0, 400.0, t.muted).grow(1.0))
                 .child(if let Some(status) = &state.info_status {
@@ -1538,7 +1534,13 @@ fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
 fn project_nav(s: &AppState, t: Palette) -> El {
     let current = s.selected_project.unwrap_or(0);
     let project = s.projects.get(current);
-    let mut nav = row().w_full().h(32.0).px(32.0).justify_end().center_y();
+    let mut nav = row()
+        .w_full()
+        .h(32.0)
+        .px(32.0)
+        .justify_end()
+        .center_y()
+        .offset(0.0, 6.0);
     if let Some(project) = project {
         let name = project.name.clone();
         let has_destinations = s.projects.len() > 1;
@@ -1581,7 +1583,6 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                 .radius(12.0)
                 .border(1.0, t.ink.alpha(0.07))
                 .fill(t.ground)
-                .shadow(8.0, 24.0, rune::Color::BLACK.alpha(0.14))
                 .offset_motion(Curve::tween(
                     0.18,
                     rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
@@ -1732,7 +1733,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             cx,
         ));
     }
-    plane = plane.child(crate::plasma::slot(s, cx, 0.22));
+    plane = plane.child(crate::plasma::slot(s, cx, if t.dark { 0.5 } else { 1.0 }));
     let plane = col()
         .key("studio-plane")
         .w_full()
@@ -1882,24 +1883,32 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(icon(&CLOSE, 13.0).color(t.muted).offset(0.0, 1.0)),
         );
     }
-    let scene = plane.child(
-        row()
-            .pin(Some(0.0), Some(27.2), None, None)
-            .offset(0.5, 0.0)
-            .w_full()
-            .h(2.0)
-            .justify_center()
-            .gap(6.0)
-            .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
-            .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
-    );
-    let scene = if s.conversation_search_open {
-        scene.opacity(0.38)
+    let has_overlay = s.conversation_search_open
+        || s.studio_project_menu_open
+        || s.studio_insert_menu.is_some()
+        || s.studio.title_info_open;
+    let scene = if has_overlay {
+        plane
     } else {
-        scene
+        plane.child(
+            row()
+                .pin(Some(0.0), Some(27.2), None, None)
+                .offset(0.5, 0.0)
+                .w_full()
+                .h(2.0)
+                .justify_center()
+                .gap(6.0)
+                .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
+                .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
+        )
     };
     let mut output = el().w_full().h_full().child(scene);
     if s.conversation_search_open {
+        output = output.child(
+            el().key("conversation-search-dim")
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .fill(t.ground.alpha(0.62)),
+        );
         output = output.child(conversation_search_modal(s, t));
     }
     output
@@ -3013,7 +3022,7 @@ fn studio_row(
         } else {
             bounds[0] - 192.0
         };
-        let y = bounds[1] + bounds[3] / 2.0 - 75.0;
+        let y = bounds[1] + bounds[3] / 2.0 - 83.0;
         result = result.child(
             el().size(8192.0, 8192.0)
                 .absolute(-4096.0, -4096.0)
@@ -3035,7 +3044,7 @@ fn studio_row(
                     .h(38.0)
                     .px(16.0)
                     .center_y()
-                    .fill(t.sunken)
+                    .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
                     .child(label("Insert", 13.0, 600.0, t.ink_soft)),
             );
         for (row_index, (glyph, title)) in [
@@ -3137,14 +3146,14 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                 .px(16.0)
                 .center_y()
                 .gap(12.0)
-                .child(icon(&PICKER_SEARCH, 18.0).color(t.muted))
+                .child(icon(&PICKER_SEARCH, 16.0).color(t.muted).offset(0.0, 1.0))
                 .child(
                     text_input(&s.conversation_search, TextStyle::new(14.0, 400.0))
                         .key("conversation-search-input")
                         .w(390.0)
                         .h(40.0)
                         .color(t.ink)
-                        .offset(0.0, 2.0)
+                        .offset(0.0, 8.0)
                         .placeholder("Search across all conversations…", t.muted)
                         .on_edit(|s: &mut AppState| &mut s.conversation_search),
                 )
@@ -3206,16 +3215,17 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
             0.18,
             rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
         ))
+        .child(el().w_full().h(1.0).fill(t.line))
         .child(
-            row().w_full().h(32.0).px(16.0).center_y().gap(12.0).child(
-                text("↑↓ navigate  ↵ open esc close")
-                    .font(
-                        TextStyle::new(10.0, 400.0)
-                            .family(Family::SystemMono)
-                            .tracking(0.0),
-                    )
-                    .color(t.muted),
-            ),
+            row()
+                .w_full()
+                .h(34.0)
+                .px(16.0)
+                .center_y()
+                .gap(16.0)
+                .child(search_hint("↑↓ navigate", t))
+                .child(search_hint("↵ open", t))
+                .child(search_hint("esc close", t)),
         );
     el().key("conversation-search-overlay")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -3227,6 +3237,16 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                 .on_press(|s: &mut AppState| s.conversation_search_open = false),
         )
         .child(col().w_full().h_full().pt(102.0).items_center().child(card))
+}
+
+fn search_hint(value: &str, t: Palette) -> El {
+    text(value)
+        .font(
+            TextStyle::new(10.0, 400.0)
+                .family(Family::SystemMono)
+                .tracking(0.0),
+        )
+        .color(t.muted)
 }
 
 fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {

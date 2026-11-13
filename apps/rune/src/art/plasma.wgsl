@@ -51,8 +51,8 @@ fn linear(c: vec3<f32>) -> vec3<f32> { return select(c/12.92,pow((c+0.055)/1.055
     let grain=(fract(sin(dot(frag+t*50.0,vec2(12.9898,78.233)))*43758.5453)-0.5)*(0.06*0.4);
     color=clamp(color+grain,vec3(0.0),vec3(1.0));
     if u.clock.z<0.5 { color=linear(color); }
-    // WebGL's canvas is premultiplied: Electron's `vec4(col, opacity)` adds the
-    // full colour over the ground at 1 - opacity. The CSS mask then scales both.
+    // Match WebGL's premultiplied canvas: CSS opacity affects both colour and alpha.
     let mask=clamp((1.0-uv.y)/0.55,0.0,1.0)*u.clock.w;
-    return vec4(color*mask,mask*mix(1.0,0.5,dark));
+    let alpha=mask*mix(1.0,0.5,dark);
+    return vec4(color*alpha,alpha);
 }
