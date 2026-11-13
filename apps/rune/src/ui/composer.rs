@@ -40,7 +40,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
         .w_full()
         .mb(if marker == '@' { 17.0 } else { 14.0 })
         .radius(18.0)
-        .fill(t.field)
+        .fill(t.raised)
         .border(1.0, t.ink.alpha(0.08));
     let title = if marker == '/' {
         "Commands"
@@ -53,6 +53,8 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
             .px(14.0)
             .gap(7.0)
             .center_y()
+            .fill(mix_srgb(t.ground, t.ink, 0.02))
+            .corners([18.0, 18.0, 14.0, 14.0])
             .child(label(marker.to_string(), 13.0, 600.0, t.accent))
             .child(label(title, 11.5, 600.0, t.muted)),
     );
@@ -390,7 +392,7 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
         .grow(1.0)
         .h(300.0)
         .radius(18.0)
-        .fill(t.field)
+        .fill(t.raised)
         .border(1.0, t.line)
         .clip_rounded(18.0)
         .child(search)
@@ -410,7 +412,7 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
         .max_w(384.0)
         .h(300.0)
         .radius(22.0)
-        .fill(t.field)
+        .fill(mix_srgb(t.ground, t.ink, 0.02))
         .child(rail)
         .child(content)
 }
