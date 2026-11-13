@@ -32,6 +32,11 @@ static SETTING_ARROW: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M9.00005 6C9.00005 6 15 10.4189 15 12C15 13.5812 9 18 9 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
+static HANDOFF_ARROW: Icon = Icon {
+    name: "studio-handoff-arrow",
+    view: 16.0,
+    body: r#"<path d="M2.5 8H13M8.5 3.5L13 8L8.5 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 /// Live replies only: the Electron fixture footers carry no fork affordance.
 static FOOTER_GITFORK: Icon = Icon {
     name: "footer-GitFork",
@@ -1290,19 +1295,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 (opened.elapsed().as_secs_f32() / 0.24).clamp(0.0, 1.0),
             )
         });
-        plane.child(
-            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                .child(
-                    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                        .fill(t.ground.alpha(0.62))
-                        .opacity(scrim_progress)
-                        .on_press(|s: &mut AppState| {
-                            s.studio.picker_open = false;
-                            s.studio.picker_opened_at = None;
-                        }),
-                )
-                .child(super::composer::model_picker(s, t).pin(None, None, Some(24.0), Some(24.0))),
-        )
+        el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .fill(t.ground)
+            .child(plane.opacity(1.0 - 0.62 * scrim_progress).pin(
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            ))
+            .child(
+                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .fill(t.ground.alpha(0.0))
+                    .on_press(|s: &mut AppState| {
+                        s.studio.picker_open = false;
+                        s.studio.picker_opened_at = None;
+                    }),
+            )
+            .child(super::composer::model_picker(s, t).pin(None, None, Some(24.0), Some(24.0)))
     } else if s.studio.handoff_picker {
         plane.child(handoff_picker(s, t))
     } else {
@@ -1462,12 +1471,7 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
                 "#59cba8"
             })
             .unwrap();
-            let count = if model.label.contains("Mini") { 1 } else { 2 };
-            let mut brains = row();
-            for _ in 0..count {
-                brains = brains.child(icon(&PICKER_BRAIN, 13.0).color(color));
-            }
-            item = item.child(brains);
+            item = item.child(icon(&PICKER_BRAIN, 11.0).color(color));
         }
         let click_provider_id = provider.id.clone();
         let click_model = model.clone();
@@ -1521,7 +1525,7 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
             400.0,
             t.ink,
         ))
-        .child(label("→", 12.0, 400.0, t.muted));
+        .child(icon(&HANDOFF_ARROW, 12.0).color(t.muted));
     if s.studio.handoff_staged {
         if let Some(provider) = s.studio.providers.get(s.studio.provider_index) {
             route = route.child(brand_mark(&provider.id, t));
@@ -1548,7 +1552,7 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
             0.4
         })
         .child(label("Hand off", 14.0, 600.0, t.ink))
-        .child(label("→", 14.0, 400.0, t.accent));
+        .child(icon(&HANDOFF_ARROW, 14.0).color(t.accent));
     if s.studio.handoff_staged && different {
         confirm = confirm
             .on_key(|s: &mut AppState, event, _| {
@@ -1651,6 +1655,8 @@ fn studio_row(
             let project_path = path.clone();
             let hover_id = id.clone();
             let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str());
+            let handoff_fixture =
+                s.studio.conversation_fixture.as_deref() == Some("composer-picker-handoff");
             let has_thread = state.is_some_and(|s| {
                 !s.dormant && s.terminal_command.is_none() && (!s.items.is_empty() || s.busy)
             });
@@ -1673,11 +1679,15 @@ fn studio_row(
                     row()
                         .w(100.0)
                         .gap(2.0)
-                        .opacity(if show_tools && (!activity_fixture || activity_hover) {
-                            1.0
-                        } else {
-                            0.0
-                        })
+                        .opacity(
+                            if handoff_fixture
+                                || (show_tools && (!activity_fixture || activity_hover))
+                            {
+                                1.0
+                            } else {
+                                0.0
+                            },
+                        )
                         .child(if has_thread && !side_chat {
                             fork_tool(&SIDE_CHAT, "Open a side chat", state, t)
                                 .on_press(|s: &mut AppState| s.create_continuation(false))
@@ -1762,11 +1772,16 @@ fn studio_row(
                 )
                 .child(
                     row()
-                        .opacity(if show_tools && (!activity_fixture || activity_hover) {
-                            1.0
-                        } else {
-                            0.0
-                        })
+                        .opacity(
+                            if !handoff_fixture
+                                && show_tools
+                                && (!activity_fixture || activity_hover)
+                            {
+                                1.0
+                            } else {
+                                0.0
+                            },
+                        )
                         .w(100.0)
                         .justify_end()
                         .gap(2.0)
@@ -2749,6 +2764,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 let mut footer =
                     row()
                         .center_y()
+                        .opacity(if fixture { 0.4 } else { 1.0 })
                         .gap(2.0)
                         .mt(if is_activity { 0.0 } else { -7.0 })
                         .min_h(24.0)

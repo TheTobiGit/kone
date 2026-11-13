@@ -380,8 +380,13 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
                 .or_else(|| model.efforts.first().map(String::as_str))
         };
         if let Some(effort) = effort {
-            let (_, hue, count, glow) = effort_meta(effort);
-            item = item.child(brain_stack(count, hex(hue).unwrap(), glow).opacity(0.8));
+            let (_, hue, _, glow) = effort_meta(effort);
+            let color = hex(hue).unwrap();
+            let mut badge = icon(&PICKER_BRAIN, 13.0).color(color);
+            if glow {
+                badge = badge.shadow(0.0, 3.0, color.alpha(0.65));
+            }
+            item = item.child(badge.opacity(0.8));
         }
         models = models.child(item.on_press(move |s: &mut AppState| {
             s.choose_studio_model(provider_index, model_index);
