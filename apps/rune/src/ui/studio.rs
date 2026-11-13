@@ -1638,8 +1638,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .and_then(|panes| panes.first())
         .and_then(|pane| pane["width"].as_u64())
         .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
-    if ((s.studio_column_hover.is_none() && !s.studio_header_hover)
-        || !selection_rects.is_empty())
+    if s.studio_column_hover.is_none() && !s.studio_header_hover
         && let Some(width) = focused_width
     {
         let left = ((viewport_w - 1292.0) / 2.0 + 155.0).max(8.0);
@@ -1656,13 +1655,13 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     }
     plane.child(
         row()
-            .pin(Some(0.0), Some(20.0), None, None)
+            .pin(Some(0.0), Some(27.2), None, None)
             .w_full()
             .h(2.0)
             .justify_center()
-            .gap(4.0)
-            .child(el().w(10.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.2)))
-            .child(el().w(20.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.64))),
+            .gap(6.0)
+            .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
+            .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
     )
 }
 
@@ -4657,6 +4656,25 @@ mod tests {
     use crate::state::{Page, Project, StudioItem};
     use rune::{Env, Runtime};
     use serde_json::json;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn terminal_capture_drag_selects_the_same_cells_as_xterm() {
+        for dark in [false, true] {
+            let mut state = AppState::default();
+            crate::studio_column_head(&mut state);
+            crate::studio_terminal_fixture(&mut state, false);
+            let fonts = rune::text::TextSystem::new(crate::FONTS, ("Geist", "Geist Mono"));
+            let mut rt = Runtime::with_text(state, view, (1292.0, 854.0), Env::new(dark, 2.0), fonts);
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            rt.pointer_down(283.0, 106.0);
+            rt.pointer_move(322.0, 106.0);
+            rt.pointer_up(322.0, 106.0);
+            rt.frame(1.0 / 60.0);
+            assert_eq!(rt.selected_text().as_deref(), Some("ermin"));
+        }
+    }
 
     #[test]
     fn thread_info_shortens_long_ids_without_splitting_unicode() {

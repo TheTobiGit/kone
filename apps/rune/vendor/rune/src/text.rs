@@ -423,11 +423,13 @@ impl TextSystem {
     /// grayscale antialiasing applies there: light text on a dark page draws heavier and dark
     /// text on a light one a little lighter than coverage blended as is, keyed by the text's
     /// luminance. With smoothing on, CoreText's dilation does that job, and with DirectWrite Skia's
-    /// gamma tables do; coverage is drawn as is.
+    /// gamma tables do; coverage is drawn as is. macOS also draws coverage as is
+    /// with smoothing off, matching Chromium's antialiased grayscale text.
     pub fn coverage_exponent(&self, fill: [f32; 4]) -> f32 {
-        // DirectWrite masks already carry Skia's gamma for their text's luminance.
+        // macOS browser grayscale coverage blends as-is; the approximation below
+        // is for Linux/web. DirectWrite masks already carry Skia's gamma.
         let direct_write = self.smoothing == FontSmoothing::DirectWrite && cfg!(target_os = "windows");
-        if self.smoothing == FontSmoothing::On || direct_write || fill[3] <= 0.0 {
+        if cfg!(target_os = "macos") || self.smoothing == FontSmoothing::On || direct_write || fill[3] <= 0.0 {
             return 1.0;
         }
         let luma = (0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2]) / fill[3];
