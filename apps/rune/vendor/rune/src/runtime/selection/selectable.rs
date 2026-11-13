@@ -131,9 +131,10 @@ pub(crate) fn extend(origin: (usize, usize), at: (usize, usize)) -> (usize, usiz
 /// their highlights match.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn push_selection(out: &mut Vec<Instance>, layout: &Layout<Ink>, a: usize, b: usize, origin: [f32; 2], k: f32,
-    fill: [f32; 4], s: f32, custom_radius: f32, clip: [f32; 4], fade: [f32; 4]) {
+    fill: [f32; 4], s: f32, custom_radius: f32, padding: [f32; 2], clip: [f32; 4], fade: [f32; 4]) {
     for (bb, _) in crate::text::range_boxes(layout, a, b, true) {
         let rect = [origin[0] + bb.x0 as f32 * k, origin[1] + bb.y0 as f32 * k, (bb.x1 - bb.x0) as f32 * k, (bb.y1 - bb.y0) as f32 * k];
+        let rect = [rect[0] - padding[0], rect[1] - padding[1], rect[2] + padding[0] * 2.0, rect[3] + padding[1] * 2.0];
         let radius = if custom_radius < 0.0 { 2.0 * s * k } else { custom_radius * k };
         extend_run(out, rect, fill, radius, clip, fade, 40.0 * s * k);
     }

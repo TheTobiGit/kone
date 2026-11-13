@@ -1074,7 +1074,9 @@ fn terminal_line(value: &str, t: Palette) -> El {
         // xterm receives the Oklab 24% accent value from `--term-selection`, but its
         // canvas selection paint falls back to a 30% white overlay when it cannot parse
         // that CSS color. Match the effective selection rendered by Electron.
-        .selection_color(rune::Color::WHITE.alpha(0.30))
+        .selection_color(rune::color::hex(if t.dark { "#525253" } else { "#f9f8f7" }).unwrap())
+        .selection_offset(0.0, 0.5)
+        .selection_padding(0.5, 0.0)
         .selection_radius(0.0)
         .w_full();
     if !spans.is_empty() {

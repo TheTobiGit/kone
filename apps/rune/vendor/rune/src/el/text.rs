@@ -519,6 +519,21 @@ impl El {
         if let Some(t) = &mut self.text { t.selection = color; }
         self
     }
+    /// Translates selectable text highlights in points without moving the glyphs.
+    /// Useful for cell-based text whose highlight follows a different baseline.
+    pub fn selection_offset(mut self, x: f32, y: f32) -> Self {
+        if let Some(t) = &mut self.text {
+            t.selection_offset = [x, y].map(|v| if v.is_finite() { v } else { 0.0 });
+        }
+        self
+    }
+    /// Expands a selectable text highlight horizontally and vertically in points.
+    pub fn selection_padding(mut self, x: f32, y: f32) -> Self {
+        if let Some(t) = &mut self.text {
+            t.selection_padding = [x, y].map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 });
+        }
+        self
+    }
     /// Sets the corner radius of this selectable text's highlight in points.
     pub fn selection_radius(mut self, radius: f32) -> Self {
         if let Some(t) = &mut self.text {

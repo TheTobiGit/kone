@@ -49,6 +49,10 @@ pub struct TextSpec {
     /// -1 uses the text selection's standard rounded highlight; nonnegative values set a custom
     /// corner radius in points.
     pub(crate) selection_radius: f32,
+    /// Visual translation of the highlight in points, independent of glyph placement.
+    pub(crate) selection_offset: [f32; 2],
+    /// Extra highlight coverage on either side of the selected range, in points.
+    pub(crate) selection_padding: [f32; 2],
     /// See [`El::uncopied`](crate::El::uncopied): byte ranges of `content`, sorted.
     pub(crate) uncopied: Vec<(u32, u32)>,
     /// Inset border rings `(start, end, color, width)` on rounded span backgrounds.

@@ -75,8 +75,9 @@ impl<S: 'static> Runtime<S> {
         let s = self.env.scale;
         let [ox, oy] = links::origin(n, spec, layout, [x, y, x + w, y + h], s, 1.0);
         for (bb, _) in crate::text::range_boxes(layout, a, b, true) {
-            let (x0, y0) = (ox + bb.x0 as f32 / s, oy + bb.y0 as f32 / s);
-            out.push([x0, y0, (bb.x1 - bb.x0) as f32 / s, (bb.y1 - bb.y0) as f32 / s]);
+            let (x0, y0) = (ox + bb.x0 as f32 / s + spec.selection_offset[0], oy + bb.y0 as f32 / s + spec.selection_offset[1]);
+            let [px, py] = spec.selection_padding;
+            out.push([x0 - px, y0 - py, (bb.x1 - bb.x0) as f32 / s + px * 2.0, (bb.y1 - bb.y0) as f32 / s + py * 2.0]);
         }
     }
 
