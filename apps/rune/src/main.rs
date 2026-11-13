@@ -320,19 +320,18 @@ fn main() {
                 studio_column_head(s);
                 studio_terminal_fixture(s, false);
             }),
+            ("studio-column-head-terminal-idle-hover", |s| {
+                studio_column_head(s);
+                studio_terminal_fixture(s, false);
+            }),
             ("studio-column-head-terminal-hover", |s| {
                 studio_column_head(s);
                 studio_terminal_fixture(s, true);
             }),
             ("studio-column-head-terminal-selection", |s| {
                 studio_column_head(s);
-                studio_terminal_fixture(s, true);
-                s.studio.terminal_cursor_visible = true;
-                s.studio.terminal_output = "kone terminal (dev mock)\r\n\x1b[0m$ ".into();
-                if let Some(pane) = s.studio_threads.get_mut("review-one") {
-                    pane.terminal_cursor_visible = true;
-                    pane.terminal_output = s.studio.terminal_output.clone();
-                }
+                studio_terminal_fixture(s, false);
+
             }),
             ("studio-column-head-handoff", |s| {
                 studio_column_head(s);

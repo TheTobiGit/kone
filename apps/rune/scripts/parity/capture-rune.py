@@ -36,7 +36,7 @@ for scene in scenes:
         with tempfile.TemporaryDirectory() as temp:
             script = args.script
             capture_at = args.at
-            if script is None and scene == 'studio-column-head-terminal-hover':
+            if script is None and scene in ('studio-column-head-terminal-hover', 'studio-column-head-terminal-idle-hover'):
                 # Electron reveals column tools while the pointer is over the
                 # terminal body, but keeps them hidden over the header.
                 script = Path(temp) / 'terminal-body-hover.json'

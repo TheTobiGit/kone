@@ -1397,7 +1397,7 @@ fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
-    let mut nav = row().center_y().gap(4.0).offset(0.0, 10.0);
+    let mut nav = row().center_y().gap(4.0).offset(8.0, 10.0);
     for (index, project) in s.projects.iter().enumerate() {
         let has_row = s.studio_layout["rows"]
             .as_array()
@@ -1416,7 +1416,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                 .child(
                     text(project.name.clone())
                         .font(
-                            TextStyle::new(12.5, 500.0)
+                            TextStyle::new(12.5, 400.0)
                                 .family(Family::Named("Geist"))
                                 .tracking(-0.125),
                         )
@@ -2178,7 +2178,7 @@ fn studio_row(
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             text("Terminal")
                                 .font(
-                                    TextStyle::new(13.5, 620.0)
+                                    TextStyle::new(13.5, 400.0)
                                         .family(Family::Named("Geist"))
                                         .tracking(-0.2025),
                                 )
@@ -2206,7 +2206,7 @@ fn studio_row(
                                                 .unwrap_or_else(|| command.clone()),
                                         )
                                         .font(
-                                            TextStyle::new(10.0, 620.0)
+                                            TextStyle::new(10.0, 400.0)
                                                 .family(Family::Named("Geist"))
                                                 .tracking(0.1),
                                         )
@@ -2252,7 +2252,7 @@ fn studio_row(
                                         format!("{width:.0}")
                                     })
                                     .font(
-                                        TextStyle::new(10.0, 650.0)
+                                        TextStyle::new(10.0, 400.0)
                                             .family(Family::Named("Geist")),
                                     )
                                     .color(t.muted),
@@ -2430,7 +2430,7 @@ fn studio_row(
                             .grow(1.0)
                             .min_h(0.0)
                             .px(11.0)
-                            .pt(8.0)
+                            .pt(10.0)
                             .scroll(ScrollSpec { stick_bottom: true })
                             .child(output)
                             .on_layout(|s: &mut AppState, bounds| {
