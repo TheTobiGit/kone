@@ -1,5 +1,10 @@
 use rune::TextEdit;
 
+type MentionFiles = Vec<(String, String)>;
+type MentionFileCache = std::sync::Mutex<
+    std::collections::HashMap<std::path::PathBuf, (std::time::Instant, MentionFiles)>,
+>;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
     #[default]
@@ -218,6 +223,8 @@ pub struct StudioState {
     pub workspace_heading: String,
     pub workspace_tray_open: bool,
     pub picker_open: bool,
+    pub composer_menu_marker: Option<char>,
+    pub composer_menu_index: usize,
     pub effort_picker_open: bool,
     pub mode_picker_open: bool,
     pub effort: String,
@@ -241,6 +248,8 @@ pub struct StudioState {
     pub providers: Vec<StudioProvider>,
     pub provider_index: usize,
     pub models: Vec<StudioModel>,
+    pub model_catalog: std::collections::HashMap<String, Vec<StudioModel>>,
+    pub model_catalog_requests: std::collections::HashMap<u64, String>,
     pub model_index: usize,
     pub items: Vec<StudioItem>,
     pub error: Option<String>,
@@ -315,6 +324,27 @@ pub struct StudioModel {
     pub label: String,
     pub efforts: Vec<String>,
     pub default_effort: Option<String>,
+}
+
+fn studio_models(value: &serde_json::Value) -> Vec<StudioModel> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            Some(StudioModel {
+                id: model["id"].as_str()?.to_owned(),
+                label: model["label"].as_str()?.to_owned(),
+                efforts: model["reasoningEfforts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|effort| effort.as_str().map(str::to_owned))
+                    .collect(),
+                default_effort: model["defaultReasoningEffort"].as_str().map(str::to_owned),
+            })
+        })
+        .collect()
 }
 
 fn token_count(n: u64) -> String {
@@ -481,6 +511,98 @@ fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
 }
 
 impl AppState {
+    pub fn composer_mention_files(&self) -> Vec<(String, String)> {
+        if self
+            .studio
+            .conversation_fixture
+            .as_deref()
+            .is_some_and(|fixture| fixture.starts_with("composer-picker-mention"))
+        {
+            return [
+                ("main.ts", "apps/desktop/src"),
+                ("main.css", "apps/web/app/assets/css"),
+                ("AgentComposer.vue", "apps/web/app/components"),
+                ("ConversationThread.vue", "apps/web/app/components"),
+                ("useAgent.ts", "apps/web/app/composables"),
+                ("useGit.ts", "apps/web/app/composables"),
+                ("index.vue", "apps/web/app/pages"),
+                ("package.json", ""),
+            ]
+            .into_iter()
+            .map(|(name, parent)| (name.into(), parent.into()))
+            .collect();
+        }
+        let root = std::path::Path::new(&self.studio.project_path);
+        if !root.is_dir() {
+            return Vec::new();
+        }
+        static FILE_CACHE: std::sync::OnceLock<MentionFileCache> = std::sync::OnceLock::new();
+        let cache = FILE_CACHE.get_or_init(Default::default);
+        if let Ok(cache) = cache.lock()
+            && let Some((at, files)) = cache.get(root)
+            && at.elapsed() < std::time::Duration::from_secs(1)
+        {
+            return files.clone();
+        }
+        let ignored = [".git", "target", "node_modules", ".next", ".nuxt", "dist"];
+        let mut pending = vec![(root.to_path_buf(), 0usize)];
+        let mut paths = Vec::new();
+        let mut visited = 0usize;
+        while let Some((directory, depth)) = pending.pop() {
+            if depth > 7 || visited >= 2500 {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                visited += 1;
+                if visited >= 2500 {
+                    break;
+                }
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(file_type) => file_type,
+                    Err(_) => continue,
+                };
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_dir() {
+                    if !ignored.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                        pending.push((path, depth + 1));
+                    }
+                } else if file_type.is_file() {
+                    paths.push(path);
+                }
+            }
+        }
+        paths.sort();
+        let files: Vec<_> = paths
+            .into_iter()
+            .take(120)
+            .filter_map(|path| {
+                let relative = path.strip_prefix(root).ok()?;
+                let name = relative.file_name()?.to_string_lossy().into_owned();
+                let parent = relative
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                Some((name, parent))
+            })
+            .collect();
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(
+                root.to_path_buf(),
+                (std::time::Instant::now(), files.clone()),
+            );
+        }
+        files
+    }
+
     pub fn request(&mut self, method: &str, params: serde_json::Value) -> Option<u64> {
         match self
             .bridge
@@ -912,6 +1034,251 @@ impl AppState {
         if s.page != Page::Studio {
             return false;
         }
+        if s.studio.handoff_picker
+            && matches!(
+                event.key,
+                rune::Key::Down | rune::Key::Up | rune::Key::Enter
+            )
+        {
+            let query = s.studio.handoff_query.text.trim().to_lowercase();
+            let mut visible = Vec::new();
+            for (provider_index, provider) in s.studio.providers.iter().enumerate() {
+                let models = s.studio.model_catalog.get(&provider.id).or_else(|| {
+                    (provider_index == s.studio.provider_index).then_some(&s.studio.models)
+                });
+                for (model_index, model) in models.into_iter().flatten().enumerate() {
+                    if query.is_empty()
+                        || format!("{} {} {}", model.label, model.id, provider.label)
+                            .to_lowercase()
+                            .contains(&query)
+                    {
+                        visible.push((provider_index, model_index));
+                    }
+                }
+            }
+            if !visible.is_empty() {
+                let current = visible
+                    .iter()
+                    .position(|item| *item == (s.studio.provider_index, s.studio.model_index))
+                    .unwrap_or(0);
+                let selected = if event.key == rune::Key::Enter {
+                    current
+                } else if event.key == rune::Key::Down {
+                    (current + 1) % visible.len()
+                } else {
+                    (current + visible.len() - 1) % visible.len()
+                };
+                let (provider_index, model_index) = visible[selected];
+                let Some(provider) = s.studio.providers.get(provider_index) else {
+                    return true;
+                };
+                let models = s
+                    .studio
+                    .model_catalog
+                    .get(&provider.id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if provider_index == s.studio.provider_index {
+                            s.studio.models.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    });
+                if let Some(model) = models.get(model_index) {
+                    let effort = model.default_effort.clone().unwrap_or_default();
+                    s.studio.provider_index = provider_index;
+                    s.studio.models = models;
+                    s.studio.model_index = model_index;
+                    s.studio.effort = effort;
+                    s.studio.handoff_staged = true;
+                }
+            }
+            return true;
+        }
+        if s.studio.picker_open {
+            let query = s.studio.handoff_query.text.trim().to_lowercase();
+            let mut visible = Vec::new();
+            for (provider_index, provider) in s.studio.providers.iter().enumerate() {
+                if query.is_empty() && provider_index != s.studio.provider_index {
+                    continue;
+                }
+                let models = s.studio.model_catalog.get(&provider.id).or_else(|| {
+                    (provider_index == s.studio.provider_index).then_some(&s.studio.models)
+                });
+                for (model_index, model) in models.into_iter().flatten().enumerate() {
+                    if query.is_empty()
+                        || format!("{} {} {}", model.label, model.id, provider.label)
+                            .to_lowercase()
+                            .contains(&query)
+                    {
+                        visible.push((provider_index, model_index));
+                    }
+                }
+            }
+            if matches!(event.key, rune::Key::Down | rune::Key::Up) && !visible.is_empty() {
+                let current = visible
+                    .iter()
+                    .position(|(provider, model)| {
+                        *provider == s.studio.provider_index && *model == s.studio.model_index
+                    })
+                    .unwrap_or(0);
+                let next = if event.key == rune::Key::Down {
+                    (current + 1) % visible.len()
+                } else {
+                    (current + visible.len() - 1) % visible.len()
+                };
+                let (provider, model) = visible[next];
+                if provider != s.studio.provider_index {
+                    s.studio.provider_index = provider;
+                    s.studio.models = s
+                        .studio
+                        .providers
+                        .get(provider)
+                        .and_then(|provider| s.studio.model_catalog.get(&provider.id))
+                        .cloned()
+                        .unwrap_or_default();
+                }
+                s.studio.model_index = model;
+                return true;
+            }
+            if event.key == rune::Key::Enter {
+                let selected = visible
+                    .contains(&(s.studio.provider_index, s.studio.model_index))
+                    .then_some((s.studio.provider_index, s.studio.model_index))
+                    .or_else(|| visible.first().copied());
+                if let Some((provider, model)) = selected {
+                    s.choose_studio_model(provider, model);
+                }
+                return true;
+            }
+        }
+        if s.studio.composer_menu_marker.is_some() {
+            match event.key {
+                rune::Key::Escape => {
+                    s.studio.composer_menu_marker = None;
+                    s.studio.composer_menu_index = 0;
+                    return true;
+                }
+                rune::Key::Down | rune::Key::Up => {
+                    let marker = s.studio.composer_menu_marker.unwrap_or('/');
+                    let query = s
+                        .composer
+                        .text
+                        .trim_start_matches(marker)
+                        .trim()
+                        .to_lowercase();
+                    let count = if marker == '/' {
+                        [
+                            ("/model", "Open model picker"),
+                            ("/new", "Start a new thread"),
+                        ]
+                        .iter()
+                        .filter(|(name, detail)| {
+                            query.is_empty()
+                                || name.contains(&query)
+                                || detail.to_lowercase().contains(&query)
+                        })
+                        .count()
+                    } else {
+                        [
+                            "main.ts",
+                            "main.css",
+                            "AgentComposer.vue",
+                            "ConversationThread.vue",
+                            "useAgent.ts",
+                            "useGit.ts",
+                            "index.vue",
+                            "package.json",
+                        ]
+                        .iter()
+                        .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
+                        .count()
+                    };
+                    if count > 0 {
+                        s.studio.composer_menu_index = if event.key == rune::Key::Down {
+                            (s.studio.composer_menu_index + 1) % count
+                        } else {
+                            (s.studio.composer_menu_index + count - 1) % count
+                        };
+                    }
+                    return true;
+                }
+                rune::Key::Enter | rune::Key::Tab => {
+                    let marker = s.studio.composer_menu_marker.take();
+                    let query = marker.map_or_else(String::new, |marker| {
+                        s.composer
+                            .text
+                            .trim_start_matches(marker)
+                            .trim()
+                            .to_lowercase()
+                    });
+                    let selected_command = if marker == Some('/') {
+                        ["/model", "/new"]
+                            .iter()
+                            .filter(|command| {
+                                let detail = if **command == "/model" {
+                                    "open model picker"
+                                } else {
+                                    "start a new thread"
+                                };
+                                query.is_empty()
+                                    || command.contains(query.as_str())
+                                    || detail.contains(query.as_str())
+                            })
+                            .nth(s.studio.composer_menu_index)
+                            .copied()
+                    } else {
+                        None
+                    };
+                    s.studio.composer_menu_index = 0;
+                    match marker {
+                        Some('/') if selected_command == Some("/model") => {
+                            s.composer.clear();
+                            s.studio.picker_open = true;
+                            s.studio.handoff_query.text.clear();
+                        }
+                        Some('/') if selected_command == Some("/new") => {
+                            s.composer.clear();
+                            s.new_studio_thread();
+                        }
+                        Some('@') => {
+                            let query = s
+                                .composer
+                                .text
+                                .trim_start_matches('@')
+                                .trim()
+                                .to_lowercase();
+                            let selected = s
+                                .composer_mention_files()
+                                .into_iter()
+                                .filter(|(name, parent)| {
+                                    query.is_empty()
+                                        || name.to_lowercase().contains(&query)
+                                        || parent.to_lowercase().contains(&query)
+                                })
+                                .nth(s.studio.composer_menu_index);
+                            if let Some((file, parent)) = selected {
+                                let path = if parent.is_empty() {
+                                    file
+                                } else {
+                                    format!("{parent}/{file}")
+                                };
+                                s.composer.text = format!("@{path} ");
+                                s.composer.focus = s.composer.text.len();
+                                s.composer.anchor = s.composer.focus;
+                            }
+                        }
+                        _ => {}
+                    }
+                    return true;
+                }
+                rune::Key::Backspace if s.composer.text.len() <= 1 => {
+                    s.studio.composer_menu_marker = None;
+                    s.studio.composer_menu_index = 0;
+                }
+                _ => {}
+            }
+        }
         if event.key == rune::Key::Escape {
             if s.studio.handoff_picker {
                 s.cancel_handoff_picker();
@@ -1270,16 +1637,51 @@ impl AppState {
 
     pub fn select_provider(&mut self, index: usize) {
         if index >= self.studio.providers.len()
-            || (self.studio.started && !self.studio.handoff_picker)
+            || (self.studio.started && !self.studio.handoff_picker && !self.studio.picker_open)
         {
             return;
         }
         self.studio.provider_index = index;
-        self.studio.models.clear();
-        self.studio.model_index = 0;
         let provider = self.studio.providers[index].id.clone();
+        self.studio.models = self
+            .studio
+            .model_catalog
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default();
+        self.studio.model_index = 0;
         self.studio.models_request =
             self.request("agent.models", serde_json::json!({"provider": provider}));
+        if let Some(request) = self.studio.models_request {
+            self.studio.model_catalog_requests.insert(request, provider);
+        }
+    }
+
+    pub fn choose_studio_model(&mut self, provider_index: usize, model_index: usize) {
+        let Some(provider) = self.studio.providers.get(provider_index) else {
+            return;
+        };
+        let models = self
+            .studio
+            .model_catalog
+            .get(&provider.id)
+            .cloned()
+            .unwrap_or_else(|| {
+                if provider_index == self.studio.provider_index {
+                    self.studio.models.clone()
+                } else {
+                    Vec::new()
+                }
+            });
+        let Some(model) = models.get(model_index) else {
+            return;
+        };
+        let effort = model.default_effort.clone().unwrap_or_default();
+        self.studio.provider_index = provider_index;
+        self.studio.models = models;
+        self.studio.model_index = model_index;
+        self.studio.effort = effort;
+        self.studio.picker_open = false;
     }
 
     pub fn open_handoff_picker(&mut self) {
@@ -1765,6 +2167,10 @@ impl AppState {
                 return;
             }
             if let Some(error) = message.get("error") {
+                self.studio.model_catalog_requests.remove(&id);
+                if self.studio.models_request == Some(id) {
+                    self.studio.models_request = None;
+                }
                 self.studio.error = Some(
                     error
                         .get("message")
@@ -1805,28 +2211,46 @@ impl AppState {
                     })
                     .collect();
                 if !self.studio.providers.is_empty() {
-                    self.select_provider(0);
+                    self.studio.provider_index = 0;
+                    let providers: Vec<String> = self
+                        .studio
+                        .providers
+                        .iter()
+                        .map(|provider| provider.id.clone())
+                        .collect();
+                    for (index, provider) in providers.into_iter().enumerate() {
+                        if let Some(request) =
+                            self.request("agent.models", serde_json::json!({"provider": &provider}))
+                        {
+                            self.studio
+                                .model_catalog_requests
+                                .insert(request, provider.clone());
+                            if index == 0 {
+                                self.studio.models_request = Some(request);
+                            }
+                        }
+                    }
+                }
+            } else if let Some(provider) = self.studio.model_catalog_requests.remove(&id) {
+                let models = studio_models(result);
+                self.studio
+                    .model_catalog
+                    .insert(provider.clone(), models.clone());
+                if self.studio.models_request == Some(id) {
+                    self.studio.models_request = None;
+                    if self
+                        .studio
+                        .providers
+                        .get(self.studio.provider_index)
+                        .is_some_and(|active| active.id == provider)
+                    {
+                        self.studio.models = models;
+                        self.studio.model_index = 0;
+                    }
                 }
             } else if self.studio.models_request == Some(id) {
                 self.studio.models_request = None;
-                self.studio.models = result
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|m| {
-                        Some(StudioModel {
-                            id: m["id"].as_str()?.to_owned(),
-                            label: m["label"].as_str()?.to_owned(),
-                            efforts: m["reasoningEfforts"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|e| e.as_str().map(str::to_owned))
-                                .collect(),
-                            default_effort: m["defaultReasoningEffort"].as_str().map(str::to_owned),
-                        })
-                    })
-                    .collect();
+                self.studio.models = studio_models(result);
                 if let Some(model) = self.studio.restore_model.take()
                     && let Some(index) = self.studio.models.iter().position(|m| m.id == model)
                 {
@@ -2310,7 +2734,59 @@ impl StartActionsState {
 
 #[cfg(test)]
 mod start_actions_tests {
-    use super::{Page, StartActionsState};
+    use super::{Page, StartActionsState, StudioModel, StudioProvider};
+
+    #[test]
+    fn composer_model_search_selects_a_matching_model_from_another_provider() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            ..Default::default()
+        };
+        s.studio.picker_open = true;
+        s.studio.providers = vec![
+            StudioProvider {
+                id: "codex".into(),
+                label: "Codex".into(),
+                supports_compaction: false,
+            },
+            StudioProvider {
+                id: "claudeAgent".into(),
+                label: "Claude".into(),
+                supports_compaction: false,
+            },
+        ];
+        s.studio.models = vec![StudioModel {
+            id: "gpt-model".into(),
+            label: "GPT Model".into(),
+            efforts: vec!["medium".into()],
+            default_effort: Some("medium".into()),
+        }];
+        s.studio.model_catalog.insert(
+            "claudeAgent".into(),
+            vec![StudioModel {
+                id: "claude-model".into(),
+                label: "Claude Model".into(),
+                efforts: vec!["high".into()],
+                default_effort: Some("high".into()),
+            }],
+        );
+        s.studio.handoff_query.text = "Claude".into();
+        let down = rune::KeyEvent {
+            key: rune::Key::Down,
+            mods: rune::Mods::default(),
+        };
+        let enter = rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &down, &mut tx));
+        assert_eq!(s.studio.provider_index, 1);
+        assert_eq!(s.studio.models[0].id, "claude-model");
+        assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
+        assert!(!s.studio.picker_open);
+        assert_eq!(s.studio.effort, "high");
+    }
 
     #[test]
     fn page_change_clears_geometry_and_magnet_state_once() {
@@ -2369,6 +2845,27 @@ mod start_actions_tests {
         assert!(!s.composer.focused);
 
         assert!(!super::AppState::studio_key(&mut s, &esc, &mut tx));
+    }
+
+    #[test]
+    fn studio_escape_dismisses_composer_trigger_before_collapsing_composer() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            ..Default::default()
+        };
+        s.studio.composer_open = true;
+        s.studio.composer_menu_marker = Some('@');
+        s.composer.text = "@main".into();
+        let esc = rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert_eq!(s.studio.composer_menu_marker, None);
+        assert!(s.studio.composer_open);
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.studio.composer_open);
     }
 
     #[test]

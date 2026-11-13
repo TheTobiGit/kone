@@ -116,6 +116,55 @@ fn main() {
             ("studio-composer-open", |s| studio_composer(s, "open")),
             ("studio-composer-text", |s| studio_composer(s, "text")),
             ("studio-composer-running", |s| studio_composer(s, "running")),
+            ("studio-picker-model", |s| {
+                studio_composer(s, "picker-model");
+                s.studio.picker_open = true;
+            }),
+            ("studio-picker-effort", |s| {
+                studio_composer(s, "picker-effort");
+                s.studio.effort = "high".into();
+            }),
+            ("studio-picker-slash", |s| {
+                studio_composer(s, "picker-slash");
+                s.composer.text = "/".into();
+                s.studio.composer_menu_marker = Some('/');
+            }),
+            ("studio-picker-mention", |s| {
+                studio_composer(s, "picker-mention");
+                s.composer.text = "@".into();
+                s.studio.composer_menu_marker = Some('@');
+            }),
+            ("studio-picker-mention-chip", |s| {
+                studio_composer(s, "picker-mention-chip");
+                s.composer.text = "@main.ts".into();
+            }),
+            ("studio-picker-handoff", |s| {
+                use state::{StudioModel, StudioProvider};
+                studio_column_head(s);
+                s.studio.providers = [
+                    ("codex", "Codex"),
+                    ("claudeAgent", "Claude"),
+                    ("opencode", "OpenCode"),
+                    ("cursor", "Cursor"),
+                ]
+                .into_iter()
+                .map(|(id, label)| StudioProvider {
+                    id: id.into(),
+                    label: label.into(),
+                    supports_compaction: false,
+                })
+                .collect();
+                s.studio.models = ["GPT-5.6-Terra", "GPT-5.6-Luna", "GPT-5.5", "GPT-5.4-Mini"]
+                    .into_iter()
+                    .map(|name| StudioModel {
+                        id: name.to_lowercase(),
+                        label: name.into(),
+                        efforts: vec!["medium".into(), "high".into()],
+                        default_effort: Some("medium".into()),
+                    })
+                    .collect();
+                s.open_handoff_picker();
+            }),
             ("studio-column-head-info", |s| {
                 studio_column_head(s);
                 s.studio.title_info_open = true;
@@ -537,12 +586,37 @@ fn studio_composer(s: &mut AppState, scene: &str) {
     s.studio.conversation_fixture = Some(format!("composer-{scene}"));
     s.studio.title = "Composer review".into();
     s.studio.turn_title = "Composer review".into();
-    s.studio.models = vec![state::StudioModel {
-        id: "gpt-5.6-terra".into(),
-        label: "GPT-5.6-Terra".into(),
+    s.studio.models = [
+        ("gpt-5.6-terra", "GPT-5.6-Terra", "medium"),
+        ("gpt-5.6-luna", "GPT-5.6-Luna", "medium"),
+        ("gpt-5.5", "GPT-5.5", "medium"),
+        ("gpt-5.4-mini", "GPT-5.4-Mini", "low"),
+    ]
+    .into_iter()
+    .map(|(id, label, effort)| state::StudioModel {
+        id: id.into(),
+        label: label.into(),
         efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
-        default_effort: Some("medium".into()),
-    }];
+        default_effort: Some(effort.into()),
+    })
+    .collect();
+    if scene.starts_with("picker-") {
+        s.studio.providers = [
+            ("codex", "Codex"),
+            ("claudeAgent", "Claude"),
+            ("opencode", "OpenCode"),
+            ("cursor", "Cursor"),
+        ]
+        .into_iter()
+        .map(|(id, label)| state::StudioProvider {
+            id: id.into(),
+            label: label.into(),
+            supports_compaction: false,
+        })
+        .collect();
+        s.studio.provider_index = 0;
+        s.studio.model_index = 0;
+    }
     s.studio.mode = "accept-edits".into();
     s.studio.effort = "medium".into();
     s.studio.fast_tier = true;
@@ -560,7 +634,8 @@ fn studio_composer(s: &mut AppState, scene: &str) {
     } else {
         None
     };
-    s.studio.composer_open = matches!(scene, "open" | "text" | "running");
+    s.studio.composer_open =
+        matches!(scene, "open" | "text" | "running") || scene.starts_with("picker-");
     s.studio.composer_opened_at = None;
     s.studio.composer_closing_at = None;
     s.studio.busy = scene == "running";
@@ -607,6 +682,12 @@ fn studio_composer(s: &mut AppState, scene: &str) {
             ..Default::default()
         });
     }
+    if scene.starts_with("picker-")
+        && let Some(user) = s.studio.items.iter_mut().find(|item| item.kind == "user")
+    {
+        user.text =
+            "Inspect model, commands, project files, and hand-off choices in the composer.".into();
+    }
     if scene == "text" {
         s.composer.text = "Line one: check the composer card geometry and spacing.\nLine two: verify provider, model, and effort controls stay aligned.\nLine three: confirm Escape collapses back to the resting orb.".into();
     } else {
@@ -628,6 +709,9 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
     }
     if s.launcher.mode.is_some() {
         return false;
+    }
+    if s.page == Page::Studio && AppState::studio_key(s, event, tx) {
+        return true;
     }
     if s.page == Page::Overview {
         if event.key == rune::Key::Escape && (!s.cycle_paths.is_empty() || s.overview_switcher_open)
@@ -690,12 +774,6 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
             }
             return true;
         }
-    }
-    if s.page == Page::Studio
-        && event.key == rune::Key::Escape
-        && AppState::studio_key(s, event, tx)
-    {
-        return true;
     }
     if event.is_command('b') || (s.page == Page::Studio && event.key == rune::Key::Escape) {
         if s.page == Page::Studio {

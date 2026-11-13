@@ -1261,11 +1261,53 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
-    if s.studio.handoff_picker {
+    if s.studio.picker_open {
+        plane.child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .child(
+                    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                        .fill(t.ink.alpha(if t.dark { 0.0 } else { 0.035 }))
+                        .on_press(|s: &mut AppState| s.studio.picker_open = false),
+                )
+                .child(super::composer::model_picker(s, t).pin(None, None, Some(24.0), Some(24.0))),
+        )
+    } else if s.studio.handoff_picker {
         plane.child(handoff_picker(s, t))
     } else {
         plane
     }
+}
+
+fn stage_handoff_model(
+    s: &mut AppState,
+    provider_index: usize,
+    model_index: usize,
+    provider_id: &str,
+    selected_model: &crate::state::StudioModel,
+) {
+    let models = s
+        .studio
+        .model_catalog
+        .get(provider_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            if s.studio.provider_index == provider_index {
+                s.studio.models.clone()
+            } else {
+                vec![selected_model.clone()]
+            }
+        });
+    if models.is_empty() {
+        return;
+    }
+    s.studio.provider_index = provider_index;
+    s.studio.models = models;
+    s.studio.model_index = model_index.min(s.studio.models.len() - 1);
+    s.studio.effort = s.studio.models[s.studio.model_index]
+        .default_effort
+        .clone()
+        .unwrap_or_default();
+    s.studio.handoff_staged = true;
 }
 
 fn handoff_picker(s: &AppState, t: Palette) -> El {
@@ -1307,95 +1349,113 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
                 }),
         );
     }
-    let mut models = col().w_full().grow(1.0).padding(14.0);
-    if s.studio.models.is_empty() {
-        models = models
+    let query = s.studio.handoff_query.text.trim().to_lowercase();
+    let mut model_entries = Vec::new();
+    for (provider_index, provider) in s.studio.providers.iter().enumerate() {
+        let models = s
+            .studio
+            .model_catalog
+            .get(&provider.id)
+            .cloned()
+            .or_else(|| {
+                (provider_index == s.studio.provider_index).then(|| s.studio.models.clone())
+            })
+            .unwrap_or_default();
+        for (model_index, model) in models.into_iter().enumerate() {
+            if query.is_empty()
+                || format!("{} {} {}", model.label, model.id, provider.label)
+                    .to_lowercase()
+                    .contains(&query)
+            {
+                model_entries.push((provider_index, model_index, provider.clone(), model));
+            }
+        }
+    }
+    let mut model_list = col().w_full().grow(1.0).padding(14.0);
+    if model_entries.is_empty() {
+        model_list = model_list
             .center()
             .child(label("No models available.", 13.0, 400.0, t.muted));
     }
-    for (index, model) in s.studio.models.iter().enumerate() {
-        let query = s.studio.handoff_query.text.trim().to_lowercase();
-        if !query.is_empty()
-            && !format!("{} {}", model.label, model.id)
-                .to_lowercase()
-                .contains(&query)
-        {
-            continue;
-        }
-        let selected = (s.studio.handoff_staged && index == s.studio.model_index)
-            || source.is_some_and(|(provider, models, source_index, _)| {
-                *provider == s.studio.provider_index
-                    && models
+    for (provider_index, model_index, provider, model) in model_entries {
+        let selected = (s.studio.handoff_staged
+            && provider_index == s.studio.provider_index
+            && model_index == s.studio.model_index)
+            || source.is_some_and(|(source_provider, source_models, source_index, _)| {
+                *source_provider == provider_index
+                    && source_models
                         .get(*source_index)
                         .is_some_and(|source| source.id == model.id)
             });
-        let provider = s
-            .studio
-            .providers
-            .get(s.studio.provider_index)
-            .map(|p| p.id.as_str())
-            .unwrap_or("codex");
-        models = models.child(
-            row()
-                .key(format!("handoff-model-{index}"))
-                .role("button")
-                .label(model.label.clone())
-                .focusable(true)
-                .on_key(move |s: &mut AppState, event, _| {
-                    if event.key != rune::Key::Enter {
-                        return false;
-                    }
-                    s.studio.model_index = index;
-                    s.studio.effort = s.studio.models[index]
-                        .default_effort
-                        .clone()
-                        .unwrap_or_default();
-                    s.studio.handoff_staged = true;
-                    true
-                })
-                .w_full()
-                .h(40.0)
-                .px(10.0)
-                .gap(13.0)
-                .center_y()
-                .radius(11.0)
-                .fill(if selected {
-                    t.hover
-                } else {
-                    t.ground.alpha(0.0)
-                })
-                .hover(t.hover)
-                .child(
-                    brand_mark_size(if provider == "codex" { "gpt" } else { provider }, 17.0, t)
-                        .opacity(0.72),
-                )
-                .child(label(model.label.clone(), 15.0, 400.0, t.ink).opacity(0.72))
-                .child(if model.efforts.is_empty() {
-                    el()
-                } else {
-                    let color = rune::color::hex(if model.label.contains("Mini") {
-                        "#50b9ed"
+        let key_provider_id = provider.id.clone();
+        let key_model = model.clone();
+        let mut item = row()
+            .key(format!("handoff-model-{}-{}", provider_index, model_index))
+            .role("button")
+            .label(model.label.clone())
+            .focusable(true)
+            .on_key(move |s: &mut AppState, event, _| {
+                if event.key != rune::Key::Enter {
+                    return false;
+                }
+                stage_handoff_model(s, provider_index, model_index, &key_provider_id, &key_model);
+                true
+            })
+            .w_full()
+            .h(40.0)
+            .px(10.0)
+            .gap(13.0)
+            .center_y()
+            .radius(11.0)
+            .fill(if selected {
+                t.hover
+            } else {
+                t.ground.alpha(0.0)
+            })
+            .hover(t.hover)
+            .child(
+                brand_mark_size(
+                    if provider.id == "codex" {
+                        "gpt"
                     } else {
-                        "#59cba8"
-                    })
-                    .unwrap();
-                    let count = if model.label.contains("Mini") { 1 } else { 2 };
-                    let mut brains = row();
-                    for _ in 0..count {
-                        brains = brains.child(icon(&PICKER_BRAIN, 13.0).color(color));
-                    }
-                    brains
-                })
-                .on_press(move |s: &mut AppState| {
-                    s.studio.model_index = index;
-                    s.studio.effort = s.studio.models[index]
-                        .default_effort
-                        .clone()
-                        .unwrap_or_default();
-                    s.studio.handoff_staged = true;
-                }),
-        );
+                        &provider.id
+                    },
+                    17.0,
+                    t,
+                )
+                .opacity(0.72),
+            )
+            .child(label(model.label.clone(), 15.0, 400.0, t.ink).opacity(0.72));
+        if provider_index != s.studio.provider_index {
+            item = item.child(label(provider.label.clone(), 11.0, 400.0, t.muted));
+        }
+        if !model.efforts.is_empty() {
+            let color = rune::color::hex(if model.label.contains("Mini") {
+                "#50b9ed"
+            } else {
+                "#59cba8"
+            })
+            .unwrap();
+            let count = if model.label.contains("Mini") { 1 } else { 2 };
+            let mut brains = row();
+            for _ in 0..count {
+                brains = brains.child(icon(&PICKER_BRAIN, 13.0).color(color));
+            }
+            item = item.child(brains);
+        }
+        let click_provider_id = provider.id.clone();
+        let click_model = model.clone();
+        model_list = model_list.child(item.on_press(move |s: &mut AppState| {
+            stage_handoff_model(
+                s,
+                provider_index,
+                model_index,
+                &click_provider_id,
+                &click_model,
+            );
+        }));
     }
+    let models = model_list;
     let content = col()
         .w(340.0)
         .h(294.0)
@@ -2372,85 +2432,10 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             )
         }
     } else if s.studio.composer_open || show_closing {
-        let mut dock = col().w(track_w).items_center();
-        if s.studio.composer_open && s.studio.picker_open {
-            let mut picker = col()
-                .w_full()
-                .max_w(360.0)
-                .mb(10.0)
-                .padding(6.0)
-                .gap(2.0)
-                .radius(14.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .child(label("PROVIDER", 10.0, 600.0, t.muted).px(8.0).py(4.0));
-            for (index, provider) in s.studio.providers.iter().enumerate() {
-                picker = picker.child(
-                    el().key(format!("provider-{index}"))
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
-                        .radius(8.0)
-                        .hover(t.hover)
-                        .child(label(
-                            format!(
-                                "{}{}",
-                                if index == s.studio.provider_index {
-                                    "✓  "
-                                } else {
-                                    "    "
-                                },
-                                provider.label
-                            ),
-                            12.5,
-                            500.0,
-                            t.ink,
-                        ))
-                        .on_press(move |s: &mut AppState| s.select_provider(index)),
-                );
-            }
-            picker = picker.child(label("MODEL", 10.0, 600.0, t.muted).px(8.0).py(4.0));
-            for (index, model) in s.studio.models.iter().enumerate() {
-                picker = picker.child(
-                    el().key(format!("model-{index}"))
-                        .w_full()
-                        .h(32.0)
-                        .px(8.0)
-                        .center_y()
-                        .radius(8.0)
-                        .hover(t.hover)
-                        .child(label(
-                            format!(
-                                "{}{}",
-                                if index == s.studio.model_index {
-                                    "✓  "
-                                } else {
-                                    "    "
-                                },
-                                model.label
-                            ),
-                            12.5,
-                            500.0,
-                            t.ink,
-                        ))
-                        .on_press(move |s: &mut AppState| {
-                            s.studio.model_index = index;
-                            s.studio.effort = s.studio.models[index]
-                                .default_effort
-                                .clone()
-                                .unwrap_or_default();
-                            if s.studio.handoff_picker {
-                                s.create_continuation(true);
-                            } else {
-                                s.studio.picker_open = false;
-                            }
-                        }),
-                );
-            }
-            dock = dock.child(picker);
-        }
-        dock.child(super::composer::composer_dock(s, name, track_w, t))
+        col()
+            .w(track_w)
+            .items_center()
+            .child(super::composer::composer_dock(s, name, track_w, t))
     } else {
         wake_orb()
     };

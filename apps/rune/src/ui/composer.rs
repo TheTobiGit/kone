@@ -8,9 +8,154 @@ use crate::{
     theme::{Palette, mix_srgb},
 };
 use rune::{
-    Color, Cursor, El, Icon, Shadow, TextStyle, auto_grow, col, color::hex, el, icon, row, text,
-    text_input,
+    Color, Cursor, El, Icon, ScrollSpec, Shadow, TextStyle, auto_grow, col, color::hex, el, icon,
+    row, text, text_input,
 };
+
+static MODEL_SEARCH: Icon = Icon {
+    name: "composer-model-search",
+    view: 24.0,
+    body: r#"<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
+
+fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
+    let marker = s.studio.composer_menu_marker?;
+    if marker == '@' && s.studio.busy {
+        return None;
+    }
+    let query = s
+        .composer
+        .text
+        .trim_start_matches(marker)
+        .trim()
+        .to_lowercase();
+    let mut menu = col()
+        .key("composer-trigger-menu")
+        .w_full()
+        .mb(12.0)
+        .padding(8.0)
+        .radius(18.0)
+        .fill(t.field)
+        .border(1.0, t.line)
+        .box_shadow(Shadow {
+            x: 0.0,
+            y: 8.0,
+            blur: 28.0,
+            spread: 0.0,
+            color: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: if t.dark { 0.34 } else { 0.12 },
+            },
+            inset: false,
+        });
+    let title = if marker == '/' {
+        "Commands"
+    } else {
+        "Project files"
+    };
+    menu = menu.child(
+        row()
+            .h(27.0)
+            .px(8.0)
+            .gap(5.0)
+            .center_y()
+            .child(label(marker.to_string(), 12.0, 600.0, t.accent))
+            .child(label(title, 11.5, 500.0, t.muted)),
+    );
+    let rows = if marker == '/' {
+        [
+            ("/model", "Open model picker"),
+            ("/new", "Start a new thread"),
+        ]
+        .into_iter()
+        .filter(|(cmd, desc)| {
+            query.is_empty() || cmd.contains(&query) || desc.to_lowercase().contains(&query)
+        })
+        .map(|(name, detail)| (name.to_owned(), detail.to_owned()))
+        .collect::<Vec<_>>()
+    } else {
+        s.composer_mention_files()
+            .into_iter()
+            .filter(|(name, path)| {
+                query.is_empty()
+                    || name.to_lowercase().contains(&query)
+                    || path.to_lowercase().contains(&query)
+            })
+            .collect::<Vec<_>>()
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    for (index, (name, detail)) in rows.iter().enumerate() {
+        let selected = index == s.studio.composer_menu_index;
+        let mut item = row()
+            .key(format!("composer-menu-row-{index}"))
+            .w_full()
+            .h(34.0)
+            .px(9.0)
+            .gap(8.0)
+            .center_y()
+            .radius(10.0)
+            .hover(t.hover)
+            .cursor(Cursor::Pointer);
+        if selected {
+            item = item.fill(t.accent.alpha(0.12));
+        }
+        if marker == '@' {
+            let (mark, color) = if name.ends_with(".vue") {
+                ("V", "#42b883")
+            } else if name.ends_with(".css") {
+                ("▦", "#a855f7")
+            } else if name.ends_with(".json") {
+                ("{}", "#e34f26")
+            } else {
+                ("TS", "#3182ce")
+            };
+            item = item
+                .child(
+                    el().w(15.0)
+                        .center()
+                        .child(label(mark, 9.0, 700.0, hex(color).unwrap())),
+                )
+                .child(label(name.clone(), 13.0, 500.0, t.ink))
+                .child(label(detail.clone(), 11.0, 400.0, t.muted));
+        } else {
+            let glyph = if name == "/model" { "⚙" } else { "+" };
+            item = item
+                .child(label(glyph, 13.0, 500.0, t.muted))
+                .child(label(name.clone(), 13.0, 600.0, t.ink))
+                .child(label(detail.clone(), 11.0, 400.0, t.muted));
+        }
+        let name = name.clone();
+        let detail = detail.clone();
+        menu = menu.child(item.on_press(move |s: &mut AppState| {
+            s.studio.composer_menu_marker = None;
+            s.studio.composer_menu_index = 0;
+            if marker == '/' {
+                if name == "/model" {
+                    s.composer.clear();
+                    s.studio.picker_open = true;
+                    s.studio.handoff_query.text.clear();
+                } else if name == "/new" {
+                    s.composer.clear();
+                    s.new_studio_thread();
+                }
+            } else {
+                let path = if detail.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{detail}/{name}")
+                };
+                s.composer.text = format!("@{path} ");
+                s.composer.focus = s.composer.text.len();
+                s.composer.anchor = s.composer.focus;
+            }
+        }));
+    }
+    Some(menu)
+}
 
 static PLUS_SIGN: Icon = Icon {
     name: "composer-plus",
@@ -120,6 +265,176 @@ fn brain_stack(count: usize, hue: Color, glow: bool) -> El {
         stack = stack.child(mark);
     }
     stack
+}
+
+pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
+    let query = s.studio.handoff_query.text.trim().to_lowercase();
+    let mut rail = col().w(44.0).pt(4.0).gap(10.0).items_center();
+    for (index, provider) in s.studio.providers.iter().enumerate() {
+        rail = rail.child(
+            el().key(format!("composer-picker-provider-{index}"))
+                .w(44.0)
+                .h(44.0)
+                .center()
+                .cursor(Cursor::Pointer)
+                .opacity(if index == s.studio.provider_index {
+                    1.0
+                } else {
+                    0.48
+                })
+                .child(brand_mark_size(
+                    if provider.id == "codex" {
+                        "gpt"
+                    } else {
+                        &provider.id
+                    },
+                    20.0,
+                    t,
+                ))
+                .on_press(move |s: &mut AppState| {
+                    if index != s.studio.provider_index {
+                        s.select_provider(index);
+                    }
+                }),
+        );
+    }
+    let search = row()
+        .h(32.0)
+        .mx(10.0)
+        .mt(10.0)
+        .px(10.0)
+        .gap(8.0)
+        .center_y()
+        .radius(12.0)
+        .fill(t.hover)
+        .border(1.0, t.line)
+        .child(icon(&MODEL_SEARCH, 14.0).color(t.muted))
+        .child(
+            text_input(&s.studio.handoff_query, TextStyle::new(12.5, 400.0))
+                .key("composer-model-search")
+                .grow(1.0)
+                .single_line()
+                .placeholder("Search models…", t.placeholder)
+                .color(t.ink)
+                .on_edit(|s: &mut AppState| &mut s.studio.handoff_query),
+        );
+    let mut entries = Vec::new();
+    for (provider_index, provider) in s.studio.providers.iter().enumerate() {
+        if query.is_empty() && provider_index != s.studio.provider_index {
+            continue;
+        }
+        let provider_models = s
+            .studio
+            .model_catalog
+            .get(&provider.id)
+            .cloned()
+            .or_else(|| {
+                (provider_index == s.studio.provider_index).then(|| s.studio.models.clone())
+            })
+            .unwrap_or_default();
+        for (model_index, model) in provider_models.into_iter().enumerate() {
+            if query.is_empty()
+                || format!("{} {} {}", model.label, model.id, provider.label)
+                    .to_lowercase()
+                    .contains(&query)
+            {
+                entries.push((provider_index, model_index, provider.clone(), model));
+            }
+        }
+    }
+    let has_current = entries.iter().any(|(provider, model, _, _)| {
+        *provider == s.studio.provider_index && *model == s.studio.model_index
+    });
+    let first_entry = entries
+        .first()
+        .map(|(provider, model, _, _)| (*provider, *model));
+    let mut models = col().w_full().padding(14.0);
+    let mut count = 0;
+    for (provider_index, model_index, provider, model) in entries {
+        count += 1;
+        let selected = (provider_index == s.studio.provider_index
+            && model_index == s.studio.model_index)
+            || (!has_current && first_entry == Some((provider_index, model_index)));
+        let mut item = row()
+            .key(format!(
+                "composer-picker-model-{provider_index}-{model_index}"
+            ))
+            .w_full()
+            .px(10.0)
+            .py(9.0)
+            .gap(10.0)
+            .center_y()
+            .radius(11.0)
+            .hover(t.hover)
+            .cursor(Cursor::Pointer)
+            .opacity(if selected { 1.0 } else { 0.72 });
+        if selected {
+            item = item.fill(t.ink.alpha(0.04));
+        }
+        item = item.child(el().w(22.0).center().child(brand_mark_size(
+            if provider.id == "codex" {
+                "gpt"
+            } else {
+                &provider.id
+            },
+            17.0,
+            t,
+        )));
+        if !query.is_empty() && provider_index != s.studio.provider_index {
+            item = item.child(label(provider.label.clone(), 11.0, 400.0, t.muted));
+        }
+        item = item.child(label(model.label.clone(), 15.0, 400.0, t.ink));
+        let effort = if selected && !s.studio.effort.is_empty() {
+            Some(s.studio.effort.as_str())
+        } else {
+            model
+                .default_effort
+                .as_deref()
+                .or_else(|| model.efforts.first().map(String::as_str))
+        };
+        if let Some(effort) = effort {
+            let (_, hue, count, glow) = effort_meta(effort);
+            item = item.child(brain_stack(count, hex(hue).unwrap(), glow).opacity(0.8));
+        }
+        models = models.child(item.on_press(move |s: &mut AppState| {
+            s.choose_studio_model(provider_index, model_index);
+        }));
+    }
+    if count == 0 {
+        let message = if query.is_empty() {
+            "No models available.".to_owned()
+        } else {
+            format!("No models match “{}”.", s.studio.handoff_query.text.trim())
+        };
+        models = models.child(label(message, 13.0, 400.0, t.muted).px(14.0).py(22.0));
+    }
+    let content = col()
+        .grow(1.0)
+        .h(300.0)
+        .radius(18.0)
+        .fill(t.field)
+        .border(1.0, t.line)
+        .clip_rounded(18.0)
+        .child(search)
+        .child(
+            col()
+                .key("composer-model-list")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(models),
+        );
+    row()
+        .w(384.0)
+        .max_w(384.0)
+        .h(300.0)
+        .radius(22.0)
+        .fill(t.sunken)
+        .child(rail)
+        .child(content)
 }
 
 pub(super) fn resting_orb(s: &AppState, t: Palette) -> El {
@@ -411,18 +726,47 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .on_edit(|s: &mut AppState| &mut s.composer)
         .on_submit(AppState::send_studio)
         .on_key(|s: &mut AppState, ev, tx| {
-            if ev.key == rune::Key::Escape {
-                AppState::studio_key(s, ev, tx)
-            } else {
-                false
+            if s.studio.composer_menu_marker.is_none()
+                && let rune::Key::Text(text) = &ev.key
+                && (text == "/" || text == "@")
+            {
+                s.studio.composer_menu_marker = text.chars().next();
+                s.studio.composer_menu_index = 0;
             }
+            AppState::studio_key(s, ev, tx)
         });
-    let field_box = el()
+    let mut field_box = el()
         .w_full()
         .pt(16.0)
         .px(14.0)
         .pb(4.0)
         .child(auto_grow(field, 1, 11).min_h(50.0).max_h(260.0));
+    if let Some(path) = s.composer.text.strip_prefix('@').map(str::trim)
+        && !path.is_empty()
+        && !path.contains(char::is_whitespace)
+    {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let chip_color = mix_srgb(t.ink, t.accent, 0.62);
+        field_box = field_box
+            .child(
+                el().pin(Some(13.0), Some(15.0), None, None)
+                    .w(82.0)
+                    .h(24.0)
+                    .fill(t.field),
+            )
+            .child(
+                row()
+                    .pin(Some(14.0), Some(16.0), None, None)
+                    .h(21.0)
+                    .px(5.0)
+                    .gap(4.0)
+                    .center_y()
+                    .radius(6.0)
+                    .fill(t.accent.alpha(0.12))
+                    .child(label("TS", 8.0, 700.0, hex("#3182ce").unwrap()))
+                    .child(label(name, 11.5, 500.0, chip_color)),
+            );
+    }
 
     let (mode_label, mode_hue_hex, mode_icon) = mode_meta(s.studio.mode.as_str());
     let mode_hue = hex(mode_hue_hex).unwrap();
@@ -465,14 +809,23 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
             .hover(t.hover)
             .cursor(Cursor::Pointer)
             .opacity(0.78)
-            .on_press(|s: &mut AppState| s.studio.picker_open = !s.studio.picker_open);
+            .on_press(|s: &mut AppState| {
+                s.studio.picker_open = !s.studio.picker_open;
+                if s.studio.picker_open {
+                    s.studio.handoff_query.text.clear();
+                }
+            });
         if let Some(p) = provider {
             let text_label = model
                 .map(|m| m.label.as_str())
                 .filter(|l| !l.is_empty())
                 .unwrap_or(p.label.as_str());
             btn = btn
-                .child(brand_mark_size(&p.id, 15.0, t))
+                .child(brand_mark_size(
+                    if p.id == "codex" { "gpt" } else { &p.id },
+                    15.0,
+                    t,
+                ))
                 .child(label(text_label, 12.5, 400.0, t.ink));
         } else {
             btn = btn
@@ -659,6 +1012,12 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
     let mut dock = col().w(track_w).items_center().opacity(card_alpha);
     if !closing && tray_alpha > 0.0 {
         dock = dock.child(context_tray(s, project_name, t).opacity(tray_alpha));
+    }
+    if !closing
+        && s.studio.composer_menu_marker.is_some()
+        && let Some(menu) = composer_trigger_menu(s, t)
+    {
+        dock = dock.child(menu);
     }
     if let Some(top_tray) = status_tray(s, track_w, t).or_else(|| workspace_tray(s, track_w, t)) {
         dock = dock.child(top_tray);
