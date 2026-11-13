@@ -1464,14 +1464,12 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
         if provider_index != s.studio.provider_index {
             item = item.child(label(provider.label.clone(), 11.0, 400.0, t.muted));
         }
-        if !model.efforts.is_empty() {
-            let color = rune::color::hex(if model.label.contains("Mini") {
-                "#50b9ed"
-            } else {
-                "#59cba8"
-            })
-            .unwrap();
-            item = item.child(icon(&PICKER_BRAIN, 11.0).color(color));
+        if let Some(effort) = model
+            .default_effort
+            .as_deref()
+            .or_else(|| model.efforts.first().map(String::as_str))
+        {
+            item = item.child(super::composer::model_effort_badge(effort));
         }
         let click_provider_id = provider.id.clone();
         let click_model = model.clone();

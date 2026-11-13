@@ -158,11 +158,18 @@ fn main() {
                 .collect();
                 s.studio.models = ["GPT-5.6-Terra", "GPT-5.6-Luna", "GPT-5.5", "GPT-5.4-Mini"]
                     .into_iter()
-                    .map(|name| StudioModel {
-                        id: name.to_lowercase(),
-                        label: name.into(),
-                        efforts: vec!["medium".into(), "high".into()],
-                        default_effort: Some("medium".into()),
+                    .map(|name| {
+                        let default_effort = if name.ends_with("Mini") {
+                            "low"
+                        } else {
+                            "medium"
+                        };
+                        StudioModel {
+                            id: name.to_lowercase(),
+                            label: name.into(),
+                            efforts: vec!["low".into(), "medium".into(), "high".into()],
+                            default_effort: Some(default_effort.into()),
+                        }
                     })
                     .collect();
                 s.open_handoff_picker();

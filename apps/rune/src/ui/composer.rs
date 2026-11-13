@@ -241,7 +241,7 @@ fn mode_meta(mode: &str) -> (&'static str, &'static str, &'static Icon) {
     }
 }
 
-fn effort_meta(effort: &str) -> (&'static str, &'static str, usize, bool) {
+pub(super) fn effort_meta(effort: &str) -> (&'static str, &'static str, usize, bool) {
     match effort {
         "base" => ("Standard", "#71717a", 2, false),
         "none" => ("None", "#a1a1aa", 1, false),
@@ -269,6 +269,23 @@ fn brain_stack(count: usize, hue: Color, glow: bool) -> El {
         stack = stack.child(mark);
     }
     stack
+}
+
+pub(super) fn model_effort_badge(effort: &str) -> El {
+    let (_, hue, count, glow) = effort_meta(effort);
+    let hue = hex(hue).unwrap();
+    let mut stack = row().center_y();
+    for index in 0..count.max(1) {
+        let mut brain = icon(&PICKER_BRAIN, 13.0).color(hue);
+        if index > 0 {
+            brain = brain.ml(-4.0);
+        }
+        if glow {
+            brain = brain.shadow(0.0, 3.0, hue.alpha(0.65));
+        }
+        stack = stack.child(brain);
+    }
+    stack.opacity(0.8)
 }
 
 pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
@@ -380,13 +397,7 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
                 .or_else(|| model.efforts.first().map(String::as_str))
         };
         if let Some(effort) = effort {
-            let (_, hue, _, glow) = effort_meta(effort);
-            let color = hex(hue).unwrap();
-            let mut badge = icon(&PICKER_BRAIN, 13.0).color(color);
-            if glow {
-                badge = badge.shadow(0.0, 3.0, color.alpha(0.65));
-            }
-            item = item.child(badge.opacity(0.8));
+            item = item.child(model_effort_badge(effort));
         }
         models = models.child(item.on_press(move |s: &mut AppState| {
             s.choose_studio_model(provider_index, model_index);
