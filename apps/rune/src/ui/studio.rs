@@ -1064,8 +1064,8 @@ fn terminal_line(value: &str, t: Palette) -> El {
         spans.push(span);
     }
     let mut line = text(output)
-        // Match the Electron terminal's 12px monospace font and 1.2 row pitch.
-        .font(TextStyle::new(12.0, 400.0).mono().lh(14.4))
+        // Match xterm's measured 13px macOS glyphs and 18.5px cell pitch.
+        .font(TextStyle::new(13.0, 400.0).mono().lh(18.5))
         .color(t.ink)
         .selectable(true)
         // xterm receives the Oklab 24% accent value from `--term-selection`, but its
@@ -1397,7 +1397,7 @@ fn activity_task_row(title: &str, status: &str, t: Palette) -> El {
 }
 
 fn project_nav(s: &AppState, t: Palette) -> El {
-    let mut nav = row().center_y().gap(4.0).offset(8.0, 10.0);
+    let mut nav = row().center_y().gap(4.0).offset(8.0, 12.0);
     for (index, project) in s.projects.iter().enumerate() {
         let has_row = s.studio_layout["rows"]
             .as_array()
@@ -2099,6 +2099,7 @@ fn studio_row(
             });
             let activity_hover = s.studio.conversation_fixture.as_deref() == Some("activity-hover");
             let head = row()
+                .offset(0.0, if state.is_some_and(|s| s.terminal_command.is_some()) { 0.5 } else { 0.0 })
                 .w_full()
                 .px(6.4)
                 .h(33.59)
@@ -2142,13 +2143,13 @@ fn studio_row(
                 )
                 .child(
                     row()
-                        .gap(8.0)
+                        .gap(if state.is_some_and(|s| s.terminal_command.is_some()) { 0.0 } else { 8.0 })
                         .h(20.0)
                         .center_y()
                         .child(if activity_fixture {
                             brand_mark_size("gpt", 14.0, t)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
-                            icon(&TERMINAL, 15.0).color(t.muted)
+                            icon(&TERMINAL, 15.0).color(t.muted).mr(8.0)
                         } else if state.is_some_and(|s| s.dormant) {
                             icon(&SIDE_CHAT, 15.0).color(t.muted)
                         } else {
@@ -2177,6 +2178,7 @@ fn studio_row(
                             label("New thread", 13.5, 400.0, t.ink)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             text("Terminal")
+                                .mr(if state.is_some_and(|s| s.terminal_running) { 8.0 } else { 0.0 })
                                 .font(
                                     TextStyle::new(13.5, 400.0)
                                         .family(Family::Named("Geist"))
@@ -2195,7 +2197,7 @@ fn studio_row(
                                     .center_y()
                                     .gap(5.0)
                                     .px(8.0)
-                                    .h(18.0)
+                                    .h(20.0)
                                     .radius(999.0)
                                     .fill(t.ink.alpha(0.05))
                                     .child(el().w(5.0).h(5.0).radius(3.0).fill(t.muted))
@@ -2430,7 +2432,7 @@ fn studio_row(
                             .grow(1.0)
                             .min_h(0.0)
                             .px(11.0)
-                            .pt(10.0)
+                            .pt(7.5)
                             .scroll(ScrollSpec { stick_bottom: true })
                             .child(output)
                             .on_layout(|s: &mut AppState, bounds| {

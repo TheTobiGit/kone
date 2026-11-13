@@ -47,9 +47,9 @@ for scene in scenes:
             elif script is None and scene == 'studio-column-head-terminal-selection':
                 script = Path(temp) / 'terminal-selection.json'
                 script.write_text(json.dumps({'events': [
-                    {'t': 0.2, 'type': 'down', 'x': 238, 'y': 106},
-                    {'t': 0.5, 'type': 'move', 'x': 410, 'y': 106},
-                    {'t': 0.6, 'type': 'up', 'x': 410, 'y': 106},
+                    {'t': 0.2, 'type': 'down', 'x': 283, 'y': 106},
+                    {'t': 0.5, 'type': 'move', 'x': 322, 'y': 106},
+                    {'t': 0.6, 'type': 'up', 'x': 322, 'y': 106},
                 ]}))
                 capture_at = capture_at if capture_at is not None else 0.8
             if script:
