@@ -41,7 +41,14 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
         .mb(if marker == '@' { 17.0 } else { 14.0 })
         .radius(18.0)
         .fill(t.raised)
-        .border(1.0, t.ink.alpha(0.08));
+        .box_shadow(Shadow {
+            x: 0.0,
+            y: 0.0,
+            blur: 0.0,
+            spread: 1.0,
+            color: t.ink.alpha(0.08),
+            inset: false,
+        });
     let title = if marker == '/' {
         "Commands"
     } else {
@@ -111,7 +118,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
                         .center()
                         .child(icon(super::file_icons::for_path(&path), 15.0)),
                 )
-                .child(label(name.clone(), 13.0, 400.0, t.ink))
+                .child(label(name.clone(), 13.0, 500.0, t.ink))
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
         } else {
             item = item
@@ -912,7 +919,17 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
                 .child(brain_stack(brains, hex(eff_hue).unwrap(), glow))
                 .child(label(eff_label, 12.5, 400.0, t.ink));
             if effort_keyboard_selected {
-                effort = effort.border(1.0, hex("#4285f4").unwrap());
+                effort = effort
+                    .fill(t.field)
+                    .border(2.0, hex("#4285f4").unwrap())
+                    .box_shadow(Shadow {
+                        x: 0.0,
+                        y: 0.0,
+                        blur: 3.0,
+                        spread: 0.0,
+                        color: hex("#4285f4").unwrap().alpha(0.4),
+                        inset: false,
+                    });
             }
             effort.on_press(|s: &mut AppState| s.cycle_studio_effort())
         });

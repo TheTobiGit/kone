@@ -215,7 +215,11 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
             }
         }
     }
-    marks = marks.child(brand_mark(provider, t).opacity(if picker_fixture { 0.56 } else { 1.0 }));
+    let mut current_mark = brand_mark(provider, t);
+    if picker_fixture {
+        current_mark = current_mark.color(if t.dark { t.muted } else { t.ink });
+    }
+    marks = marks.child(current_mark.opacity(if picker_fixture { 0.9 } else { 1.0 }));
     if state.is_some_and(|s| s.side_chat) {
         marks = marks.child(
             icon(&SIDE_CHAT, 11.0).color(crate::theme::mix_srgb(t.ink_soft, t.accent, 0.72)),
