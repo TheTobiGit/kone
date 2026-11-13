@@ -18,6 +18,12 @@ static MODEL_SEARCH: Icon = Icon {
     body: r#"<circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 15.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
+static COMMAND_MODEL: Icon = Icon {
+    name: "composer-command-model",
+    view: 24.0,
+    body: r#"<path d="M12 3.5 14 5l2.5-.2.7 2.4 2.2 1.2-.8 2.4.8 2.4-2.2 1.2-.7 2.4L14 16.5l-2 1.5-2-1.5-2.5.2-.7-2.4-2.2-1.2.8-2.4-.8-2.4 2.2-1.2.7-2.4L10 5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="11.5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>"#,
+};
+
 fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     let marker = s.studio.composer_menu_marker?;
     if marker == '@' && s.studio.busy {
@@ -32,8 +38,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     let mut menu = col()
         .key("composer-trigger-menu")
         .w_full()
-        .mb(18.0)
-        .padding(8.0)
+        .mb(if marker == '@' { 17.0 } else { 14.0 })
         .radius(18.0)
         .fill(t.field)
         .border(1.0, t.ink.alpha(0.08));
@@ -44,12 +49,12 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     };
     menu = menu.child(
         row()
-            .h(27.0)
-            .px(8.0)
-            .gap(5.0)
+            .h(38.14)
+            .px(14.0)
+            .gap(7.0)
             .center_y()
-            .child(label(marker.to_string(), 12.0, 600.0, t.accent))
-            .child(label(title, 11.5, 500.0, t.muted)),
+            .child(label(marker.to_string(), 13.0, 600.0, t.accent))
+            .child(label(title, 11.5, 600.0, t.muted)),
     );
     let rows = if marker == '/' {
         [
@@ -75,6 +80,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     if rows.is_empty() {
         return None;
     }
+    let mut list = col().w_full().padding(6.0);
     for (index, (name, detail)) in rows.iter().enumerate() {
         let selected = index == s.studio.composer_menu_index;
         let mut item = row()
@@ -82,7 +88,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
             .w_full()
             .h(34.0)
             .px(9.0)
-            .gap(8.0)
+            .gap(9.0)
             .center_y()
             .radius(10.0)
             .hover(t.hover)
@@ -103,18 +109,21 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
                         .center()
                         .child(icon(super::file_icons::for_path(&path), 15.0)),
                 )
-                .child(label(name.clone(), 13.0, 500.0, t.ink))
+                .child(label(name.clone(), 13.0, 400.0, t.ink))
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
         } else {
-            let glyph = if name == "/model" { "⚙" } else { "+" };
             item = item
-                .child(label(glyph, 13.0, 500.0, t.muted))
+                .child(if name == "/model" {
+                    icon(&COMMAND_MODEL, 15.0).color(t.muted)
+                } else {
+                    icon(&PLUS_SIGN, 15.0).color(t.muted)
+                })
                 .child(label(name.clone(), 13.0, 600.0, t.ink))
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
         }
         let name = name.clone();
         let detail = detail.clone();
-        menu = menu.child(item.on_press(move |s: &mut AppState| {
+        list = list.child(item.on_press(move |s: &mut AppState| {
             s.studio.composer_menu_marker = None;
             s.studio.composer_menu_index = 0;
             if marker == '/' {
@@ -139,6 +148,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
             }
         }));
     }
+    menu = menu.child(list).child(el().h(5.0));
     Some(menu)
 }
 
@@ -400,7 +410,7 @@ pub(super) fn model_picker(s: &AppState, t: Palette) -> El {
         .max_w(384.0)
         .h(300.0)
         .radius(22.0)
-        .fill(t.sunken)
+        .fill(t.field)
         .child(rail)
         .child(content)
 }
@@ -533,11 +543,13 @@ fn workspace_tray(s: &AppState, track_w: f32, t: Palette) -> Option<El> {
 }
 
 fn context_tray(s: &AppState, project_name: &str, t: Palette) -> El {
-    let branch_label = s.studio.worktree_path.as_deref().and_then(|path| {
-        std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .filter(|n| !n.is_empty())
+    let branch_label = s.studio.context_branch.as_deref().or_else(|| {
+        s.studio.worktree_path.as_deref().and_then(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+        })
     });
     let thread_title = if s.studio.turn_title.is_empty() {
         if s.studio.title.is_empty() {
@@ -787,9 +799,7 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
                 }
             });
         if s.studio.picker_open {
-            btn = btn
-                .opacity(1.0)
-                .border(1.0, hex("#4285f4").unwrap().alpha(0.72));
+            btn = btn.opacity(1.0).border(1.5, hex("#4285f4").unwrap());
         }
         if let Some(p) = provider {
             let text_label = model
@@ -884,8 +894,10 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
             s.studio.effort.as_str()
         };
         let (eff_label, eff_hue, brains, glow) = effort_meta(effort_key);
-        right_group = right_group.child(
-            row()
+        let effort_keyboard_selected =
+            s.studio.conversation_fixture.as_deref() == Some("composer-picker-effort");
+        right_group = right_group.child({
+            let mut effort = row()
                 .key("studio-effort-picker")
                 .h(30.0)
                 .px(7.0)
@@ -896,9 +908,12 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
                 .cursor(Cursor::Pointer)
                 .opacity(0.9)
                 .child(brain_stack(brains, hex(eff_hue).unwrap(), glow))
-                .child(label(eff_label, 12.5, 400.0, t.ink))
-                .on_press(|s: &mut AppState| s.cycle_studio_effort()),
-        );
+                .child(label(eff_label, 12.5, 400.0, t.ink));
+            if effort_keyboard_selected {
+                effort = effort.border(1.0, hex("#4285f4").unwrap());
+            }
+            effort.on_press(|s: &mut AppState| s.cycle_studio_effort())
+        });
     }
     if s.studio.fast_tier {
         let mut fast = el()

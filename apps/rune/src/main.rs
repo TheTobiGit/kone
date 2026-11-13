@@ -142,6 +142,7 @@ fn main() {
                 use state::{StudioModel, StudioProvider};
                 studio_composer(s, "picker-handoff");
                 s.studio.composer_open = false;
+                s.studio_column_hover = Some(s.studio.thread_id.clone());
                 s.studio.providers = [
                     ("codex", "Codex"),
                     ("claudeAgent", "Claude"),
@@ -621,7 +622,7 @@ fn studio_composer(s: &mut AppState, scene: &str) {
         .collect();
         s.studio.provider_index = 0;
         s.studio.model_index = 0;
-        s.studio.worktree_path = Some("/tmp/calm-agent-ui-continuation".into());
+        s.studio.context_branch = Some("calm-agent-ui-continuation".into());
     }
     s.studio.mode = "accept-edits".into();
     s.studio.effort = "medium".into();

@@ -184,6 +184,11 @@ pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
 }
 
 pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
+    let picker_fixture = state.is_some_and(|s| {
+        s.conversation_fixture
+            .as_deref()
+            .is_some_and(|fixture| fixture.starts_with("composer-picker-"))
+    });
     let provider = state
         .and_then(|s| s.providers.get(s.provider_index))
         .map(|p| p.id.as_str())
@@ -210,7 +215,7 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
             }
         }
     }
-    marks = marks.child(brand_mark(provider, t));
+    marks = marks.child(brand_mark(provider, t).opacity(if picker_fixture { 0.56 } else { 1.0 }));
     if state.is_some_and(|s| s.side_chat) {
         marks = marks.child(
             icon(&SIDE_CHAT, 11.0).color(crate::theme::mix_srgb(t.ink_soft, t.accent, 0.72)),

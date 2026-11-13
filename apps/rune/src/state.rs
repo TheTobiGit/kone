@@ -207,6 +207,7 @@ pub struct StudioState {
     pub draft: TextEdit,
     pub thread_open: bool,
     pub project_path: String,
+    pub context_branch: Option<String>,
     pub composer_open: bool,
     pub composer_opened_at: Option<std::time::Instant>,
     pub composer_closing_at: Option<std::time::Instant>,
