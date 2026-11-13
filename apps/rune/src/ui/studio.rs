@@ -956,7 +956,8 @@ fn terminal_line(value: &str, t: Palette) -> El {
                             span = span.color(color);
                         }
                         if bold {
-                            span = span.weight(700.0);
+                            // xterm's terminal configuration uses a 600 bold face.
+                            span = span.weight(600.0);
                         }
                         if let Some(background) = background {
                             span = span.bg(background, 0.0);
@@ -1055,7 +1056,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
             span = span.color(color);
         }
         if bold {
-            span = span.weight(700.0);
+            span = span.weight(600.0);
         }
         if let Some(background) = background {
             span = span.bg(background, 0.0);
