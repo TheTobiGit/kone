@@ -388,7 +388,7 @@ impl<S: 'static> Runtime<S> {
             }
             if spec.selectable && let Some((a, b)) = selectable::range_in(sel_ranges, i) {
                 let (a, b) = n.elided.map_or((a, b), |e| e.range(a, b));
-                selectable::push_selection(&mut self.instances, layout, a, b, origin, tk, premul(spec.selection, o, srgb), s, clip, fade);
+                selectable::push_selection(&mut self.instances, layout, a, b, origin, tk, premul(spec.selection, o, srgb), s, spec.selection_radius, clip, fade);
             }
             self.glyph_scratch.clear();
             self.text.set_glyph_inks(color, &spec.spans);

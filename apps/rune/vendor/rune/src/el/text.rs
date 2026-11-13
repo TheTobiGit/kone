@@ -519,6 +519,13 @@ impl El {
         if let Some(t) = &mut self.text { t.selection = color; }
         self
     }
+    /// Sets the corner radius of this selectable text's highlight in points.
+    pub fn selection_radius(mut self, radius: f32) -> Self {
+        if let Some(t) = &mut self.text {
+            t.selection_radius = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+        }
+        self
+    }
     /// Binds the field to a `TextEdit` in app state. `f` may capture (a row index, say); wrap
     /// a closure in [`edit_access`] so its returned borrow is tied to the state.
     pub fn on_edit<S: 'static>(mut self, f: impl for<'a> Fn(&'a mut S) -> &'a mut TextEdit + 'static) -> Self {

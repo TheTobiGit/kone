@@ -76,6 +76,7 @@ pub fn text(content: impl Into<String>) -> El {
         source: None,
         selectable: false,
         selection: DEFAULT_SELECTION,
+        selection_radius: -1.0,
         uncopied: Vec::new(),
         rings: Vec::new(),
         strikes: Vec::new(),

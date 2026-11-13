@@ -931,11 +931,13 @@ pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: run
     text(value).font(TextStyle::new(size, weight)).color(color)
 }
 
+type AnsiStyle = (Option<rune::Color>, bool, Option<rune::Color>, Option<u8>);
+
 fn terminal_line(value: &str, t: Palette) -> El {
     let mut output = String::with_capacity(value.len());
     let bytes = value.as_bytes();
     let mut cursor = 0;
-    let mut active: Option<(Option<rune::Color>, bool, Option<rune::Color>)> = None;
+    let mut active: Option<AnsiStyle> = None;
     let mut range_start = 0;
     let mut spans = Vec::new();
     while cursor < bytes.len() {
@@ -946,9 +948,9 @@ fn terminal_line(value: &str, t: Palette) -> El {
                     end += 1;
                 }
                 if end < bytes.len() && bytes[end] == b'm' {
-                    let mut style = active.take().unwrap_or((None, false, None));
+                    let mut style = active.take().unwrap_or((None, false, None, None));
                     if range_start < output.len() {
-                        let (color, bold, background) = style;
+                        let (color, bold, background, _) = style;
                         let mut span = Span::new(range_start, output.len());
                         if let Some(color) = color {
                             span = span.color(color);
@@ -968,13 +970,33 @@ fn terminal_line(value: &str, t: Palette) -> El {
                         .peekable();
                     while let Some(code) = parts.next() {
                         match code {
-                            0 => style = (None, false, None),
-                            1 => style.1 = true,
-                            22 => style.1 = false,
-                            39 => style.0 = None,
+                            0 => style = (None, false, None, None),
+                            1 => {
+                                style.1 = true;
+                                if let Some(index) = style.3 {
+                                    style.0 = Some(ansi_color(index + 8, t));
+                                }
+                            }
+                            22 => {
+                                style.1 = false;
+                                if let Some(index) = style.3 {
+                                    style.0 = Some(ansi_color(index, t));
+                                }
+                            }
+                            39 => {
+                                style.0 = None;
+                                style.3 = None;
+                            }
                             49 => style.2 = None,
-                            30..=37 => style.0 = Some(ansi_color((code - 30) as u8, t)),
-                            90..=97 => style.0 = Some(ansi_color((code - 90 + 8) as u8, t)),
+                            30..=37 => {
+                                let index = (code - 30) as u8;
+                                style.3 = Some(index);
+                                style.0 = Some(ansi_color(index + if style.1 { 8 } else { 0 }, t));
+                            }
+                            90..=97 => {
+                                style.3 = None;
+                                style.0 = Some(ansi_color((code - 90 + 8) as u8, t));
+                            }
                             40..=47 => style.2 = Some(ansi_color((code - 40) as u8, t)),
                             100..=107 => style.2 = Some(ansi_color((code - 100 + 8) as u8, t)),
                             38 | 48 => {
@@ -995,6 +1017,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
                                 if let Some(color) = color {
                                     if foreground {
                                         style.0 = Some(color);
+                                        style.3 = None;
                                     } else {
                                         style.2 = Some(color);
                                     }
@@ -1003,7 +1026,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
                             _ => {}
                         }
                     }
-                    active = (style != (None, false, None)).then_some(style);
+                    active = (style != (None, false, None, None)).then_some(style);
                     range_start = output.len();
                 }
                 cursor = (end + 1).min(bytes.len());
@@ -1024,7 +1047,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
         }
         cursor += ch.len_utf8();
     }
-    if let Some((color, bold, background)) = active
+    if let Some((color, bold, background, _)) = active
         && range_start < output.len()
     {
         let mut span = Span::new(range_start, output.len());
@@ -1044,7 +1067,11 @@ fn terminal_line(value: &str, t: Palette) -> El {
         .font(TextStyle::new(13.0, 400.0).mono().lh(18.2))
         .color(t.ink)
         .selectable(true)
-        .selection_color(t.accent.alpha(0.24))
+        // xterm receives the Oklab 24% accent value from `--term-selection`, but its
+        // canvas selection paint falls back to a 30% white overlay when it cannot parse
+        // that CSS color. Match the effective selection rendered by Electron.
+        .selection_color(rune::Color::WHITE.alpha(0.30))
+        .selection_radius(0.0)
         .w_full();
     if !spans.is_empty() {
         line = line.spans(spans);
@@ -2249,9 +2276,20 @@ fn studio_row(
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0).selection_group(true);
                 let cursor_visible = focused && s.studio.terminal_cursor_visible;
+                let terminal_cols = if terminal.terminal_cols == 0 {
+                    80
+                } else {
+                    terminal.terminal_cols as usize
+                };
+                let terminal_rows = if terminal.terminal_rows == 0 {
+                    24
+                } else {
+                    terminal.terminal_rows as usize
+                };
                 let lines = crate::terminal::screen_lines(
                     &terminal.terminal_output,
-                    terminal.terminal_cols.max(80) as usize,
+                    terminal_cols,
+                    terminal_rows,
                     300,
                     cursor_visible,
                 );

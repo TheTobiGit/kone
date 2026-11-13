@@ -46,6 +46,9 @@ pub struct TextSpec {
     pub(crate) selectable: bool,
     /// See [`El::selection_color`](crate::El::selection_color).
     pub(crate) selection: Color,
+    /// -1 uses the text selection's standard rounded highlight; nonnegative values set a custom
+    /// corner radius in points.
+    pub(crate) selection_radius: f32,
     /// See [`El::uncopied`](crate::El::uncopied): byte ranges of `content`, sorted.
     pub(crate) uncopied: Vec<(u32, u32)>,
     /// Inset border rings `(start, end, color, width)` on rounded span backgrounds.

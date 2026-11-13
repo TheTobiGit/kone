@@ -2,8 +2,6 @@
 //! It handles cursor, erase, scrolling-region and alternate-screen commands used by CLIs.
 use unicode_width::UnicodeWidthChar;
 
-const DEFAULT_ROWS: usize = 24;
-
 #[derive(Clone, Default)]
 struct Cell {
     ch: char,
@@ -24,15 +22,15 @@ struct Screen {
 }
 
 impl Screen {
-    fn new(columns: usize) -> Self {
+    fn new(columns: usize, height: usize) -> Self {
         Self {
-            rows: vec![vec![Cell::default(); columns]; DEFAULT_ROWS],
+            rows: vec![vec![Cell::default(); columns]; height],
             x: 0,
             y: 0,
             saved_x: 0,
             saved_y: 0,
             top: 0,
-            bottom: DEFAULT_ROWS - 1,
+            bottom: height - 1,
             origin_mode: false,
             wrap_pending: false,
         }
@@ -68,16 +66,18 @@ impl Screen {
 }
 
 /// Materialize a terminal's scrollback as rows, applying VT cursor and erase commands.
-/// The screen height is the conventional 24 rows; `limit` caps retained main-screen history.
+/// `rows` is the live terminal height; `limit` caps retained main-screen history.
 pub fn screen_lines(
     input: &str,
     columns: usize,
+    rows: usize,
     limit: usize,
     cursor_visible: bool,
 ) -> Vec<String> {
     let columns = columns.clamp(2, 1000);
+    let rows = rows.clamp(1, 500);
     let limit = limit.max(1);
-    let mut main = Screen::new(columns);
+    let mut main = Screen::new(columns, rows);
     let mut alternate: Option<Screen> = None;
     let mut main_restore_cursor: Option<(usize, usize)> = None;
     let mut scrollback: Vec<Vec<Cell>> = Vec::new();
@@ -131,7 +131,7 @@ pub fn screen_lines(
                                 main_restore_cursor = Some((main.x, main.y));
                             }
                             if alternate.is_none() || *mode != 47 {
-                                alternate = Some(Screen::new(columns));
+                                alternate = Some(Screen::new(columns, rows));
                             }
                         }
                         47 | 1047 | 1049 => {
@@ -139,7 +139,7 @@ pub fn screen_lines(
                             if *mode == 1049 {
                                 let (x, y) = main_restore_cursor.take().unwrap_or((main.x, main.y));
                                 main.x = x.min(columns - 1);
-                                main.y = y.min(DEFAULT_ROWS - 1);
+                                main.y = y.min(rows - 1);
                                 main.wrap_pending = false;
                             }
                         }
@@ -348,6 +348,7 @@ pub fn screen_lines(
         }
         let keep_history = alternate.is_none();
         let screen = active(&mut main, &mut alternate);
+        let height = screen.rows.len();
         match ch {
             '\r' => {
                 screen.x = 0;
@@ -358,7 +359,7 @@ pub fn screen_lines(
                 if screen.y == screen.bottom {
                     screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
                 } else {
-                    screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
+                    screen.y = (screen.y + 1).min(height - 1);
                 }
                 if ch != '\n' {
                     screen.x = 0;
@@ -379,7 +380,7 @@ pub fn screen_lines(
                     if screen.y == screen.bottom {
                         screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
                     } else {
-                        screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
+                        screen.y = (screen.y + 1).min(height - 1);
                     }
                 }
                 let width = UnicodeWidthChar::width(c).unwrap_or(1).clamp(1, 2);
@@ -388,7 +389,7 @@ pub fn screen_lines(
                     if screen.y == screen.bottom {
                         screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
                     } else {
-                        screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
+                        screen.y = (screen.y + 1).min(height - 1);
                     }
                 }
                 screen.rows[screen.y][screen.x] = Cell {
@@ -474,35 +475,46 @@ mod tests {
 
     #[test]
     fn carriage_return_and_erase_rewrite_the_current_row() {
-        assert_eq!(screen_lines("hello\r\x1b[Kready", 20, 20, false), ["ready"]);
+        assert_eq!(
+            screen_lines("hello\r\x1b[Kready", 20, 24, 20, false),
+            ["ready"]
+        );
     }
     #[test]
     fn cursor_addressing_and_cell_wrapping_are_applied() {
-        assert_eq!(screen_lines("ab\x1b[1;4HXY", 4, 20, false), ["ab X", "Y"]);
+        assert_eq!(
+            screen_lines("ab\x1b[1;4HXY", 4, 24, 20, false),
+            ["ab X", "Y"]
+        );
     }
     #[test]
     fn cursor_is_rendered_at_the_vt_column() {
         assert_eq!(
-            screen_lines("hello\x1b[1;2H", 20, 20, true),
+            screen_lines("hello\x1b[1;2H", 20, 24, 20, true),
             ["h\u{f8ff}ello"]
         );
     }
+
+    #[test]
+    fn cursor_movement_uses_the_resized_screen_height() {
+        assert_eq!(screen_lines("a\x1b[99Bz", 20, 2, 20, false), ["a", " z"]);
+    }
     #[test]
     fn sgr_is_retained_per_cell_and_reset_for_later_text() {
-        let rows = screen_lines("\x1b[1;31mred\x1b[0;32mgreen", 20, 20, false);
+        let rows = screen_lines("\x1b[1;31mred\x1b[0;32mgreen", 20, 24, 20, false);
         assert_eq!(rows, ["\x1b[0m\x1b[1;31mred\x1b[0m\x1b[32mgreen\x1b[0m"]);
     }
     #[test]
     fn alternate_screen_is_isolated_and_main_screen_is_restored() {
         assert_eq!(
-            screen_lines("main\x1b[?1049halt\x1b[?1049l!", 20, 20, false),
+            screen_lines("main\x1b[?1049halt\x1b[?1049l!", 20, 24, 20, false),
             ["main!"]
         );
     }
     #[test]
     fn scrolling_region_scrolls_only_inside_its_margins() {
         let input = "top\r\nrow2\r\nrow3\r\nrow4\r\nrow5\x1b[2;4r\x1b[4;1H\r\nnew";
-        let rows = screen_lines(input, 12, 30, false);
+        let rows = screen_lines(input, 12, 24, 30, false);
         assert_eq!(rows[0], "top");
         assert_eq!(rows[1], "row3");
         assert_eq!(rows[2], "row4");
@@ -512,7 +524,7 @@ mod tests {
     #[test]
     fn explicit_scroll_command_obeys_scrolling_region() {
         let input = "one\r\ntwo\r\nthree\x1b[1;3r\x1b[2;1H\x1b[S";
-        let rows = screen_lines(input, 12, 30, false);
+        let rows = screen_lines(input, 12, 24, 30, false);
         assert_eq!(rows[0], "two");
         assert_eq!(rows[1], "three");
     }
