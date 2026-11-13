@@ -954,7 +954,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
                             span = span.color(color);
                         }
                         if bold {
-                            span = span.bold();
+                            span = span.weight(700.0);
                         }
                         if let Some(background) = background {
                             span = span.bg(background, 0.0);
@@ -1032,7 +1032,7 @@ fn terminal_line(value: &str, t: Palette) -> El {
             span = span.color(color);
         }
         if bold {
-            span = span.bold();
+            span = span.weight(700.0);
         }
         if let Some(background) = background {
             span = span.bg(background, 0.0);

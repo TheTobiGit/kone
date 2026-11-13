@@ -1,6 +1,8 @@
 //! Small VT screen model for the Studio terminal transcript.
-//! It handles the cursor and erase operations used by shells and common CLI output.
+//! It handles cursor, erase, scrolling-region and alternate-screen commands used by CLIs.
 use unicode_width::UnicodeWidthChar;
+
+const DEFAULT_ROWS: usize = 24;
 
 #[derive(Clone, Default)]
 struct Cell {
@@ -8,7 +10,65 @@ struct Cell {
     sgr: String,
 }
 
+#[derive(Clone)]
+struct Screen {
+    rows: Vec<Vec<Cell>>,
+    x: usize,
+    y: usize,
+    saved_x: usize,
+    saved_y: usize,
+    top: usize,
+    bottom: usize,
+    origin_mode: bool,
+    wrap_pending: bool,
+}
+
+impl Screen {
+    fn new(columns: usize) -> Self {
+        Self {
+            rows: vec![vec![Cell::default(); columns]; DEFAULT_ROWS],
+            x: 0,
+            y: 0,
+            saved_x: 0,
+            saved_y: 0,
+            top: 0,
+            bottom: DEFAULT_ROWS - 1,
+            origin_mode: false,
+            wrap_pending: false,
+        }
+    }
+
+    fn scroll_up(
+        &mut self,
+        count: usize,
+        columns: usize,
+        scrollback: &mut Vec<Vec<Cell>>,
+        cap: usize,
+        keep_history: bool,
+    ) {
+        for _ in 0..count.min(self.bottom - self.top + 1) {
+            let row = self.rows.remove(self.top);
+            if keep_history && self.top == 0 && self.bottom == self.rows.len() {
+                scrollback.push(row);
+                if scrollback.len() > cap {
+                    scrollback.remove(0);
+                }
+            }
+            self.rows
+                .insert(self.bottom, vec![Cell::default(); columns]);
+        }
+    }
+
+    fn scroll_down(&mut self, count: usize, columns: usize) {
+        for _ in 0..count.min(self.bottom - self.top + 1) {
+            self.rows.remove(self.bottom);
+            self.rows.insert(self.top, vec![Cell::default(); columns]);
+        }
+    }
+}
+
 /// Materialize a terminal's scrollback as rows, applying VT cursor and erase commands.
+/// The screen height is the conventional 24 rows; `limit` caps retained main-screen history.
 pub fn screen_lines(
     input: &str,
     columns: usize,
@@ -16,13 +76,24 @@ pub fn screen_lines(
     cursor_visible: bool,
 ) -> Vec<String> {
     let columns = columns.clamp(2, 1000);
-    let mut rows = vec![vec![Cell::default(); columns]];
-    let (mut x, mut y, mut saved_x, mut saved_y) = (0usize, 0usize, 0usize, 0usize);
+    let limit = limit.max(1);
+    let mut main = Screen::new(columns);
+    let mut alternate: Option<Screen> = None;
+    let mut main_restore_cursor: Option<(usize, usize)> = None;
+    let mut scrollback: Vec<Vec<Cell>> = Vec::new();
     let mut sgr = String::new();
     let mut chars = input.chars().peekable();
-    let mut wrap_pending = false;
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
+            if chars.peek() == Some(&']') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c == '\x07' {
+                        break;
+                    }
+                }
+                continue;
+            }
             if chars.next() != Some('[') {
                 continue;
             }
@@ -35,13 +106,52 @@ pub fn screen_lines(
                 }
                 params.push(byte);
             }
+            let private = params.starts_with('?');
             let values = params
-                .trim_start_matches('?')
+                .trim_start_matches(['?', '>'])
                 .split(';')
                 .map(|v| v.parse::<usize>().unwrap_or(0))
                 .collect::<Vec<_>>();
             let n = values.first().copied().filter(|v| *v != 0).unwrap_or(1);
-            let height = rows.len();
+
+            // DEC private modes toggle the alternate buffer and origin addressing.
+            if private && final_byte == Some('h') || private && final_byte == Some('l') {
+                let enabled = final_byte == Some('h');
+                for mode in &values {
+                    match mode {
+                        6 => {
+                            active(&mut main, &mut alternate).origin_mode = enabled;
+                            let screen = active(&mut main, &mut alternate);
+                            screen.x = 0;
+                            screen.y = if enabled { screen.top } else { 0 };
+                            screen.wrap_pending = false;
+                        }
+                        47 | 1047 | 1049 if enabled => {
+                            if *mode == 1049 {
+                                main_restore_cursor = Some((main.x, main.y));
+                            }
+                            if alternate.is_none() || *mode != 47 {
+                                alternate = Some(Screen::new(columns));
+                            }
+                        }
+                        47 | 1047 | 1049 => {
+                            alternate = None;
+                            if *mode == 1049 {
+                                let (x, y) = main_restore_cursor.take().unwrap_or((main.x, main.y));
+                                main.x = x.min(columns - 1);
+                                main.y = y.min(DEFAULT_ROWS - 1);
+                                main.wrap_pending = false;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+
+            let keep_history = alternate.is_none();
+            let screen = active(&mut main, &mut alternate);
+            let height = screen.rows.len();
             match final_byte.unwrap_or('\0') {
                 'm' => {
                     let codes = params
@@ -59,106 +169,166 @@ pub fn screen_lines(
                     }
                 }
                 'A' => {
-                    y = y.saturating_sub(n);
-                    wrap_pending = false;
+                    screen.y = screen.y.saturating_sub(n).max(screen.top);
+                    screen.wrap_pending = false;
                 }
                 'B' => {
-                    y = (y + n).min(height.saturating_sub(1));
-                    wrap_pending = false;
+                    screen.y = (screen.y + n).min(screen.bottom);
+                    screen.wrap_pending = false;
                 }
                 'C' => {
-                    x = (x + n).min(columns - 1);
-                    wrap_pending = false;
+                    screen.x = (screen.x + n).min(columns - 1);
+                    screen.wrap_pending = false;
                 }
                 'D' => {
-                    x = x.saturating_sub(n);
-                    wrap_pending = false;
+                    screen.x = screen.x.saturating_sub(n);
+                    screen.wrap_pending = false;
                 }
                 'E' => {
-                    y = (y + n).min(height.saturating_sub(1));
-                    x = 0;
-                    wrap_pending = false;
+                    screen.y = (screen.y + n).min(screen.bottom);
+                    screen.x = 0;
+                    screen.wrap_pending = false;
                 }
                 'F' => {
-                    y = y.saturating_sub(n);
-                    x = 0;
-                    wrap_pending = false;
+                    screen.y = screen.y.saturating_sub(n).max(screen.top);
+                    screen.x = 0;
+                    screen.wrap_pending = false;
                 }
-                'G' => {
-                    x = n.saturating_sub(1).min(columns - 1);
-                    wrap_pending = false;
+                'G' | '`' => {
+                    screen.x = n.saturating_sub(1).min(columns - 1);
+                    screen.wrap_pending = false;
+                }
+                'd' => {
+                    let row = n.saturating_sub(1);
+                    screen.y = if screen.origin_mode {
+                        screen.top + row.min(screen.bottom - screen.top)
+                    } else {
+                        row.min(height - 1)
+                    };
+                    screen.wrap_pending = false;
                 }
                 'H' | 'f' => {
-                    y = values
+                    let row = values
                         .first()
                         .copied()
+                        .filter(|v| *v != 0)
                         .unwrap_or(1)
-                        .saturating_sub(1)
-                        .min(height.saturating_sub(1));
-                    x = values
+                        .saturating_sub(1);
+                    let col = values
                         .get(1)
                         .copied()
+                        .filter(|v| *v != 0)
                         .unwrap_or(1)
-                        .saturating_sub(1)
-                        .min(columns - 1);
-                    wrap_pending = false;
+                        .saturating_sub(1);
+                    screen.y = if screen.origin_mode {
+                        screen.top + row.min(screen.bottom - screen.top)
+                    } else {
+                        row.min(height - 1)
+                    };
+                    screen.x = col.min(columns - 1);
+                    screen.wrap_pending = false;
                 }
                 's' => {
-                    saved_x = x;
-                    saved_y = y;
+                    screen.saved_x = screen.x;
+                    screen.saved_y = screen.y;
                 }
                 'u' => {
-                    x = saved_x.min(columns - 1);
-                    y = saved_y.min(height.saturating_sub(1));
-                    wrap_pending = false;
+                    screen.x = screen.saved_x.min(columns - 1);
+                    screen.y = screen.saved_y.min(height - 1);
+                    screen.wrap_pending = false;
+                }
+                'r' => {
+                    let top = values
+                        .first()
+                        .copied()
+                        .filter(|v| *v != 0)
+                        .unwrap_or(1)
+                        .saturating_sub(1);
+                    let bottom = values
+                        .get(1)
+                        .copied()
+                        .filter(|v| *v != 0)
+                        .unwrap_or(height)
+                        .saturating_sub(1);
+                    if top < bottom && bottom < height {
+                        screen.top = top;
+                        screen.bottom = bottom;
+                        screen.x = 0;
+                        screen.y = if screen.origin_mode { top } else { 0 };
+                        screen.wrap_pending = false;
+                    }
+                }
+                'S' => screen.scroll_up(n, columns, &mut scrollback, limit, keep_history),
+                'T' => screen.scroll_down(n, columns),
+                'L' => {
+                    if screen.y >= screen.top && screen.y <= screen.bottom {
+                        let bottom = screen.bottom;
+                        for _ in 0..n.min(bottom - screen.y + 1) {
+                            screen.rows.remove(bottom);
+                            screen.rows.insert(screen.y, vec![Cell::default(); columns]);
+                        }
+                    }
+                }
+                'M' => {
+                    if screen.y >= screen.top && screen.y <= screen.bottom {
+                        for _ in 0..n.min(screen.bottom - screen.y + 1) {
+                            screen.rows.remove(screen.y);
+                            screen
+                                .rows
+                                .insert(screen.bottom, vec![Cell::default(); columns]);
+                        }
+                    }
                 }
                 'K' => {
                     let mode = values.first().copied().unwrap_or(0);
                     let (start, end) = match mode {
-                        1 => (0, x + 1),
+                        1 => (0, screen.x + 1),
                         2 => (0, columns),
-                        _ => (x, columns),
+                        _ => (screen.x, columns),
                     };
-                    for cell in rows[y].iter_mut().take(end).skip(start) {
+                    for cell in screen.rows[screen.y].iter_mut().take(end).skip(start) {
                         *cell = Cell::default();
                     }
                 }
                 'J' => {
                     let mode = values.first().copied().unwrap_or(0);
                     if mode == 2 || mode == 3 {
-                        rows = vec![vec![Cell::default(); columns]];
-                        x = 0;
-                        y = 0;
+                        screen.rows = vec![vec![Cell::default(); columns]; height];
+                        screen.x = 0;
+                        screen.y = 0;
+                        if mode == 3 && keep_history {
+                            scrollback.clear();
+                        }
                     } else if mode == 0 {
-                        for row in rows.iter_mut().skip(y + 1) {
+                        for row in screen.rows.iter_mut().skip(screen.y + 1) {
                             row.fill(Cell::default());
                         }
-                        for cell in rows[y].iter_mut().skip(x) {
+                        for cell in screen.rows[screen.y].iter_mut().skip(screen.x) {
                             *cell = Cell::default();
                         }
                     } else {
-                        for row in rows.iter_mut().take(y) {
+                        for row in screen.rows.iter_mut().take(screen.y) {
                             row.fill(Cell::default());
                         }
-                        for cell in rows[y].iter_mut().take(x + 1) {
+                        for cell in screen.rows[screen.y].iter_mut().take(screen.x + 1) {
                             *cell = Cell::default();
                         }
                     }
                 }
                 '@' | 'P' | 'X' => {
-                    let row = &mut rows[y];
-                    let count = n.min(columns - x);
+                    let row = &mut screen.rows[screen.y];
+                    let count = n.min(columns - screen.x);
                     match final_byte.unwrap() {
                         '@' => {
-                            for i in (x + count..columns).rev() {
+                            for i in (screen.x + count..columns).rev() {
                                 row[i] = row[i - count].clone();
                             }
-                            for cell in row.iter_mut().skip(x).take(count) {
+                            for cell in row.iter_mut().skip(screen.x).take(count) {
                                 *cell = Cell::default();
                             }
                         }
                         'P' => {
-                            for i in x..columns - count {
+                            for i in screen.x..columns - count {
                                 row[i] = row[i + count].clone();
                             }
                             for cell in row.iter_mut().skip(columns - count) {
@@ -166,7 +336,7 @@ pub fn screen_lines(
                             }
                         }
                         _ => {
-                            for cell in row.iter_mut().skip(x).take(count) {
+                            for cell in row.iter_mut().skip(screen.x).take(count) {
                                 *cell = Cell::default();
                             }
                         }
@@ -176,88 +346,111 @@ pub fn screen_lines(
             }
             continue;
         }
+        let keep_history = alternate.is_none();
+        let screen = active(&mut main, &mut alternate);
         match ch {
             '\r' => {
-                x = 0;
-                wrap_pending = false;
+                screen.x = 0;
+                screen.wrap_pending = false;
             }
-            '\n' => {
-                y += 1;
-                x = 0;
-                wrap_pending = false;
-                if y == rows.len() {
-                    rows.push(vec![Cell::default(); columns]);
+            '\n' | '\x0b' | '\x0c' => {
+                screen.wrap_pending = false;
+                if screen.y == screen.bottom {
+                    screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
+                } else {
+                    screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
+                }
+                if ch != '\n' {
+                    screen.x = 0;
                 }
             }
             '\x08' => {
-                x = x.saturating_sub(1);
-                wrap_pending = false;
+                screen.x = screen.x.saturating_sub(1);
+                screen.wrap_pending = false;
             }
             '\t' => {
-                x = ((x / 8 + 1) * 8).min(columns - 1);
-                wrap_pending = false;
+                screen.x = ((screen.x / 8 + 1) * 8).min(columns - 1);
+                screen.wrap_pending = false;
             }
             c if c.is_control() => {}
             c => {
-                if wrap_pending {
-                    x = 0;
-                    y += 1;
-                    if y == rows.len() {
-                        rows.push(vec![Cell::default(); columns]);
+                if screen.wrap_pending {
+                    screen.x = 0;
+                    if screen.y == screen.bottom {
+                        screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
+                    } else {
+                        screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
                     }
                 }
                 let width = UnicodeWidthChar::width(c).unwrap_or(1).clamp(1, 2);
-                if x + width > columns {
-                    x = 0;
-                    y += 1;
-                    if y == rows.len() {
-                        rows.push(vec![Cell::default(); columns]);
+                if screen.x + width > columns {
+                    screen.x = 0;
+                    if screen.y == screen.bottom {
+                        screen.scroll_up(1, columns, &mut scrollback, limit, keep_history);
+                    } else {
+                        screen.y = (screen.y + 1).min(DEFAULT_ROWS - 1);
                     }
                 }
-                rows[y][x] = Cell {
+                screen.rows[screen.y][screen.x] = Cell {
                     ch: c,
                     sgr: sgr.clone(),
                 };
                 for offset in 1..width {
-                    rows[y][x + offset] = Cell {
+                    screen.rows[screen.y][screen.x + offset] = Cell {
                         ch: ' ',
                         sgr: sgr.clone(),
                     };
                 }
-                x += width;
-                wrap_pending = x >= columns;
-                x = x.min(columns - 1);
+                screen.x += width;
+                screen.wrap_pending = screen.x >= columns;
+                screen.x = screen.x.min(columns - 1);
             }
         }
     }
-    let start = rows.len().saturating_sub(limit);
-    rows.into_iter()
+
+    let (screen, history) = if let Some(alt) = alternate.as_ref() {
+        (alt, &[][..])
+    } else {
+        (&main, scrollback.as_slice())
+    };
+    let mut all_rows = history.iter().chain(screen.rows.iter()).collect::<Vec<_>>();
+    let active_row = history.len() + screen.y;
+    let visible_count = all_rows
+        .iter()
+        .rposition(|row| row.iter().any(|c| c.ch != '\0' && c.ch != ' '))
+        .map_or(0, |i| i + 1)
+        .max(active_row + 1);
+    all_rows.truncate(visible_count);
+    let start = visible_count.saturating_sub(limit);
+    all_rows.drain(..start);
+    all_rows
+        .into_iter()
         .enumerate()
-        .skip(start)
-        .map(|(row_index, row)| {
+        .map(|(i, row)| {
+            let row_index = i + start;
             let content_end = row
                 .iter()
                 .rposition(|c| c.ch != '\0' && c.ch != ' ')
                 .map_or(0, |i| i + 1);
-            let end = if row_index == y {
-                content_end.max(x)
+            let end = if row_index == active_row {
+                content_end.max(screen.x)
             } else {
                 content_end
             };
             let mut out = String::new();
             let mut style = String::new();
-            for (column, cell) in row.into_iter().take(end).enumerate() {
-                if cursor_visible && row_index == y && column == x {
+            for (column, cell) in row.iter().take(end).enumerate() {
+                if cursor_visible && row_index == active_row && column == screen.x {
                     out.push('\u{f8ff}');
                 }
                 if cell.sgr != style {
                     out.push_str("\x1b[0m");
                     out.push_str(&cell.sgr);
-                    style = cell.sgr;
+                    style = cell.sgr.clone();
                 }
                 out.push(if cell.ch == '\0' { ' ' } else { cell.ch });
             }
-            if cursor_visible && row_index == y && x >= end {
+            if cursor_visible && row_index == active_row && screen.x >= end {
                 out.push('\u{f8ff}');
             }
             if !style.is_empty() {
@@ -268,6 +461,13 @@ pub fn screen_lines(
         .collect()
 }
 
+fn active<'a>(main: &'a mut Screen, alternate: &'a mut Option<Screen>) -> &'a mut Screen {
+    match alternate {
+        Some(screen) => screen,
+        None => main,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::screen_lines;
@@ -276,12 +476,10 @@ mod tests {
     fn carriage_return_and_erase_rewrite_the_current_row() {
         assert_eq!(screen_lines("hello\r\x1b[Kready", 20, 20, false), ["ready"]);
     }
-
     #[test]
     fn cursor_addressing_and_cell_wrapping_are_applied() {
         assert_eq!(screen_lines("ab\x1b[1;4HXY", 4, 20, false), ["ab X", "Y"]);
     }
-
     #[test]
     fn cursor_is_rendered_at_the_vt_column() {
         assert_eq!(
@@ -289,10 +487,33 @@ mod tests {
             ["h\u{f8ff}ello"]
         );
     }
-
     #[test]
     fn sgr_is_retained_per_cell_and_reset_for_later_text() {
         let rows = screen_lines("\x1b[1;31mred\x1b[0;32mgreen", 20, 20, false);
         assert_eq!(rows, ["\x1b[0m\x1b[1;31mred\x1b[0m\x1b[32mgreen\x1b[0m"]);
+    }
+    #[test]
+    fn alternate_screen_is_isolated_and_main_screen_is_restored() {
+        assert_eq!(
+            screen_lines("main\x1b[?1049halt\x1b[?1049l!", 20, 20, false),
+            ["main!"]
+        );
+    }
+    #[test]
+    fn scrolling_region_scrolls_only_inside_its_margins() {
+        let input = "top\r\nrow2\r\nrow3\r\nrow4\r\nrow5\x1b[2;4r\x1b[4;1H\r\nnew";
+        let rows = screen_lines(input, 12, 30, false);
+        assert_eq!(rows[0], "top");
+        assert_eq!(rows[1], "row3");
+        assert_eq!(rows[2], "row4");
+        assert_eq!(rows[3], "new");
+        assert_eq!(rows[4], "row5");
+    }
+    #[test]
+    fn explicit_scroll_command_obeys_scrolling_region() {
+        let input = "one\r\ntwo\r\nthree\x1b[1;3r\x1b[2;1H\x1b[S";
+        let rows = screen_lines(input, 12, 30, false);
+        assert_eq!(rows[0], "two");
+        assert_eq!(rows[1], "three");
     }
 }
