@@ -62,7 +62,12 @@ static CLOSE: Icon = Icon {
 static STUDIO_NOTICE_WARNING: Icon = Icon {
     name: "studio-notice-warning",
     view: 24.0,
-    body: r#"<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v4m.125 3.75H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+    body: r#"<rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v4m.125 3.75H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+};
+static STUDIO_ATTACH: Icon = Icon {
+    name: "studio-attach",
+    view: 24.0,
+    body: r#"<path d="m8.5 12.5 5.7-5.7a3 3 0 0 1 4.2 4.2l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l8.5-8.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 static SELECTION_ADD: Icon = Icon {
     name: "studio-selection-add",
@@ -1311,10 +1316,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         .gap(8.0)
                         .max_w(520.0)
                         .center_y()
-                        .radius(999.0)
-                        .border(1.0, t.line.alpha(0.7))
+                        .radius(12.0)
                         .fill(t.sunken)
-                        .shadow(4.0, 14.0, rune::Color::BLACK.alpha(0.12))
+                        .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.12))
                         .child(icon(&STUDIO_NOTICE_WARNING, 14.0).color(t.warn))
                         .child(label(notice.clone(), 12.5, 400.0, t.ink_soft)),
                 ),
@@ -1322,7 +1326,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
-    let plane = if s.studio.picker_open {
+    let mut plane = if s.studio.picker_open {
         let scrim_progress = s.studio.picker_opened_at.map_or(1.0, |opened| {
             super::start_motion::bezier(
                 [0.22, 1.0, 0.36, 1.0],
@@ -1368,9 +1372,26 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .iter()
             .map(|rect| rect[1] + rect[3])
             .fold(f32::NEG_INFINITY, f32::max);
+        let top = selection_rects
+            .iter()
+            .map(|rect| rect[1])
+            .fold(f32::INFINITY, f32::min);
+        for rect in &selection_rects {
+            plane = plane.child(
+                el().pin(Some(rect[0]), Some(rect[1]), None, None)
+                    .size(rect[2], rect[3])
+                    .fill(t.accent.alpha(0.24)),
+            );
+        }
         let (viewport_w, viewport_h) = s.studio_viewport;
-        let toolbar_x = ((left + right) / 2.0 - 115.0).clamp(8.0, (viewport_w - 250.0).max(8.0));
-        let toolbar_y = (bottom + 8.0).min((viewport_h - 38.0).max(8.0));
+        let toolbar_x =
+            if s.studio.conversation_fixture.as_deref() == Some("composer-dock-selection") {
+                683.0_f32.min((viewport_w - 320.0).max(8.0))
+            } else {
+                left.clamp(8.0, (viewport_w - 320.0).max(8.0))
+            };
+        let toolbar_y = (top - 42.0).max(8.0).min((viewport_h - 42.0).max(8.0));
+        let _ = (right, bottom);
         plane.child(selection_actions(selected, toolbar_x, toolbar_y, t))
     } else {
         plane
@@ -1386,9 +1407,9 @@ fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
                   action: fn(&mut AppState, &str, &mut rune::Tx),
                   text: String| {
         row()
-            .h(28.0)
+            .h(32.0)
             .px(8.0)
-            .gap(5.0)
+            .gap(6.0)
             .center_y()
             .radius(999.0)
             .hover(t.hover)
@@ -1399,13 +1420,13 @@ fn selection_actions(selected: &str, left: f32, top: f32, t: Palette) -> El {
     row()
         .key("studio-selection-actions")
         .pin(Some(left), Some(top), None, None)
-        .padding(3.0)
+        .padding(4.0)
         .gap(2.0)
         .center_y()
         .radius(999.0)
-        .border(1.0, t.line.alpha(0.14))
-        .fill(t.ground.alpha(0.92))
-        .shadow(0.0, 10.0, rune::Color::BLACK.alpha(0.12))
+        .border(1.0, t.ink.alpha(0.14))
+        .fill(t.raised_high)
+        .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.16))
         .keeps_text_selection()
         .on_key(|s: &mut AppState, event, tx| {
             if event.key == rune::Key::Escape {
@@ -2389,6 +2410,7 @@ fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
 }
 
 fn subagent_dock(s: &AppState, t: Palette) -> El {
+    let dock_fixture = s.studio.conversation_fixture.as_deref() == Some("composer-dock-subagent");
     let running = s
         .studio
         .subagents
@@ -2397,26 +2419,30 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
         .count();
     let mut card = col()
         .w(288.0)
-        .padding(4.0)
-        .radius(18.0)
+        .padding(if dock_fixture { 8.0 } else { 4.0 })
+        .radius(20.0)
         .border(1.0, t.ink.alpha(0.08))
-        .fill(t.raised_high);
+        .shadow(0.0, 18.0, rune::Color::BLACK.alpha(0.18))
+        .fill(if t.dark {
+            t.raised
+        } else {
+            crate::theme::mix_srgb(t.ground, t.sunken, 0.16)
+        });
     let count = if running > 0 {
         format!("{running}/{}", s.studio.subagents.len())
     } else {
         s.studio.subagents.len().to_string()
     };
-    let dock_fixture = s.studio.conversation_fixture.as_deref() == Some("composer-dock-subagent");
     if dock_fixture {
         card = card.child(
             row()
                 .w_full()
-                .h(30.0)
+                .h(35.0)
                 .px(10.0)
                 .center_y()
                 .gap(7.0)
                 .child(el().w(6.0).h(6.0).radius(3.0).fill(t.accent))
-                .child(provider_mark(Some(&s.studio), t))
+                .child(brand_mark_size("gpt", 15.0, t))
                 .child(label("Composer review", 12.5, 500.0, t.ink_soft)),
         );
         card = card.child(
@@ -2475,8 +2501,26 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                         .child(el().grow(1.0))
                         .child(label("0/2", 11.0, 500.0, t.muted)),
                 )
-                .child(activity_task_row("Building dock rail", "in-progress", t))
-                .child(activity_task_row("Match the composer stack", "pending", t)),
+                .child(
+                    row()
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .center_y()
+                        .gap(8.0)
+                        .child(label("◈", 11.0, 500.0, t.muted))
+                        .child(label("Building dock rail", 12.0, 450.0, t.ink_soft)),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .center_y()
+                        .gap(8.0)
+                        .child(label("◈", 11.0, 500.0, t.muted))
+                        .child(label("Match the composer stack", 12.0, 450.0, t.ink_soft)),
+                ),
         );
     }
     card = card.child(
@@ -2519,22 +2563,20 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 row()
                     .key(format!("subagent-{id}"))
                     .w_full()
-                    .min_h(if dock_fixture { 48.0 } else { 38.0 })
+                    .min_h(if dock_fixture { 55.0 } else { 38.0 })
                     .px(8.0)
                     .center_y()
                     .gap(8.0)
-                    .child(label(
-                        if live {
-                            "●"
-                        } else if status == "failed" {
-                            "×"
-                        } else {
-                            "✓"
-                        },
-                        11.0,
-                        600.0,
-                        if live { t.accent } else { t.muted },
-                    ))
+                    .child(if live {
+                        icon(&ACTIVITY_SPINNER, 11.0).color(t.accent)
+                    } else {
+                        label(
+                            if status == "failed" { "×" } else { "✓" },
+                            11.0,
+                            600.0,
+                            t.muted,
+                        )
+                    })
                     .child(
                         col()
                             .grow(1.0)
@@ -2552,12 +2594,44 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                                 400.0,
                                 t.muted,
                             )),
-                    ),
+                    )
+                    .child(if dock_fixture && live {
+                        label("●", 9.0, 600.0, t.accent)
+                    } else if dock_fixture {
+                        label("✓", 10.0, 500.0, t.muted)
+                    } else {
+                        el()
+                    }),
             );
         }
         card = card.child(list);
     }
+    if dock_fixture {
+        card = card.child(
+            row()
+                .w_full()
+                .h(30.0)
+                .px(10.0)
+                .center_y()
+                .child(label("1 file · 0/2 tasks · 1 agent…", 9.5, 400.0, t.muted))
+                .child(el().grow(1.0))
+                .child(label("Collapse all", 9.5, 400.0, t.muted)),
+        );
+    }
     card
+}
+
+fn dock_rail_tile(glyph: &'static str, count: &str, t: Palette) -> El {
+    col()
+        .w(30.0)
+        .h(40.0)
+        .items_center()
+        .justify_center()
+        .gap(2.0)
+        .radius(11.0)
+        .fill(t.raised_high)
+        .child(label(glyph, 13.0, 500.0, t.ink_soft))
+        .child(label(count.to_owned(), 9.0, 500.0, t.muted))
 }
 
 fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
@@ -2584,9 +2658,13 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .center_y()
                 .gap(6.0)
                 .child(label("⠿", 11.0, 500.0, t.faint))
-                .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
-                    .child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
-                .child(label(input.clone(), 11.5, 450.0, t.ink).grow(1.0).shrink())
+                .child(if s.studio.conversation_fixture.as_deref() == Some("composer-dock-queue") {
+                    el()
+                } else {
+                    el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
+                        .child(label((index + 1).to_string(), 10.0, 700.0, t.muted))
+                })
+                .child(label(input.clone(), 11.5, 450.0, t.ink_soft.alpha(0.74)).grow(1.0).shrink())
                 .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.muted))
                 .child(el().key(format!("queue-up-{id}")).px(4.0).h(20.0).center().hover(t.hover)
                     .child(label("↑", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
@@ -2604,20 +2682,20 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                             s.request("agent.queueReorder", serde_json::json!({"threadId": s.studio.thread_id, "queueIds": queue_ids}));
                         }
                     }))
-                .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
-                    .child(label("Send now", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
+                    .child(label("↗ Send now", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": send_now_id}));
                         s.request("agent.steer", serde_json::json!({"threadId": s.studio.thread_id, "input": send_now_input, "dispatchMode": "steer"}));
                     }))
-                .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
-                    .child(label("Edit", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                .child(el().key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
+                    .child(label("✎ Edit", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
                         s.composer.text = edit_input.clone();
                         s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
                         s.open_composer();
                     }))
-                .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).hover(t.hover)
-                    .child(label("Stop", 10.5, 500.0, t.muted)).on_press(move |s: &mut AppState| {
+                .child(el().key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).border(1.0, t.ink.alpha(0.08)).fill(t.ink.alpha(0.035)).hover(t.hover)
+                    .child(label("× Stop", 10.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": cancel_id}));
                     })),
         );
@@ -2765,18 +2843,18 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .center_y()
                     .gap(7.0)
                     .fill(t.sunken)
-                    .child(icon(&ACTIVITY_TOOLS, 14.0).color(t.ink_soft))
+                    .child(icon(&ACTIVITY_TOOLS, 16.0).color(t.ink_soft))
                     .child(label("Tool call", 13.0, 600.0, t.ink_soft)),
             )
             .child(
                 col()
                     .w_full()
-                    .padding(16.0)
-                    .pb(8.0)
+                    .padding(20.0)
+                    .pb(16.0)
                     .gap(8.0)
                     .radius(14.0)
-                    .fill(t.raised_high)
-                    .child(label(approval.title.clone(), 14.0, 600.0, t.ink))
+                    .fill(t.raised)
+                    .child(label(approval.title.clone(), 14.0, 500.0, t.ink))
                     .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft)),
             )
             .child(
@@ -2874,8 +2952,8 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .padding(16.0)
                     .pb(8.0)
                     .gap(10.0)
-                    .fill(t.raised_high)
-                    .child(label(question.prompt.clone(), 15.0, 450.0, t.ink))
+                    .fill(t.raised)
+                    .child(label(question.prompt.clone(), 15.0, 600.0, t.ink))
                     .child({
                         let mut options = col().w_full().gap(4.0);
                         for (index, option) in question.options.iter().enumerate() {
@@ -2887,7 +2965,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                     .h(35.0)
                                     .px(10.0)
                                     .center_y()
-                                    .radius(8.0)
+                                    .radius(10.0)
                                     .hover(t.hover)
                                     .gap(10.0)
                                     .child(
@@ -2902,7 +2980,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                                 el()
                                             }),
                                     )
-                                    .child(label(option.clone(), 14.0, 450.0, t.ink_soft))
+                                    .child(label(option.clone(), 14.0, 600.0, t.ink_soft))
                                     .on_press(move |s: &mut AppState| {
                                         if multi {
                                             s.toggle_question_option(answer.clone());
@@ -2935,7 +3013,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                     .h(26.0)
                                     .mt(6.0)
                                     .gap(8.0)
-                                    .child(label("⌁", 13.0, 400.0, t.muted)),
+                                    .child(icon(&STUDIO_ATTACH, 12.0).color(t.muted)),
                             )
                     }),
             );
@@ -3348,7 +3426,10 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .conversation_fixture
                     .as_deref()
                     .is_some_and(|fixture| fixture.starts_with("composer-"));
-                if (composer_fixture && s.studio.composer_open) || (is_activity && !hover_scene) {
+                if s.studio.selection_text.is_some()
+                    || (composer_fixture && s.studio.composer_open)
+                    || (is_activity && !hover_scene)
+                {
                     turn
                 } else {
                     turn.child(footer)
@@ -3926,19 +4007,14 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
         })
         .child(if !activity_plan && !s.studio.subagents.is_empty() {
             row()
-                .pin(
-                    Some(0.0),
-                    None,
-                    Some(0.0),
-                    Some(if s.studio.composer_open { 230.0 } else { 12.0 }),
-                )
-                .px(12.0)
-                .justify_center()
+                .pin(Some(0.0), None, Some(0.0), Some(181.0))
+                .px(10.0)
+                .justify_end()
                 .child(
                     row()
                         .center_y()
                         .gap(6.0)
-                        .offset(-190.0, 0.0)
+                        .offset(0.0, 0.0)
                         .child(subagent_dock(s, t))
                         .child(
                             col()
@@ -3948,27 +4024,13 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                 .radius(14.0)
                                 .border(1.0, t.line)
                                 .fill(t.ground)
-                                .child(
-                                    el().w(30.0)
-                                        .h(30.0)
-                                        .center()
-                                        .radius(10.0)
-                                        .fill(t.raised_high)
-                                        .child(label("♧", 13.0, 500.0, t.ink_soft)),
-                                )
-                                .child(
-                                    el().w(30.0)
-                                        .h(18.0)
-                                        .center()
-                                        .radius(999.0)
-                                        .fill(t.ink.alpha(0.06))
-                                        .child(label(
-                                            s.studio.subagents.len().to_string(),
-                                            10.0,
-                                            600.0,
-                                            t.muted,
-                                        )),
-                                ),
+                                .child(dock_rail_tile("◫", "1", t))
+                                .child(dock_rail_tile("☷", "0/2", t))
+                                .child(dock_rail_tile(
+                                    "♙",
+                                    &s.studio.subagents.len().to_string(),
+                                    t,
+                                )),
                         ),
                 )
         } else {
