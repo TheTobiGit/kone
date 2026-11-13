@@ -1367,6 +1367,7 @@ dependencies = [
  "base64",
  "rune",
  "serde_json",
+ "unicode-width",
  "wgpu",
 ]
 

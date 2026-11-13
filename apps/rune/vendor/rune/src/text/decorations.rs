@@ -68,7 +68,7 @@ impl TextSystem {
         if spans.iter().all(|s| s.bg.is_none() && s.underline.is_none()) {
             return;
         }
-        let radius = 4.0 * scale;
+        let rounded_radius = 4.0 * scale;
         let mut last_bg = None;
         for line in layout.lines() {
             let m = line.metrics();
@@ -79,6 +79,9 @@ impl TextSystem {
                     continue;
                 }
                 let Some(s) = spans.get(ink as usize - 1) else { continue };
+                // A zero-pad ANSI terminal background occupies whole cells and
+                // uses xterm's square corners. Other span backgrounds remain pills.
+                let radius = if s.bg_pad == 0.0 { 0.0 } else { rounded_radius };
                 let x0 = origin[0] + gr.offset();
                 let w = gr.advance();
                 if let Some(bg) = s.bg {

@@ -204,6 +204,8 @@ pub struct StudioState {
     pub terminal_session_id: Option<String>,
     pub terminal_output: String,
     pub terminal_input: TextEdit,
+    pub terminal_cursor_visible: bool,
+    pub terminal_cursor_blink_at: Option<std::time::Instant>,
     pub terminal_running: bool,
     pub terminal_child: Option<String>,
     pub terminal_exit_code: Option<i64>,
@@ -712,6 +714,25 @@ impl AppState {
         if activity_motion {
             tx.wake_after(std::time::Duration::from_millis(33));
         }
+        let terminal_focused = s.page == Page::Studio && s.studio.terminal_input.focused;
+        let mut terminal_cursor_changed = false;
+        if terminal_focused {
+            let now = std::time::Instant::now();
+            let due = s
+                .studio
+                .terminal_cursor_blink_at
+                .is_none_or(|at| now.duration_since(at) >= std::time::Duration::from_millis(500));
+            if due {
+                s.studio.terminal_cursor_visible = !s.studio.terminal_cursor_visible;
+                s.studio.terminal_cursor_blink_at = Some(now);
+                terminal_cursor_changed = true;
+            }
+            tx.wake_after(std::time::Duration::from_millis(500));
+        } else {
+            terminal_cursor_changed = !s.studio.terminal_cursor_visible;
+            s.studio.terminal_cursor_visible = true;
+            s.studio.terminal_cursor_blink_at = None;
+        }
         if s.studio
             .composer_closing_at
             .is_some_and(|at| at.elapsed().as_secs_f32() >= 0.20)
@@ -820,6 +841,7 @@ impl AppState {
             || tooltip_changed
             || animating
             || activity_motion
+            || terminal_cursor_changed
             || session_motion
             || metric_motion
             || holding

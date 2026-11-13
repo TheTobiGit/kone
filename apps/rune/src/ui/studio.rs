@@ -946,9 +946,9 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
                     end += 1;
                 }
                 if end < bytes.len() && bytes[end] == b'm' {
-                    if let Some((color, bold, background)) = active.take()
-                        && range_start < output.len()
-                    {
+                    let mut style = active.take().unwrap_or((None, false, None));
+                    if range_start < output.len() {
+                        let (color, bold, background) = style;
                         let mut span = Span::new(range_start, output.len());
                         if let Some(color) = color {
                             span = span.color(color);
@@ -962,7 +962,6 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
                         spans.push(span);
                     }
                     let codes = std::str::from_utf8(&bytes[cursor + 2..end]).unwrap_or("");
-                    let mut style = active.unwrap_or((None, false, None));
                     let mut parts = codes
                         .split(';')
                         .filter_map(|x| x.parse::<u16>().ok())
@@ -1043,8 +1042,10 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
     }
     let mut line = text(output)
         // xterm uses fontSize 13 × lineHeight 1.2 (15.6 CSS px).
-        .font(TextStyle::new(13.0, 400.0).mono().lh(15.6))
+        .font(TextStyle::new(13.0, 400.0).mono().lh(18.2))
         .color(t.ink)
+        .selectable(true)
+        .selection_color(t.accent.alpha(0.24))
         .w_full();
     if !spans.is_empty() {
         line = line.spans(spans);
@@ -2247,22 +2248,19 @@ fn studio_row(
                     .pt(40.0)
                     .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
-                let mut output = col().w_full().gap(0.0);
-                let normalized_output = terminal
-                    .terminal_output
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n");
-                let lines = normalized_output
-                    .lines()
-                    .rev()
-                    .take(300)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>();
+                let mut output = col().w_full().gap(0.0).selection_group(true);
+                let lines = crate::terminal::screen_lines(
+                    &terminal.terminal_output,
+                    terminal.terminal_cols.max(80) as usize,
+                    300,
+                );
                 let last_line = lines.len().saturating_sub(1);
                 for (index, line) in lines.into_iter().enumerate() {
-                    output = output.child(terminal_line(line, t, focused && index == last_line));
+                    output = output.child(terminal_line(
+                        &line,
+                        t,
+                        focused && index == last_line && s.studio.terminal_cursor_visible,
+                    ));
                 }
                 if let Some(code) = terminal.terminal_exit_code {
                     output = output.child(
@@ -2327,7 +2325,7 @@ fn studio_row(
                             .grow(1.0)
                             .min_h(0.0)
                             .px(11.0)
-                            .pt(9.0)
+                            .pt(8.0)
                             .scroll(ScrollSpec { stick_bottom: true })
                             .child(output)
                             .on_layout(|s: &mut AppState, bounds| {
