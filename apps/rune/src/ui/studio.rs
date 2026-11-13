@@ -187,6 +187,16 @@ static STUDIO_PROVIDER_CODEX: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z" fill="currentColor" fill-rule="evenodd"/>"#,
 };
+static STUDIO_FOLDER_OPEN: Icon = Icon {
+    name: "studio-folder-open",
+    view: 24.0,
+    body: r#"<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v1H7.2a2 2 0 0 0-1.9 1.4L3 18.2V6.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m5.2 12.1.9 6.1a1.5 1.5 0 0 0 1.5 1.3h10.2a1.5 1.5 0 0 0 1.4-1.1l1.5-5.2a1.2 1.2 0 0 0-1.2-1.5H6.4a1.2 1.2 0 0 0-1.2.4Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+};
+static STUDIO_EXPORT: Icon = Icon {
+    name: "studio-export",
+    view: 24.0,
+    body: r#"<path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 static STUDIO_PROVIDER_GPT: Icon = Icon {
     name: "studio-provider-gpt",
     view: 24.0,
@@ -241,6 +251,15 @@ static ARROW_RIGHT: Icon = Icon {
 
 fn brand_mark(provider: &str, t: Palette) -> El {
     brand_mark_size(provider, 15.0, t)
+}
+fn provider_icon(provider: &str) -> &'static Icon {
+    match provider.to_ascii_lowercase().as_str() {
+        "claude" | "claudeagent" => &STUDIO_PROVIDER_CLAUDE,
+        "cursor" => &STUDIO_PROVIDER_CURSOR,
+        "opencode" => &STUDIO_PROVIDER_OPENCODE,
+        "gpt" | "openai" => &STUDIO_PROVIDER_GPT,
+        _ => &STUDIO_PROVIDER_CODEX,
+    }
 }
 pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
     let mark = match provider {
@@ -784,7 +803,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio.title_info_open = false),
             );
-            title = title.child(thread_info_panel(state, t).absolute(-120.0, 25.0).raise());
+            title = title.child(thread_info_panel(state, t).absolute(-104.0, 25.0).raise());
         }
     }
     title
@@ -794,7 +813,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     let info_row = |name: &str, value: String| {
         row()
             .w_full()
-            .h(28.0)
+            .h(30.0)
             .center_y()
             .justify_between()
             .gap(16.0)
@@ -821,9 +840,14 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .child(
                 text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
                     .key("studio-title-draft")
-                    .w(180.0)
+                    .w(250.0)
                     .h(24.0)
+                    .px(6.0)
+                    .radius(6.0)
+                    .border(1.0, t.accent.alpha(0.24))
+                    .fill(t.field)
                     .color(t.ink)
+                    .selection_color(t.accent.alpha(0.24))
                     .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
                     .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
                         s.commit_studio_title();
@@ -847,7 +871,22 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .px(15.0)
         .py(8.0)
         .child(name_row)
-        .child(info_row("Provider", provider))
+        .child(
+            row()
+                .w_full()
+                .h(30.0)
+                .center_y()
+                .justify_between()
+                .gap(16.0)
+                .child(label("Provider", 11.5, 400.0, t.muted))
+                .child(
+                    row()
+                        .center_y()
+                        .gap(5.0)
+                        .child(icon(provider_icon(&provider), 13.0).color(t.ink))
+                        .child(label(provider, 12.5, 500.0, t.ink)),
+                ),
+        )
         .child(info_row("Model", model))
         .child(info_row("Reasoning", state.effort.clone()));
     if let Some(path) = &state.worktree_path {
@@ -863,11 +902,26 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .unwrap_or(&state.project_path)
             .to_owned();
         rows = rows
-            .child(label("PROJECT", 10.0, 600.0, t.muted).mt(10.0))
+            .child(label("PROJECT", 9.5, 400.0, t.faint).mt(10.0))
             .child(info_row("Repo", repo.clone()))
-            .child(info_row("Folder", repo));
+            .child(
+                row()
+                    .w_full()
+                    .h(30.0)
+                    .center_y()
+                    .justify_between()
+                    .gap(16.0)
+                    .child(label("Folder", 11.5, 400.0, t.muted))
+                    .child(
+                        row()
+                            .center_y()
+                            .gap(5.0)
+                            .child(label(repo, 12.5, 500.0, t.ink))
+                            .child(icon(&STUDIO_FOLDER_OPEN, 12.0).color(t.muted)),
+                    ),
+            );
     }
-    rows = rows.child(label("USAGE", 10.0, 600.0, t.muted).mt(10.0));
+    rows = rows.child(label("USAGE", 9.5, 400.0, t.faint).mt(10.0));
     if let Some((used, window)) = state.context_usage {
         rows = rows.child(info_row(
             "In context",
@@ -886,16 +940,33 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         }
     }
     rows = rows
-        .child(label("IDENTITY", 10.0, 600.0, t.muted).mt(10.0))
-        .child(info_row(
-            "Thread ID",
-            if state.thread_id.is_empty() {
-                "Not started".into()
-            } else {
-                short_thread_id(&state.thread_id)
-            },
-        ));
-    rows = rows.child(label("EXPORT", 10.0, 600.0, t.muted).mt(10.0))
+        .child(label("IDENTITY", 9.5, 400.0, t.faint).mt(10.0))
+        .child(
+            row()
+                .w_full()
+                .h(30.0)
+                .center_y()
+                .justify_between()
+                .gap(16.0)
+                .child(label("Thread ID", 11.5, 400.0, t.muted))
+                .child(
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .child(label(
+                            if state.thread_id.is_empty() {
+                                "Not started".into()
+                            } else {
+                                short_thread_id(&state.thread_id)
+                            },
+                            12.5,
+                            500.0,
+                            t.ink,
+                        ))
+                        .child(icon(&FOOTER_COPY01, 12.0).color(t.muted)),
+                ),
+        );
+    rows = rows.child(label("EXPORT", 9.5, 400.0, t.faint).mt(10.0))
         .child(row().w_full().h(32.0).center_y().justify_between()
             .child(label("Format", 11.5, 400.0, t.muted))
             .child(row().gap(12.0)
@@ -908,7 +979,8 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .child(row().w_full().justify_end().child(
             el().key("studio-export").role("button").focusable(true).px(12.0).h(30.0).center()
                 .radius(8.0).border(1.0, t.line)
-                .child(label("↓  Export thread", 12.5, 550.0, t.ink))
+                .fill(if t.dark { t.raised } else { rune::color::hex("#fdfcf8").unwrap() })
+                .child(row().center_y().gap(6.0).child(icon(&STUDIO_EXPORT, 13.0).color(t.muted)).child(label("Export thread", 12.5, 450.0, t.muted)))
                 .on_press_tx(|s: &mut AppState, tx: &mut rune::Tx| {
                     if s.studio.busy || s.studio.export_request.is_some() { return; }
                     let format = if s.studio.export_json { "json" } else { "markdown" };
@@ -933,7 +1005,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .w(320.0)
         .radius(18.0)
         .border(1.0, t.ink.alpha(0.08))
-        .fill(t.ground)
+        .fill(if t.dark {
+            t.raised
+        } else {
+            rune::color::hex("#fdfcf8").unwrap()
+        })
         .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.16))
         .offset_motion(Curve::tween(
             0.18,
@@ -946,7 +1022,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .px(15.0)
                 .center_y()
                 .gap(12.0)
-                .fill(t.raised)
+                .fill(if t.dark {
+                    t.ground
+                } else {
+                    rune::color::hex("#faf9f5").unwrap()
+                })
                 .child(label("Details", 13.0, 600.0, t.ink_soft))
                 .child(label("Inbox", 13.0, 400.0, t.muted).grow(1.0))
                 .child(if let Some(status) = &state.info_status {
@@ -1616,7 +1696,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         (1292.0, 854.0)
     };
-    let mut plane = col().w_full();
+    let mut plane = col().w_full().h_full();
     let rows = s.studio_layout["rows"].as_array();
     let mut selected_present = false;
     if let Some(rows) = rows {
@@ -1652,6 +1732,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             cx,
         ));
     }
+    plane = plane.child(crate::plasma::slot(s, cx, 0.22));
     let plane = col()
         .key("studio-plane")
         .w_full()
@@ -1801,7 +1882,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child(icon(&CLOSE, 13.0).color(t.muted).offset(0.0, 1.0)),
         );
     }
-    let mut output = plane.child(
+    let scene = plane.child(
         row()
             .pin(Some(0.0), Some(27.2), None, None)
             .offset(0.5, 0.0)
@@ -1812,6 +1893,12 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
             .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
     );
+    let scene = if s.conversation_search_open {
+        scene.opacity(0.38)
+    } else {
+        scene
+    };
+    let mut output = el().w_full().h_full().child(scene);
     if s.conversation_search_open {
         output = output.child(conversation_search_modal(s, t));
     }
@@ -2074,7 +2161,11 @@ fn handoff_picker(s: &AppState, t: Palette) -> El {
         .h(294.0)
         .radius(18.0)
         .border(1.0, t.line)
-        .fill(t.raised)
+        .fill(if t.dark {
+            t.raised
+        } else {
+            rune::color::hex("#fdfcf8").unwrap()
+        })
         .child(
             row()
                 .h(32.0)
@@ -3053,6 +3144,7 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                         .w(390.0)
                         .h(40.0)
                         .color(t.ink)
+                        .offset(0.0, 2.0)
                         .placeholder("Search across all conversations…", t.muted)
                         .on_edit(|s: &mut AppState| &mut s.conversation_search),
                 )
@@ -3116,9 +3208,9 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
         ))
         .child(
             row().w_full().h(32.0).px(16.0).center_y().gap(12.0).child(
-                text("↑↓ navigate   ↵ open   esc close")
+                text("↑↓ navigate  ↵ open esc close")
                     .font(
-                        TextStyle::new(11.0, 400.0)
+                        TextStyle::new(10.0, 400.0)
                             .family(Family::SystemMono)
                             .tracking(0.0),
                     )
@@ -3128,6 +3220,12 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
     el().key("conversation-search-overlay")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .fill(rune::Color::BLACK.alpha(0.0))
+        .child(
+            el().key("conversation-search-scrim")
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .fill(rune::Color::BLACK.alpha(0.0))
+                .on_press(|s: &mut AppState| s.conversation_search_open = false),
+        )
         .child(col().w_full().h_full().pt(102.0).items_center().child(card))
 }
 

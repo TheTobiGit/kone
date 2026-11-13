@@ -115,6 +115,7 @@ fn main() {
                 s.studio.title_info_open = true;
                 s.studio.title_editing = true;
                 s.studio.title_draft = rune::TextEdit::new(s.studio.title.clone());
+                s.studio.title_draft.anchor = 0;
                 s.studio.title_draft.focused = true;
             }),
             ("studio-conversation-search", |s| {
@@ -583,12 +584,14 @@ fn studio_menus(s: &mut AppState) {
     s.studio.title = "Studio menus review".into();
     s.studio.project_path = "/Users/you/Developer/kone".into();
     s.studio.worktree_path = None;
+    s.studio.connected_identity = None;
+    s.studio.items.clear();
     s.studio.models.clear();
     s.studio.model_index = 0;
     s.studio.effort = "Medium".into();
     s.studio.info_status = Some("Working".into());
     s.studio.context_usage = None;
-    s.studio.thread_id = "fc18a38a1234567890b551d7".into();
+    s.studio.thread_id = "87e83c63reviewseedcee5f4".into();
     s.studio_layout["rows"][0]["focusedId"] = serde_json::json!(s.studio.thread_id);
     s.studio_layout["rows"][0]["panes"][0]["id"] = serde_json::json!(s.studio.thread_id);
     s.studio_layout["rows"][0]["panes"][0]["anchor"]["threadId"] =

@@ -3309,6 +3309,48 @@ mod start_actions_tests {
     }
 
     #[test]
+    fn studio_project_switch_walks_destinations_and_selects_with_enter() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            projects: vec![
+                super::Project {
+                    name: "kone".into(),
+                    path: "/kone".into(),
+                },
+                super::Project {
+                    name: "nova".into(),
+                    path: "/nova".into(),
+                },
+                super::Project {
+                    name: "atlas".into(),
+                    path: "/atlas".into(),
+                },
+            ],
+            selected_project: Some(0),
+            studio_project_menu_open: true,
+            ..Default::default()
+        };
+        let mut tx = rune::Tx::default();
+        let key = |key| rune::KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        };
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Down),
+            &mut tx
+        ));
+        assert_eq!(s.studio_project_selection, 1);
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Enter),
+            &mut tx
+        ));
+        assert_eq!(s.selected_project, Some(2));
+        assert!(!s.studio_project_menu_open);
+    }
+
+    #[test]
     fn studio_insert_menu_uses_arrow_selection_and_enter() {
         let mut s = super::AppState {
             page: Page::Studio,

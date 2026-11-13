@@ -23,6 +23,10 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         s.page
     };
     let page = match under {
+        Page::Empty if s.page == Page::Studio && s.selected_project.is_some() => el()
+            .w_full()
+            .h_full()
+            .fill(crate::theme::Palette::new(cx.system_dark()).ground),
         Page::Empty => empty::view(s, cx),
         Page::Projects => projects::view(s, cx),
         Page::Overview => overview::view(s, cx),
