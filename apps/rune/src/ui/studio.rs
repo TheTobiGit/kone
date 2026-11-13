@@ -2450,7 +2450,7 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 .w_full()
                 .padding(5.0)
                 .radius(14.0)
-                .fill(t.ground)
+                .fill(t.raised)
                 .gap(2.0)
                 .child(
                     row()
@@ -2489,7 +2489,7 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 .w_full()
                 .padding(5.0)
                 .radius(14.0)
-                .fill(t.ground)
+                .fill(t.raised)
                 .gap(2.0)
                 .child(
                     row()
@@ -2555,7 +2555,7 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
             .w_full()
             .padding(4.0)
             .radius(14.0)
-            .fill(t.ground)
+            .fill(t.raised)
             .gap(2.0);
         for (id, title, status) in &s.studio.subagents {
             let live = matches!(status.as_str(), "starting" | "running");
@@ -2658,13 +2658,9 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .center_y()
                 .gap(6.0)
                 .child(label("⠿", 11.0, 500.0, t.faint))
-                .child(if s.studio.conversation_fixture.as_deref() == Some("composer-dock-queue") {
-                    el()
-                } else {
-                    el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
-                        .child(label((index + 1).to_string(), 10.0, 700.0, t.muted))
-                })
-                .child(label(input.clone(), 11.5, 450.0, t.ink_soft.alpha(0.74)).grow(1.0).shrink())
+                .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
+                    .child(label((index + 1).to_string(), 10.0, 700.0, t.muted)))
+                .child(label(input.clone(), 11.5, 450.0, t.ink_soft.alpha(0.62)).grow(1.0).shrink())
                 .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.muted))
                 .child(el().key(format!("queue-up-{id}")).px(4.0).h(20.0).center().hover(t.hover)
                     .child(label("↑", 11.0, 500.0, t.muted)).on_press(move |s: &mut AppState| {

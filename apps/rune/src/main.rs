@@ -165,12 +165,9 @@ fn main() {
                 s.studio.queued_turns = vec![
                     (
                         "queued-1".into(),
-                        "Add approval shortcuts to the overlay.".into(),
+                        "Add keyboard shortcuts for approval.".into(),
                     ),
-                    (
-                        "queued-2".into(),
-                        "Check stacked thread docks after that.".into(),
-                    ),
+                    ("queued-2".into(), "Then verify the overlay stack.".into()),
                 ];
             }),
             ("studio-dock-selection", |s| {
