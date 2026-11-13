@@ -2418,12 +2418,23 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
         .filter(|row| matches!(row.2.as_str(), "starting" | "running"))
         .count();
     let mut card = col()
-        .w(288.0)
-        .padding(if dock_fixture { 8.0 } else { 4.0 })
-        .radius(20.0)
-        .border(1.0, t.ink.alpha(0.08))
-        .shadow(0.0, 18.0, rune::Color::BLACK.alpha(0.18))
-        .fill(if t.dark {
+        .w(if dock_fixture { 300.0 } else { 288.0 })
+        .padding(if dock_fixture { 6.0 } else { 4.0 })
+        .gap(if dock_fixture { 4.0 } else { 0.0 })
+        .radius(if dock_fixture { 14.0 } else { 20.0 })
+        .border(if dock_fixture { 0.0 } else { 1.0 }, t.ink.alpha(0.08))
+        .shadow(
+            0.0,
+            18.0,
+            rune::Color::BLACK.alpha(if dock_fixture { 0.0 } else { 0.18 }),
+        )
+        .fill(if dock_fixture {
+            if t.dark {
+                t.raised
+            } else {
+                crate::theme::mix_srgb(t.ground, t.sunken, 0.16)
+            }
+        } else if t.dark {
             t.raised
         } else {
             crate::theme::mix_srgb(t.ground, t.sunken, 0.16)
@@ -2441,16 +2452,18 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 .px(10.0)
                 .center_y()
                 .gap(7.0)
+                .radius(10.0)
+                .fill(t.raised_high)
                 .child(el().w(6.0).h(6.0).radius(3.0).fill(t.accent))
                 .child(brand_mark_size("gpt", 15.0, t))
-                .child(label("Composer review", 12.5, 500.0, t.ink_soft)),
+                .child(label("Composer review", 13.0, 500.0, t.ink_soft)),
         );
         card = card.child(
             col()
                 .w_full()
                 .padding(5.0)
                 .radius(14.0)
-                .fill(t.raised)
+                .fill(t.raised_high)
                 .gap(2.0)
                 .child(
                     row()
@@ -2471,7 +2484,12 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                             10.0,
                             500.0,
                             rune::color::hex("#d25c5c").unwrap(),
-                        )),
+                        ))
+                        .child(
+                            icon(&ACTIVITY_CHEVRON, 14.0)
+                                .color(t.muted)
+                                .rotate(std::f32::consts::FRAC_PI_2),
+                        ),
                 )
                 .child(
                     row()
@@ -2479,7 +2497,8 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                         .h(32.0)
                         .px(8.0)
                         .center_y()
-                        .child(label("◉  main.rs", 12.0, 450.0, t.ink_soft))
+                        .child(icon(&FOOTER_GITFORK, 13.0).color(t.muted))
+                        .child(label("main.rs", 12.0, 450.0, t.ink_soft))
                         .child(el().grow(1.0))
                         .child(label("+18  −4", 10.0, 500.0, t.muted)),
                 ),
@@ -2489,7 +2508,7 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                 .w_full()
                 .padding(5.0)
                 .radius(14.0)
-                .fill(t.raised)
+                .fill(t.raised_high)
                 .gap(2.0)
                 .child(
                     row()
@@ -2499,123 +2518,157 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
                         .center_y()
                         .child(label("Tasks", 12.0, 500.0, t.ink_soft))
                         .child(el().grow(1.0))
-                        .child(label("0/2", 11.0, 500.0, t.muted)),
+                        .child(label("○", 12.0, 500.0, t.muted))
+                        .child(label("0/2", 11.0, 500.0, t.muted))
+                        .child(
+                            icon(&ACTIVITY_CHEVRON, 14.0)
+                                .color(t.muted)
+                                .rotate(std::f32::consts::FRAC_PI_2),
+                        ),
                 )
                 .child(
                     row()
                         .w_full()
-                        .h(34.0)
+                        .h(32.0)
                         .px(8.0)
                         .center_y()
                         .gap(8.0)
-                        .child(label("◈", 11.0, 500.0, t.muted))
+                        .child(icon(&FOOTER_GITFORK, 12.0).color(t.muted))
                         .child(label("Building dock rail", 12.0, 450.0, t.ink_soft)),
                 )
                 .child(
                     row()
                         .w_full()
-                        .h(34.0)
+                        .h(32.0)
                         .px(8.0)
                         .center_y()
                         .gap(8.0)
-                        .child(label("◈", 11.0, 500.0, t.muted))
+                        .child(
+                            el().w(12.0)
+                                .h(12.0)
+                                .radius(3.0)
+                                .border(1.0, t.muted.alpha(0.7)),
+                        )
                         .child(label("Match the composer stack", 12.0, 450.0, t.ink_soft)),
                 ),
         );
     }
     card = card.child(
-        row()
-            .key("subagents-toggle")
+        col()
             .w_full()
-            .h(34.0)
-            .px(10.0)
-            .center_y()
-            .gap(8.0)
-            .radius(12.0)
-            .hover(t.hover)
-            .child(label("Subagents", 12.5, 550.0, t.ink_soft))
-            .child(el().grow(1.0))
-            .child(label(count, 11.0, 500.0, t.muted))
-            .child(label(
-                if s.studio.subagents_expanded {
-                    "⌄"
-                } else {
-                    "›"
-                },
-                14.0,
-                500.0,
-                t.muted,
-            ))
-            .on_press(|s: &mut AppState| {
-                s.studio.subagents_expanded = !s.studio.subagents_expanded
-            }),
-    );
-    if s.studio.subagents_expanded {
-        let mut list = col()
-            .w_full()
-            .padding(4.0)
-            .radius(14.0)
-            .fill(t.raised)
-            .gap(2.0);
-        for (id, title, status) in &s.studio.subagents {
-            let live = matches!(status.as_str(), "starting" | "running");
-            list = list.child(
+            .padding(if dock_fixture { 5.0 } else { 0.0 })
+            .radius(if dock_fixture { 14.0 } else { 0.0 })
+            .fill(if dock_fixture {
+                t.raised_high
+            } else {
+                t.ground
+            })
+            .child(
                 row()
-                    .key(format!("subagent-{id}"))
+                    .key("subagents-toggle")
                     .w_full()
-                    .min_h(if dock_fixture { 55.0 } else { 38.0 })
+                    .h(34.0)
                     .px(8.0)
                     .center_y()
                     .gap(8.0)
-                    .child(if live {
-                        icon(&ACTIVITY_SPINNER, 11.0).color(t.accent)
-                    } else {
-                        label(
-                            if status == "failed" { "×" } else { "✓" },
-                            11.0,
-                            600.0,
-                            t.muted,
-                        )
-                    })
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .shrink()
-                            .child(label(title.clone(), 12.0, 500.0, t.ink_soft))
-                            .child(label(
-                                if dock_fixture && live {
-                                    "Default model · Reading Vue and CSS sources".into()
-                                } else if dock_fixture {
-                                    "Default model · Finished reference measurements".into()
-                                } else {
-                                    status.clone()
-                                },
-                                if dock_fixture { 9.5 } else { 10.5 },
-                                400.0,
-                                t.muted,
-                            )),
-                    )
-                    .child(if dock_fixture && live {
-                        label("●", 9.0, 600.0, t.accent)
-                    } else if dock_fixture {
-                        label("✓", 10.0, 500.0, t.muted)
-                    } else {
-                        el()
+                    .radius(12.0)
+                    .hover(t.hover)
+                    .child(label("Subagents", 12.5, 550.0, t.ink_soft))
+                    .child(el().grow(1.0))
+                    .child(label(count, 11.0, 500.0, t.muted))
+                    .child(label(
+                        if s.studio.subagents_expanded {
+                            "⌄"
+                        } else {
+                            "›"
+                        },
+                        14.0,
+                        500.0,
+                        t.muted,
+                    ))
+                    .on_press(|s: &mut AppState| {
+                        s.studio.subagents_expanded = !s.studio.subagents_expanded
                     }),
-            );
-        }
-        card = card.child(list);
-    }
+            )
+            .child(if s.studio.subagents_expanded {
+                let mut list = col().w_full().gap(2.0);
+                for (id, title, status) in &s.studio.subagents {
+                    let live = matches!(status.as_str(), "starting" | "running");
+                    list = list.child(
+                        row()
+                            .key(format!("subagent-{id}"))
+                            .w_full()
+                            .min_h(if dock_fixture { 52.0 } else { 38.0 })
+                            .px(8.0)
+                            .center_y()
+                            .gap(8.0)
+                            .child(if live {
+                                icon(&ACTIVITY_SPINNER, 12.0).color(t.muted)
+                            } else if dock_fixture {
+                                el().w(14.0)
+                                    .h(14.0)
+                                    .center()
+                                    .radius(7.0)
+                                    .fill(rune::color::hex("#35b982").unwrap())
+                                    .child(label(
+                                        "✓",
+                                        10.0,
+                                        700.0,
+                                        rune::color::hex("#ffffff").unwrap(),
+                                    ))
+                            } else {
+                                label(
+                                    if status == "failed" { "×" } else { "✓" },
+                                    11.0,
+                                    600.0,
+                                    t.muted,
+                                )
+                            })
+                            .child(
+                                col()
+                                    .grow(1.0)
+                                    .shrink()
+                                    .child(label(title.clone(), 12.0, 500.0, t.ink_soft))
+                                    .child(label(
+                                        if dock_fixture && live {
+                                            "Default model · Reading Vue and CSS so…".into()
+                                        } else if dock_fixture {
+                                            "Default model · Finished reference measurements".into()
+                                        } else {
+                                            status.clone()
+                                        },
+                                        11.5,
+                                        400.0,
+                                        t.muted,
+                                    )),
+                            )
+                            .child(if dock_fixture && live {
+                                label("●", 9.0, 600.0, t.accent)
+                            } else {
+                                el()
+                            }),
+                    );
+                }
+                list
+            } else {
+                el()
+            }),
+    );
     if dock_fixture {
         card = card.child(
-            row()
+            col()
                 .w_full()
-                .h(30.0)
-                .px(10.0)
-                .center_y()
-                .child(label("1 file · 0/2 tasks · 1 agent…", 9.5, 400.0, t.muted))
-                .child(el().grow(1.0))
-                .child(label("Collapse all", 9.5, 400.0, t.muted)),
+                .child(el().w_full().h(1.0).fill(t.line))
+                .child(
+                    row()
+                        .w_full()
+                        .h(29.0)
+                        .px(10.0)
+                        .center_y()
+                        .child(label("1 file · 0/2 tasks · 1 agent…", 10.0, 400.0, t.muted))
+                        .child(el().grow(1.0))
+                        .child(label("Collapse all", 10.0, 400.0, t.muted)),
+                ),
         );
     }
     card
@@ -2623,15 +2676,27 @@ fn subagent_dock(s: &AppState, t: Palette) -> El {
 
 fn dock_rail_tile(glyph: &'static str, count: &str, t: Palette) -> El {
     col()
-        .w(30.0)
+        .w(38.0)
         .h(40.0)
-        .items_center()
-        .justify_center()
-        .gap(2.0)
         .radius(11.0)
         .fill(t.raised_high)
-        .child(label(glyph, 13.0, 500.0, t.ink_soft))
-        .child(label(count.to_owned(), 9.0, 500.0, t.muted))
+        .child(
+            row()
+                .w_full()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .gap(3.0)
+                .child(label(glyph, 12.0, 500.0, t.ink_soft))
+                .child(label(count.to_owned(), 9.0, 500.0, t.muted)),
+        )
+        .child(
+            el().pin(Some(3.0), Some(3.0), None, None)
+                .w(5.0)
+                .h(5.0)
+                .radius(3.0)
+                .fill(t.danger),
+        )
 }
 
 fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
@@ -2845,13 +2910,26 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .child(
                 col()
                     .w_full()
-                    .padding(20.0)
+                    .padding(24.0)
                     .pb(16.0)
                     .gap(8.0)
                     .radius(14.0)
                     .fill(t.raised)
                     .child(label(approval.title.clone(), 14.0, 500.0, t.ink))
-                    .child(label(approval.detail.clone(), 13.0, 400.0, t.ink_soft)),
+                    .child(label(
+                        if s.studio.conversation_fixture.as_deref()
+                            == Some("composer-dock-approval")
+                        {
+                            approval
+                                .detail
+                                .replace(" keyboard handling", " keyboard\nhandling")
+                        } else {
+                            approval.detail.clone()
+                        },
+                        13.0,
+                        400.0,
+                        t.ink_soft,
+                    )),
             )
             .child(
                 row()
@@ -2915,7 +2993,11 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .h(42.0)
                     .px(14.0)
                     .center_y()
-                    .fill(t.sunken)
+                    .fill(if t.dark {
+                        t.sunken
+                    } else {
+                        crate::theme::mix_srgb(t.raised, t.sunken, 0.75)
+                    })
                     .child(
                         label(
                             if question.header.is_empty() {
@@ -2924,7 +3006,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                 question.header.clone()
                             },
                             13.0,
-                            500.0,
+                            400.0,
                             t.ink_soft,
                         )
                         .grow(1.0),
@@ -2949,7 +3031,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                     .pb(8.0)
                     .gap(10.0)
                     .fill(t.raised)
-                    .child(label(question.prompt.clone(), 15.0, 600.0, t.ink))
+                    .child(label(question.prompt.clone(), 15.0, 500.0, t.ink))
                     .child({
                         let mut options = col().w_full().gap(4.0);
                         for (index, option) in question.options.iter().enumerate() {
@@ -2976,7 +3058,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                                                 el()
                                             }),
                                     )
-                                    .child(label(option.clone(), 14.0, 600.0, t.ink_soft))
+                                    .child(label(option.clone(), 14.0, 400.0, t.ink_soft))
                                     .on_press(move |s: &mut AppState| {
                                         if multi {
                                             s.toggle_question_option(answer.clone());
@@ -4014,7 +4096,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                         .child(subagent_dock(s, t))
                         .child(
                             col()
-                                .w(38.0)
+                                .w(44.0)
                                 .padding(3.0)
                                 .gap(4.0)
                                 .radius(14.0)
