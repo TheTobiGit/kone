@@ -1042,7 +1042,8 @@ fn terminal_line(value: &str, t: Palette, show_cursor: bool) -> El {
         spans.push(Span::new(cursor_start, output.len()).color(t.accent));
     }
     let mut line = text(output)
-        .font(TextStyle::new(13.0, 400.0).mono().lh(16.5))
+        // xterm uses fontSize 13 × lineHeight 1.2 (15.6 CSS px).
+        .font(TextStyle::new(13.0, 400.0).mono().lh(15.6))
         .color(t.ink)
         .w_full();
     if !spans.is_empty() {
@@ -1072,11 +1073,16 @@ fn ansi256_color(index: u8, t: Palette) -> rune::Color {
 }
 
 fn ansi_color(index: u8, t: Palette) -> rune::Color {
-    const COLORS: [&str; 16] = [
-        "#1c1c1c", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
-        "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
+    const LIGHT: [&str; 16] = [
+        "#3f3f46", "#c81e3a", "#0f8a5f", "#b45309", "#2563eb", "#9333ea", "#0e7490", "#52525b",
+        "#71717a", "#e11d48", "#059669", "#d97706", "#3b82f6", "#a855f7", "#0891b2", "#27272a",
     ];
-    let color = COLORS[index.min(15) as usize];
+    const DARK: [&str; 16] = [
+        "#3b3b42", "#f2726f", "#4ec9a6", "#e5b567", "#7aa2f7", "#c9a2f0", "#6bd6c6", "#d4d4d8",
+        "#5b5b63", "#ff8f8b", "#79e3c0", "#f2cd88", "#9cb8ff", "#dcb8ff", "#8ce8da", "#ffffff",
+    ];
+    let colors = if t.dark { &DARK } else { &LIGHT };
+    let color = colors[index.min(15) as usize];
     rune::color::hex(color).unwrap_or(t.ink_soft)
 }
 
