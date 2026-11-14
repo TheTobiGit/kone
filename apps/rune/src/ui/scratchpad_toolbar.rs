@@ -165,7 +165,7 @@ fn apply(state: &mut StudioState, action: Action) {
             edit.toggle_mark(mark);
             if code {
                 edit.set_caret(end);
-                state.scratchpad_toolbar.code_spacer=Some(end);
+                state.scratchpad_toolbar.code_spacer = Some(end);
             }
         }
         Action::Block(block) => {
@@ -203,7 +203,13 @@ fn apply(state: &mut StudioState, action: Action) {
 }
 pub fn sync(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
     let range = state.scratchpad.as_ref().map(|edit| edit.range());
-    if state.scratchpad_toolbar.code_spacer.is_some_and(|at|range!=Some((at,at))) { state.scratchpad_toolbar.code_spacer=None; }
+    if state
+        .scratchpad_toolbar
+        .code_spacer
+        .is_some_and(|at| range != Some((at, at)))
+    {
+        state.scratchpad_toolbar.code_spacer = None;
+    }
     if state.scratchpad_toolbar.selection != range {
         state.scratchpad_toolbar.selection = range;
         state.scratchpad_toolbar.dismissed = None;

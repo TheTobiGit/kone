@@ -2807,6 +2807,7 @@ fn studio_row(
                     code_bg: t.ink.alpha(0.06),
                     quote_bar: t.accent.alpha(0.45),
                     marker: Some(t.muted),
+                    code_caret_spacer: None,
                 })
                 .w_full()
                 .grow(1.0)

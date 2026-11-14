@@ -799,7 +799,7 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
     }
     if scene == "mark-code" || scene == "mark-combined" {
         edit.set_caret(21);
-        s.studio.scratchpad_toolbar.code_spacer=Some(21);
+        s.studio.scratchpad_toolbar.code_spacer = Some(21);
         edit.focused = false;
     }
     use ui::scratchpad_toolbar::Popover;
@@ -833,11 +833,11 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
         s.studio.scratchpad_clear_progress = 0.5;
     }
     s.studio.scratchpad_saved = edit.to_html();
+    s.studio.scratchpad_toolbar.selection = Some(edit.range());
     s.studio.scratchpad_saved_at = (scene != "not-saved").then(|| "10:24 AM".into());
     if scene == "saving" {
         s.studio.scratchpad_save_request = Some(u64::MAX);
     }
-    s.studio.scratchpad_toolbar.selection = Some(edit.range());
     s.studio.scratchpad = Some(edit);
     s.studio.scratchpad_revision = 2;
     s.studio.scratchpad_id = "studio-review-pad".into();
