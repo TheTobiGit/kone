@@ -107,7 +107,7 @@ pub fn poll(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
     }
     false
 }
-pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &str) -> El {
+pub fn view(_s: &AppState, state: &StudioState, t: Palette, project: usize, id: &str) -> El {
     let danger = rune::color::hex("#e11d48").unwrap();
     // Electron counts body.textContent: paragraph boundaries add no whitespace.
     let words = state.scratchpad.as_ref().map_or(0, |edit| {
@@ -232,13 +232,11 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
         .pt(12.0)
         .pb(3.2)
         .px(1.6)
-        .opacity(
-            if state.scratchpad_footer_hover || s.studio_column_hover.as_deref() == Some(id) {
-                1.0
-            } else {
-                0.45
-            },
-        )
+        .opacity(if state.scratchpad_footer_hover {
+            1.0
+        } else {
+            0.45
+        })
         .on_hover_focus_change(move |s: &mut AppState, over, _| {
             focus(s, project, &foot_id);
             s.studio.scratchpad_footer_hover = over;
