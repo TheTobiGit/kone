@@ -4351,11 +4351,7 @@ fn empty_thread_art(
     mark: u32,
 ) -> El {
     let height = (viewport_height.max(640.0) * 0.72).min(580.0);
-    let top = if overview {
-        26.296875
-    } else {
-        (viewport_height - height) * 0.5 - 89.203125
-    };
+    let top = if overview { 26.296875 } else { 0.0 };
     let cached_scale = 0.985 * 0.985;
     el().w_full()
         .max_w(720.0)
@@ -5682,7 +5678,8 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 // Anchored fixture scenes settle mid-content, so they must not
                 // fight the bottom stick; "mid" and live threads follow the end.
                 .scroll(ScrollSpec {
-                    stick_bottom: !is_activity
+                    stick_bottom: !s.studio.items.is_empty()
+                        && !is_activity
                         && !s.studio.conversation_fixture.as_deref().is_some_and(|f| {
                             matches!(f, "scrolled" | "compaction" | "marks" | "code")
                                 || f.starts_with("composer-")

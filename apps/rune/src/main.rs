@@ -221,6 +221,7 @@ fn main() {
                 s.studio_threads.clear();
                 s.studio.composer_open = false;
                 s.studio.title = "Studio overview review".into();
+                s.studio.providers[0].id = "gpt".into();
             }),
             ("studio-final-composer", |s| {
                 studio_review(s);
@@ -231,6 +232,7 @@ fn main() {
                 s.studio_threads.clear();
                 s.studio.composer_open = true;
                 s.studio.title = "Studio overview review".into();
+                s.studio.providers[0].id = "gpt".into();
             }),
             ("studio-final-multi", studio_final_multi),
             ("studio-column-head", studio_column_head),
