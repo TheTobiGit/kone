@@ -75,5 +75,8 @@ fn linear(c: vec3<f32>) -> vec3<f32> { return select(c / 12.92, pow((c + 0.055) 
     }
     let coverage = clamp(abs(area) * 0.5, 0.0, 1.0);
     let alpha = abs(u.color.a) * 0.15 * coverage;
-    return vec4(color * alpha, alpha);
+    // Canvas2D stores each premultiplied draw in its 8-bit backing store
+    // before the lighter operation. Preserve that quantization even when
+    // Rune composites through a floating-point intermediate.
+    return floor(vec4(color * alpha, alpha) * 255.0 + vec4(0.5)) / 255.0;
 }
