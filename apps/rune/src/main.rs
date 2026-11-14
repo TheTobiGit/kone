@@ -232,6 +232,7 @@ fn main() {
                 s.studio.composer_open = true;
                 s.studio.title = "Studio overview review".into();
             }),
+            ("studio-final-multi", studio_final_multi),
             ("studio-column-head", studio_column_head),
             ("studio-insert-menu", |s| {
                 studio_menus(s);
@@ -730,6 +731,56 @@ fn studio_overview_fixture(s: &mut AppState, selection: usize) {
     s.studio.providers[0].id = "gpt".into();
     s.studio.overview = true;
     s.studio.overview_selection = selection.min(2);
+}
+
+fn studio_final_multi(s: &mut AppState) {
+    use state::{Project, StudioState};
+    studio_overview_fixture(s, 0);
+    s.projects = vec![
+        Project {
+            name: "kone".into(),
+            path: "/review/kone".into(),
+        },
+        Project {
+            name: "nova".into(),
+            path: "/review/nova".into(),
+        },
+    ];
+    s.selected_project = Some(0);
+    s.studio.project_path = "/review/kone".into();
+    s.studio_layout = serde_json::json!({
+        "version": 2,
+        "focusedRow": "/review/kone",
+        "rows": [
+            {"projectPath":"/review/kone","focusedId":"review-one","panes":[
+                {"id":"review-one","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-one"}},
+                {"id":"review-two","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-two"}},
+                {"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}
+            ]},
+            {"projectPath":"/review/nova","focusedId":"nova-one","panes":[
+                {"id":"nova-one","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"nova-one"}},
+                {"id":"nova-two","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"nova-two"}}
+            ]}
+        ]
+    });
+    s.studio.title = "Studio overview review".into();
+    s.studio.composer_open = false;
+    for id in ["review-three", "nova-one", "nova-two"] {
+        s.studio_threads.insert(
+            id.into(),
+            StudioState {
+                thread_open: true,
+                thread_id: id.into(),
+                project_path: if id.starts_with("nova") {
+                    "/review/nova".into()
+                } else {
+                    "/review/kone".into()
+                },
+                ..Default::default()
+            },
+        );
+    }
+    s.studio.overview = true;
 }
 
 fn studio_column_head(s: &mut AppState) {

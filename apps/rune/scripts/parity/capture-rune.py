@@ -36,7 +36,7 @@ for scene in scenes:
         output = args.outdir / f'{scene}-{theme}.png'
         output.unlink(missing_ok=True)
         command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', args.size, '--scale', str(args.scale), '--snap', str(output)]
-        overview = scene.startswith('studio-overview')
+        overview = scene.startswith('studio-overview') or scene == 'studio-final-multi'
         tree = output.with_suffix('.json')
         if overview:
             command += ['--tree', str(tree)]
@@ -104,9 +104,10 @@ for scene in scenes:
         if overview:
             report = json.loads(tree.read_text())
             cards = [el for el in report['elements'] if el.get('key', '').startswith('studio-pane-')]
-            if len(cards) != 3:
-                raise RuntimeError(f'{scene}: expected three cards, got {len(cards)}')
-            zoomed = scene != 'studio-overview-in'
+            expected_cards = 5 if scene == 'studio-final-multi' else 3
+            if len(cards) != expected_cards:
+                raise RuntimeError(f'{scene}: expected {expected_cards} cards, got {len(cards)}')
+            zoomed = scene == 'studio-final-multi' or scene != 'studio-overview-in'
             rail = next(el for el in report['elements'] if el.get('key', '').startswith('studio-rail-plane-'))
             if (rail.get('role') == 'grid') != zoomed:
                 raise RuntimeError(f'{scene}: captured the wrong overview state')
