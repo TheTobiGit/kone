@@ -414,28 +414,26 @@ fn fork_tool(
                 None
             };
         });
-    if shown {
-        let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
-        button = button.child(
-            el().key(format!("studio-tooltip-{tip}"))
-                .absolute(
-                    if tip == "Open a side chat" {
-                        0.0
-                    } else {
-                        (20.0 - width) / 2.0
-                    },
-                    -26.0,
-                )
-                .transition(tooltip_transition())
-                .w(width)
-                .px(7.0)
-                .h(20.0)
-                .center()
-                .radius(6.0)
-                .fill(t.ink)
-                .child(label(tip, 11.0, 500.0, t.ground)),
-        );
-    }
+    let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
+    button = button.child(tooltip_motion(
+        el().key(format!("studio-tooltip-{tip}"))
+            .absolute(
+                if tip == "Open a side chat" {
+                    0.0
+                } else {
+                    (20.0 - width) / 2.0
+                },
+                -26.0,
+            )
+            .w(width)
+            .px(7.0)
+            .h(20.0)
+            .center()
+            .radius(6.0)
+            .fill(t.ink)
+            .child(label(tip, 11.0, 500.0, t.ground)),
+        shown,
+    ));
     button
 }
 
@@ -448,26 +446,24 @@ fn head_tip(
 ) -> El {
     let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip.as_str());
     let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
-    if shown {
-        control = control.child(
-            el().key(format!("studio-tooltip-{tip}"))
-                .transition(tooltip_transition())
-                .absolute(
-                    if right {
-                        20.0 - width
-                    } else {
-                        (20.0 - width) / 2.0
-                    },
-                    -26.0,
-                )
-                .w(width)
-                .h(20.0)
-                .center()
-                .radius(6.0)
-                .fill(t.ink)
-                .child(label(tip.clone(), 11.0, 500.0, t.ground)),
-        );
-    }
+    control = control.child(tooltip_motion(
+        el().key(format!("studio-tooltip-{tip}"))
+            .absolute(
+                if right {
+                    20.0 - width
+                } else {
+                    (20.0 - width) / 2.0
+                },
+                -26.0,
+            )
+            .w(width)
+            .h(20.0)
+            .center()
+            .radius(6.0)
+            .fill(t.ink)
+            .child(label(tip.clone(), 11.0, 500.0, t.ground)),
+        shown,
+    ));
     control
         .hover_group_focus()
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
@@ -481,11 +477,14 @@ fn head_tip(
         })
 }
 
-fn tooltip_transition() -> rune::Transition {
-    let spring = rune::Spring::from_stiffness_damping(900.0, 60.0, 1.0);
-    rune::Transition::offset(0.0, 2.0)
-        .combined(rune::Transition::opacity())
-        .springs(rune::SpringPair::new(spring, spring))
+fn tooltip_motion(mut element: El, shown: bool) -> El {
+    let ease = rune::Easing::cubic(0.25, 0.1, 0.25, 1.0);
+    element = element
+        .offset(0.0, if shown { 0.0 } else { 2.0 })
+        .opacity(if shown { 1.0 } else { 0.0 })
+        .offset_motion(Curve::tween(0.12, ease))
+        .opacity_motion(Curve::tween(0.12, ease));
+    element
 }
 
 static METER_TRACK: Icon = Icon {
