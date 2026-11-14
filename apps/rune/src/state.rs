@@ -165,6 +165,15 @@ impl AppState {
 
 #[derive(Default)]
 pub struct StudioState {
+    pub scratchpad: Option<TextEdit>,
+    pub scratchpad_saved: String,
+    pub scratchpad_saving: String,
+    pub scratchpad_load_request: Option<u64>,
+    pub scratchpad_save_request: Option<u64>,
+    pub scratchpad_id: String,
+    /// Stored revision + 1; zero means the shared document has not loaded yet.
+    pub scratchpad_revision: u64,
+    pub scratchpad_conflict: bool,
     /// Initial positioning for deterministic conversation comparison captures.
     pub conversation_fixture: Option<String>,
     pub activity_open: bool,
@@ -685,6 +694,30 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        if s.studio.scratchpad.is_some()
+            && s.studio.scratchpad_load_request.is_none()
+            && s.studio.scratchpad_revision == 0
+            && s.bridge.is_some()
+        {
+            s.studio.scratchpad_load_request = s.request(
+                "scratchpad.list",
+                serde_json::json!({"projectPath":s.studio.project_path}),
+            );
+        }
+        s.persist_scratchpad();
+        let parked_pads: Vec<String> = s
+            .studio_threads
+            .iter()
+            .filter(|(_, state)| state.scratchpad.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in parked_pads {
+            let parked = s.studio_threads.remove(&id).unwrap();
+            let focused = std::mem::replace(&mut s.studio, parked);
+            s.persist_scratchpad();
+            let parked = std::mem::replace(&mut s.studio, focused);
+            s.studio_threads.insert(id, parked);
+        }
         if let Some((key, at)) = s.studio.conversation_scroll.clone() {
             let deadline = *s
                 .studio
@@ -889,6 +922,7 @@ impl AppState {
     }
 
     fn park_studio_thread(&mut self) {
+        self.persist_scratchpad();
         if self.studio.thread_id.is_empty() {
             return;
         }
@@ -1023,6 +1057,17 @@ impl AppState {
             .filter(|(id, _)| id != &self.studio.thread_id && !self.studio_threads.contains_key(id))
             .collect();
         for (thread, path) in threads {
+            if thread.starts_with("scratchpad:") {
+                let mut state = StudioState {
+                    thread_id: thread.clone(),
+                    project_path: path,
+                    thread_open: true,
+                    ..Default::default()
+                };
+                Self::load_scratchpad(&mut state);
+                self.studio_threads.insert(thread, state);
+                continue;
+            }
             if thread.starts_with("terminal:") {
                 self.studio_threads.insert(
                     thread.clone(),
@@ -1208,6 +1253,7 @@ impl AppState {
                         match s.studio_insert_selection {
                             0 if !blank_thread_open => s.insert_studio_thread(index),
                             1 => s.insert_studio_terminal(index),
+                            2 => s.insert_studio_scratchpad(index),
                             _ => {}
                         }
                     }
@@ -1698,7 +1744,10 @@ impl AppState {
             self.studio.thread_id = thread.clone();
             self.studio.project_path = project_path;
             self.studio.thread_open = true;
-            if thread.starts_with("terminal:") {
+            if thread.starts_with("scratchpad:") {
+                Self::load_scratchpad(&mut self.studio);
+                self.studio.composer_open = false;
+            } else if thread.starts_with("terminal:") {
                 self.studio.terminal_command = Some(String::new());
                 self.studio.composer_open = false;
             } else {
@@ -1825,6 +1874,97 @@ impl AppState {
             panes.insert(at.min(panes.len()), pane);
             self.persist_studio_layout();
         }
+    }
+
+    fn scratchpad_path(project: &str) -> std::path::PathBuf {
+        let mut path = Self::changes_preferences_path();
+        path.pop();
+        path.push("scratchpads");
+        // Encode losslessly, split below filesystem component limits.
+        let encoded = project
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        for chunk in encoded.as_bytes().chunks(80) {
+            path.push(std::str::from_utf8(chunk).expect("hex is ASCII"));
+        }
+        path.push("document.html");
+        path
+    }
+
+    fn load_scratchpad(state: &mut StudioState) {
+        state.scratchpad_id = state.thread_id.clone();
+        let text =
+            std::fs::read_to_string(Self::scratchpad_path(&state.project_path)).unwrap_or_default();
+        state.scratchpad_saved = text.clone();
+        let mut edit = TextEdit::from_html(&text).rich();
+        edit.focused = true;
+        state.scratchpad = Some(edit);
+    }
+
+    fn persist_scratchpad(&mut self) {
+        let Some(edit) = self.studio.scratchpad.as_ref() else {
+            return;
+        };
+        if self.studio.scratchpad_conflict {
+            return;
+        }
+        if self.studio.scratchpad_load_request.is_some()
+            || self.studio.scratchpad_save_request.is_some()
+        {
+            return;
+        }
+        let body = edit.to_html();
+        if body == self.studio.scratchpad_saved {
+            return;
+        }
+        if self.bridge.is_some() {
+            self.studio.scratchpad_saving = body.clone();
+            self.studio.scratchpad_save_request = self.request("scratchpad.save", serde_json::json!({"scratchpadId":self.studio.scratchpad_id,"projectPath":self.studio.project_path,"body":body,"expectedRevision":self.studio.scratchpad_revision.saturating_sub(1)}));
+            return;
+        }
+        let path = Self::scratchpad_path(&self.studio.project_path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::write(path, &body).is_ok() {
+            self.studio.scratchpad_saved = body;
+        }
+    }
+
+    pub fn studio_scratchpad_open(&self) -> bool {
+        self.studio_layout["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| r["projectPath"] == self.studio.project_path)
+            .and_then(|r| r["panes"].as_array())
+            .is_some_and(|panes| panes.iter().any(|p| p["kind"] == "scratchpad"))
+    }
+
+    pub fn insert_studio_scratchpad(&mut self, at: usize) {
+        if !self.studio_layout_ready || self.studio_scratchpad_open() {
+            return;
+        }
+        self.persist_scratchpad();
+        let path = self.studio.project_path.clone();
+        let id = format!("scratchpad:{path}");
+        self.park_studio_thread();
+        if let Some(row) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+        {
+            if let Some(panes) = row["panes"].as_array_mut() {
+                panes.insert(at.min(panes.len()), serde_json::json!({"id":id, "kind":"scratchpad", "anchor":{"kind":"scratchpad", "scratchpadId":id, "threadId":id}, "width":0}));
+            }
+            row["focusedId"] = id.clone().into();
+        }
+        self.studio.thread_id = id;
+        self.studio.project_path = path;
+        self.studio.thread_open = true;
+        Self::load_scratchpad(&mut self.studio);
+        self.persist_studio_layout();
     }
 
     pub fn insert_studio_terminal(&mut self, at: usize) {
@@ -2291,6 +2431,8 @@ impl AppState {
                 event_thread == Some(thread.as_str())
                     || response_id.is_some_and(|id| {
                         [
+                            state.scratchpad_load_request,
+                            state.scratchpad_save_request,
                             state.title_rename_request.as_ref().map(|(id, _)| *id),
                             state.export_request,
                             state.continuation_request,
@@ -2332,6 +2474,47 @@ impl AppState {
             return;
         }
         if let Some(id) = message.get("id").and_then(|v| v.as_u64()) {
+            if self.studio.scratchpad_load_request == Some(id) {
+                self.studio.scratchpad_load_request = None;
+                if let Some(record) = message["result"]
+                    .as_array()
+                    .and_then(|records| records.first())
+                {
+                    self.studio.scratchpad_id = record["id"]
+                        .as_str()
+                        .unwrap_or(&self.studio.thread_id)
+                        .to_owned();
+                    let text = record["body"].as_str().unwrap_or_default().to_owned();
+                    let changed = self.studio.scratchpad.as_ref().is_some_and(|edit| {
+                        edit.to_html()
+                            != TextEdit::from_html(&self.studio.scratchpad_saved).to_html()
+                    });
+                    if changed && !text.is_empty() {
+                        self.studio.scratchpad_conflict = true;
+                        self.studio.error = Some("Scratchpad loaded after editing began; your unsaved text is preserved.".into());
+                    } else if !changed && let Some(edit) = self.studio.scratchpad.as_mut() {
+                        *edit = TextEdit::from_html(&text).rich();
+                    }
+                    self.studio.scratchpad_saved = text;
+                    self.studio.scratchpad_revision = record["revision"].as_u64().unwrap_or(0) + 1;
+                } else {
+                    self.studio.scratchpad_revision = 1;
+                }
+                return;
+            }
+            if self.studio.scratchpad_save_request == Some(id) {
+                self.studio.scratchpad_save_request = None;
+                if let Some(revision) = message["result"]["revision"].as_u64() {
+                    self.studio.scratchpad_revision = revision + 1;
+                    self.studio.scratchpad_saved = self.studio.scratchpad_saving.clone();
+                } else if message["result"]["conflict"].is_number() {
+                    self.studio.scratchpad_conflict = true;
+                    self.studio.error = Some(
+                        "Scratchpad changed elsewhere; your unsaved text is preserved.".into(),
+                    );
+                }
+                return;
+            }
             if self.studio_load_request == Some(id) {
                 self.studio_load_request = None;
                 if message.get("error").is_some() {
@@ -3379,6 +3562,86 @@ mod start_actions_tests {
         assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
         assert!(s.studio_insert_menu.is_none());
         assert_eq!(s.studio_layout["rows"][0]["panes"][0]["kind"], "terminal");
+    }
+
+    #[test]
+    fn scratchpad_keyboard_inserts_one_project_scoped_pane() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            studio_layout_ready: true,
+            ..Default::default()
+        };
+        s.studio.project_path = "/scratchpad-keyboard-fixture".into();
+        s.studio_layout = serde_json::json!({"version":2,"rows":[{"projectPath":s.studio.project_path,"panes":[]}]});
+        s.studio_insert_menu = Some((s.studio.project_path.clone(), 0, [0.0; 4]));
+        s.studio_insert_selection = 2;
+        let enter = rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods::default(),
+        };
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &enter,
+            &mut rune::Tx::default()
+        ));
+        assert!(s.studio.scratchpad.is_some());
+        assert_eq!(s.studio_layout["rows"][0]["panes"][0]["kind"], "scratchpad");
+        s.insert_studio_scratchpad(0);
+        assert_eq!(
+            s.studio_layout["rows"][0]["panes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn scratchpad_restores_store_content_and_acknowledges_only_saved_snapshot() {
+        let mut s = super::AppState::default();
+        s.studio.scratchpad = Some(rune::TextEdit::default());
+        s.studio.scratchpad_load_request = Some(41);
+        s.studio_message(serde_json::json!({"id":41,"result":[{"id":"pad-a","body":"project note","revision":3}]}));
+        assert_eq!(s.studio.scratchpad.as_ref().unwrap().text, "project note");
+        assert_eq!(s.studio.scratchpad_id, "pad-a");
+        assert_eq!(s.studio.scratchpad_revision, 4);
+        s.studio.scratchpad_saving = "first edit".into();
+        s.studio.scratchpad.as_mut().unwrap().text = "later edit".into();
+        s.studio.scratchpad_save_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"revision":4}}));
+        assert_eq!(s.studio.scratchpad_saved, "first edit");
+        assert_eq!(s.studio.scratchpad.as_ref().unwrap().text, "later edit");
+        assert_eq!(s.studio.scratchpad_revision, 5);
+    }
+
+    #[test]
+    fn scratchpad_late_load_preserves_typing_and_conflict_pauses_writes() {
+        let mut s = super::AppState::default();
+        let mut edit = rune::TextEdit::from_html("<p>typed during load</p>");
+        edit.focused = true;
+        s.studio.scratchpad = Some(edit);
+        s.studio.scratchpad_load_request = Some(51);
+        s.studio_message(serde_json::json!({"id":51,"result":[{"id":"existing","body":"<p>remote note</p>","revision":2}]}));
+        assert_eq!(
+            s.studio.scratchpad.as_ref().unwrap().text,
+            "typed during load"
+        );
+        assert!(s.studio.scratchpad_conflict);
+        s.persist_scratchpad();
+        assert!(s.studio.scratchpad_save_request.is_none());
+        s.studio.scratchpad_conflict = false;
+        s.studio.scratchpad_save_request = Some(52);
+        s.studio_message(serde_json::json!({"id":52,"result":{"conflict":3}}));
+        assert!(s.studio.scratchpad_conflict);
+        s.persist_scratchpad();
+        assert!(s.studio.scratchpad_save_request.is_none());
+    }
+
+    #[test]
+    fn scratchpad_storage_path_uses_bounded_components() {
+        let path = super::AppState::scratchpad_path(&format!("/{}", "a".repeat(1024)));
+        assert!(path.components().all(|part| part.as_os_str().len() <= 255));
+        assert_ne!(path, super::AppState::scratchpad_path("/another/a"));
     }
 
     #[test]

@@ -275,6 +275,14 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     }
     case "projects.forget": { const input = z.object({ path: z.string() }).parse(params); return updateProjects((list) => list.filter((p) => p.path !== input.path)); }
     case "projects.pin": { const input = z.object({ path: z.string(), pinned: z.boolean() }).parse(params); return updateProjects((list) => list.map((p) => p.path === input.path ? { ...p, pinned: input.pinned } : p)); }
+    case "scratchpad.list": {
+      const input = z.object({ projectPath: z.string().min(1) }).parse(params);
+      return store.listScratchpads(input.projectPath);
+    }
+    case "scratchpad.save": {
+      const input = z.object({ scratchpadId: z.string().min(1), projectPath: z.string().min(1), body: z.string(), expectedRevision: z.number().int().optional() }).parse(params);
+      return store.saveScratchpad({ padId: input.scratchpadId, projectPath: input.projectPath, title: "Scratchpad", body: input.body, expectedRevision: input.expectedRevision });
+    }
     case "studio.load": return store.loadStudio();
     case "studio.save": {
       const input = z.object({ layout: studioLayoutSchema }).parse(params);
