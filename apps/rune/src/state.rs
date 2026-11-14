@@ -242,6 +242,7 @@ pub struct StudioState {
     pub context_auto_compact: bool,
     pub context_open: bool,
     pub title_info_open: bool,
+    pub title_keyboard_return: bool,
     pub title_info_width: f32,
     pub title_editing: bool,
     pub title_draft: TextEdit,
@@ -1699,6 +1700,7 @@ impl AppState {
                     return true;
                 }
                 s.studio.title_info_open = false;
+                s.studio.title_keyboard_return = true;
                 return true;
             }
             if s.studio.context_open {

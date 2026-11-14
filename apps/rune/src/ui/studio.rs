@@ -803,9 +803,15 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                 }
             })
             .on_press(|s: &mut AppState| {
+                s.studio.title_keyboard_return = false;
                 s.studio.title_info_open = !s.studio.title_info_open;
                 s.studio.context_open = false;
             });
+        if state.is_some_and(|state| state.title_keyboard_return) {
+            // Chromium restores a visible ring after keyboard dismissal even
+            // when the popover was opened with the pointer.
+            title = title.focus_within_ring(2.0, 2.0, t.ink.alpha(0.3));
+        }
         if let Some(state) = state.filter(|state| state.title_info_open) {
             title = title.child(
                 el().size(8192.0, 8192.0)
@@ -3151,11 +3157,11 @@ fn studio_row(
                 )
             } else if let Some(state) = state {
                 parked_body(
+                    s,
                     state,
                     &id,
-                    s.studio
-                        .overview
-                        .then_some((s.studio_viewport.1, viewport_h, width)),
+                    (s.studio_viewport.1, viewport_h, width),
+                    s.studio.overview,
                     t,
                     crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
                 )
@@ -3923,23 +3929,53 @@ fn search_hint(value: &str, t: Palette) -> El {
 }
 
 fn parked_body(
+    app: &AppState,
     state: &StudioState,
     id: &str,
-    overview: Option<(f32, f32, f32)>,
+    geometry: (f32, f32, f32),
+    overview: bool,
     t: Palette,
     mark: u32,
 ) -> El {
-    if state.items.is_empty()
-        && let Some((window_height, height, width)) = overview
-    {
-        return col().w_full().grow(1.0).shrink().child(empty_thread_art(
-            window_height,
-            height,
-            width,
-            true,
-            false,
-            mark,
-        ));
+    let (window_height, height, width) = geometry;
+    if state.items.is_empty() {
+        let mut body = col()
+            .key(format!("studio-parked-{id}"))
+            .w_full()
+            .grow(1.0)
+            .shrink()
+            .child(empty_thread_art(
+                window_height,
+                height,
+                width,
+                overview,
+                false,
+                mark,
+            ));
+        if !overview {
+            let thread = id.to_owned();
+            let project_path = state.project_path.clone();
+            body = body.child(
+                row()
+                    .pin(Some(0.0), None, Some(0.0), Some(33.0))
+                    .px(16.0)
+                    .justify_center()
+                    .child(
+                        super::composer::resting_orb(app, t)
+                            .key(format!("studio-wake-composer-{id}"))
+                            .on_press(move |s: &mut AppState| {
+                                if let Some(index) =
+                                    s.projects.iter().position(|p| p.path == project_path)
+                                {
+                                    s.select_studio_project(index);
+                                }
+                                s.open_studio_thread(thread.clone());
+                                s.open_composer();
+                            }),
+                    ),
+            );
+        }
+        return body;
     }
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
@@ -3956,13 +3992,6 @@ fn parked_body(
             line = line.padding(14.0).radius(14.0).fill(t.hover);
         }
         transcript = transcript.child(line);
-    }
-    if state.items.is_empty() {
-        transcript = transcript.child(el().w_full().h(580.0).child(crate::codegolf::slot(
-            mark,
-            false,
-            [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
-        )));
     }
     col()
         .key(format!("studio-parked-{id}"))
