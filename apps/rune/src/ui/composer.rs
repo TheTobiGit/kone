@@ -1030,12 +1030,12 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
             color: black.alpha(0.05),
             inset: false,
         })
-        .clip_rounded(corner_r)
         .child(
             col()
                 .w_full()
                 .radius(corner_r)
                 .fill(t.field)
+                .clip_rounded(corner_r)
                 .child(field_box)
                 .child(bar),
         )
