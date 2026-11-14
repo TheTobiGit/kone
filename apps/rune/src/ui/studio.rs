@@ -409,7 +409,7 @@ fn fork_tool(
             s.studio.head_tooltip = None;
             s.studio.head_tooltip_pending = if over {
                 tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.into(), std::time::Instant::now()))
+                Some((tip.into(), s.studio.motion_clock))
             } else {
                 None
             };
@@ -465,12 +465,14 @@ fn head_tip(
         shown,
     ));
     control
+        .focusable(true)
+        .role("button")
         .hover_group_focus()
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
             s.studio.head_tooltip = None;
             s.studio.head_tooltip_pending = if over {
                 tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.clone(), std::time::Instant::now()))
+                Some((tip.clone(), s.studio.motion_clock))
             } else {
                 None
             };
@@ -531,6 +533,10 @@ fn context_meter(state: &StudioState, t: Palette) -> El {
     };
     let mut meter = el()
         .key("studio-context-meter")
+        .opacity(state.meter_progress.unwrap_or(1.0))
+        .scale(0.55 + 0.45 * state.meter_progress.unwrap_or(1.0))
+        .opacity_motion(rune::Anim::INSTANT)
+        .scale_motion(rune::Anim::INSTANT)
         .role("button")
         .label("Context window")
         .expanded(state.context_open)
@@ -2559,7 +2565,8 @@ fn studio_row(
             let close_id = id.clone();
             let project_path = path.clone();
             let hover_id = id.clone();
-            let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str());
+            let show_tools = s.studio_column_hover.as_deref() == Some(id.as_str())
+                || (focused && s.studio_header_hover);
             let handoff_fixture =
                 s.studio.conversation_fixture.as_deref() == Some("composer-picker-handoff");
             let has_thread = state.is_some_and(|s| {
@@ -2847,6 +2854,7 @@ fn studio_row(
                             t,
                         )),
                 )
+                .hover_group_focus()
                 .on_hover_focus_change(|s: &mut AppState, over, _| {
                     s.studio_header_hover = over;
                 });
@@ -4381,26 +4389,30 @@ fn empty_thread_art(
     mark: u32,
 ) -> El {
     let height = (viewport_height * 0.72).min(580.0);
-    let top = if overview {
-        26.296875 + (row_height - viewport_height) * 0.5
-    } else {
-        0.0
-    };
     let cached_scale = 0.985 * 0.985;
-    el().w_full()
-        .max_w(720.0)
-        .self_center()
-        .h(height)
-        .offset(0.0, top)
-        .child(
-            crate::codegolf::slot(
-                mark,
-                live,
-                [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
-            )
-            .w(col_width.min(720.0) * cached_scale)
-            .h(height * cached_scale),
+    let art = el().w_full().max_w(720.0).self_center().h(height).child(
+        crate::codegolf::slot(
+            mark,
+            live,
+            [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
         )
+        .w(col_width.min(720.0) * cached_scale)
+        .h(height * cached_scale),
+    );
+    if overview {
+        // Overview clips every descendant of the body. The empty thread fills
+        // its content box, after the 24pt top and 208pt dock clearance, and
+        // centres the viewport-sized art within that shorter box.
+        let content_height = (row_height - 29.78125 - 24.0 - 208.0).max(0.0);
+        col()
+            .w_full()
+            .h(content_height)
+            .offset(0.0, 24.0 - (33.59 - 29.78125))
+            .clip_soft(0.0)
+            .child(art.offset(0.0, (content_height - height) * 0.5))
+    } else {
+        art
+    }
 }
 
 fn focused_body(

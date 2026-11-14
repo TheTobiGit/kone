@@ -229,7 +229,10 @@ pub struct StudioState {
     pub connected_identity: Option<StudioIdentity>,
     pub side_chat: bool,
     pub head_tooltip: Option<String>,
-    pub head_tooltip_pending: Option<(String, std::time::Instant)>,
+    pub head_tooltip_pending: Option<(String, f64)>,
+    pub motion_clock: f64,
+    pub meter_enter_at: Option<f64>,
+    pub meter_progress: Option<f32>,
     pub context_usage: Option<(u64, u64)>,
     pub context_input: Option<u64>,
     pub context_output: Option<u64>,
@@ -766,15 +769,36 @@ impl AppState {
         if title_blurred {
             s.commit_studio_title();
         }
+        s.studio.motion_clock = clock;
+        let mut meter_changed = false;
+        for state in std::iter::once(&mut s.studio).chain(s.studio_threads.values_mut()) {
+            if state.context_usage.is_some_and(|(_, window)| window > 0) {
+                let at = *state.meter_enter_at.get_or_insert(clock);
+                let elapsed = std::env::var("KONE_CAPTURE_METER_TIME")
+                    .ok()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .unwrap_or(clock - at);
+                let progress = rune::Easing::cubic(0.22, 1.0, 0.36, 1.0)
+                    .eval((elapsed / 0.46).clamp(0.0, 1.0) as f32);
+                meter_changed |= state.meter_progress != Some(progress);
+                state.meter_progress = Some(progress);
+                if elapsed < 0.46 {
+                    tx.wake_after(std::time::Duration::from_millis(16));
+                }
+            } else {
+                state.meter_enter_at = None;
+                state.meter_progress = None;
+            }
+        }
         let mut tooltip_changed = false;
         if let Some((tip, at)) = &s.studio.head_tooltip_pending {
-            let elapsed = at.elapsed();
-            if elapsed >= std::time::Duration::from_millis(300) {
+            let elapsed = clock - at;
+            if elapsed >= 0.3 {
                 s.studio.head_tooltip = Some(tip.clone());
                 s.studio.head_tooltip_pending = None;
                 tooltip_changed = true;
             } else {
-                tx.wake_after(std::time::Duration::from_millis(300) - elapsed);
+                tx.wake_after(std::time::Duration::from_secs_f64((0.3 - elapsed).max(0.0)));
             }
         }
         let animating = s
@@ -911,6 +935,7 @@ impl AppState {
         changed
             || scratchpad_motion
             || title_blurred
+            || meter_changed
             || tooltip_changed
             || animating
             || activity_motion

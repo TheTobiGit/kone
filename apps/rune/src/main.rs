@@ -728,6 +728,7 @@ fn studio_review(s: &mut AppState) {
 fn studio_overview_fixture(s: &mut AppState, selection: usize) {
     studio_review(s);
     s.studio.title = "Studio overview review".into();
+    s.studio.context_usage = Some((4200, 10_000));
     s.studio.composer_open = false;
     s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(
         serde_json::json!({"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}),
@@ -771,6 +772,7 @@ fn studio_final_multi(s: &mut AppState) {
         ]
     });
     s.studio.title = "Studio overview review".into();
+    s.studio.context_usage = Some((4200, 10_000));
     s.studio.composer_open = false;
     for id in ["review-three", "nova-one", "nova-two"] {
         s.studio_threads.insert(
