@@ -112,5 +112,8 @@ for scene in scenes:
                 raise RuntimeError(f'{scene}: captured the wrong overview state')
             if scene == 'studio-overview-focus' and not cards[1]['focusVisible']:
                 raise RuntimeError(f'{scene}: second card did not receive keyboard focus')
+            expected_scale = 0.596219 if scene == 'studio-overview-mid' else 0.58
+            if zoomed and any(abs(card['scale'] - expected_scale) > 0.0001 for card in cards):
+                raise RuntimeError(f'{scene}: captured the wrong zoom progress')
             if scene == 'studio-overview-in' and abs(cards[1]['rect'][0] - 226) > 1:
                 raise RuntimeError(f'{scene}: selected column was not centered: {cards[1]["rect"]}')

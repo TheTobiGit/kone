@@ -1097,6 +1097,11 @@ impl El {
         self.cold_mut().focus.ring_off = false;
         self
     }
+    /// Contrasting outer halo behind this element's keyboard focus ring.
+    pub fn focus_ring_halo(mut self, width: f32, color: Color) -> Self {
+        self.cold_mut().focus.halo = Some((width.max(0.0), color));
+        self
+    }
     /// A ring drawn while focus is on this element or anywhere inside it, whether the pointer or
     /// the keyboard put it there, as CSS `:focus-within` draws a text field's box: e.g.
     /// `focus_within_ring(1.0, -1.0, c)` for `outline: 1px solid; outline-offset: -1px`, a ring

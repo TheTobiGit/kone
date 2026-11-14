@@ -1098,6 +1098,20 @@ impl<S: 'static> Runtime<S> {
                     let ow = pixel_snap::line_width(ol.width * s) * sc;
                     let g = pixel_snap::line_width(ol.offset * s) * sc + ow;
                     if c.a > 0.0 && ol.width > 0.0 {
+                        if focus_ring.is_some() && let Some((width, color)) = n.focus.halo {
+                            let halo = pixel_snap::line_width(width * s) * sc;
+                            let outer = g + halo;
+                            self.instances.push(Instance {
+                                rect: [r[0] - outer, r[1] - outer, w + 2.0 * outer, h + 2.0 * outer],
+                                radii: radii.map(|v| if v != 0.0 { v + outer.copysign(v) } else { 0.0 }),
+                                fill: [0.0; 4],
+                                border: premul(color, o, srgb),
+                                params: [halo + ow * 0.5, KIND_RECT, 0.0, 1.0],
+                                uv: [0.0; 4],
+                                clip,
+                                fade: crate::render::pack_fade(fade, clip, clip),
+                            });
+                        }
                         self.instances.push(Instance {
                             rect: [r[0] - g, r[1] - g, w + 2.0 * g, h + 2.0 * g],
                             radii: radii.map(|v| if v != 0.0 { v + g.copysign(v) } else { 0.0 }),

@@ -13,6 +13,8 @@ pub(crate) struct FocusSpec {
     pub reveal_selected: bool,
     pub preserve_on_press: crate::runtime::selectable::OnPress,
     pub ring: Option<Outline>,
+    /// Optional contrasting halo behind the keyboard ring.
+    pub halo: Option<(f32, Color)>,
     /// `focus_within_ring`: `ring` shows while focus is on this element or inside it, from
     /// the pointer or the keyboard.
     pub within: bool,
@@ -46,6 +48,7 @@ impl crate::cold::Empty for FocusSpec {
         reveal_selected: false,
         preserve_on_press: crate::runtime::selectable::OnPress { focus: false, selection: false },
         ring: None,
+        halo: None,
         within: false,
         ring_off: false,
         flat_within: false,

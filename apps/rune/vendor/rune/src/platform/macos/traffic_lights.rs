@@ -46,8 +46,7 @@ pub(crate) fn hide(window: &Window) {
     let Some(win) = ns_window(window) else { return };
     for kind in [NSWindowButton::NSWindowCloseButton, NSWindowButton::NSWindowMiniaturizeButton, NSWindowButton::NSWindowZoomButton] {
         if let Some(button) = win.standardWindowButton(kind) {
-            // SAFETY: the buttons belong to this live AppKit window on the main thread.
-            unsafe { button.setHidden(true); }
+            button.setHidden(true);
         }
     }
 }

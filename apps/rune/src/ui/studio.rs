@@ -253,12 +253,12 @@ fn provider_icon(provider: &str) -> &'static Icon {
 }
 pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
     if provider == "unknown" {
-        return el().w(size).h(size).center().child(
-            el().w(size * 0.375)
-                .h(size * 0.375)
-                .radius(size)
-                .fill(t.muted),
-        );
+        static UNKNOWN: Icon = Icon {
+            name: "studio-provider-unknown",
+            view: 24.0,
+            body: r#"<circle cx="12" cy="12" r="4.5" fill="currentColor"/>"#,
+        };
+        return icon(&UNKNOWN, size).color(t.ink.alpha(0.9));
     }
     let mark = match provider {
         "claudeAgent" => &STUDIO_PROVIDER_CLAUDE,
@@ -2615,8 +2615,13 @@ fn studio_row(
                             0.0
                         } else if state.is_some_and(|s| s.scratchpad.is_some()) {
                             4.0
-                        } else {
+                        } else if state
+                            .is_some_and(|state| state.worktree_path.is_some() && !state.dormant)
+                        {
                             8.0
+                        } else {
+                            // The absent workspace mark must not add a second flex gap.
+                            4.0
                         })
                         .h(20.0)
                         .center_y()
@@ -3225,13 +3230,20 @@ fn studio_row(
                     .gap(5.0)
                     .scale(1.0 / k)
                     .origin(0.5, 0.0)
-                    .child(brand_mark_size(
-                        state
-                            .and_then(|state| state.providers.get(state.provider_index))
-                            .map_or("unknown", |provider| provider.id.as_str()),
-                        13.0,
-                        t,
-                    ))
+                    .child(
+                        brand_mark_size(
+                            state
+                                .and_then(|state| state.providers.get(state.provider_index))
+                                .map_or("unknown", |provider| provider.id.as_str()),
+                            13.0,
+                            t,
+                        )
+                        .color(if hovered || selected {
+                            t.ink
+                        } else {
+                            t.muted
+                        }),
+                    )
                     .child(
                         text(title.clone())
                             .font(TextStyle::new(12.5, 400.0).tracking(-0.125).lh(19.375))
@@ -3242,22 +3254,23 @@ fn studio_row(
                     .opacity_motion(rune::Anim::INSTANT)
                     .fill(fill)
                     .radius(12.0)
-                    .border(
-                        if selected && hovered {
+                    .box_shadow(rune::Shadow {
+                        spread: if selected && hovered {
                             2.0
                         } else if selected || hovered {
                             1.5
                         } else {
                             1.0
                         },
-                        if selected {
+                        color: if selected {
                             t.accent
                         } else if hovered {
                             t.ink.alpha(0.22)
                         } else {
                             t.ink.alpha(0.09)
                         },
-                    )
+                        ..Default::default()
+                    })
                     .shadow(
                         if hovered {
                             4.0
@@ -3285,7 +3298,8 @@ fn studio_row(
                     .role("button")
                     .label(format!("{title}, column {} of {count}", i + 1))
                     .focus_selected(s.studio.overview_selection == i)
-                    .focus_ring(1.0, 0.0, rune::color::hex("#005fcc").unwrap())
+                    .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
+                    .focus_ring_halo(1.0, rune::Color::WHITE)
                     .child(caption)
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.studio.overview = false;
@@ -3379,6 +3393,8 @@ fn studio_row(
                         .child(el().w_full().h(2.0).radius(1.0).fill(
                             if selected_row && id == s.studio.thread_id {
                                 t.ink
+                            } else if !s.studio_threads.contains_key(thread) {
+                                t.ink.alpha(0.08)
                             } else {
                                 t.ink.alpha(0.16)
                             },
@@ -3554,7 +3570,7 @@ fn studio_row(
     if s.studio.overview {
         result = result.child(
             text(project.name.clone())
-                .font(TextStyle::new(13.5, 600.0).tracking(-0.2025).lh(13.5))
+                .font(TextStyle::new(13.5, 400.0).tracking(-0.2025).lh(13.5))
                 .color(if selected_row { t.ink } else { t.ink_soft })
                 .absolute(48.0, 8.0),
         );
@@ -4336,7 +4352,7 @@ fn empty_thread_art(
     } else {
         (viewport_height - height) * 0.5 - 89.203125
     };
-    let cached_scale = if overview { 0.985 * 0.985 } else { 0.985 };
+    let cached_scale = 0.985 * 0.985;
     el().w_full()
         .max_w(720.0)
         .self_center()
@@ -4755,6 +4771,9 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     } else {
         wake_orb()
     };
+    let dock = dock
+        .opacity(if s.studio.overview { 0.0 } else { 1.0 })
+        .opacity_motion(rune::Anim::INSTANT);
     let mut transcript = col().w_full().max_w(720.0).self_center().gap(24.0).pt(24.0);
     if !s.studio.items.is_empty()
         && !s
@@ -5745,9 +5764,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 el()
             },
         )
-        .child(if s.studio.overview {
-            el()
-        } else if activity_plan {
+        .child(if activity_plan {
             row()
                 .pin(Some(0.0), None, Some(0.0), Some(14.0))
                 .px(16.0)
@@ -5755,10 +5772,16 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 .child(dock)
         } else {
             row()
-                .pin(Some(0.0), None, Some(0.0), Some(32.0))
+                .pin(
+                    Some(0.0),
+                    None,
+                    Some(0.0),
+                    Some(if s.studio.composer_open { 32.0 } else { 33.0 }),
+                )
                 .px(16.0)
                 .justify_center()
                 .child(dock)
+                .transition(rune::Transition::none())
         })
 }
 
