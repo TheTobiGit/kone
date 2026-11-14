@@ -187,10 +187,10 @@ static STUDIO_PROVIDER_CODEX: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z" fill="currentColor" fill-rule="evenodd"/>"#,
 };
-static STUDIO_FOLDER_OPEN: Icon = Icon {
-    name: "studio-folder-open",
+static STUDIO_FOLDER_CLOSED: Icon = Icon {
+    name: "studio-folder-closed",
     view: 24.0,
-    body: r#"<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v1H7.2a2 2 0 0 0-1.9 1.4L3 18.2V6.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m5.2 12.1.9 6.1a1.5 1.5 0 0 0 1.5 1.3h10.2a1.5 1.5 0 0 0 1.4-1.1l1.5-5.2a1.2 1.2 0 0 0-1.2-1.5H6.4a1.2 1.2 0 0 0-1.2.4Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4.2l2 2H19A1.5 1.5 0 0 1 20.5 9v8A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17V7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
 };
 static STUDIO_EXPORT: Icon = Icon {
     name: "studio-export",
@@ -813,7 +813,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     let info_row = |name: &str, value: String| {
         row()
             .w_full()
-            .h(30.0)
+            .h(27.0)
             .center_y()
             .justify_between()
             .gap(16.0)
@@ -840,11 +840,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .child(
                 text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
                     .key("studio-title-draft")
-                    .w(250.0)
+                    .w(212.0)
                     .h(24.0)
                     .px(6.0)
                     .radius(6.0)
-                    .border(0.0, t.ink.alpha(0.0))
+                    .border(1.0, t.accent.alpha(0.45))
                     .fill(if t.dark {
                         crate::theme::mix_srgb(t.raised, t.ink, 0.08)
                     } else {
@@ -875,12 +875,13 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     let mut rows = col()
         .w_full()
         .px(15.0)
-        .py(9.0)
+        .pt(8.0)
+        .pb(14.0)
         .child(name_row)
         .child(
             row()
                 .w_full()
-                .h(30.0)
+                .h(27.0)
                 .center_y()
                 .justify_between()
                 .gap(16.0)
@@ -894,7 +895,34 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 ),
         )
         .child(info_row("Model", model))
-        .child(info_row("Reasoning", state.effort.clone()));
+        .child(
+            row()
+                .w_full()
+                .h(27.0)
+                .center_y()
+                .justify_between()
+                .gap(16.0)
+                .child(label("Reasoning", 11.5, 400.0, t.muted))
+                .child(
+                    row()
+                        .center_y()
+                        .gap(6.0)
+                        .child(
+                            row()
+                                .center_y()
+                                .child(
+                                    icon(&PICKER_BRAIN, 13.0)
+                                        .color(rune::color::hex("#10B981").unwrap()),
+                                )
+                                .child(
+                                    icon(&PICKER_BRAIN, 13.0)
+                                        .color(rune::color::hex("#10B981").unwrap())
+                                        .offset(-5.0, 0.0),
+                                ),
+                        )
+                        .child(label(state.effort.clone(), 12.5, 500.0, t.ink)),
+                ),
+        );
     if let Some(path) = &state.worktree_path {
         rows = rows.child(info_row("Worktree", path.clone()));
     }
@@ -908,12 +936,12 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .unwrap_or(&state.project_path)
             .to_owned();
         rows = rows
-            .child(label("PROJECT", 9.0, 400.0, t.faint).mt(10.0))
+            .child(info_section("PROJECT", t).mt(10.0).mb(2.0))
             .child(info_row("Repo", repo.clone()))
             .child(
                 row()
                     .w_full()
-                    .h(30.0)
+                    .h(27.0)
                     .center_y()
                     .justify_between()
                     .gap(16.0)
@@ -923,11 +951,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                             .center_y()
                             .gap(5.0)
                             .child(label(repo, 12.5, 500.0, t.ink))
-                            .child(icon(&STUDIO_FOLDER_OPEN, 12.0).color(t.muted)),
+                            .child(icon(&STUDIO_FOLDER_CLOSED, 12.0).color(t.muted)),
                     ),
             );
     }
-    rows = rows.child(label("USAGE", 9.0, 400.0, t.faint).mt(10.0));
+    rows = rows.child(info_section("USAGE", t).mt(10.0).mb(2.0));
     if let Some((used, window)) = state.context_usage {
         rows = rows.child(info_row(
             "In context",
@@ -946,11 +974,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         }
     }
     rows = rows
-        .child(label("IDENTITY", 9.0, 400.0, t.faint).mt(10.0))
+        .child(info_section("IDENTITY", t).mt(10.0).mb(2.0))
         .child(
             row()
                 .w_full()
-                .h(30.0)
+                .h(27.0)
                 .center_y()
                 .justify_between()
                 .gap(16.0)
@@ -972,7 +1000,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                         .child(icon(&FOOTER_COPY01, 12.0).color(t.muted)),
                 ),
         );
-    rows = rows.child(label("EXPORT", 9.0, 400.0, t.faint).mt(10.0))
+    rows = rows.child(info_section("EXPORT", t).mt(10.0).mb(2.0))
         .child(row().w_full().h(32.0).center_y().justify_between()
             .child(label("Format", 11.5, 400.0, t.muted))
             .child(row().gap(12.0)
@@ -1074,8 +1102,18 @@ fn short_thread_id(id: &str) -> String {
     }
 }
 
+fn info_section(value: &str, t: Palette) -> El {
+    text(value)
+        .font(TextStyle::new(10.0, 400.0).lh(15.0).tracking(0.6))
+        .quarter_pixel_glyphs(cfg!(target_os = "macos"))
+        .color(t.muted.alpha(0.8))
+}
+
 pub(super) fn label(value: impl Into<String>, size: f32, weight: f32, color: rune::Color) -> El {
-    text(value).font(TextStyle::new(size, weight)).color(color)
+    text(value)
+        .font(TextStyle::new(size, weight))
+        .quarter_pixel_glyphs(cfg!(target_os = "macos"))
+        .color(color)
 }
 
 type AnsiStyle = (Option<rune::Color>, bool, Option<rune::Color>, Option<u8>);
@@ -3048,9 +3086,9 @@ fn studio_row(
         let x = if index == 0 {
             bounds[0] + bounds[2] + 8.0
         } else {
-            bounds[0] - 192.0
+            bounds[0] - 180.0
         };
-        let y = bounds[1] + bounds[3] / 2.0 - 83.0;
+        let y = bounds[1] + bounds[3] / 2.0 - 84.0;
         result = result.child(
             el().size(8192.0, 8192.0)
                 .absolute(-4096.0, -4096.0)
@@ -3062,18 +3100,21 @@ fn studio_row(
             .radius(18.0)
             .border(1.0, t.ink.alpha(0.08))
             .fill(t.raised)
+            .pt(5.6)
             .offset_motion(Curve::tween(
                 0.18,
                 rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
             ))
             .child(
                 el().w_full()
-                    .h(42.5)
+                    .h(40.0)
                     .px(16.0)
                     .center_y()
+                    .corners([18.0, 18.0, 0.0, 0.0])
                     .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
                     .child(label("Insert", 13.0, 500.0, t.ink_soft)),
             );
+        let mut actions = col().w_full().pl(12.0).pr(12.0).gap(1.0);
         for (row_index, (glyph, title)) in [
             (&INSERT_THREAD, "New thread"),
             (&INSERT_TERMINAL, "Terminal"),
@@ -3084,8 +3125,8 @@ fn studio_row(
         {
             let mut action = row()
                 .w_full()
-                .h(32.0)
-                .px(12.0)
+                .h(31.0)
+                .px(8.0)
                 .gap(8.0)
                 .center_y()
                 .child(icon(glyph, 14.0).color(t.muted))
@@ -3131,9 +3172,10 @@ fn studio_row(
             {
                 action = action.fill(t.hover);
             }
-            menu = menu.child(action);
+            actions = actions.child(action);
         }
-        result = result.child(menu.child(el().h(13.0)).absolute(x.max(0.0), y.max(0.0)));
+        menu = menu.child(actions).child(el().h(14.0));
+        result = result.child(menu.absolute(x.max(0.0), y.max(0.0)));
     }
     result
 }
@@ -3179,7 +3221,8 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                         .w(390.0)
                         .h(40.0)
                         .color(t.ink)
-                        .offset(0.0, 10.0)
+                        .offset(0.0, 13.0)
+                        .quarter_pixel_glyphs(cfg!(target_os = "macos"))
                         .placeholder("Search across all conversations…", t.muted)
                         .on_edit(|s: &mut AppState| &mut s.conversation_search),
                 )
@@ -3245,10 +3288,10 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
         .child(
             row()
                 .w_full()
-                .h(34.0)
+                .h(30.0)
                 .px(16.0)
                 .center_y()
-                .gap(14.0)
+                .gap(22.0)
                 .px(14.0)
                 .child(search_hint("↑↓ navigate", t))
                 .child(search_hint("↵ open", t))

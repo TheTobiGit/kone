@@ -132,13 +132,14 @@ impl Compositor<AppState> for Plasma {
 
 /// The floor plasma; `glow` is its entrance fade (1 at rest).
 pub fn slot(s: &AppState, cx: &rune::Cx<AppState>, glow: f32) -> rune::El {
-    let height = cx
+    let viewport_height = cx
         .layout_size("empty-root")
-        .map_or(352.8, |size| (size[1] * 0.42).clamp(220.0, 380.0));
+        .or_else(|| cx.layout_size("studio-plane"))
+        .map_or(854.0, |size| size[1]);
+    let height = (viewport_height * 0.42).clamp(220.0, 380.0);
     let art = rune::effect(0x504c)
         .effect_data([if cx.system_dark() { 1.0 } else { 0.0 }, glow, 0.0, 0.0])
         .h(height)
-        .offset(0.0, 36.0)
         .pin(Some(0.0), None, Some(0.0), Some(0.0));
     if s.art_focused {
         // The shader changes its pixels; this clock only schedules bounded GPU frames.
