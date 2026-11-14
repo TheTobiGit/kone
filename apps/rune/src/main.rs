@@ -489,9 +489,25 @@ fn main() {
                 s.studio.handoff_source = Some("claudeAgent".into());
             }),
             ("studio-three-review", |s| {
-                studio_review(s);
-                s.studio.composer_open = false;
-                s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(serde_json::json!({"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}));
+                studio_overview_fixture(s, 0);
+                s.studio.overview = false;
+            }),
+            ("studio-overview", |s| {
+                studio_overview_fixture(s, 0);
+            }),
+            ("studio-overview-mid", |s| {
+                studio_overview_fixture(s, 1);
+            }),
+            ("studio-overview-hover", |s| {
+                studio_overview_fixture(s, 0);
+            }),
+            ("studio-overview-focus", |s| {
+                studio_overview_fixture(s, 1);
+            }),
+            ("studio-overview-in", |s| {
+                studio_overview_fixture(s, 1);
+                s.studio.overview = false;
+                s.open_studio_thread("review-two".into());
             }),
             ("studio-bare-board", |s| {
                 studio_review(s);
@@ -677,6 +693,27 @@ fn studio_review(s: &mut AppState) {
         ..StudioState::default()
     };
     s.studio_threads.insert("review-two".into(), second);
+}
+
+fn studio_overview_fixture(s: &mut AppState, selection: usize) {
+    studio_review(s);
+    s.studio.title = "Studio overview review".into();
+    s.studio.composer_open = false;
+    s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(
+        serde_json::json!({"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}),
+    );
+    s.studio.connected_identity = Some(state::StudioIdentity {
+        name: "Cinder".into(),
+        svg: review::fixture_avatar(),
+        avatar: None,
+    });
+    s.studio.items.push(state::StudioItem {
+        kind: "connected".into(),
+        text: "Cinder".into(),
+        ..Default::default()
+    });
+    s.studio.overview = true;
+    s.studio.overview_selection = selection.min(2);
 }
 
 fn studio_column_head(s: &mut AppState) {

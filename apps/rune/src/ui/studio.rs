@@ -1834,6 +1834,18 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         (1292.0, 854.0)
     };
+    let overview_message = if s.studio.overview {
+        let count = s.studio_layout["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["projectPath"] == s.studio.project_path)
+            .and_then(|row| row["panes"].as_array())
+            .map_or(0, Vec::len);
+        format!("Overview — {count} columns")
+    } else {
+        String::new()
+    };
     // ThreadStrip only mounts its floor plasma inside the empty-board chooser.
     let mut plane = col().w_full().h_full();
     let rows = s.studio_layout["rows"].as_array();
@@ -1875,7 +1887,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .key("studio-plane")
         .w_full()
         .h_full()
-        .fill(t.ground)
+        .fill(if s.studio.overview {
+            crate::theme::mix_srgb(t.ground, t.ink, 0.035)
+        } else {
+            t.ground
+        })
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
@@ -1949,6 +1965,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
+    plane = plane.child(
+        el().key("studio-overview-announcement")
+            .w(1.0)
+            .h(1.0)
+            .opacity(0.0)
+            .role("status")
+            .label(overview_message),
+    );
     let mut plane = if let Some(selected) = s.studio.selection_text.as_ref()
         && !s.studio.picker_open
         && !s.studio.handoff_picker
@@ -2005,6 +2029,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .and_then(|pane| pane["width"].as_u64())
         .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
     if s.studio.scratchpad.is_none()
+        && !s.studio.overview
         && s.studio_column_hover.is_none()
         && !s.conversation_search_open
         && !s.studio_header_hover
@@ -2500,8 +2525,33 @@ fn studio_row(
     let project = &s.projects[project_index];
     let path = project.path.clone();
     let panes = saved["panes"].as_array();
-    let mut rail = row().h_full();
+    let mut rail = row()
+        .h_full()
+        .gap(if s.studio.overview { 28.0 } else { 0.0 });
+    if s.studio.overview {
+        rail = rail.role("list").label("Studio columns").focus_group();
+    }
     let count = panes.map_or(0, Vec::len);
+    let pane_widths: Vec<f32> = panes
+        .into_iter()
+        .flatten()
+        .map(|pane| {
+            [840.0_f32, 960.0, 1120.0, 1240.0]
+                [(pane["width"].as_u64().unwrap_or(0) as usize).min(3)]
+            .min(viewport_w)
+        })
+        .collect();
+    let overview_natural_width =
+        pane_widths.iter().sum::<f32>() + 28.0 * count.saturating_sub(1) as f32;
+    let normal_start_pad = if count == 0 {
+        0.0
+    } else {
+        ((viewport_w - pane_widths[0]) / 2.0 - 14.0).max(0.0)
+    };
+    let normal_natural_width = pane_widths.iter().sum::<f32>()
+        + 14.0 * (count + 1) as f32
+        + normal_start_pad
+        + if count > 1 { viewport_w / 2.0 } else { 0.0 };
     if count >= 1 {
         let pane = &panes.unwrap()[0];
         let width = [840.0_f32, 960.0, 1120.0, 1240.0]
@@ -2512,10 +2562,12 @@ fn studio_row(
         } else {
             width
         };
-        rail = rail.child(
-            el().w(((viewport_w - width) / 2.0 - 14.0).max(0.0))
-                .h_full(),
-        );
+        let start_pad = if s.studio.overview {
+            0.0
+        } else {
+            ((viewport_w - width) / 2.0 - 14.0).max(0.0)
+        };
+        rail = rail.child(el().w(start_pad).h_full());
     }
     if let Some(panes) = panes {
         for (i, pane) in panes.iter().enumerate() {
@@ -3112,7 +3164,17 @@ fn studio_row(
                     s.studio_column_hover = None;
                 }
             });
-            if i == 0 {
+            let head = if s.studio.overview {
+                head.inert()
+            } else {
+                head
+            };
+            let body = if s.studio.overview {
+                body.inert()
+            } else {
+                body
+            };
+            if i == 0 && !s.studio.overview {
                 let seam_key = format!("{path}-0");
                 let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str())
                     || s.studio_insert_menu
@@ -3154,83 +3216,166 @@ fn studio_row(
                         }),
                 );
             }
-            rail = rail.child(
-                col()
-                    .key(format!("studio-pane-{id}"))
-                    .w(width)
-                    .h_full()
-                    .opacity(if focused {
-                        1.0
-                    } else if show_tools {
-                        0.52
+            let mut card = col()
+                .key(format!("studio-pane-{id}"))
+                .w(width)
+                .h_full()
+                .opacity(if s.studio.overview || focused {
+                    1.0
+                } else if show_tools {
+                    0.52
+                } else {
+                    0.34
+                })
+                .scale(if focused || s.studio.overview {
+                    1.0
+                } else {
+                    0.985
+                })
+                .pt(24.0)
+                .child(head.opacity(
+                    if focused
+                        && state.is_some_and(|state| {
+                            state.approval.is_some() || state.question.is_some()
+                        })
+                    {
+                        0.2
                     } else {
-                        0.34
-                    })
-                    .scale(if focused { 1.0 } else { 0.985 })
-                    .pt(24.0)
-                    .on_press_tx(move |s: &mut AppState, tx| {
-                        s.select_studio_project(project_index);
-                        s.open_studio_thread(focus_id.clone());
-                        tx.scroll_into_view(format!("studio-row-slot-{project_path}"));
-                        s.center_studio_column(tx);
-                    })
-                    .child(head.opacity(
-                        if focused
-                            && state.is_some_and(|state| {
-                                state.approval.is_some() || state.question.is_some()
-                            })
-                        {
-                            0.2
+                        1.0
+                    },
+                ))
+                .child(body);
+            if s.studio.overview {
+                let title = state
+                    .map(|state| state.title.as_str())
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or("New thread")
+                    .to_owned();
+                let selected = s.studio.overview_selection == i;
+                let select_id = id.clone();
+                let select_path = path.clone();
+                let hovered = s.studio.overview_hovered.as_deref() == Some(id.as_str());
+                let hover_id = id.clone();
+                let k = 0.58_f32;
+                let fill = if selected && hovered {
+                    crate::theme::mix_srgb(t.ground, t.accent, 0.035)
+                } else if hovered {
+                    crate::theme::mix_srgb(t.ground, t.hover, 0.45)
+                } else {
+                    t.ground
+                };
+                let caption = row()
+                    .pin(Some(0.0), None, Some(0.0), Some(-32.0))
+                    .h(18.0)
+                    .center_y()
+                    .justify_center()
+                    .gap(5.0)
+                    .scale(1.0 / k)
+                    .child(provider_mark(state, t).scale(0.8))
+                    .child(label(
+                        title.clone(),
+                        12.5,
+                        400.0,
+                        if hovered || selected { t.ink } else { t.muted },
+                    ));
+                card = card
+                    .fill(fill)
+                    .radius(12.0)
+                    .border(
+                        if selected || hovered { 1.5 } else { 1.0 },
+                        if selected {
+                            t.accent
+                        } else if hovered {
+                            t.ink.alpha(0.22)
                         } else {
-                            1.0
+                            t.ink.alpha(0.09)
                         },
-                    ))
-                    .child(body),
-            );
-            let seam_key = format!("{path}-{}", i + 1);
-            let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str())
-                || s.studio_insert_menu
-                    .as_ref()
-                    .is_some_and(|(menu_path, seam, _)| {
-                        menu_path == &path && (*seam == i + 1 || *seam == usize::MAX)
-                    });
-            let layout_key = seam_key.clone();
-            let press_key = seam_key.clone();
-            let menu_path = path.clone();
-            rail = rail.child(
-                el().key(format!("studio-seam-{path}-{}", i + 1))
-                    .w(14.0)
-                    .h(28.0)
-                    .offset(0.0, -16.3)
-                    .self_center()
-                    .center()
-                    .on_drawn_layout(move |s: &mut AppState, bounds| {
-                        s.studio_seam_bounds.insert(layout_key.clone(), bounds);
+                    )
+                    .shadow(
+                        if selected || hovered { 3.0 } else { 2.0 },
+                        if selected || hovered { 12.0 } else { 8.0 },
+                        if selected {
+                            t.accent.alpha(0.18)
+                        } else {
+                            rune::Color::BLACK.alpha(if hovered { 0.07 } else { 0.04 })
+                        },
+                    )
+                    .focusable(true)
+                    .role("button")
+                    .label(format!("{title}, column {} of {count}", i + 1))
+                    .focus_selected(selected)
+                    .focus_ring(2.0, 2.0, t.accent)
+                    .child(caption)
+                    .on_press_tx(move |s: &mut AppState, tx| {
+                        s.studio.overview = false;
+                        s.studio.overview_selection = i;
+                        s.select_studio_project(project_index);
+                        s.open_studio_thread(select_id.clone());
+                        tx.scroll_into_view(format!("studio-row-slot-{select_path}"));
+                        s.center_studio_column(tx);
                     })
                     .on_hover_change(move |s: &mut AppState, over, _| {
                         if over {
-                            s.studio_seam_hover = Some(seam_key.clone());
-                        } else if s.studio_seam_hover.as_deref() == Some(seam_key.as_str()) {
-                            s.studio_seam_hover = None;
+                            s.studio.overview_hovered = Some(hover_id.clone());
+                        } else if s.studio.overview_hovered.as_deref() == Some(hover_id.as_str()) {
+                            s.studio.overview_hovered = None;
                         }
-                    })
-                    .child(
-                        el().w(5.0)
-                            .h(if hovered { 19.44 } else { 18.0 })
-                            .radius(3.0)
-                            .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
-                    )
-                    .on_press(move |s: &mut AppState| {
-                        s.studio_insert_selection = 0;
-                        s.studio_insert_menu = s
-                            .studio_seam_bounds
-                            .get(&press_key)
-                            .copied()
-                            .map(|b| (menu_path.clone(), i + 1, b));
-                    }),
-            );
+                    });
+                rail = rail.child(card);
+            } else {
+                rail = rail.child(card.on_press_tx(move |s: &mut AppState, tx| {
+                    s.select_studio_project(project_index);
+                    s.open_studio_thread(focus_id.clone());
+                    tx.scroll_into_view(format!("studio-row-slot-{project_path}"));
+                    s.center_studio_column(tx);
+                }));
+            }
+            if !s.studio.overview {
+                let seam_key = format!("{path}-{}", i + 1);
+                let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str())
+                    || s.studio_insert_menu
+                        .as_ref()
+                        .is_some_and(|(menu_path, seam, _)| {
+                            menu_path == &path && (*seam == i + 1 || *seam == usize::MAX)
+                        });
+                let layout_key = seam_key.clone();
+                let press_key = seam_key.clone();
+                let menu_path = path.clone();
+                rail = rail.child(
+                    el().key(format!("studio-seam-{path}-{}", i + 1))
+                        .w(14.0)
+                        .h(28.0)
+                        .offset(0.0, -16.3)
+                        .self_center()
+                        .center()
+                        .on_drawn_layout(move |s: &mut AppState, bounds| {
+                            s.studio_seam_bounds.insert(layout_key.clone(), bounds);
+                        })
+                        .on_hover_change(move |s: &mut AppState, over, _| {
+                            if over {
+                                s.studio_seam_hover = Some(seam_key.clone());
+                            } else if s.studio_seam_hover.as_deref() == Some(seam_key.as_str()) {
+                                s.studio_seam_hover = None;
+                            }
+                        })
+                        .child(
+                            el().w(5.0)
+                                .h(if hovered { 19.44 } else { 18.0 })
+                                .radius(3.0)
+                                .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
+                        )
+                        .on_press(move |s: &mut AppState| {
+                            s.studio_insert_selection = 0;
+                            s.studio_insert_menu = s
+                                .studio_seam_bounds
+                                .get(&press_key)
+                                .copied()
+                                .map(|b| (menu_path.clone(), i + 1, b));
+                        }),
+                );
+            }
         }
-        if count > 1 {
+        if count > 1 && !s.studio.overview {
             rail = rail.child(el().w(viewport_w / 2.0).h_full());
         }
     }
@@ -3369,19 +3514,52 @@ fn studio_row(
                 ),
             )
     } else {
+        let duration = if cx.is_reduced_motion() { 0.001 } else { 0.42 };
+        let plane_width = if s.studio.overview {
+            overview_natural_width
+        } else {
+            normal_natural_width
+        };
+        let footprint = if s.studio.overview {
+            overview_natural_width * 0.58 + 96.0
+        } else {
+            normal_natural_width
+        };
+        let rail_content = el()
+            .key(format!("studio-overview-scaler-{path}"))
+            .w(footprint)
+            .h_full()
+            .child(
+                rail.key(format!("studio-rail-plane-{path}"))
+                    .w(plane_width)
+                    .scale(if s.studio.overview { 0.58 } else { 1.0 })
+                    .origin(0.0, 0.5)
+                    .offset(
+                        if s.studio.overview { 48.0 } else { 0.0 },
+                        if s.studio.overview { -14.0 } else { 0.0 },
+                    )
+                    .scale_motion(rune::Curve::tween(
+                        duration,
+                        rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+                    )),
+            );
         col()
             .key(format!("studio-rail-{path}"))
             .w_full()
             .grow(1.0)
             .shrink()
             .scroll_x()
-            .child(rail)
+            .child(rail_content)
     };
     let mut result = col()
         .key(format!("studio-row-slot-{path}"))
         .w_full()
         .h(viewport_h)
-        .fill(t.ground)
+        .fill(if s.studio.overview {
+            crate::theme::mix_srgb(t.ground, t.ink, 0.035)
+        } else {
+            t.ground
+        })
         .child(bar)
         .child(content);
     if let Some((menu_path, index, bounds)) = &s.studio_insert_menu

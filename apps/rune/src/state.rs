@@ -119,6 +119,29 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn studio_overview_scroll_x(&self, index: usize) -> f32 {
+        let width = |pane: &serde_json::Value| {
+            let preset = pane["width"].as_u64().unwrap_or(0).min(3) as usize;
+            [840.0_f32, 960.0, 1120.0, 1240.0][preset]
+        };
+        let panes = self.studio_layout["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["projectPath"] == self.studio.project_path)
+            .and_then(|row| row["panes"].as_array());
+        let Some(panes) = panes else { return 0.0 };
+        let before: f32 = panes.iter().take(index).map(width).sum();
+        let selected = panes.get(index).map(width).unwrap_or(0.0);
+        let center = before + index as f32 * 28.0 + selected / 2.0;
+        let viewport = if self.studio_viewport.0 > 0.0 {
+            self.studio_viewport.0
+        } else {
+            1292.0
+        };
+        (48.0 + center * 0.58 - viewport / 2.0).max(0.0)
+    }
+
     fn changes_preferences_path() -> std::path::PathBuf {
         std::env::var_os("KONE_RUNE_DATA_DIR")
             .map(std::path::PathBuf::from)
@@ -165,6 +188,10 @@ impl AppState {
 
 #[derive(Default)]
 pub struct StudioState {
+    /// Bird's-eye overview of the current row's thread columns.
+    pub overview: bool,
+    pub overview_selection: usize,
+    pub overview_hovered: Option<String>,
     pub scratchpad: Option<TextEdit>,
     pub scratchpad_toolbar: crate::ui::scratchpad_toolbar::ToolbarState,
     pub scratchpad_saved_at: Option<String>,
@@ -1146,6 +1173,86 @@ impl AppState {
     pub fn studio_key(s: &mut Self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
         if s.page != Page::Studio {
             return false;
+        }
+        if event.is_command('o') && event.mods.shift {
+            let panes = s.studio_layout["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|row| row["projectPath"] == s.studio.project_path)
+                .and_then(|row| row["panes"].as_array());
+            if panes.is_some_and(|panes| panes.len() > 1) {
+                if s.studio.overview {
+                    s.studio.overview = false;
+                    s.center_studio_column(tx);
+                } else {
+                    s.studio.overview_selection = panes
+                        .into_iter()
+                        .flatten()
+                        .position(|pane| pane["anchor"]["threadId"] == s.studio.thread_id)
+                        .unwrap_or(0);
+                    s.studio.overview = true;
+                    let path = s.studio.project_path.clone();
+                    tx.scroll_to_x(
+                        format!("studio-rail-{path}"),
+                        s.studio_overview_scroll_x(s.studio.overview_selection),
+                    );
+                }
+            }
+            return true;
+        }
+        if s.studio.overview {
+            let count = s.studio_layout["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|row| row["projectPath"] == s.studio.project_path)
+                .and_then(|row| row["panes"].as_array())
+                .map_or(0, Vec::len);
+            match event.key {
+                rune::Key::Escape => {
+                    s.studio.overview = false;
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                rune::Key::Left | rune::Key::Up => {
+                    s.studio.overview_selection = s.studio.overview_selection.saturating_sub(1);
+                    let path = s.studio.project_path.clone();
+                    tx.scroll_to_x(
+                        format!("studio-rail-{path}"),
+                        s.studio_overview_scroll_x(s.studio.overview_selection),
+                    );
+                    return true;
+                }
+                rune::Key::Right | rune::Key::Down => {
+                    s.studio.overview_selection =
+                        (s.studio.overview_selection + 1).min(count.saturating_sub(1));
+                    let path = s.studio.project_path.clone();
+                    tx.scroll_to_x(
+                        format!("studio-rail-{path}"),
+                        s.studio_overview_scroll_x(s.studio.overview_selection),
+                    );
+                    return true;
+                }
+                rune::Key::Enter => {
+                    let id = s.studio_layout["rows"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|row| row["projectPath"] == s.studio.project_path)
+                        .and_then(|row| row["panes"].as_array())
+                        .and_then(|panes| panes.get(s.studio.overview_selection))
+                        .and_then(|pane| pane["anchor"]["threadId"].as_str())
+                        .map(str::to_owned);
+                    if let Some(id) = id {
+                        s.studio.overview = false;
+                        s.open_studio_thread(id);
+                        s.center_studio_column(tx);
+                    }
+                    return true;
+                }
+                _ => {}
+            }
         }
         if s.studio.approval.is_some() {
             if event.key == rune::Key::Enter {
@@ -3388,6 +3495,50 @@ impl StartActionsState {
 #[cfg(test)]
 mod start_actions_tests {
     use super::{Page, StartActionsState, StudioModel, StudioProvider};
+
+    #[test]
+    fn studio_overview_toggles_navigates_and_enters_a_column() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            selected_project: Some(0),
+            projects: vec![super::Project {
+                name: "kone".into(),
+                path: "/demo".into(),
+            }],
+            ..Default::default()
+        };
+        s.studio.project_path = "/demo".into();
+        s.studio.thread_id = "thread-one".into();
+        s.studio_layout = serde_json::json!({"version":2,"rows":[{"projectPath":"/demo","focusedId":"thread-one","panes":[
+            {"id":"thread-one","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"thread-one"}},
+            {"id":"thread-two","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"thread-two"}}
+        ]}]});
+        let toggle = rune::KeyEvent {
+            key: rune::Key::Command('o'),
+            mods: rune::Mods {
+                cmd: true,
+                shift: true,
+                ..Default::default()
+            },
+        };
+        let right = rune::KeyEvent {
+            key: rune::Key::Right,
+            mods: rune::Mods::default(),
+        };
+        let enter = rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods::default(),
+        };
+        let mut tx = rune::Tx::default();
+        assert!(super::AppState::studio_key(&mut s, &toggle, &mut tx));
+        assert!(s.studio.overview);
+        assert_eq!(s.studio.overview_selection, 0);
+        assert!(super::AppState::studio_key(&mut s, &right, &mut tx));
+        assert_eq!(s.studio.overview_selection, 1);
+        assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
+        assert!(!s.studio.overview);
+        assert_eq!(s.studio.thread_id, "thread-two");
+    }
 
     #[test]
     fn composer_model_search_selects_a_matching_model_from_another_provider() {

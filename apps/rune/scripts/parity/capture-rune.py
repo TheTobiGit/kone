@@ -29,6 +29,8 @@ args.outdir.mkdir(parents=True, exist_ok=True)
 for scene in scenes:
     hover = scene == 'empty-brand-hover'
     native_scene = 'empty-brand' if hover else scene
+    if scene == 'studio-overview-mid':
+        native_scene = 'studio-three-review'
     for theme in ('light', 'dark'):
         output = args.outdir / f'{scene}-{theme}.png'
         output.unlink(missing_ok=True)
@@ -52,6 +54,26 @@ for scene in scenes:
                     {'t': 0.6, 'type': 'up', 'x': 322, 'y': 106},
                 ]}))
                 capture_at = capture_at if capture_at is not None else 0.8
+            elif script is None and scene == 'studio-overview-hover':
+                script = Path(temp) / 'overview-hover.json'
+                script.write_text(json.dumps({'events': [
+                    {'t': 1.3, 'type': 'move', 'x': 340, 'y': 250},
+                ]}))
+                capture_at = capture_at if capture_at is not None else 2.0
+            elif script is None and scene == 'studio-overview-focus':
+                script = Path(temp) / 'overview-focus.json'
+                script.write_text(json.dumps({'events': [
+                    {'t': 0.2, 'type': 'key', 'name': 'Tab'},
+                ]}))
+                capture_at = capture_at if capture_at is not None else 2.0
+            elif script is None and scene == 'studio-overview-mid':
+                script = Path(temp) / 'overview-mid.json'
+                script.write_text(json.dumps({'events': [
+                    {'t': 0.2, 'type': 'key', 'name': 'o', 'cmd': True, 'shift': True},
+                ]}))
+                # Pin the native easing at its halfway point even when the
+                # caller supplies a settled-frame time for the other scenes.
+                capture_at = 0.41
             if script:
                 command += ['--script', str(script)]
             if capture_at is not None:
