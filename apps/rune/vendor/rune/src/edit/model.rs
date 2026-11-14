@@ -198,6 +198,8 @@ pub struct RichStyle {
     pub dark: bool,
     /// CSS-like document paragraph margins and block typography.
     pub document_spacing: bool,
+    /// Transient padding at a browser-generated code caret spacer; never serialized.
+    pub code_caret_spacer: Option<usize>,
     pub code_fg: Option<Color>,
     pub code_bg: Color,
     pub code_block_bg: Color,
@@ -211,6 +213,7 @@ impl Default for RichStyle {
         Self {
             dark: false,
             document_spacing: false,
+            code_caret_spacer: None,
             code_fg: None,
             code_bg: oklcha(0.55, 0.02, 260.0, 0.16),
             code_block_bg: oklcha(0.5, 0.02, 260.0, 0.12),

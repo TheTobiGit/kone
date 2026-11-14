@@ -239,7 +239,7 @@ impl<S: 'static> Runtime<S> {
                     if a != b && e.preedit.is_none() {
                         let (da, db) = e.display_selection_range(a, b);
                         selectable::push_field_selection(&mut self.instances, layout, da, db,
-                            origin, tk, premul(inp.selection, o, srgb), s, spec.selection_radius, clip, fade);
+                            [origin[0] + spec.selection_offset[0] * s * tk, origin[1] + spec.selection_offset[1] * s * tk], tk, premul(inp.selection, o, srgb), s, spec.selection_radius, clip, fade);
                     }
                     caret = input_caret;
                     if let Some((_, _)) = &e.preedit

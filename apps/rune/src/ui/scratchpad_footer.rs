@@ -3,7 +3,7 @@ use crate::{
     state::{AppState, StudioState},
     theme::Palette,
 };
-use rune::{El, Family, Icon, Key, Phase, TextStyle, el, icon, row, text};
+use rune::{Curve, Easing, El, Family, Icon, Key, Phase, TextStyle, el, icon, row, text};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static COPY: Icon = Icon {
@@ -58,21 +58,54 @@ pub fn saved_time(milliseconds: u64) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .unwrap_or_default()
 }
-pub fn poll(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
-    let Some(start) = state.scratchpad_clear_started else {
-        return false;
+fn retract_ease(time: f32) -> f32 {
+    // Solve the source CSS cubic-bezier(.22,1,.36,1) at the elapsed time.
+    let coordinate = |t: f32, a: f32, b: f32| {
+        3.0 * (1.0 - t).powi(2) * t * a + 3.0 * (1.0 - t) * t * t * b + t.powi(3)
     };
-    state.scratchpad_clear_progress = (start.elapsed().as_secs_f32() / 0.850).min(1.0);
-    if state.scratchpad_clear_progress >= 1.0 {
-        if let Some(edit) = state.scratchpad.as_mut() {
-            edit.replace_text("");
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..18 {
+        let middle = (low + high) / 2.0;
+        if coordinate(middle, 0.22, 0.36) < time {
+            low = middle;
+        } else {
+            high = middle;
         }
-        state.scratchpad_clear_started = None;
-        state.scratchpad_clear_progress = 0.0;
-    } else {
-        tx.wake_after(Duration::from_millis(16));
     }
-    true
+    coordinate((low + high) / 2.0, 1.0, 1.0)
+}
+fn cancel(state: &mut StudioState, tx: &mut rune::Tx) {
+    if state.scratchpad_clear_started.take().is_some() {
+        state.scratchpad_clear_cancelled = Some((Instant::now(), state.scratchpad_clear_progress));
+        tx.wake_after(Duration::ZERO);
+    }
+}
+pub fn poll(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
+    if let Some(start) = state.scratchpad_clear_started {
+        state.scratchpad_clear_progress = (start.elapsed().as_secs_f32() / 0.850).min(1.0);
+        if state.scratchpad_clear_progress >= 1.0 {
+            if let Some(edit) = state.scratchpad.as_mut() {
+                edit.replace_text("");
+            }
+            state.scratchpad_clear_started = None;
+            state.scratchpad_clear_progress = 0.0;
+        } else {
+            tx.wake_after(Duration::from_millis(16));
+        }
+        return true;
+    }
+    if let Some((start, initial)) = state.scratchpad_clear_cancelled {
+        let elapsed = (start.elapsed().as_secs_f32() / 0.220).min(1.0);
+        state.scratchpad_clear_progress = initial * (1.0 - retract_ease(elapsed));
+        if elapsed >= 1.0 {
+            state.scratchpad_clear_progress = 0.0;
+            state.scratchpad_clear_cancelled = None;
+        } else {
+            tx.wake_after(Duration::from_millis(16));
+        }
+        return true;
+    }
+    false
 }
 pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &str) -> El {
     let danger = rune::color::hex("#e11d48").unwrap();
@@ -117,12 +150,16 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
         .radius(7.0)
         .clip_rounded(7.0)
         .scale(
-            if state.scratchpad_clear_started.is_some() || state.scratchpad_clear_progress > 0.0 {
+            if state.scratchpad_clear_started.is_some()
+                || (state.scratchpad_clear_progress > 0.0
+                    && state.scratchpad_clear_cancelled.is_none())
+            {
                 0.97
             } else {
                 1.0
             },
         )
+        .scale_motion(Curve::tween(0.12, Easing::cubic(0.25, 0.1, 0.25, 1.0)))
         .child(
             el().absolute(0.0, 0.0)
                 .w(38.90625 * state.scratchpad_clear_progress)
@@ -146,48 +183,46 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
             focus(s, project, &key_id);
             if !s.studio.scratchpad_clear_key_held {
                 s.studio.scratchpad_clear_key_held = true;
+                s.studio.scratchpad_clear_cancelled = None;
                 s.studio.scratchpad_clear_started = Some(Instant::now());
                 tx.wake_after(Duration::ZERO);
             }
             true
         })
-        .on_key_up(move |s: &mut AppState, event, _| {
+        .on_key_up(move |s: &mut AppState, event, tx| {
             if !matches!(&event.key, Key::Enter) && !matches!(&event.key, Key::Text(t) if t == " ")
             {
                 return false;
             }
             focus(s, project, &key_up_id);
             s.studio.scratchpad_clear_key_held = false;
-            s.studio.scratchpad_clear_started = None;
-            s.studio.scratchpad_clear_progress = 0.0;
+            cancel(&mut s.studio, tx);
             true
         })
         .on_drag(move |s: &mut AppState, drag, tx| {
             focus(s, project, &clear_id);
             match drag.phase {
                 Phase::Down => {
+                    s.studio.scratchpad_clear_cancelled = None;
                     s.studio.scratchpad_clear_started = Some(Instant::now());
                     tx.wake_after(Duration::ZERO);
                 }
                 Phase::Move
                     if drag.x < 0.0 || drag.y < 0.0 || drag.x > drag.w || drag.y > drag.h =>
                 {
-                    s.studio.scratchpad_clear_started = None;
-                    s.studio.scratchpad_clear_progress = 0.0;
+                    cancel(&mut s.studio, tx);
                 }
                 Phase::Up => {
-                    s.studio.scratchpad_clear_started = None;
-                    s.studio.scratchpad_clear_progress = 0.0;
+                    cancel(&mut s.studio, tx);
                 }
                 _ => {}
             }
         })
-        .on_hover_change(move |s: &mut AppState, over, _| {
+        .on_hover_change(move |s: &mut AppState, over, tx| {
             focus(s, project, &hover_id);
             s.studio.scratchpad_clear_hover = over;
             if !over {
-                s.studio.scratchpad_clear_started = None;
-                s.studio.scratchpad_clear_progress = 0.0;
+                cancel(&mut s.studio, tx);
             }
         });
     row()
@@ -533,6 +568,33 @@ pub fn markdown(html: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cancelling_retracts_without_clearing_the_document() {
+        let mut state = crate::state::StudioState {
+            scratchpad: Some(rune::TextEdit::from_html("<p>Keep</p>")),
+            scratchpad_clear_started: Some(std::time::Instant::now()),
+            scratchpad_clear_progress: 0.5,
+            ..Default::default()
+        };
+        let mut tx = rune::Tx::default();
+        super::cancel(&mut state, &mut tx);
+        assert!(state.scratchpad_clear_started.is_none());
+        assert_eq!(state.scratchpad_clear_progress, 0.5);
+        state.scratchpad_clear_cancelled = Some((
+            std::time::Instant::now() - std::time::Duration::from_millis(110),
+            0.5,
+        ));
+        assert!(super::poll(&mut state, &mut tx));
+        assert!(state.scratchpad_clear_progress > 0.0 && state.scratchpad_clear_progress < 0.1);
+        state.scratchpad_clear_cancelled = Some((
+            std::time::Instant::now() - std::time::Duration::from_millis(221),
+            0.5,
+        ));
+        assert!(super::poll(&mut state, &mut tx));
+        assert_eq!(state.scratchpad_clear_progress, 0.0);
+        assert_eq!(state.scratchpad.as_ref().unwrap().text, "Keep");
+        assert!(state.scratchpad_clear_cancelled.is_none());
+    }
     #[test]
     fn clear_requires_full_hold_and_resets_progress() {
         let mut state = crate::state::StudioState {

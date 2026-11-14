@@ -499,6 +499,7 @@ impl TextSystem {
         cache: bool,
         document_spacing: bool,
         soft_breaks: &[u32],
+        code_caret_spacer: Option<usize>,
     ) -> Rc<Layout<Ink>> {
         self.follow_language();
         let shared = (!cache).then(|| std::mem::replace(&mut self.layout_cx, LayoutContext::new()));
@@ -507,10 +508,10 @@ impl TextSystem {
         // breaking adds the width, alignment and block indents. A layout cached at one width
         // is re-broken at another rather than shaped again.
         let mut shape_key = shape.unwrap_or_else(|| shape_key(text, spans, style, scale, wrap_anywhere, pills));
-        if document_spacing {
+        if document_spacing || code_caret_spacer.is_some() {
             use std::hash::{Hash, Hasher};
             let mut h = hash::KeyHasher::default();
-            (shape_key, true).hash(&mut h);
+            (shape_key, document_spacing, code_caret_spacer).hash(&mut h);
             shape_key = h.finish();
         }
         let mut key = hash::break_key(shape_key, max_width, align, has_indented_blocks.then_some(blocks));
@@ -660,6 +661,10 @@ impl TextSystem {
         if let Family::Named(list) = style.family {
             self.load_installed(list);
         }
+        for family in spans.iter().filter_map(|span| span.family) {
+            if let Family::Named(list) = family { self.load_installed(list); }
+            if family == Family::SystemMono { self.system_mono(); }
+        }
         let math = self.math.as_deref().unwrap_or(&[]);
         let emoji = self.emoji.as_slice();
         let system = self.system_mono.as_deref().unwrap_or_default();
@@ -752,9 +757,18 @@ impl TextSystem {
                     b.push(FontFamily::from(mono.as_slice()), r.clone());
                     b.push(StyleProperty::FontFeatures(unligated.as_slice().into()), r.clone());
                 }
+                if let Some(family) = s.family {
+                    let families = match family {
+                        Family::Named(name) => vec![FontFamilyName::Named(name.into())],
+                        Family::Mono | Family::SystemMono => vec![FontFamilyName::Generic(parley::GenericFamily::Monospace)],
+                        _ => vec![FontFamilyName::Generic(parley::GenericFamily::SansSerif)],
+                    };
+                    b.push(FontFamily::from(families.as_slice()), r.clone());
+                }
                 if let Some(w) = s.weight {
                     b.push(StyleProperty::FontWeight(FontWeight::new(w)), r.clone());
                 }
+                if s.synthetic_bold { b.push(StyleProperty::FontWeight(FontWeight::new(400.0)), r.clone()); }
                 if s.italic {
                     b.push(StyleProperty::FontStyle(FontStyle::Italic), r.clone());
                 }
@@ -776,7 +790,9 @@ impl TextSystem {
                 }
             }
             for (range, stack) in &routed {
-                b.push(FontFamily::from(stacks[*stack].as_deref().unwrap_or_default()), range.clone());
+                if !spans.iter().any(|s| s.family.is_some() && s.start as usize <= range.start && range.end <= s.end as usize) {
+                    b.push(FontFamily::from(stacks[*stack].as_deref().unwrap_or_default()), range.clone());
+                }
             }
             for (range, v) in exact {
                 b.push(StyleProperty::LetterSpacing(*v), range.clone());
@@ -804,12 +820,21 @@ impl TextSystem {
                 for (side, index, width) in [(0, span.start, span.inline_pad[0]), (1, span.end, span.inline_pad[1])] {
                     if width <= 0.0 { continue; }
                     b.push_inline_box(parley::InlineBox {
-                        id: (1u64 << 62) | (i as u64) << 1 | side,
+                        id: (1u64 << 61) | (i as u64) << 1 | side,
                         kind: parley::InlineBoxKind::InFlow,
                         index: index as usize, width: width * scale, height: 0.0,
                         baseline: None, vertical_align: parley::VerticalAlign::BASELINE,
                     });
                 }
+            }
+            if let Some(index) = code_caret_spacer {
+                let mut index = index.min(text.len());
+                while !text.is_char_boundary(index) { index -= 1; }
+                b.push_inline_box(parley::InlineBox {
+                    id: 1u64 << 60, kind: parley::InlineBoxKind::InFlow,
+                    index, width: style.size * 0.24 * scale, height: 0.0,
+                    baseline: None, vertical_align: parley::VerticalAlign::BASELINE,
+                });
             }
             let mut layout: Layout<Ink> = b.build(text);
             break_lines(&mut layout);

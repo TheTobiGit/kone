@@ -799,6 +799,8 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
     }
     if scene == "mark-code" || scene == "mark-combined" {
         edit.set_caret(21);
+        s.studio.scratchpad_toolbar.code_spacer=Some(21);
+        edit.focused = false;
     }
     use ui::scratchpad_toolbar::Popover;
     if scene == "block-menu" {
@@ -819,7 +821,7 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
         }
     }
     if scene == "below" {
-        s.studio.conversation_scroll = Some(("scratchpad-body-studio-review-pad".into(), 38.0));
+        s.studio.conversation_scroll = Some(("scratchpad-editor-studio-review-pad".into(), -100.0));
     }
     s.studio.scratchpad_tool_hover = match scene {
         "copy-hover" => Some("copy"),

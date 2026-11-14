@@ -33,7 +33,7 @@ use super::key_index::{self, KeyIndex};
 
 #[path = "selection/rects.rs"]
 mod selection_rects;
-pub(crate) use selection_rects::{SELECTION, SelectedRange, boxes_moved};
+pub(crate) use selection_rects::{SELECTION, SELECTION_DRAGGING, SelectedRange, boxes_moved};
 
 /// Extra measurements one commit may take while a read moves.
 const PASSES: usize = 2;
@@ -324,6 +324,7 @@ impl<S: 'static> Runtime<S> {
 
     fn layout_of(&self, nodes: &[Node], index: Option<&KeyIndex>, key: &str) -> Option<[f32; 4]> {
         if key == SELECTION { return None; }
+        if key == SELECTION_DRAGGING { return Some(self.selection_dragging_rect()); }
         let (key, scrolled) = key.strip_prefix(WINDOW).map_or((key, false), |key| (key, true));
         let first = match index {
             Some(index) => index.first(nodes, key),

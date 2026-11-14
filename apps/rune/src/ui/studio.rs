@@ -2060,6 +2060,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         output = output.child(conversation_search_modal(s, t));
     }
     if let Some(edit) = s.studio.scratchpad.as_ref()
+        && !cx.selection_dragging()
+        && s.studio.scratchpad_toolbar.shown_after.is_none()
         && !edit.selected().trim().is_empty()
         && s.studio.scratchpad_toolbar.dismissed != Some(edit.range())
         && let (Some(first), Some(last)) = (selection_rects.first(), selection_rects.last())
@@ -2069,7 +2071,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             t,
             super::scratchpad_toolbar::Anchor {
                 x: first[0] + first[2] / 2.0,
-                top: first[1],
+                top: first[1] + 2.0,
                 bottom: last[1] + last[3],
             },
             (viewport_w, viewport_h),
@@ -2805,7 +2807,6 @@ fn studio_row(
                     code_bg: t.ink.alpha(0.06),
                     quote_bar: t.accent.alpha(0.45),
                     marker: Some(t.muted),
-                    ..Default::default()
                 })
                 .w_full()
                 .grow(1.0)
@@ -2822,6 +2823,7 @@ fn studio_row(
                     t.accent.alpha(0.24),
                 )
                 .selection_radius(0.0)
+                .selection_offset(0.0, 1.0)
                 .on_edit(move |s: &mut AppState| {
                     if s.studio.thread_id != edit_id {
                         s.select_studio_project(project_index);
@@ -2854,14 +2856,20 @@ fn studio_row(
                                 .lh(26.88),
                         )
                         .spans(vec![
-                            rune::Span::new(30, 32)
-                                .mono()
-                                .size(13.76)
-                                .color(t.ink_soft.alpha(0.7)),
-                            rune::Span::new(36, 37)
-                                .mono()
-                                .size(13.76)
-                                .color(t.ink_soft.alpha(0.7)),
+                            rune::Span {
+                                family: Some(Family::Named("Menlo")),
+                                line_height: Some(23.1168),
+                                ..rune::Span::new(30, 32)
+                            }
+                            .size(13.76)
+                            .color(t.ink_soft.alpha(0.7)),
+                            rune::Span {
+                                family: Some(Family::Named("Menlo")),
+                                line_height: Some(23.1168),
+                                ..rune::Span::new(36, 37)
+                            }
+                            .size(13.76)
+                            .color(t.ink_soft.alpha(0.7)),
                         ])
                         .absolute(0.0, 40.0),
                     );

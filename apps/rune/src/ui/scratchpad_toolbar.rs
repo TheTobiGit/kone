@@ -19,19 +19,25 @@ pub enum Popover {
 #[derive(Clone, Debug)]
 pub struct ToolbarState {
     pub open: Option<Popover>,
+    pub hover: Option<String>,
+    pub code_spacer: Option<usize>,
     pub highlight: String,
     pub text: String,
     pub dismissed: Option<(usize, usize)>,
     pub selection: Option<(usize, usize)>,
+    pub shown_after: Option<std::time::Instant>,
 }
 impl Default for ToolbarState {
     fn default() -> Self {
         Self {
             open: None,
+            hover: None,
+            code_spacer: None,
             highlight: "copper".into(),
             text: "default".into(),
             dismissed: None,
             selection: None,
+            shown_after: None,
         }
     }
 }
@@ -159,6 +165,7 @@ fn apply(state: &mut StudioState, action: Action) {
             edit.toggle_mark(mark);
             if code {
                 edit.set_caret(end);
+                state.scratchpad_toolbar.code_spacer=Some(end);
             }
         }
         Action::Block(block) => {
@@ -194,13 +201,26 @@ fn apply(state: &mut StudioState, action: Action) {
         Action::Pop(_) => {}
     }
 }
-pub fn sync(state: &mut StudioState) {
+pub fn sync(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
     let range = state.scratchpad.as_ref().map(|edit| edit.range());
+    if state.scratchpad_toolbar.code_spacer.is_some_and(|at|range!=Some((at,at))) { state.scratchpad_toolbar.code_spacer=None; }
     if state.scratchpad_toolbar.selection != range {
         state.scratchpad_toolbar.selection = range;
         state.scratchpad_toolbar.dismissed = None;
         state.scratchpad_toolbar.open = None;
+        state.scratchpad_toolbar.shown_after = Some(std::time::Instant::now());
+        tx.wake_after(std::time::Duration::from_millis(90));
+        return true;
     }
+    if let Some(at) = state.scratchpad_toolbar.shown_after {
+        let delay = std::time::Duration::from_millis(90);
+        if at.elapsed() >= delay {
+            state.scratchpad_toolbar.shown_after = None;
+            return true;
+        }
+        tx.wake_after(delay.saturating_sub(at.elapsed()));
+    }
+    false
 }
 pub fn key(state: &mut StudioState, event: &KeyEvent) -> bool {
     let Some(edit) = state.scratchpad.as_ref() else {
@@ -242,6 +262,13 @@ pub fn key(state: &mut StudioState, event: &KeyEvent) -> bool {
         false
     }
 }
+fn hot(mut t: Palette, ui: &ToolbarState, key: &str) -> Palette {
+    if ui.hover.as_deref() == Some(key) {
+        t.ink_soft = t.ink;
+        t.muted = t.ink;
+    }
+    t
+}
 fn button(
     key: &str,
     art: &'static Icon,
@@ -251,6 +278,7 @@ fn button(
     t: Palette,
     action: Action,
 ) -> El {
+    let hover_key = key.to_owned();
     let mut button = el()
         .key(key.to_string())
         .role("button")
@@ -265,6 +293,14 @@ fn button(
         })
         .center()
         .hover(t.hover)
+        .press_scale(0.93)
+        .on_hover_change(move |s: &mut AppState, over, _| {
+            if over {
+                s.studio.scratchpad_toolbar.hover = Some(hover_key.clone());
+            } else if s.studio.scratchpad_toolbar.hover.as_ref() == Some(&hover_key) {
+                s.studio.scratchpad_toolbar.hover = None;
+            }
+        })
         .child(
             icon(art, if width == 16.0 { 11.0 } else { 14.0 }).color(if active {
                 t.ink
@@ -371,12 +407,20 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         } else {
             Color::TRANSPARENT
         })
-        .child(icon(active.1, 14.0).color(t.ink_soft))
-        .child(label(active.3, 11.5, t.ink_soft))
+        .child(icon(active.1, 14.0).color(if expanded { t.ink } else { t.ink_soft }))
+        .child(
+            label(active.3, 11.5, if expanded { t.ink } else { t.ink_soft }).font(
+                TextStyle::new(11.5, 400.0)
+                    .family(Family::Named("Geist"))
+                    .lh(11.5)
+                    .tracking(0.0575),
+            ),
+        )
         .child(icon(&BLOCK_CHEVRON, 12.0).ml(-1.0).color(t.muted))
         .on_press(|s: &mut AppState| apply(&mut s.studio, Action::Pop(Popover::Block)));
     let mut bar = row()
         .key("pad-format-bar")
+        .instant_changes()
         .role("toolbar")
         .label("Formatting")
         .focus_group()
@@ -407,7 +451,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             28.0,
             edit.has_mark(&mark),
             t.accent,
-            t,
+            hot(t, ui, name),
             Action::Mark(mark),
         ));
     }
@@ -447,7 +491,15 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             28.0,
             active_mark,
             pen,
-            t,
+            hot(
+                t,
+                ui,
+                if pop == Popover::Highlight {
+                    "Highlight"
+                } else {
+                    "Text colour"
+                },
+            ),
             action,
         )
         .corners([9.0, 3.0, 3.0, 9.0])
@@ -468,10 +520,23 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             16.0,
             false,
             t.accent,
-            t,
+            hot(
+                t,
+                ui,
+                if pop == Popover::Highlight {
+                    "Choose highlight colour"
+                } else {
+                    "Choose text colour"
+                },
+            ),
             Action::Pop(pop),
         )
-        .expanded(ui.open == Some(pop));
+        .expanded(ui.open == Some(pop))
+        .fill(if ui.open == Some(pop) {
+            t.ink.alpha(0.08)
+        } else {
+            Color::TRANSPARENT
+        });
         bar = bar.child(row().h(28.0).child(pen_button).child(chev));
     }
     bar = bar.child(rule(t)).child(button(
@@ -480,7 +545,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         28.0,
         false,
         t.accent,
-        t,
+        hot(t, ui, "Clear formatting"),
         Action::Clear,
     ));
     if ui.open.is_none() {

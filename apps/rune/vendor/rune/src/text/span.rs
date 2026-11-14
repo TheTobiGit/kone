@@ -13,6 +13,10 @@ pub struct Span {
     pub end: u32,
     pub weight: Option<f32>,
     pub mono: bool,
+    /// Override the element family for this run.
+    pub family: Option<crate::Family>,
+    /// Embolden the regular face while preserving its glyph advances.
+    pub synthetic_bold: bool,
     pub size: Option<f32>,
     /// Absolute line height in points for this run.
     pub line_height: Option<f32>,
@@ -175,6 +179,8 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
                 m.weight = s.weight;
             }
             m.mono |= s.mono;
+            if s.family.is_some() { m.family = s.family; }
+            m.synthetic_bold |= s.synthetic_bold;
             if s.size.is_some() {
                 m.size = s.size;
             }
@@ -200,6 +206,8 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
                 && last.end == m.start
                 && last.weight == m.weight
                 && last.mono == m.mono
+                && last.family == m.family
+                && last.synthetic_bold == m.synthetic_bold
                 && last.size == m.size
                 && last.line_height == m.line_height
                 && last.tracking == m.tracking

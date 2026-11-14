@@ -180,3 +180,71 @@ fn inline_padding_changes_advance_and_its_cache_key() {
     let plain_again = text.layout_rich("hello world", &[], style, 2.0, None);
     assert_eq!(plain_again.full_width(), plain.full_width());
 }
+
+#[test]
+fn trailing_inline_padding_moves_following_glyph_run() {
+    use rune::text::TextSystem;
+    use rune::{Span, TextStyle};
+    let mut text = TextSystem::default();
+    let style = TextStyle::new(16.0, 400.0);
+    let a = text.layout_rich(
+        "codeafter",
+        &[Span {
+            start: 0,
+            end: 4,
+            mono: true,
+            ..Span::default()
+        }],
+        style,
+        2.0,
+        None,
+    );
+    let b = text.layout_rich(
+        "codeafter",
+        &[Span {
+            start: 0,
+            end: 4,
+            mono: true,
+            inline_pad: [4.5; 2],
+            ..Span::default()
+        }],
+        style,
+        2.0,
+        None,
+    );
+    let mut first = Vec::new();
+    let mut padded = Vec::new();
+    text.glyphs_for_layout(&a, 2.0, [0.0; 2], false, &mut first);
+    text.glyphs_for_layout(&b, 2.0, [0.0; 2], false, &mut padded);
+    assert_eq!(first.len(), padded.len());
+    assert!((padded.last().unwrap().rect[0] - first.last().unwrap().rect[0] - 18.0).abs() < 0.01);
+}
+
+#[test]
+fn synthetic_bold_preserves_regular_face_advance() {
+    use rune::text::TextSystem;
+    use rune::{Family, Span, TextStyle};
+    let mut text = TextSystem::new(
+        &[
+            include_bytes!("../assets/fonts/Geist-Regular.ttf"),
+            include_bytes!("../assets/fonts/Geist-Bold.ttf"),
+        ],
+        ("Geist", "Geist"),
+    );
+    let style = TextStyle::new(22.0, 400.0).family(Family::Named("Geist"));
+    let plain = text.layout_rich("Notes, snippets, drafts.", &[], style, 2.0, None);
+    let bold = text.layout_rich(
+        "Notes, snippets, drafts.",
+        &[Span {
+            start: 0,
+            end: 23,
+            weight: Some(700.0),
+            synthetic_bold: true,
+            ..Span::default()
+        }],
+        style,
+        2.0,
+        None,
+    );
+    assert!((plain.full_width() - bold.full_width()).abs() < 0.01);
+}

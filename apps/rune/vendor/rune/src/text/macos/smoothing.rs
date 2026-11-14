@@ -91,12 +91,13 @@ pub(crate) struct Smoothing {
     pipeline: ApplePipeline,
     /// Luminance bucket per `Ink`: 0 is the element's colour, n is `spans[n - 1]`'s.
     inks: Vec<u8>,
+    synthetic: Vec<bool>,
     metrics: HashMap<(u64, u32, u64), Option<HintMetrics>>,
 }
 
 impl Default for Smoothing {
     fn default() -> Self {
-        Smoothing { pipeline: crate::text::FontSmoothing::default().pipeline(), inks: Vec::new(), metrics: HashMap::new() }
+        Smoothing { pipeline: crate::text::FontSmoothing::default().pipeline(), inks: Vec::new(), synthetic: Vec::new(), metrics: HashMap::new() }
     }
 }
 
@@ -134,6 +135,8 @@ impl Smoothing {
         self.inks.clear();
         self.inks.push(base);
         self.inks.extend(spans.iter().map(|s| s.color.map_or(base, color_bucket)));
+        self.synthetic.clear(); self.synthetic.push(false);
+        self.synthetic.extend(spans.iter().map(|s| s.synthetic_bold));
     }
 
     /// Each `Ink`'s luminance bucket, as [`Self::set_inks`] last chose them.
@@ -143,9 +146,10 @@ impl Smoothing {
     /// stage). The radius, not the bucket, keys the atlas: buckets that reach the cap share
     /// masks.
     pub(crate) fn radius(&self, ink: u16, ppem: f32) -> f64 {
-        if !self.pipeline.dilate { return 0.0; }
+        let synthetic = if self.synthetic.get(ink as usize).copied().unwrap_or(false) { ppem as f64 / 48.0 } else { 0.0 };
+        if !self.pipeline.dilate { return synthetic; }
         let bucket = self.inks.get(ink as usize).or(self.inks.first()).copied().unwrap_or(0);
-        radius_for_bucket(ppem as f64, bucket)
+        radius_for_bucket(ppem as f64, bucket) + synthetic
     }
 
     pub(crate) fn rasterize(&mut self, cx: &mut ScaleContext, atlas: &mut Atlas, job: Job<'_>) -> Rasterized {
@@ -161,7 +165,7 @@ impl Smoothing {
 
     /// The glyph's coverage and placement (swash's convention: `top` is rows above the baseline).
     pub(crate) fn mask(&mut self, cx: &mut ScaleContext, job: &Job<'_>) -> Option<(Vec<u8>, Placement)> {
-        let pipeline = self.pipeline;
+        let pipeline = ApplePipeline { dilate: self.pipeline.dilate || job.radius > 0.0, ..self.pipeline };
         let path = design_outline(cx, job.font, job.coords, job.glyph, job.ppem as f64)?;
         let path = if job.skew == 0 { path } else {
             let t = (job.skew as f64).to_radians().tan();

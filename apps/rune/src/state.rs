@@ -171,6 +171,7 @@ pub struct StudioState {
     pub scratchpad_footer_hover: bool,
     pub scratchpad_tool_hover: Option<&'static str>,
     pub scratchpad_clear_started: Option<std::time::Instant>,
+    pub scratchpad_clear_cancelled: Option<(std::time::Instant, f32)>,
     pub scratchpad_clear_progress: f32,
     pub scratchpad_clear_hover: bool,
     pub scratchpad_clear_key_held: bool,
@@ -702,8 +703,9 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
-        crate::ui::scratchpad_toolbar::sync(&mut s.studio);
-        let mut scratchpad_motion = crate::ui::scratchpad_footer::poll(&mut s.studio, tx);
+        let toolbar_changed = crate::ui::scratchpad_toolbar::sync(&mut s.studio, tx);
+        let mut scratchpad_motion =
+            crate::ui::scratchpad_footer::poll(&mut s.studio, tx) || toolbar_changed;
         s.persist_scratchpad();
         let parked_pads: Vec<String> = s
             .studio_threads
@@ -714,7 +716,7 @@ impl AppState {
         for id in parked_pads {
             let parked = s.studio_threads.remove(&id).unwrap();
             let focused = std::mem::replace(&mut s.studio, parked);
-            crate::ui::scratchpad_toolbar::sync(&mut s.studio);
+            crate::ui::scratchpad_toolbar::sync(&mut s.studio, tx);
             scratchpad_motion |= crate::ui::scratchpad_footer::poll(&mut s.studio, tx);
             s.persist_scratchpad();
             let parked = std::mem::replace(&mut s.studio, focused);

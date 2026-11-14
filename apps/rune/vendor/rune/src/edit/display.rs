@@ -66,7 +66,8 @@ impl TextEdit {
                     spans.push(Span {
                         start: r_start,
                         end: r_end,
-                        weight: Some(if style.document_spacing { 700.0 } else { (base_style.weight + 250.0).clamp(600.0, 900.0) }),
+                        synthetic_bold: style.document_spacing,
+                        weight: Some(if style.document_spacing { 400.0 } else { (base_style.weight + 250.0).clamp(600.0, 900.0) }),
                         ..Span::default()
                     });
                 }
@@ -96,6 +97,7 @@ impl TextEdit {
                         mono: true,
                         color: style.code_fg,
                         bg: Some(style.code_bg),
+                        family: style.document_spacing.then_some(if cfg!(target_os = "macos") { crate::Family::Named("Menlo") } else { crate::Family::SystemMono }),
                         size: style.document_spacing.then_some(base_style.size * 0.88),
                         bg_radius: style.document_spacing.then_some(5.0),
                         bg_pad: if style.document_spacing { base_style.size * 0.88 * 0.32 } else { 2.0 },
@@ -135,11 +137,12 @@ impl TextEdit {
             if let Some(Block::Heading(level)) = blocks.get(index) {
                 let size = match level { 1 => 22.0, 2 => 19.0, 3 => 17.0, _ => 16.0 };
                 spans.push(Span { start: start as u32, end: (start + line.len() + usize::from(start + line.len() < display.len())) as u32,
-                    size: Some(size), weight: Some(600.0), line_height: Some(size * 1.3), tracking: Some(-0.015 * size), ..Span::default() });
+                    size: Some(size), weight: Some(if style.document_spacing { 400.0 } else { 600.0 }), synthetic_bold: style.document_spacing, line_height: Some(size * 1.3), tracking: Some(-0.015 * size), ..Span::default() });
             }
             if style.document_spacing && blocks.get(index) == Some(&Block::Code) {
                 spans.push(Span { start: start as u32, end: (start + line.len() + usize::from(start + line.len() < display.len())) as u32,
-                    size: Some(13.5), line_height: Some(21.6), mono: true, ..Span::default() });
+                    size: Some(13.5), line_height: Some(21.6), mono: true,
+                    family: Some(if cfg!(target_os = "macos") { crate::Family::Named("Menlo") } else { crate::Family::SystemMono }), ..Span::default() });
             }
             if matches!(blocks.get(index), Some(Block::Task(true))) {
                 spans.push(Span { start: start as u32, end: (start + line.len()) as u32,

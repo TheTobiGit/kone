@@ -7,8 +7,19 @@ use super::*;
 
 /// The layout-read key `Cx::selection_rects` reads under.
 pub(crate) const SELECTION: &str = "\u{1}selection";
+pub(crate) const SELECTION_DRAGGING: &str = "\u{1}selection-dragging";
 
 impl<S> Cx<S> {
+    /// Whether a pointer press is currently selecting text in an editable field or selectable
+    /// text. True from press until release or cancellation, including double-click selection;
+    /// selections made with the keyboard or by code are never dragging. A view reading this
+    /// re-runs when the press begins or ends, even when the selected range did not change.
+    /// This is independent of [`Self::selection_rects`], whose boxes continue to track every
+    /// selection change and scroll while the press is held.
+    pub fn selection_dragging(&self) -> bool {
+        self.layout(SELECTION_DRAGGING).is_some_and(|r| r[0] != 0.0)
+    }
+
     /// The line boxes of the text selection, `[x, y, w, h]` each in window points after
     /// scrolling, in reading order: one per line of each selected text, as its highlight draws
     /// them. Empty (and allocating nothing) when nothing is selected or only a caret is placed.
@@ -40,6 +51,10 @@ pub(crate) fn boxes_moved(a: &[[f32; 4]], b: &[[f32; 4]]) -> bool {
 }
 
 impl<S: 'static> Runtime<S> {
+    pub(super) fn selection_dragging_rect(&self) -> [f32; 4] {
+        [f32::from(self.text_sel.dragging || self.input_click.dragging_path().is_some()), 0.0, 0.0, 0.0]
+    }
+
     /// The selection's line boxes laid out in the last commit's nodes.
     pub(super) fn selection_boxes(&self) -> Vec<[f32; 4]> {
         let mut out = Vec::new();
@@ -107,6 +122,8 @@ impl<S: 'static> Runtime<S> {
     /// scrolling). That isn't layout feedback, so the view re-runs as for a state change.
     pub(super) fn selection_read_moved(&self) -> bool {
         let seen = &self.layout_seen.rects;
-        seen.contains_key(SELECTION) && boxes_moved(&seen.selection, &self.selection_boxes())
+        (seen.contains_key(SELECTION) && boxes_moved(&seen.selection, &self.selection_boxes()))
+            || (seen.contains_key(SELECTION_DRAGGING)
+                && seen.get(SELECTION_DRAGGING).copied().flatten() != Some(self.selection_dragging_rect()))
     }
 }
