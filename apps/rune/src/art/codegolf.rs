@@ -175,7 +175,17 @@ impl CodeGolf {
         if site.data[3] >= 0.0 {
             *time += self.dt;
         }
-        let time = *time;
+        // Scene captures use the requested virtual instant, independent of the
+        // number of preparation frames the snapshot renderer needs.
+        let time = *CAPTURE_TIME
+            .get_or_init(|| {
+                let args: Vec<_> = std::env::args().collect();
+                args.windows(2)
+                    .find(|pair| pair[0] == "--at")
+                    .and_then(|pair| pair[1].parse::<f32>().ok())
+            })
+            .as_ref()
+            .unwrap_or(time);
         let pipe = self
             .pipelines
             .entry((site.mark, site.format))
@@ -213,11 +223,13 @@ impl CodeGolf {
         pass.draw(0..6, 0..10000);
     }
 }
+static CAPTURE_TIME: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
 static CENTROID: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
 
-/// `color` is the CSS sRGB accent including its own alpha.
+/// `color` is the CSS sRGB accent; its alpha is the completed canvas opacity.
 pub fn slot(mark: u32, focused_and_visible: bool, color: [f32; 4]) -> rune::El {
-    let mut color = color;
+    let opacity = color[3].abs();
+    let mut color = [color[0], color[1], color[2], 1.0];
     if !focused_and_visible {
         color[3] = -color[3];
     }
@@ -233,5 +245,9 @@ pub fn slot(mark: u32, focused_and_visible: bool, color: [f32; 4]) -> rune::El {
     } else {
         art
     };
-    rune::el().w_full().h_full().opacity(0.9999).child(art)
+    rune::el()
+        .w_full()
+        .h_full()
+        .opacity(opacity)
+        .child(rune::el().w_full().h_full().additive_canvas().child(art))
 }

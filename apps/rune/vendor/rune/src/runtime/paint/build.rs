@@ -277,8 +277,8 @@ impl<S: 'static> Runtime<S> {
             let effective_opacity = (own * pinh.opacity).clamp(0.0, 1.0);
             let hit_opacity = (hit_own * pinh.hit_opacity).clamp(0.0, 1.0);
             let next = if tree_order { self.layer_paint_order.get(paint_index + 1).copied() } else { (i + 1 < n_nodes).then_some(i + 1) };
-            let dissolve = self.has_dissolve && self.dissolve_scratch[i];
-            let additive_parent = self.has_dissolve && n.parent.is_some_and(|p| self.dissolve_scratch[p]);
+            let dissolve = n.vis.additive_canvas || (self.has_dissolve && self.dissolve_scratch[i]);
+            let additive_parent = self.has_dissolve && n.parent.is_some_and(|p| self.nodes[p].vis.additive_canvas || self.dissolve_scratch[p]);
             // `El::layer_opacity` fades paint only; hit testing and what elements report keep
             // `own`.
             let paint_own = own * n.vis.layer_opacity;

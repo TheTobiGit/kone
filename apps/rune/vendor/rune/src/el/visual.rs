@@ -108,6 +108,7 @@ pub struct VisualCold {
     pub paint_alpha: f32,
     /// `El::layer_opacity`: static alpha its whole subtree composites at, as one layer.
     pub(crate) layer_opacity: f32,
+    pub(crate) additive_canvas: bool,
     pub blur: f32,
     /// `El::rotate`, in radians clockwise.
     pub(crate) rotate: f32,
@@ -164,6 +165,7 @@ impl Empty for VisualCold {
         offset: [0.0; 2],
         paint_alpha: 1.0,
         layer_opacity: 1.0,
+        additive_canvas: false,
         blur: 0.0,
         rotate: 0.0,
         mark: 0,

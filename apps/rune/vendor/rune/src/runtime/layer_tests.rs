@@ -485,3 +485,51 @@ fn isolated_layers_preserve_image_video_spring_and_list_order() {
         near(&out[(y*32+x)*4..(y*32+x+1)*4], want);
     }
 }
+
+#[test]
+fn additive_canvas_is_bounded_without_a_dissolve_animation() {
+    fn view(active: &bool, _: &mut Cx<bool>) -> El {
+        let art = el().size(16.0, 16.0).child(el().size(16.0, 16.0).fill(Color::WHITE));
+        let canvas = if *active { art.additive_canvas() } else { art };
+        el().size(16.0, 16.0).opacity(0.4).child(canvas)
+    }
+    let mut rt = Runtime::new(false, view, (16.0, 16.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    assert!(!rt.instances.iter().any(|i| i.params[1] == KIND_LAYER && i.params[0] == 1.0));
+    rt.state = true;
+    rt.invalidate();
+    rt.frame(0.0);
+    let additive: Vec<_> = rt.instances.iter().filter(|i| i.params[1] == KIND_LAYER && i.params[0] == 1.0).collect();
+    assert_eq!(additive.len(), 1, "an opaque canvas still needs its bounded scope");
+    assert_eq!(additive[0].fill[3], 1.0, "clamp before the enclosing opacity");
+    assert!(rt.instances.iter().any(|i| i.params[1] == KIND_LAYER && i.params[0] == 0.0 && (i.fill[3] - 0.4).abs() < 0.001));
+    rt.state = false;
+    rt.invalidate();
+    rt.frame(0.0);
+    assert!(!rt.instances.iter().any(|i| i.params[1] == KIND_LAYER && i.params[0] == 1.0), "memo reuse must notice the option was cleared");
+}
+
+#[test]
+fn text_field_selection_honors_square_radius_without_changing_default() {
+    fn view(state: &(crate::TextEdit, bool), _: &mut Cx<(crate::TextEdit, bool)>) -> El {
+        let field = crate::text_input(&state.0, crate::TextStyle::new(14.0, 400.0))
+            .size(180.0, 30.0)
+            .selection_color(Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 })
+            .on_edit(|state: &mut (crate::TextEdit, bool)| &mut state.0);
+        if state.1 { field.selection_radius(0.0) } else { field }
+    }
+    let mut edit = crate::TextEdit::new("selected");
+    edit.anchor = 0;
+    edit.focused = true;
+    let mut rt = Runtime::new((edit, false), view, (180.0, 30.0), Env::new(true, 1.0));
+    let highlight = |rt: &Runtime<(crate::TextEdit, bool)>| {
+        rt.instances.iter().find(|i| i.params[1] == KIND_RECT && i.fill == [0.0, 1.0, 0.0, 1.0])
+            .expect("selected field paints a highlight").radii
+    };
+    rt.frame(0.0);
+    assert_eq!(highlight(&rt), [2.0; 4]);
+    rt.state.1 = true;
+    rt.invalidate();
+    rt.frame(0.0);
+    assert_eq!(highlight(&rt), [0.0; 4]);
+}

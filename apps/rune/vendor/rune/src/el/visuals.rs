@@ -295,6 +295,14 @@ impl El {
         self.vis_flags.set(VisualFlags::PLUS_LIGHTER, true);
         self
     }
+    /// Isolate an additive drawing surface and saturate its completed premultiplied
+    /// channels before an ancestor applies opacity, matching Canvas2D's `lighter`.
+    /// Put this inside an opacity wrapper to composite the bounded canvas source-over.
+    pub fn additive_canvas(mut self) -> Self {
+        self.vis_flags.set(VisualFlags::PLUS_LIGHTER, true);
+        self.vis.cold_mut().additive_canvas = true;
+        self
+    }
     /// Rasterize this subtree once into an offscreen texture when settled and composite that
     /// texture until the subtree's draw output changes, including while an ancestor's
     /// [`live_offset`](Self::live_offset) or [`live_scale`](Self::live_scale) moves it. While a
