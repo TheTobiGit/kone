@@ -49,9 +49,9 @@ fn break_lines_capped(
         let blk = blocks.get(para_idx).copied().unwrap_or(crate::edit::Block::Paragraph);
         let indent = if document_spacing {
             use crate::edit::Block;
-            match blk { Block::Bullet(l) | Block::Numbered(l) => font_size * 1.25 * (l as f32 + 1.0),
+            (match blk { Block::Bullet(l) | Block::Numbered(l) => font_size * 1.25 * (l as f32 + 1.0),
                 Block::Task(_) => font_size * 1.25, Block::Quote => font_size * 0.85 + 2.0,
-                Block::Code => font_size * 0.85, _ => 0.0 } * scale
+                Block::Code => font_size * 0.85, _ => 0.0 }) * scale
         } else { (blk.indent_pt(font_size) * scale).round() };
         if document_spacing && line_in_para == 0 {
             use crate::edit::Block;

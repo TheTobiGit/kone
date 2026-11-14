@@ -506,7 +506,13 @@ impl TextSystem {
         // Shaping depends on the text, spans, style, scale, overflow-wrap and pills; line
         // breaking adds the width, alignment and block indents. A layout cached at one width
         // is re-broken at another rather than shaped again.
-        let shape_key = shape.unwrap_or_else(|| shape_key(text, spans, style, scale, wrap_anywhere, pills));
+        let mut shape_key = shape.unwrap_or_else(|| shape_key(text, spans, style, scale, wrap_anywhere, pills));
+        if document_spacing {
+            use std::hash::{Hash, Hasher};
+            let mut h = hash::KeyHasher::default();
+            (shape_key, true).hash(&mut h);
+            shape_key = h.finish();
+        }
         let mut key = hash::break_key(shape_key, max_width, align, has_indented_blocks.then_some(blocks));
         if document_spacing {
             use std::hash::{Hash, Hasher};
@@ -703,7 +709,7 @@ impl TextSystem {
         let unligated: Vec<parley::FontFeature> = features.iter().chain(&off).copied().collect();
         type Spacings = [(std::ops::Range<usize>, f32)];
         let build = |lcx: &mut LayoutContext<Ink>, fcx: &mut FontContext, exact: &Spacings, widen: &Spacings| {
-            let mut b = lcx.ranged_builder(fcx, text, scale, true);
+            let mut b = lcx.ranged_builder(fcx, text, scale, !document_spacing);
             b.push_default(FontFamily::from(sans.as_slice()));
             b.push_default(StyleProperty::Locale(language));
             b.push_default(StyleProperty::FontSize(style.size));
@@ -791,6 +797,17 @@ impl TextSystem {
                         height: 0.0,
                         baseline: None,
                         vertical_align: parley::VerticalAlign::BASELINE,
+                    });
+                }
+            }
+            for (i, span) in spans.iter().enumerate() {
+                for (side, index, width) in [(0, span.start, span.inline_pad[0]), (1, span.end, span.inline_pad[1])] {
+                    if width <= 0.0 { continue; }
+                    b.push_inline_box(parley::InlineBox {
+                        id: (1u64 << 62) | (i as u64) << 1 | side,
+                        kind: parley::InlineBoxKind::InFlow,
+                        index: index as usize, width: width * scale, height: 0.0,
+                        baseline: None, vertical_align: parley::VerticalAlign::BASELINE,
                     });
                 }
             }

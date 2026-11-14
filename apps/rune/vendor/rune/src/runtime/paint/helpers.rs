@@ -34,11 +34,11 @@ pub(super) fn emit_block_decorations(
 
     let flush_code = |instances: &mut Vec<Instance>, run: &mut Option<(f32, f32)>| {
         if let Some((top, bot)) = run.take() {
-            let pad_y = if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
+            let pad_y = if spec.rich_style.document_spacing { spec.style.size * 0.7 * s * tk } else if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
             instances.push(rect_inst(
                 [x0 + glide[0], top - pad_y + glide[1], box_w, (bot - top) + 2.0 * pad_y],
                 premul(spec.rich_style.code_block_bg, o, srgb),
-                6.0 * s * tk,
+                if spec.rich_style.document_spacing { 10.0 * s * tk } else { 6.0 * s * tk },
                 clip,
                 fade,
             ));
@@ -46,13 +46,13 @@ pub(super) fn emit_block_decorations(
     };
     let flush_quote = |instances: &mut Vec<Instance>, run: &mut Option<(f32, f32)>| {
         if let Some((top, bot)) = run.take() {
-            let bar_w = if tk == 1.0 { (3.0 * s).round().max(2.0) } else { (3.0 * s * tk).max(2.0 * tk) };
-            let bar_x = if tk == 1.0 { (origin[0] + 2.0 * s).round() } else { origin[0] + 2.0 * s * tk } + glide[0];
-            let inset_y = if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
+            let bar_w = if spec.rich_style.document_spacing { 2.0 * s * tk } else if tk == 1.0 { (3.0 * s).round().max(2.0) } else { (3.0 * s * tk).max(2.0 * tk) };
+            let bar_x = if spec.rich_style.document_spacing { origin[0] } else if tk == 1.0 { (origin[0] + 2.0 * s).round() } else { origin[0] + 2.0 * s * tk } + glide[0];
+            let inset_y = if spec.rich_style.document_spacing { 0.0 } else if tk == 1.0 { (2.0 * s).round() } else { 2.0 * s * tk };
             instances.push(rect_inst(
                 [bar_x, top + inset_y + glide[1], bar_w, (bot - top - 2.0 * inset_y).max(4.0 * s * tk)],
                 premul(spec.rich_style.quote_bar, o, srgb),
-                bar_w * 0.5,
+                if spec.rich_style.document_spacing { 0.0 } else { bar_w * 0.5 },
                 clip,
                 fade,
             ));
@@ -175,7 +175,7 @@ pub(super) fn emit_block_decorations(
                 }
 
                 Block::Bullet(lvl) => {
-                    let d = if tk == 1.0 { (4.5 * s).round().max(3.0) } else { (4.5 * s * tk).max(3.0 * tk) };
+                    let d = if spec.rich_style.document_spacing { 4.0 * s * tk } else if tk == 1.0 { (4.5 * s).round().max(3.0) } else { (4.5 * s * tk).max(3.0 * tk) };
                     let cx = origin[0] + (indent_px - (7.0 * s).round()) * tk - d;
                     let cy = baseline_y - 0.34 * spec.style.size * s * tk - d * 0.5;
                     let (cx, cy) = if tk == 1.0 { (cx.round(), cy.round()) } else { (cx, cy) };

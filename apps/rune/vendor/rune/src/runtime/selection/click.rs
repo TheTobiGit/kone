@@ -211,6 +211,7 @@ impl<S: 'static> Runtime<S> {
             self.input_click.drop_drag();
             return false;
         };
+        let document = self.node(&path).and_then(|n| n.input.as_ref()).is_some_and(|i| i.rich_style.document_spacing);
         let single = self.node(&path).and_then(|n| n.input.as_ref()).is_some_and(|i| i.single_line);
         let layout = self.node(&path).and_then(|n| n.text_layout.clone());
         let s = self.env.scale;
@@ -229,6 +230,18 @@ impl<S: 'static> Runtime<S> {
                 }
                 if let Some(l) = layout {
                     let h = hit(e, &l, x + scroll, y, s, single);
+                    if document && clicks == 1 && !shift {
+                        if let Some(paragraph) = e.paragraphs().into_iter().find(|p| p.range.start <= h.caret && h.caret <= p.range.end)
+                            && let crate::Block::Task(checked) = paragraph.block
+                            && (-2.0..=12.0).contains(&(x + scroll))
+                        {
+                            e.set_selection(paragraph.range.start, paragraph.range.start);
+                            e.set_block(crate::Block::Task(!checked));
+                            self.input_click.clear();
+                            one.instant = true;
+                            return true;
+                        }
+                    }
                     if shift {
                         let anchor = e.anchor;
                         self.input_click.unit = Unit::Char;

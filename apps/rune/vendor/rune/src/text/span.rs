@@ -22,6 +22,10 @@ pub struct Span {
     /// Rounded background behind the span's runs (inline code), padded by `bg_pad` points.
     pub bg: Option<Color>,
     pub bg_pad: f32,
+    /// Override the standard rounded inline background radius, in points.
+    pub bg_radius: Option<f32>,
+    /// Inline space reserved before and after this styled range, in points.
+    pub inline_pad: [f32; 2],
     pub underline: Option<Color>,
     /// The family's italic face, or a synthetic oblique when it has none.
     pub italic: bool,
@@ -179,9 +183,12 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
             if s.color.is_some() {
                 m.color = s.color;
             }
+            if a == s.start && s.inline_pad[0] != 0.0 { m.inline_pad[0] = s.inline_pad[0]; }
+            if b == s.end && s.inline_pad[1] != 0.0 { m.inline_pad[1] = s.inline_pad[1]; }
             if s.bg.is_some() {
                 m.bg = s.bg;
                 m.bg_pad = s.bg_pad;
+                m.bg_radius = s.bg_radius;
             }
             if s.underline.is_some() {
                 m.underline = s.underline;
@@ -199,10 +206,13 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
                 && last.color == m.color
                 && last.bg == m.bg
                 && last.bg_pad == m.bg_pad
+                && last.bg_radius == m.bg_radius
                 && last.underline == m.underline
                 && last.italic == m.italic
+                && last.inline_pad[1] == 0.0 && m.inline_pad[0] == 0.0
             {
                 last.end = m.end;
+                last.inline_pad[1] = m.inline_pad[1];
             } else {
                 out.push(m);
             }

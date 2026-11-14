@@ -169,6 +169,7 @@ pub struct StudioState {
     pub scratchpad_toolbar: crate::ui::scratchpad_toolbar::ToolbarState,
     pub scratchpad_saved_at: Option<String>,
     pub scratchpad_footer_hover: bool,
+    pub scratchpad_tool_hover: Option<&'static str>,
     pub scratchpad_clear_started: Option<std::time::Instant>,
     pub scratchpad_clear_progress: f32,
     pub scratchpad_clear_hover: bool,

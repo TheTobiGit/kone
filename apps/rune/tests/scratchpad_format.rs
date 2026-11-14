@@ -63,3 +63,120 @@ fn stored_pen_names_resolve_per_theme() {
     assert_eq!(light.pen_color("sky", true).hex(), "#3884ff38");
     assert_eq!(dark.pen_color("sky", true).hex(), "#5698ff52");
 }
+
+#[test]
+fn document_paragraph_gap_moves_selection_geometry_and_soft_breaks_do_not() {
+    use rune::{Cx, El, Env, RichStyle, Runtime, TextStyle, text_input};
+    struct State {
+        edit: TextEdit,
+        boxes: std::cell::RefCell<Vec<[f32; 4]>>,
+    }
+    fn view(state: &State, cx: &mut Cx<State>) -> El {
+        *state.boxes.borrow_mut() = cx.selection_rects();
+        text_input(&state.edit, TextStyle::new(16.0, 400.0).lh(26.88))
+            .rich_style(RichStyle {
+                document_spacing: true,
+                ..RichStyle::default()
+            })
+            .w(500.0)
+            .h(300.0)
+            .on_edit(|state: &mut State| &mut state.edit)
+    }
+    fn distance(html: &str) -> f32 {
+        let mut edit = TextEdit::from_html(html);
+        edit.focused = true;
+        edit.set_selection(0, edit.text.len());
+        let mut runtime = Runtime::new(
+            State {
+                edit,
+                boxes: Default::default(),
+            },
+            view,
+            (500.0, 300.0),
+            Env::new(false, 1.0),
+        );
+        runtime.frame(0.0);
+        runtime.frame(0.0);
+        let rectangles = runtime.state.boxes.borrow();
+        assert_eq!(rectangles.len(), 2, "{rectangles:?}");
+        rectangles[1][1] - rectangles[0][1]
+    }
+    let paragraphs = distance("<p>one</p><p>two</p>");
+    let soft = distance("<p>one<br>two</p>");
+    assert!(
+        (paragraphs - soft - 8.8).abs() < 0.02,
+        "paragraphs={paragraphs}, soft={soft}"
+    );
+}
+
+#[test]
+fn task_return_continues_unchecked_and_keeps_undo() {
+    use rune::{Key, KeyEvent, Mods};
+    let mut edit = TextEdit::from_html("<ul><li data-checked=\"true\">finished</li></ul>");
+    edit.set_selection(edit.text.len(), edit.text.len());
+    edit.key(
+        &KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        },
+        None,
+    );
+    assert_eq!(edit.blocks(), &[Block::Task(true), Block::Task(false)]);
+    edit.undo();
+    assert_eq!(edit.blocks(), &[Block::Task(true)]);
+    assert_eq!(edit.text, "finished");
+}
+
+#[test]
+fn document_return_edits_instead_of_submitting() {
+    use rune::{Cx, El, Env, Key, KeyEvent, Mods, RichStyle, Runtime, TextStyle, text_input};
+    fn view(edit: &TextEdit, _: &mut Cx<TextEdit>) -> El {
+        text_input(edit, TextStyle::new(16.0, 400.0).lh(26.88))
+            .rich_style(RichStyle {
+                document_spacing: true,
+                ..RichStyle::default()
+            })
+            .w(500.0)
+            .h(300.0)
+            .on_edit(|edit: &mut TextEdit| edit)
+    }
+    let mut edit = TextEdit::from_html("<p>one</p>");
+    edit.focused = true;
+    edit.set_selection(edit.text.len(), edit.text.len());
+    let mut runtime = Runtime::new(edit, view, (500.0, 300.0), Env::new(false, 1.0));
+    runtime.frame(0.0);
+    runtime.key(KeyEvent {
+        key: Key::Enter,
+        mods: Mods::default(),
+    });
+    runtime.frame(0.0);
+    assert_eq!(runtime.state.text, "one\n");
+    assert_eq!(
+        runtime.state.blocks(),
+        &[Block::Paragraph, Block::Paragraph]
+    );
+}
+
+#[test]
+fn inline_padding_changes_advance_and_its_cache_key() {
+    use rune::text::TextSystem;
+    use rune::{Span, TextStyle};
+    let mut text = TextSystem::default();
+    let style = TextStyle::new(16.0, 400.0);
+    let plain = text.layout_rich("hello world", &[], style, 2.0, None);
+    let padded = text.layout_rich(
+        "hello world",
+        &[Span {
+            start: 0,
+            end: 5,
+            inline_pad: [4.5; 2],
+            ..Span::default()
+        }],
+        style,
+        2.0,
+        None,
+    );
+    assert!((padded.full_width() - plain.full_width() - 18.0).abs() < 0.02);
+    let plain_again = text.layout_rich("hello world", &[], style, 2.0, None);
+    assert_eq!(plain_again.full_width(), plain.full_width());
+}

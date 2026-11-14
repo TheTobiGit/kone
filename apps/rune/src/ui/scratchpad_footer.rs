@@ -6,6 +6,12 @@ use crate::{
 use rune::{El, Family, Icon, Key, Phase, TextStyle, el, icon, row, text};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+static COPY: Icon = Icon {
+    name: "pad-Copy01",
+    view: 24.0,
+    body: r#"<path d="M9 15C9 12.1716 9 10.7574 9.87868 9.87868C10.7574 9 12.1716 9 15 9L16 9C18.8284 9 20.2426 9 21.1213 9.87868C22 10.7574 22 12.1716 22 15V16C22 18.8284 22 20.2426 21.1213 21.1213C20.2426 22 18.8284 22 16 22H15C12.1716 22 10.7574 22 9.87868 21.1213C9 20.2426 9 18.8284 9 16L9 15Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.9999 9C16.9975 6.04291 16.9528 4.51121 16.092 3.46243C15.9258 3.25989 15.7401 3.07418 15.5376 2.90796C14.4312 2 12.7875 2 9.5 2C6.21252 2 4.56878 2 3.46243 2.90796C3.25989 3.07417 3.07418 3.25989 2.90796 3.46243C2 4.56878 2 6.21252 2 9.5C2 12.7875 2 14.4312 2.90796 15.5376C3.07417 15.7401 3.25989 15.9258 3.46243 16.092C4.51121 16.9528 6.04291 16.9975 9 16.9999" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static DOWNLOAD: Icon = Icon {
     name: "pad-Download04",
     view: 24.0,
@@ -13,7 +19,12 @@ static DOWNLOAD: Icon = Icon {
 };
 fn label(value: impl Into<String>, size: f32, color: rune::Color) -> El {
     text(value)
-        .font(TextStyle::new(size, 400.0).family(Family::Named("Geist")))
+        .font(
+            TextStyle::new(size, 400.0)
+                .family(Family::Named("Geist"))
+                .lh(size * 1.55)
+                .features("'tnum' 1"),
+        )
         .color(color)
 }
 fn focus(s: &mut AppState, project: usize, id: &str) {
@@ -64,10 +75,16 @@ pub fn poll(state: &mut StudioState, tx: &mut rune::Tx) -> bool {
     true
 }
 pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &str) -> El {
-    let words = state
-        .scratchpad
-        .as_ref()
-        .map_or(0, |e| e.text.split_whitespace().count());
+    let danger = rune::color::hex("#e11d48").unwrap();
+    // Electron counts body.textContent: paragraph boundaries add no whitespace.
+    let words = state.scratchpad.as_ref().map_or(0, |edit| {
+        parse(&edit.to_html(), &mut 0)
+            .iter()
+            .map(plain)
+            .collect::<String>()
+            .split_whitespace()
+            .count()
+    });
     let saving = state.scratchpad_save_request.is_some()
         || state
             .scratchpad
@@ -81,6 +98,8 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
             .as_ref()
             .map_or_else(|| "Not saved".into(), |at| format!("Saved {at}"))
     };
+    let copy_hover_id = id.to_owned();
+    let export_hover_id = id.to_owned();
     let copy_id = id.to_owned();
     let export_id = id.to_owned();
     let clear_id = id.to_owned();
@@ -97,22 +116,24 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
         .py(3.0)
         .radius(7.0)
         .clip_rounded(7.0)
-        .scale(if state.scratchpad_clear_started.is_some() {
-            0.97
-        } else {
-            1.0
-        })
+        .scale(
+            if state.scratchpad_clear_started.is_some() || state.scratchpad_clear_progress > 0.0 {
+                0.97
+            } else {
+                1.0
+            },
+        )
         .child(
             el().absolute(0.0, 0.0)
-                .w(36.5 * state.scratchpad_clear_progress)
+                .w(38.90625 * state.scratchpad_clear_progress)
                 .h_full()
-                .fill(t.danger.alpha(0.15)),
+                .fill(danger.alpha(0.15)),
         )
         .child(label(
             "Clear",
             11.0,
             if state.scratchpad_clear_hover || state.scratchpad_clear_started.is_some() {
-                t.danger
+                danger
             } else {
                 t.muted
             },
@@ -207,7 +228,17 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
                         .py(4.48)
                         .radius(8.0)
                         .hover(t.hover)
-                        .child(icon(&super::studio::FOOTER_COPY01, 13.0).color(t.muted))
+                        .child(icon(&COPY, 13.0).color(
+                            if state.scratchpad_tool_hover == Some("copy") {
+                                t.ink
+                            } else {
+                                t.muted
+                            },
+                        ))
+                        .on_hover_change(move |s: &mut AppState, over, _| {
+                            focus(s, project, &copy_hover_id);
+                            s.studio.scratchpad_tool_hover = over.then_some("copy");
+                        })
                         .on_press_tx(move |s: &mut AppState, tx| {
                             focus(s, project, &copy_id);
                             if let Some(edit) = &s.studio.scratchpad {
@@ -227,7 +258,17 @@ pub fn view(s: &AppState, state: &StudioState, t: Palette, project: usize, id: &
                         .py(4.48)
                         .radius(8.0)
                         .hover(t.hover)
-                        .child(icon(&DOWNLOAD, 13.0).color(t.muted))
+                        .child(icon(&DOWNLOAD, 13.0).color(
+                            if state.scratchpad_tool_hover == Some("export") {
+                                t.ink
+                            } else {
+                                t.muted
+                            },
+                        ))
+                        .on_hover_change(move |s: &mut AppState, over, _| {
+                            focus(s, project, &export_hover_id);
+                            s.studio.scratchpad_tool_hover = over.then_some("export");
+                        })
                         .on_press_tx(move |s: &mut AppState, tx| {
                             focus(s, project, &export_id);
                             let md = s
@@ -372,10 +413,10 @@ fn plain(node: &Node) -> String {
     }
 }
 fn list(node: &Node, indent: &str, out: &mut Vec<String>) {
-    let mut n = attribute(&node.attrs, "start")
+    let start = attribute(&node.attrs, "start")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1);
-    for li in node.children.iter().filter(|n| n.tag == "li") {
+    for (n, li) in (start..).zip(node.children.iter().filter(|n| n.tag == "li")) {
         let own: String = li
             .children
             .iter()
@@ -394,7 +435,6 @@ fn list(node: &Node, indent: &str, out: &mut Vec<String>) {
                 .trim_end()
                 .to_owned(),
         );
-        n += 1;
         for sub in li
             .children
             .iter()

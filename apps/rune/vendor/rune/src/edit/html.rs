@@ -892,11 +892,21 @@ pub(crate) fn serialize_html(edit: &TextEdit, range: Range<usize>) -> String {
                 out.push_str(&format!("</h{level}>"));
                 idx += 1;
             }
-            Block::Task(checked) => {
-                out.push_str(if checked { "<ul><li data-checked=\"true\">" } else { "<ul><li data-checked=\"false\">" });
-                serialize_inline(edit, paras[idx].1.clone(), &mut out);
-                out.push_str("</li></ul>");
-                idx += 1;
+            Block::Task(_) => {
+                out.push_str("<ul>");
+                while idx < paras.len() {
+                    let Block::Task(checked) = paras[idx].2 else { break };
+                    out.push_str(if checked { "<li data-checked=\"true\">" } else { "<li data-checked=\"false\">" });
+                    serialize_inline(edit, paras[idx].1.clone(), &mut out);
+                    idx += 1;
+                    while idx < paras.len() && paras[idx].3 && paras[idx].2 == Block::Task(checked) {
+                        out.push_str("<br>");
+                        serialize_inline(edit, paras[idx].1.clone(), &mut out);
+                        idx += 1;
+                    }
+                    out.push_str("</li>");
+                }
+                out.push_str("</ul>");
             }
             Block::Paragraph => {
                 out.push_str("<p>");

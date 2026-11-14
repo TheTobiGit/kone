@@ -82,7 +82,11 @@ pub fn placement(
 }
 fn label(value: impl Into<String>, size: f32, color: Color) -> El {
     text(value)
-        .font(TextStyle::new(size, 400.0).family(Family::Named("Geist")))
+        .font(
+            TextStyle::new(size, 400.0)
+                .family(Family::Named("Geist"))
+                .lh(size),
+        )
         .color(color)
 }
 fn color(hex: &str) -> Color {
@@ -149,7 +153,14 @@ fn apply(state: &mut StudioState, action: Action) {
         return;
     };
     match action {
-        Action::Mark(mark) => edit.toggle_mark(mark),
+        Action::Mark(mark) => {
+            let code = mark == Mark::Code;
+            let end = edit.range().1;
+            edit.toggle_mark(mark);
+            if code {
+                edit.set_caret(end);
+            }
+        }
         Action::Block(block) => {
             edit.set_block(block);
             state.scratchpad_toolbar.open = None;
@@ -169,7 +180,14 @@ fn apply(state: &mut StudioState, action: Action) {
             state.scratchpad_toolbar.open = None;
         }
         Action::Clear => {
-            for mark in edit.active_marks() {
+            let (a, b) = edit.range();
+            let marks: Vec<_> = edit
+                .marks()
+                .iter()
+                .filter(|m| m.start < b && a < m.end)
+                .map(|m| m.mark.clone())
+                .collect();
+            for mark in marks {
                 edit.remove_mark(&mark);
             }
         }
@@ -188,9 +206,6 @@ pub fn key(state: &mut StudioState, event: &KeyEvent) -> bool {
     let Some(edit) = state.scratchpad.as_ref() else {
         return false;
     };
-    if !edit.focused {
-        return false;
-    }
     let range = edit.range();
     if event.key == Key::Escape
         && range.0 != range.1
@@ -243,15 +258,27 @@ fn button(
         .label(key.to_string())
         .w(width)
         .h(28.0)
-        .radius(9.0)
+        .corners(if width == 16.0 {
+            [3.0, 9.0, 9.0, 3.0]
+        } else {
+            [9.0; 4]
+        })
         .center()
         .hover(t.hover)
-        .child(icon(art, 14.0).color(if active { t.ink } else { t.ink_soft }))
+        .child(
+            icon(art, if width == 16.0 { 11.0 } else { 14.0 }).color(if active {
+                t.ink
+            } else if width == 16.0 {
+                t.muted
+            } else {
+                t.ink_soft
+            }),
+        )
         .on_press(move |s: &mut AppState| apply(&mut s.studio, action.clone()));
     if active {
         button = button
-            .fill(accent.alpha(0.18))
-            .border(1.0, accent.alpha(0.32));
+            .fill(accent.alpha(accent.a * 0.18))
+            .border(1.0, accent.alpha(accent.a * 0.32));
     }
     button
 }
@@ -314,13 +341,12 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         .find(|b| same_block(b.0, edit.active_block()))
         .unwrap_or(blocks()[0]);
     let label_width = match active.3 {
-        "Text" => 23.78125,
-        "H1" => 13.5,
-        "H2" | "H3" => 15.0,
-        "List" => 18.0,
-        "1. List" => 28.0,
-        "Task" => 24.0,
-        _ => 32.0,
+        "Text" => 22.171875,
+        "H1" | "H2" | "H3" => 15.21875,
+        "List" => 19.171875,
+        "1. List" => 31.421875,
+        "Task" => 24.703125,
+        _ => 32.25,
     };
     let block_width = 14.0 + label_width + 12.0 + 9.0 + 13.0;
     let width = 10.0 + block_width + 3.0 * 9.0 + 4.0 * 28.0 + 2.0 * 44.0 + 28.0 + 10.0;
@@ -347,17 +373,18 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         })
         .child(icon(active.1, 14.0).color(t.ink_soft))
         .child(label(active.3, 11.5, t.ink_soft))
-        .child(icon(&ARROWDOWN01, 12.0).color(t.muted))
+        .child(icon(&BLOCK_CHEVRON, 12.0).ml(-1.0).color(t.muted))
         .on_press(|s: &mut AppState| apply(&mut s.studio, Action::Pop(Popover::Block)));
     let mut bar = row()
         .key("pad-format-bar")
         .role("toolbar")
         .label("Formatting")
         .focus_group()
+        .on_key(|s: &mut AppState, event, _| key(&mut s.studio, event))
         .pin(Some(p.left), Some(p.top), None, None)
         .w(width)
         .h(38.0)
-        .padding(4.0)
+        .padding(5.0)
         .gap(1.0)
         .center_y()
         .radius(13.0)
@@ -405,9 +432,9 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         ),
     ] {
         let slot_x = if pop == Popover::Highlight {
-            block_width + 11.0 + 116.0 + 11.0 + 5.0
+            block_width + 142.0
         } else {
-            block_width + 11.0 + 116.0 + 11.0 + 50.0
+            block_width + 187.0
         };
         slots.push((pop, slot_x + 22.0));
         let pen_button = button(
@@ -423,6 +450,8 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             t,
             action,
         )
+        .corners([9.0, 3.0, 3.0, 9.0])
+        .pl(2.0)
         .child(
             el().pin(Some(5.0), None, Some(3.0), Some(3.0))
                 .h(2.0)
@@ -435,7 +464,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             } else {
                 "Choose text colour"
             },
-            &ARROWDOWN01,
+            &SPLIT_CHEVRON,
             16.0,
             false,
             t.accent,
@@ -456,7 +485,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
     ));
     if ui.open.is_none() {
         bar = bar.child(
-            el().absolute(width / 2.0 - 5.0, if p.above { 32.0 } else { -5.0 })
+            el().absolute(width / 2.0 - 5.0, if p.above { 33.0 } else { -5.0 })
                 .size(10.0, 10.0)
                 .rotate(std::f32::consts::FRAC_PI_4)
                 .fill(t.ground)
@@ -476,12 +505,12 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
     if let Some(pop) = ui.open {
         let height = if pop == Popover::Block { 243.0 } else { 34.0 };
         let top = if p.pop_above {
-            p.top - height - 7.0
+            p.top - height - 2.0
         } else {
-            p.top + 38.0 + 7.0
+            p.top + 40.0
         };
         let panel = if pop == Popover::Block {
-            let mut panel = col().gap(1.0).padding(5.0).w(194.0);
+            let mut panel = col().gap(1.0).padding(6.0).w(194.0);
             for (block, art, name, _, hint) in blocks() {
                 let on = same_block(block, edit.active_block());
                 let mut item = row()
@@ -499,7 +528,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
                     .child(icon(art, 14.0).color(if on { t.accent } else { t.muted }))
                     .child(label(name, 12.0, if on { t.ink } else { t.ink_soft }).grow(1.0));
                 if on {
-                    item = item.child(icon(&TICK02, 13.0).color(t.accent));
+                    item = item.child(icon(&TICK02, 13.0).color(t.accent).mr(-2.0));
                 } else if !hint.is_empty() {
                     item = item.child(label(hint, 10.5, t.muted));
                 }
@@ -517,9 +546,8 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             } else {
                 &["default", "copper", "moss", "sky", "orchid", "ash"]
             };
-            let w = 14.0 + ids.len() as f32 * 20.0 + (ids.len() - 1) as f32 * 5.0;
             let slot = slots.iter().find(|a| a.0 == pop).unwrap().1;
-            let mut panel = row().padding(6.0).gap(5.0).center_y();
+            let mut panel = row().padding(7.0).gap(5.0).center_y();
             for id in ids {
                 let id = (*id).to_string();
                 let dot = if pop == Popover::Highlight {
@@ -584,7 +612,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             }
             shell(t)
                 .child(panel)
-                .pin(Some(p.left + slot - w / 2.0), Some(top), None, None)
+                .pin(Some(p.left + slot), Some(top), None, None)
         };
         overlay = overlay.child(panel.keeps_text_selection().preserve_focus_on_press(true));
     }
@@ -593,6 +621,64 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn toolbar_view(s: &AppState, _: &mut rune::Cx<AppState>) -> El {
+        let edit = s.studio.scratchpad.as_ref().unwrap();
+        el().w_full()
+            .h_full()
+            .on_key(|s: &mut AppState, event, _| key(&mut s.studio, event))
+            .child(
+                rune::text_input(edit, TextStyle::new(16.0, 400.0))
+                    .absolute(150.0, 150.0)
+                    .w(400.0)
+                    .h(100.0)
+                    .on_input_key(|s: &mut AppState, event, _| key(&mut s.studio, event))
+                    .on_edit(|s: &mut AppState| s.studio.scratchpad.as_mut().unwrap()),
+            )
+            .child(overlay(
+                s,
+                Palette::new(false),
+                Anchor {
+                    x: 250.0,
+                    top: 150.0,
+                    bottom: 177.0,
+                },
+                (600.0, 500.0),
+            ))
+    }
+    #[test]
+    fn toolbar_click_keeps_editor_focus_selection_and_escape_steps_back() {
+        let mut state = AppState::default();
+        let mut edit = rune::TextEdit::new("hello world").rich();
+        edit.focused = true;
+        edit.set_selection(0, 5);
+        state.studio.scratchpad = Some(edit);
+        let mut rt = rune::Runtime::new(
+            state,
+            toolbar_view,
+            (600.0, 500.0),
+            rune::Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.pointer_down(177.0, 121.0);
+        rt.pointer_up(177.0, 121.0);
+        rt.frame(0.0);
+        let edit = rt.state.studio.scratchpad.as_ref().unwrap();
+        assert!(edit.focused);
+        assert_eq!(edit.range(), (0, 5));
+        assert!(edit.has_mark(&Mark::Bold));
+        rt.state.studio.scratchpad_toolbar.open = Some(Popover::Highlight);
+        let escape = KeyEvent {
+            key: Key::Escape,
+            mods: Default::default(),
+        };
+        rt.key(escape.clone());
+        rt.frame(0.0);
+        assert_eq!(rt.state.studio.scratchpad_toolbar.open, None);
+        assert_eq!(rt.state.studio.scratchpad_toolbar.dismissed, None);
+        rt.key(escape);
+        rt.frame(0.0);
+        assert_eq!(rt.state.studio.scratchpad_toolbar.dismissed, Some((0, 5)));
+    }
     #[test]
     fn placement_flips_and_clamps() {
         let a = placement(

@@ -66,7 +66,7 @@ impl TextEdit {
                     spans.push(Span {
                         start: r_start,
                         end: r_end,
-                        weight: Some((base_style.weight + 250.0).clamp(600.0, 900.0)),
+                        weight: Some(if style.document_spacing { 700.0 } else { (base_style.weight + 250.0).clamp(600.0, 900.0) }),
                         ..Span::default()
                     });
                 }
@@ -96,13 +96,17 @@ impl TextEdit {
                         mono: true,
                         color: style.code_fg,
                         bg: Some(style.code_bg),
-                        bg_pad: 2.0,
+                        size: style.document_spacing.then_some(base_style.size * 0.88),
+                        bg_radius: style.document_spacing.then_some(5.0),
+                        bg_pad: if style.document_spacing { base_style.size * 0.88 * 0.32 } else { 2.0 },
+                        inline_pad: if style.document_spacing { [base_style.size * 0.88 * 0.32; 2] } else { [0.0; 2] },
                         ..Span::default()
                     });
                 }
                 Mark::Highlight(name) => {
                     spans.push(Span { start: r_start, end: r_end,
-                        bg: Some(style.pen_color(name, true)), bg_pad: base_style.size * 0.08,
+                        bg: Some(style.pen_color(name, true)), bg_pad: base_style.size * 0.16,
+                        inline_pad: if style.document_spacing { [base_style.size * 0.12; 2] } else { [0.0; 2] },
                         ..Span::default() });
                 }
                 Mark::TextColor(name) => {
@@ -135,10 +139,12 @@ impl TextEdit {
             }
             if style.document_spacing && blocks.get(index) == Some(&Block::Code) {
                 spans.push(Span { start: start as u32, end: (start + line.len() + usize::from(start + line.len() < display.len())) as u32,
-                    size: Some(14.5), line_height: Some(23.2), mono: true, ..Span::default() });
+                    size: Some(13.5), line_height: Some(21.6), mono: true, ..Span::default() });
             }
             if matches!(blocks.get(index), Some(Block::Task(true))) {
-                strikes.push((start as u32, (start + line.len()) as u32, None));
+                spans.push(Span { start: start as u32, end: (start + line.len()) as u32,
+                    color: style.marker, ..Span::default() });
+                strikes.push((start as u32, (start + line.len()) as u32, style.marker.map(|c| c.alpha(c.a * 0.6))));
             }
             start += line.len() + 1;
         }

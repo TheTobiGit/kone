@@ -132,7 +132,7 @@ impl TextEdit {
                                 if a == b && line_range.is_empty() {
                                     self.set_block(Block::Paragraph);
                                 } else {
-                                    self.insert_newline(blk, false);
+                                    self.insert_newline(if matches!(blk, Block::Task(_)) { Block::Task(false) } else { blk }, false);
                                 }
                             }
                             Block::Quote => {

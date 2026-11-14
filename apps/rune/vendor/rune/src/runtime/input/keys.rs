@@ -169,8 +169,8 @@ impl<S: 'static> Runtime<S> {
     /// [`Self::with_focused`] for an edit that needs the app state (an app's paste hook).
     pub(super) fn with_focused_state(&mut self, f: impl FnOnce(crate::states::States<'_>, &crate::el::EditFn, &mut Tx) -> EditOutcome, tx: &mut Tx) -> bool {
         let Some(path) = self.focused.clone() else { return false };
-        let Some((access, submit, change, animate_layout, single_line, secure, revealed_override)) =
-            self.focused_input().map(|i| (i.access.clone(), i.submit.clone(), i.change.clone(), i.animate_layout, i.single_line, i.edit.is_secure(), i.revealed_override))
+        let Some((access, submit, change, animate_layout, single_line, secure, revealed_override, document)) =
+            self.focused_input().map(|i| (i.access.clone(), i.submit.clone(), i.change.clone(), i.animate_layout, i.single_line, i.edit.is_secure(), i.revealed_override, i.rich_style.document_spacing))
         else {
             return false;
         };
@@ -184,6 +184,10 @@ impl<S: 'static> Runtime<S> {
         }
         let before = change.as_ref().map(|_| zeroize::Zeroizing::new(access(states!(self)).text.clone()));
         let mut out = f(states!(self), &access, tx);
+        if out.submit && document && !single_line {
+            access(states!(self)).insert("\n");
+            out.submit = false;
+        }
         // Submit and Escape's blur act once per press; held keys still type, move and delete.
         if tx.key_repeat { out.submit = false; out.blur = false; }
         // Typing is the user's own hand: no animation.

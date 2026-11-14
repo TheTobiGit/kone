@@ -748,7 +748,7 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
     if scene == "below" {
         edit = TextEdit::new(format!(
             "Notes, snippets, drafts.\n{}",
-            "Keep the useful pieces close.\n".repeat(30)
+            "Keep the useful pieces close.\n".repeat(30).trim_end()
         ))
         .rich();
     }
@@ -797,6 +797,9 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
             edit.toggle_mark(mark);
         }
     }
+    if scene == "mark-code" || scene == "mark-combined" {
+        edit.set_caret(21);
+    }
     use ui::scratchpad_toolbar::Popover;
     if scene == "block-menu" {
         s.studio.scratchpad_toolbar.open = Some(Popover::Block);
@@ -814,6 +817,18 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
             edit.toggle_mark(Mark::TextColor(id.into()));
             s.studio.scratchpad_toolbar.text = id.into();
         }
+    }
+    if scene == "below" {
+        s.studio.conversation_scroll = Some(("scratchpad-body-studio-review-pad".into(), 38.0));
+    }
+    s.studio.scratchpad_tool_hover = match scene {
+        "copy-hover" => Some("copy"),
+        "export-hover" => Some("export"),
+        _ => None,
+    };
+    s.studio.scratchpad_clear_hover = scene.starts_with("clear-");
+    if scene == "clear-progress" {
+        s.studio.scratchpad_clear_progress = 0.5;
     }
     s.studio.scratchpad_saved = edit.to_html();
     s.studio.scratchpad_saved_at = (scene != "not-saved").then(|| "10:24 AM".into());
@@ -1107,7 +1122,13 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
         s.conversation_search_selection = 0;
         return true;
     }
-    if s.page == Page::Studio && ui::scratchpad_toolbar::key(&mut s.studio, event) {
+    if s.page == Page::Studio
+        && s.studio
+            .scratchpad
+            .as_ref()
+            .is_some_and(|edit| edit.focused)
+        && ui::scratchpad_toolbar::key(&mut s.studio, event)
+    {
         return true;
     }
     if s.page == Page::Studio && AppState::studio_key(s, event, tx) {

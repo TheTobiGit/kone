@@ -81,7 +81,7 @@ impl TextSystem {
                 let Some(s) = spans.get(ink as usize - 1) else { continue };
                 // A zero-pad ANSI terminal background occupies whole cells and
                 // uses xterm's square corners. Other span backgrounds remain pills.
-                let radius = if s.bg_pad == 0.0 { 0.0 } else { rounded_radius };
+                let radius = s.bg_radius.map_or_else(|| if s.bg_pad == 0.0 { 0.0 } else { rounded_radius }, |r| r * scale);
                 let x0 = origin[0] + gr.offset();
                 let w = gr.advance();
                 if let Some(bg) = s.bg {

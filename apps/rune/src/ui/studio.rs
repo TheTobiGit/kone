@@ -2004,7 +2004,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .and_then(|panes| panes.first())
         .and_then(|pane| pane["width"].as_u64())
         .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
-    if s.studio_column_hover.is_none()
+    if s.studio.scratchpad.is_none()
+        && s.studio_column_hover.is_none()
         && !s.conversation_search_open
         && !s.studio_header_hover
         && let Some(width) = focused_width
@@ -2037,7 +2038,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .justify_center()
                 .gap(6.0)
                 .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
-                .child(el().w(24.0).h(2.0).radius(1.0).fill(t.ink)),
+                .child(
+                    el().w(if s.studio.scratchpad.is_some() {
+                        10.0
+                    } else {
+                        24.0
+                    })
+                    .h(2.0)
+                    .radius(1.0)
+                    .fill(t.ink),
+                ),
         )
     };
     let mut output = el().w_full().h_full().child(scene);
@@ -2563,6 +2573,8 @@ fn studio_row(
                     row()
                         .gap(if state.is_some_and(|s| s.terminal_command.is_some()) {
                             0.0
+                        } else if state.is_some_and(|s| s.scratchpad.is_some()) {
+                            4.0
                         } else {
                             8.0
                         })
@@ -2601,7 +2613,12 @@ fn studio_row(
                         .child(if state.is_some_and(|s| s.dormant) {
                             label("New thread", 13.5, 400.0, t.ink)
                         } else if state.is_some_and(|s| s.scratchpad.is_some()) {
-                            label("Scratchpad", 13.5, 400.0, t.ink)
+                            label("Scratchpad", 13.5, 400.0, t.ink).font(
+                                TextStyle::new(13.5, 400.0)
+                                    .family(Family::Named("Geist"))
+                                    .tracking(-0.2025)
+                                    .lh(16.2),
+                            )
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             text("Terminal")
                                 .mr(if state.is_some_and(|s| s.terminal_running) {
@@ -2776,9 +2793,15 @@ fn studio_row(
                         .lh(26.88),
                 )
                 .key(format!("scratchpad-editor-{id}"))
+                .on_input_key(|s: &mut AppState, event, _| {
+                    super::scratchpad_toolbar::key(&mut s.studio, event)
+                })
                 .rich_style(rune::RichStyle {
                     dark: t.dark,
+                    document_spacing: true,
                     code_fg: Some(t.ink),
+                    link: t.accent,
+                    code_block_bg: t.ink.alpha(0.04),
                     code_bg: t.ink.alpha(0.06),
                     quote_bar: t.accent.alpha(0.45),
                     marker: Some(t.muted),
@@ -2787,9 +2810,18 @@ fn studio_row(
                 .w_full()
                 .grow(1.0)
                 .color(t.ink)
-                .py(40.0)
+                .pt(39.0)
+                .pb(40.0)
                 .min_h(192.0)
-                .caret(t.accent, t.accent.alpha(0.24))
+                .caret(
+                    if pad.range().0 == pad.range().1 {
+                        t.accent
+                    } else {
+                        rune::Color::TRANSPARENT
+                    },
+                    t.accent.alpha(0.24),
+                )
+                .selection_radius(0.0)
                 .on_edit(move |s: &mut AppState| {
                     if s.studio.thread_id != edit_id {
                         s.select_studio_project(project_index);
@@ -2800,6 +2832,7 @@ fn studio_row(
                         .get_or_insert_with(|| rune::TextEdit::default().rich())
                 });
                 let mut doc = el()
+                    .key(format!("scratchpad-body-{id}"))
                     .w_full()
                     .grow(1.0)
                     .scroll(rune::ScrollSpec {
@@ -2820,6 +2853,16 @@ fn studio_row(
                                 .family(Family::Named("Geist"))
                                 .lh(26.88),
                         )
+                        .spans(vec![
+                            rune::Span::new(30, 32)
+                                .mono()
+                                .size(13.76)
+                                .color(t.ink_soft.alpha(0.7)),
+                            rune::Span::new(36, 37)
+                                .mono()
+                                .size(13.76)
+                                .color(t.ink_soft.alpha(0.7)),
+                        ])
                         .absolute(0.0, 40.0),
                     );
                 }
@@ -2829,8 +2872,6 @@ fn studio_row(
                     .self_center()
                     .grow(1.0)
                     .min_h(0.0)
-                    .mt(10.4)
-                    .mb(20.0)
                     .child(doc)
                     .child(super::scratchpad_footer::view(
                         s,
@@ -2884,7 +2925,14 @@ fn studio_row(
                             ),
                     );
                 }
-                body
+                col()
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .pt(10.4)
+                    .pb(20.0)
+                    .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
+                    .child(body)
             } else if state.is_some_and(|s| s.dormant) {
                 col()
                     .w_full()
@@ -3305,7 +3353,7 @@ fn studio_row(
         let x = if index == 0 {
             bounds[0] + bounds[2] + 8.0
         } else {
-            bounds[0] - 192.0
+            bounds[0] - 191.5
         };
         let y = bounds[1] + bounds[3] / 2.0 - 76.835;
         result = result.child(
@@ -3359,13 +3407,13 @@ fn studio_row(
                 .px(8.0)
                 .gap(7.2)
                 .center_y()
-                .child(icon(glyph, 14.0).color(t.muted))
+                .child(icon(glyph, 14.0).color(t.muted).offset(0.0, 0.5))
                 .child(
                     label(title, 13.0, 400.0, t.ink_soft)
                         .font(TextStyle::new(13.0, 400.0).tracking(-0.13))
                         .grow(1.0),
                 )
-                .child(icon(&INSERT_CHEVRON, 11.0).color(t.muted));
+                .child(icon(&INSERT_CHEVRON, 11.0).color(t.muted).offset(0.0, 1.0));
             action = action.on_hover_change(move |s: &mut AppState, over, _| {
                 if over {
                     s.studio_insert_selection = row_index;

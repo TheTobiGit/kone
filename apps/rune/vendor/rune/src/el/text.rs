@@ -190,7 +190,7 @@ impl El {
     pub(crate) fn sync_input_rich(&mut self) {
         let (Some(inp), Some(t)) = (&self.cold.input, &mut self.text) else { return };
         t.rich_style = inp.rich_style;
-        if inp.edit.is_plain() && inp.decorations.is_empty() {
+        if inp.edit.is_plain() && inp.decorations.is_empty() && !inp.rich_style.document_spacing {
             // A plain field lays out and draws exactly as before rich editing existed.
             t.spans.clear();
             t.strikes.clear();

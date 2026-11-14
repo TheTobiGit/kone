@@ -1,9 +1,14 @@
 // Source paths from Electron @hugeicons/core-free-icons 4.2.2.
 use rune::Icon;
-pub static ARROWDOWN01: Icon = Icon {
-    name: "pad-ArrowDown01",
+pub static SPLIT_CHEVRON: Icon = Icon {
+    name: "pad-SplitChevron",
     view: 24.0,
-    body: r#"<g fill="none"><path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"/></g>"#,
+    body: r#"<g fill="none"><path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/></g>"#,
+};
+pub static BLOCK_CHEVRON: Icon = Icon {
+    name: "pad-BlockChevron",
+    view: 24.0,
+    body: r#"<g fill="none"><path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2"/></g>"#,
 };
 pub static CHECKLIST: Icon = Icon {
     name: "pad-CheckList",
