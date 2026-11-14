@@ -1260,22 +1260,30 @@ impl AppState {
                 .and_then(|row| row["panes"].as_array())
                 .map_or(0, Vec::len);
             match event.key {
-                rune::Key::Left => {
-                    s.studio.overview_selection = s.studio.overview_selection.saturating_sub(1);
+                rune::Key::Left | rune::Key::Right => {
+                    let selection = if event.key == rune::Key::Left {
+                        s.studio.overview_selection.saturating_sub(1)
+                    } else {
+                        (s.studio.overview_selection + 1).min(count.saturating_sub(1))
+                    };
+                    let id = s.studio_layout["rows"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|row| row["projectPath"] == s.studio.project_path)
+                        .and_then(|row| row["panes"].as_array())
+                        .and_then(|panes| panes.get(selection))
+                        .and_then(|pane| pane["anchor"]["threadId"].as_str())
+                        .map(str::to_owned);
+                    if let Some(id) = id {
+                        s.open_studio_thread(id);
+                        s.studio.overview = true;
+                    }
+                    s.studio.overview_selection = selection;
                     let path = s.studio.project_path.clone();
                     tx.scroll_to_x(
                         format!("studio-rail-{path}"),
-                        s.studio_overview_scroll_x(s.studio.overview_selection),
-                    );
-                    return true;
-                }
-                rune::Key::Right => {
-                    s.studio.overview_selection =
-                        (s.studio.overview_selection + 1).min(count.saturating_sub(1));
-                    let path = s.studio.project_path.clone();
-                    tx.scroll_to_x(
-                        format!("studio-rail-{path}"),
-                        s.studio_overview_scroll_x(s.studio.overview_selection),
+                        s.studio_overview_scroll_x(selection),
                     );
                     return true;
                 }
@@ -3587,6 +3595,18 @@ mod start_actions_tests {
         assert_eq!(s.studio.overview_selection, 0);
         assert!(super::AppState::studio_key(&mut s, &right, &mut tx));
         assert_eq!(s.studio.overview_selection, 1);
+        assert_eq!(s.studio.thread_id, "thread-two");
+        for exit in [rune::Key::Escape, rune::Key::Text(" ".into())] {
+            let exit = rune::KeyEvent {
+                key: exit,
+                mods: rune::Mods::default(),
+            };
+            assert!(super::AppState::studio_key(&mut s, &exit, &mut tx));
+            assert!(!s.studio.overview);
+            assert_eq!(s.studio.thread_id, "thread-two");
+            assert!(super::AppState::studio_key(&mut s, &toggle, &mut tx));
+            assert!(s.studio.overview);
+        }
         assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
         assert!(!s.studio.overview);
         assert_eq!(s.studio.thread_id, "thread-two");
