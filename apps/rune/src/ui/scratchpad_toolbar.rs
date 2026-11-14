@@ -363,6 +363,7 @@ fn blocks() -> [(
 fn same_block(a: Block, b: Block) -> bool {
     match (a, b) {
         (Block::Task(_), Block::Task(_)) => true,
+        (Block::Heading(a), Block::Heading(b)) => a == b,
         _ => a.same_kind(b),
     }
 }
@@ -445,6 +446,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
         .preserve_focus_on_press(true)
         .child(block_button)
         .child(rule(t));
+    let heading = matches!(edit.active_block(), Block::Heading(_));
     for (name, art, mark) in [
         ("Bold", &TEXTBOLD, Mark::Bold),
         ("Italic", &TEXTITALIC, Mark::Italic),
@@ -455,7 +457,7 @@ pub fn overlay(s: &AppState, t: Palette, anchor: Anchor, viewport: (f32, f32)) -
             name,
             art,
             28.0,
-            edit.has_mark(&mark),
+            edit.has_mark(&mark) || (heading && mark == Mark::Bold),
             t.accent,
             hot(t, ui, name),
             Action::Mark(mark),

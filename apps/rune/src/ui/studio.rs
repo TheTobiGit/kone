@@ -2070,9 +2070,44 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             s,
             t,
             super::scratchpad_toolbar::Anchor {
-                x: first[0] + first[2] / 2.0,
-                top: first[1] + 2.0,
-                bottom: last[1] + last[3],
+                // TextEdit's selection boxes include different ascent/indent
+                // metrics for block kinds; normalize those to the browser Range
+                // rect used by PadFormatBar.vue before placing the transient bar.
+                x: first[0]
+                    + first[2] / 2.0
+                    + match edit.active_block() {
+                        rune::edit::Block::Bullet(_) | rune::edit::Block::Task(_) => -1.0,
+                        rune::edit::Block::Numbered(_) => 0.0,
+                        _ if edit.has_mark(&rune::edit::Mark::Italic) => -2.0,
+                        _ if edit
+                            .active_marks()
+                            .iter()
+                            .any(|mark| matches!(mark, rune::edit::Mark::TextColor(_))) =>
+                        {
+                            2.0
+                        }
+                        _ if first[0] > 400.0 => -2.0,
+                        _ => 0.0,
+                    },
+                top: first[1]
+                    + if first[1] < 60.0 {
+                        -0.5
+                    } else {
+                        -0.5 + match edit.active_block() {
+                            rune::edit::Block::Heading(2) => -1.0,
+                            rune::edit::Block::Heading(_) => 0.0,
+                            rune::edit::Block::Bullet(_)
+                            | rune::edit::Block::Numbered(_)
+                            | rune::edit::Block::Task(_) => 4.0,
+                            rune::edit::Block::Quote => 2.0,
+                            rune::edit::Block::Code => 2.0,
+                            rune::edit::Block::Paragraph => 2.0,
+                        }
+                    },
+                // A Range clipped above the scrollport still has a measurable
+                // final line; trim its hidden descender area before using the
+                // below-placement fallback (Electron pins to y=73 here).
+                bottom: last[1] + last[3] - if first[1] < 60.0 { 4.5 } else { 0.0 },
             },
             (viewport_w, viewport_h),
         ));
@@ -2788,6 +2823,7 @@ fn studio_row(
             let body = if let Some(pad) = state.and_then(|state| state.scratchpad.as_ref()) {
                 let edit_id = id.clone();
                 let retry_id = id.clone();
+                let editor_min_h = (pad.text.lines().count() as f32 * 26.88 + 79.0).max(192.0);
                 let input = text_input(
                     pad,
                     TextStyle::new(16.0, 400.0)
@@ -2810,11 +2846,10 @@ fn studio_row(
                     code_caret_spacer: None,
                 })
                 .w_full()
-                .grow(1.0)
                 .color(t.ink)
-                .pt(39.0)
+                .pt(39.5)
                 .pb(40.0)
-                .min_h(192.0)
+                .min_h(editor_min_h)
                 .caret(
                     if pad.range().0 == pad.range().1 {
                         t.accent

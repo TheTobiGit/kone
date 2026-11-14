@@ -728,7 +728,7 @@ impl AppState {
                 .conversation_scroll_deadline
                 .get_or_insert(clock + 1.0);
             if clock < deadline {
-                tx.scroll_key_to(key, at);
+                tx.scroll_to_y(key, at);
                 tx.wake_after(std::time::Duration::ZERO);
             } else {
                 s.studio.conversation_scroll = None;

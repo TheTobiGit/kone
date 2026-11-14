@@ -821,7 +821,7 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
         }
     }
     if scene == "below" {
-        s.studio.conversation_scroll = Some(("scratchpad-editor-studio-review-pad".into(), -100.0));
+        s.studio.conversation_scroll = Some(("scratchpad-editor-studio-review-pad".into(), 100.0));
     }
     s.studio.scratchpad_tool_hover = match scene {
         "copy-hover" => Some("copy"),
@@ -842,6 +842,19 @@ fn studio_scratchpad(s: &mut AppState, scene: &str) {
     s.studio.scratchpad_revision = 2;
     s.studio.scratchpad_id = "studio-review-pad".into();
     if scene.ends_with("hover") || scene.starts_with("clear-") {
+        s.studio_column_hover = Some(s.studio.thread_id.clone());
+    }
+    if matches!(
+        scene,
+        "block-p"
+            | "block-h1"
+            | "block-h2"
+            | "block-h3"
+            | "block-ul"
+            | "block-ol"
+            | "block-task"
+            | "block-quote"
+    ) {
         s.studio_column_hover = Some(s.studio.thread_id.clone());
     }
 }
