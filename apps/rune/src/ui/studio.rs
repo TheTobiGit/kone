@@ -187,10 +187,10 @@ static STUDIO_PROVIDER_CODEX: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z" fill="currentColor" fill-rule="evenodd"/>"#,
 };
-static STUDIO_FOLDER_CLOSED: Icon = Icon {
-    name: "studio-folder-closed",
+static STUDIO_FOLDER_OPEN: Icon = Icon {
+    name: "studio-folder-open",
     view: 24.0,
-    body: r#"<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4.2l2 2H19A1.5 1.5 0 0 1 20.5 9v8A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17V7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>"#,
 };
 static STUDIO_EXPORT: Icon = Icon {
     name: "studio-export",
@@ -803,7 +803,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio.title_info_open = false),
             );
-            title = title.child(thread_info_panel(state, t).absolute(-104.0, 23.0).raise());
+            title = title.child(thread_info_panel(state, t).absolute(-100.0, 23.0).raise());
         }
     }
     title
@@ -876,7 +876,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .w_full()
         .px(15.0)
         .pt(8.0)
-        .pb(14.0)
+        .pb(20.0)
         .child(name_row)
         .child(
             row()
@@ -950,8 +950,15 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                         row()
                             .center_y()
                             .gap(5.0)
-                            .child(label(repo, 12.5, 500.0, t.ink))
-                            .child(icon(&STUDIO_FOLDER_CLOSED, 12.0).color(t.muted)),
+                            .child(
+                                text(repo.clone())
+                                    .font(TextStyle::new(12.5, 500.0))
+                                    .color(t.ink)
+                                    .spans(vec![
+                                        Span::new(0, repo.len()).underline(t.muted.alpha(0.35)),
+                                    ]),
+                            )
+                            .child(icon(&STUDIO_FOLDER_OPEN, 13.0).color(t.muted)),
                     ),
             );
     }
@@ -1011,7 +1018,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                     .child(label("JSON", 12.5, 500.0, if state.export_json { t.ink } else { t.muted }))
                     .on_press(|s: &mut AppState| s.studio.export_json = true))))
         .child(row().w_full().justify_end().child(
-            el().key("studio-export").role("button").focusable(true).px(12.0).h(30.0).center()
+            el().key("studio-export").role("button").focusable(true).px(12.0).h(30.0).center().opacity(0.45)
                 .radius(8.0).border(1.0, t.line)
                 .fill(if t.dark { t.raised } else { rune::color::hex("#fdfcf8").unwrap() })
                 .child(row().center_y().gap(6.0).child(icon(&STUDIO_EXPORT, 13.0).color(t.muted)).child(label("Export thread", 12.5, 450.0, t.muted)))
@@ -1044,7 +1051,13 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         } else {
             rune::color::hex("#fdfcf8").unwrap()
         })
-        .shadow(0.0, 12.0, rune::Color::BLACK.alpha(0.16))
+        .box_shadow(rune::Shadow {
+            y: 12.0,
+            blur: 28.0,
+            spread: -10.0,
+            color: rune::Color::BLACK.alpha(0.16),
+            ..Default::default()
+        })
         .offset_motion(Curve::tween(
             0.18,
             rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
@@ -1057,7 +1070,11 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .center_y()
                 .gap(12.0)
                 .corners([18.0, 18.0, 0.0, 0.0])
-                .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
+                .fill(if t.dark {
+                    crate::theme::mix_srgb(t.raised, t.ink, 0.02)
+                } else {
+                    rune::color::hex("#f4f2ef").unwrap()
+                })
                 .child(label("Details", 13.0, 500.0, t.ink_soft))
                 .child(label("Inbox", 13.0, 400.0, t.muted).grow(1.0))
                 .child(if let Some(status) = &state.info_status {
@@ -1622,7 +1639,8 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                             t.ink
                         } else {
                             t.muted
-                        }),
+                        })
+                        .offset(0.0, 5.0),
                 )
                 .on_hover_change(|s: &mut AppState, over, _| {
                     if over {
@@ -3086,7 +3104,7 @@ fn studio_row(
         let x = if index == 0 {
             bounds[0] + bounds[2] + 8.0
         } else {
-            bounds[0] - 180.0
+            bounds[0] - 192.0
         };
         let y = bounds[1] + bounds[3] / 2.0 - 84.0;
         result = result.child(
@@ -3098,8 +3116,12 @@ fn studio_row(
             .key("studio-thread-insert-menu")
             .w(184.0)
             .radius(18.0)
-            .border(1.0, t.ink.alpha(0.08))
             .fill(t.raised)
+            .box_shadow(rune::Shadow {
+                spread: 1.0,
+                color: t.ink.alpha(0.08),
+                ..Default::default()
+            })
             .pt(5.6)
             .offset_motion(Curve::tween(
                 0.18,
@@ -3221,7 +3243,7 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                         .w(390.0)
                         .h(40.0)
                         .color(t.ink)
-                        .offset(0.0, 13.0)
+                        .offset(0.0, 12.0)
                         .quarter_pixel_glyphs(cfg!(target_os = "macos"))
                         .placeholder("Search across all conversations…", t.muted)
                         .on_edit(|s: &mut AppState| &mut s.conversation_search),
@@ -3291,7 +3313,7 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                 .h(30.0)
                 .px(16.0)
                 .center_y()
-                .gap(22.0)
+                .gap(14.0)
                 .px(14.0)
                 .child(search_hint("↑↓ navigate", t))
                 .child(search_hint("↵ open", t))
@@ -3299,11 +3321,11 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
         );
     el().key("conversation-search-overlay")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .fill(rune::Color::BLACK.alpha(0.0))
+        .fill(t.ground.alpha(0.0))
         .child(
             el().key("conversation-search-scrim")
                 .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                .fill(rune::Color::BLACK.alpha(0.0))
+                .fill(t.ground.alpha(0.0))
                 .on_press(|s: &mut AppState| s.conversation_search_open = false),
         )
         .child(col().w_full().h_full().pt(102.0).items_center().child(card))

@@ -38,7 +38,10 @@ fn linear(c: vec3<f32>) -> vec3<f32> { return select(c/12.92,pow((c+0.055)/1.055
     // backdrop scenes, so retain its subtle inward warp around that point.
     let d_mouse=length(p);
     p*=1.0-0.02*(1.0-smoothstep(0.0,0.45,d_mouse));
-    let t=u.clock.x*(0.15*0.55); let dark=u.clock.y;
+    // ClosingPlasma's fixed Electron reference frame lands at a later shader
+    // phase than the Rune host clock; retain the same animation rate while
+    // aligning its seeded backdrop composition.
+    let t=(u.clock.x+12.0)*(0.15*0.55); let dark=u.clock.y;
     let flow=vec2(fbm(p+vec2(t*0.2,t*0.1)),fbm(p+vec2(-t*0.1,t*0.3)));
     let n=fbm(p*2.0+flow*1.45);
     let ridges=pow(1.0-abs(snoise(p*4.0+n)*2.0),3.0);
