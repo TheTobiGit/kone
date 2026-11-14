@@ -3375,7 +3375,7 @@ fn studio_row(
         }
     }
     let mut bar = row().w_full().h(32.0).px(32.0).justify_between().center_y();
-    if count > 1 && !s.studio.overview {
+    if count > 1 {
         let mut dashes = row().gap(6.0).center_y();
         for pane in panes.into_iter().flatten() {
             if let Some(thread) = pane["anchor"]["threadId"].as_str() {
@@ -3418,8 +3418,17 @@ fn studio_row(
     } else {
         bar = bar.child(el().w(24.0));
     }
-    if count > 0 && !s.studio.overview {
+    if count > 0 {
         bar = bar.child(project_nav(s, t));
+    }
+    bar = bar
+        .opacity(if s.studio.overview { 0.0 } else { 1.0 })
+        .opacity_motion(rune::Curve::tween(
+            0.28,
+            rune::Easing::cubic(0.25, 0.1, 0.25, 1.0),
+        ));
+    if s.studio.overview {
+        bar = bar.inert();
     }
     let content = if count == 0 {
         let parent = project.path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
@@ -3562,11 +3571,7 @@ fn studio_row(
             t.ground
         })
         .child(content)
-        .child(if s.studio.overview {
-            el()
-        } else {
-            bar.absolute(0.0, 0.0)
-        });
+        .child(bar.absolute(0.0, 0.0));
     if s.studio.overview {
         result = result.child(
             text(project.name.clone())
