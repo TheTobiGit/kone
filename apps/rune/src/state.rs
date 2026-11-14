@@ -1181,7 +1181,13 @@ impl AppState {
                 .flatten()
                 .find(|row| row["projectPath"] == s.studio.project_path)
                 .and_then(|row| row["panes"].as_array());
-            if panes.is_some_and(|panes| panes.len() > 1) {
+            if s.studio_layout["rows"].as_array().is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row["panes"]
+                        .as_array()
+                        .is_some_and(|panes| !panes.is_empty())
+                })
+            }) {
                 if s.studio.overview {
                     s.studio.overview = false;
                     s.center_studio_column(tx);
@@ -1202,6 +1208,50 @@ impl AppState {
             return true;
         }
         if s.studio.overview {
+            if matches!(event.key, rune::Key::Up | rune::Key::Down) {
+                let step = if event.key == rune::Key::Up { -1 } else { 1 };
+                let path = s.studio_layout["rows"].as_array().and_then(|rows| {
+                    let rows: Vec<_> = rows
+                        .iter()
+                        .filter(|row| {
+                            row["panes"]
+                                .as_array()
+                                .is_some_and(|panes| !panes.is_empty())
+                        })
+                        .collect();
+                    let index = rows
+                        .iter()
+                        .position(|row| row["projectPath"] == s.studio.project_path)?;
+                    rows.get(index.checked_add_signed(step)?)?["projectPath"]
+                        .as_str()
+                        .map(str::to_owned)
+                });
+                if let Some(path) = path
+                    && let Some(index) = s.projects.iter().position(|project| project.path == path)
+                {
+                    s.select_studio_project(index);
+                    s.studio.overview = true;
+                    s.studio.overview_selection = s.studio_layout["rows"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|row| row["projectPath"] == path)
+                        .and_then(|row| row["panes"].as_array())
+                        .and_then(|panes| {
+                            panes
+                                .iter()
+                                .position(|pane| pane["anchor"]["threadId"] == s.studio.thread_id)
+                        })
+                        .unwrap_or(0);
+                    tx.scroll_into_view(format!("studio-row-slot-{path}"));
+                }
+                return true;
+            }
+            if event.key == rune::Key::Text(" ".into()) {
+                s.studio.overview = false;
+                s.center_studio_column(tx);
+                return true;
+            }
             let count = s.studio_layout["rows"]
                 .as_array()
                 .into_iter()
@@ -1210,7 +1260,7 @@ impl AppState {
                 .and_then(|row| row["panes"].as_array())
                 .map_or(0, Vec::len);
             match event.key {
-                rune::Key::Left | rune::Key::Up => {
+                rune::Key::Left => {
                     s.studio.overview_selection = s.studio.overview_selection.saturating_sub(1);
                     let path = s.studio.project_path.clone();
                     tx.scroll_to_x(
@@ -1219,7 +1269,7 @@ impl AppState {
                     );
                     return true;
                 }
-                rune::Key::Right | rune::Key::Down => {
+                rune::Key::Right => {
                     s.studio.overview_selection =
                         (s.studio.overview_selection + 1).min(count.saturating_sub(1));
                     let path = s.studio.project_path.clone();
@@ -3540,6 +3590,64 @@ mod start_actions_tests {
         assert!(super::AppState::studio_key(&mut s, &enter, &mut tx));
         assert!(!s.studio.overview);
         assert_eq!(s.studio.thread_id, "thread-two");
+    }
+
+    #[test]
+    fn studio_overview_vertical_navigation_changes_rows_and_space_exits() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            selected_project: Some(0),
+            projects: vec![
+                super::Project {
+                    name: "kone".into(),
+                    path: "/demo".into(),
+                },
+                super::Project {
+                    name: "nova".into(),
+                    path: "/nova".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        s.studio.project_path = "/demo".into();
+        s.studio.thread_id = "one".into();
+        s.studio.overview = true;
+        s.studio_layout = serde_json::json!({"version":2,"rows":[
+            {"projectPath":"/demo","focusedId":"one","panes":[{"id":"one","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"one"}}]},
+            {"projectPath":"/nova","focusedId":"two","panes":[{"id":"two","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"two"}}]}
+        ]});
+        let mut tx = rune::Tx::default();
+        let key = |key| rune::KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        };
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Down),
+            &mut tx
+        ));
+        assert_eq!(s.studio.project_path, "/nova");
+        assert!(s.studio.overview);
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Down),
+            &mut tx
+        ));
+        assert_eq!(s.studio.project_path, "/nova");
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Up),
+            &mut tx
+        ));
+        assert_eq!(s.studio.project_path, "/demo");
+        assert!(s.studio.overview);
+        assert!(super::AppState::studio_key(
+            &mut s,
+            &key(rune::Key::Text(" ".into())),
+            &mut tx
+        ));
+        assert!(!s.studio.overview);
+        assert_eq!(s.studio.thread_id, "one");
     }
 
     #[test]
