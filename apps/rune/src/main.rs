@@ -212,6 +212,26 @@ fn main() {
                 studio_scratchpad(s, "clear-complete")
             }),
             ("studio-review", studio_review),
+            ("studio-final", |s| {
+                studio_review(s);
+                s.studio_layout["rows"][0]["panes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .truncate(1);
+                s.studio_threads.clear();
+                s.studio.composer_open = false;
+                s.studio.title = "Studio overview review".into();
+            }),
+            ("studio-final-composer", |s| {
+                studio_review(s);
+                s.studio_layout["rows"][0]["panes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .truncate(1);
+                s.studio_threads.clear();
+                s.studio.composer_open = true;
+                s.studio.title = "Studio overview review".into();
+            }),
             ("studio-column-head", studio_column_head),
             ("studio-insert-menu", |s| {
                 studio_menus(s);
