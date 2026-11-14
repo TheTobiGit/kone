@@ -446,25 +446,24 @@ fn head_tip(
     t: Palette,
 ) -> El {
     let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip.as_str());
-    let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
-    control = control.child(tooltip_motion(
+    let bubble = tooltip_motion(
         el().key(format!("studio-tooltip-{tip}"))
-            .absolute(
-                if right {
-                    20.0 - width
-                } else {
-                    (20.0 - width) / 2.0
-                },
-                -26.3,
-            )
-            .w(width)
+            .px(7.0)
             .h(20.3)
             .center()
             .radius(6.0)
             .fill(t.ink)
-            .child(label(tip.clone(), 11.0, 500.0, t.ground)),
+            .child(label(tip.clone(), 11.0, 400.0, t.ground)),
         shown,
-    ));
+    );
+    control = control.child(if right {
+        bubble.pin(None, None, Some(0.0), Some(26.0))
+    } else {
+        el().pin(Some(0.0), None, Some(0.0), Some(26.0))
+            .h(20.3)
+            .center()
+            .child(bubble)
+    });
     control
         .focusable(true)
         .role("button")
@@ -785,6 +784,9 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
     if focused {
         title = title
             .key("studio-title-info-trigger")
+            .on_layout(|s: &mut AppState, bounds| {
+                s.studio.title_info_width = bounds[2];
+            })
             .role("button")
             .label("Thread info")
             .expanded(state.is_some_and(|state| state.title_info_open))
@@ -813,7 +815,7 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
             title = title.child(
                 thread_info_panel(state, t)
                     .focus_return("studio-title-info-trigger")
-                    .absolute(-98.0, 23.0)
+                    .absolute(state.title_info_width / 2.0 - 158.5, 24.0)
                     .raise(),
             );
         }
@@ -932,7 +934,9 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .corners([14.0, 14.0, 18.0, 18.0])
         .fill(panel_color)
         .child(name_row)
-        .child(
+        .child(if provider.is_empty() {
+            el().h(0.0)
+        } else {
             row()
                 .w_full()
                 .h(27.375)
@@ -946,8 +950,8 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                         .gap(5.0)
                         .child(icon(provider_icon(&provider), 14.0).color(t.ink.alpha(0.9)))
                         .child(label(provider, 12.5, 400.0, t.ink)),
-                ),
-        )
+                )
+        })
         .child(info_row("Model", model))
         .child(
             row()
@@ -974,7 +978,17 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                                         .absolute(8.0, 0.0),
                                 ),
                         )
-                        .child(label(state.effort.clone(), 12.5, 400.0, t.ink)),
+                        .child(label(
+                            match state.effort.to_lowercase().as_str() {
+                                "low" => "Low",
+                                "high" => "High",
+                                "xhigh" => "Extra high",
+                                _ => "Medium",
+                            },
+                            12.5,
+                            400.0,
+                            t.ink,
+                        )),
                 ),
         );
     if let Some(path) = &state.worktree_path {
@@ -1084,7 +1098,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                     .child(label("JSON", 12.5, 400.0, if state.export_json { t.ink } else { t.muted }))
                     .on_press(|s: &mut AppState| s.studio.export_json = true))))
         .child(row().w_full().pt(6.0).pb(2.0).justify_end().child(
-            el().key("studio-export").role("button").focusable(true).px(12.0).h(31.375).center().opacity(0.45)
+            el().key("studio-export").role("button").focusable(true).px(12.0).h(31.375).center().opacity(if state.busy || state.export_request.is_some() { 0.45 } else { 1.0 })
                 .radius(8.0).border(1.0, t.ink.alpha(0.14))
                 .fill(if t.dark { t.raised } else { rune::color::hex("#fffefb").unwrap() })
                 .child(row().center_y().gap(6.0).child(icon(&INFO_EXPORT, 13.0).color(t.ink)).child(label("Export thread", 12.5, 400.0, t.ink)))
@@ -1131,7 +1145,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .child(
             row()
                 .w_full()
-                .h(42.0)
+                .h(40.1)
                 .px(15.2)
                 .center_y()
                 .gap(12.0)
@@ -2800,16 +2814,14 @@ fn studio_row(
                             false,
                             t,
                         ))
-                        .child(if state.is_some_and(|s| s.terminal_command.is_some()) {
+                        .children(state.filter(|s| s.terminal_command.is_some()).map(|_| {
                             el().w(20.0)
                                 .h(20.0)
                                 .center()
                                 .radius(6.0)
                                 .hover(t.hover)
                                 .child(icon(&REFRESH, 13.0).color(tool_ink))
-                        } else {
-                            el().w(0.0)
-                        })
+                        }))
                         .child(head_tip(
                             el().key(format!("studio-zen-{id}"))
                                 .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
@@ -3619,12 +3631,7 @@ fn studio_row(
     if let Some((menu_path, index, bounds)) = &s.studio_insert_menu
         && *menu_path == path
     {
-        let blank_thread_open = count == 1
-            && !s
-                .studio
-                .items
-                .iter()
-                .any(|item| item.kind == "user" && !item.text.trim().is_empty());
+        let blank_thread_open = s.studio_has_blank_thread(&path);
         let index = *index;
         let x = if index == 0 {
             bounds[0] + bounds[2] + 8.0

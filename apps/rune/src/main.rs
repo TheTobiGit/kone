@@ -540,6 +540,21 @@ fn main() {
                 s.studio.error = None;
                 s.studio_scroll_row = Some(s.studio.project_path.clone());
             }),
+            ("studio-overview-info", |s| {
+                studio_overview_fixture(s, 1);
+                s.studio.overview = false;
+                s.open_studio_thread("review-two".into());
+                s.studio.error = None;
+                s.studio.thread_id = "overview-thread-three".into();
+                s.studio.project_path = "/review/kone".into();
+                s.projects[0].path = "/review/kone".into();
+                s.studio_layout["rows"][0]["projectPath"] = "/review/kone".into();
+                s.studio_layout["rows"][0]["focusedId"] = "overview-thread-three".into();
+                s.studio_layout["rows"][0]["panes"][1]["id"] = "overview-thread-three".into();
+                s.studio_layout["rows"][0]["panes"][1]["anchor"]["threadId"] =
+                    "overview-thread-three".into();
+                s.studio_scroll_row = Some(s.studio.project_path.clone());
+            }),
             ("studio-meter-motion", |s| {
                 studio_overview_fixture(s, 1);
                 s.studio.overview = false;

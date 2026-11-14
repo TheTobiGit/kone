@@ -242,6 +242,7 @@ pub struct StudioState {
     pub context_auto_compact: bool,
     pub context_open: bool,
     pub title_info_open: bool,
+    pub title_info_width: f32,
     pub title_editing: bool,
     pub title_draft: TextEdit,
     pub title_rename_request: Option<(u64, String)>,
@@ -1426,18 +1427,8 @@ impl AppState {
                     return true;
                 }
                 rune::Key::Enter => {
-                    if let Some((_, index, _)) = s.studio_insert_menu.take() {
-                        let blank_thread_open =
-                            s.studio_layout["rows"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .find(|row| row["projectPath"] == s.studio.project_path)
-                                .and_then(|row| row["panes"].as_array())
-                                .is_some_and(|panes| panes.len() == 1)
-                                && !s.studio.items.iter().any(|item| {
-                                    item.kind == "user" && !item.text.trim().is_empty()
-                                });
+                    if let Some((path, index, _)) = s.studio_insert_menu.take() {
+                        let blank_thread_open = s.studio_has_blank_thread(&path);
                         match s.studio_insert_selection {
                             0 if !blank_thread_open => s.insert_studio_thread(index),
                             1 => s.insert_studio_terminal(index),
@@ -2055,6 +2046,42 @@ impl AppState {
             None => &list[0],
         };
         self.studio.effort = next.clone();
+    }
+
+    pub fn studio_has_blank_thread(&self, project_path: &str) -> bool {
+        self.studio_layout["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["projectPath"] == project_path)
+            .and_then(|row| row["panes"].as_array())
+            .is_some_and(|panes| {
+                panes.iter().any(|pane| {
+                    if pane["kind"] != "thread" {
+                        return false;
+                    }
+                    let id = pane["anchor"]["threadId"]
+                        .as_str()
+                        .filter(|id| !id.is_empty());
+                    let thread = id.and_then(|id| {
+                        if self.studio.thread_id == id {
+                            Some(&self.studio)
+                        } else {
+                            self.studio_threads.get(id)
+                        }
+                    });
+                    match thread {
+                        Some(thread) if !thread.dormant => {
+                            !thread.busy
+                                && !thread.items.iter().any(|item| {
+                                    item.kind != "connected"
+                                        && (!item.text.is_empty() || !item.name.is_empty())
+                                })
+                        }
+                        _ => id.is_none(),
+                    }
+                })
+            })
     }
 
     pub fn insert_studio_thread(&mut self, at: usize) {
