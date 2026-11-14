@@ -115,7 +115,8 @@ pub struct AppState {
     pub conversation_search: TextEdit,
     pub conversation_search_selection: usize,
     pub studio_under_page: Page,
-    pub studio_fade: Option<(std::time::Instant, bool)>,
+    pub studio_fade: Option<(f64, bool)>,
+    pub frame_clock: f64,
     pub studio_refusal: Option<std::time::Instant>,
 }
 
@@ -734,6 +735,7 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        s.frame_clock = clock;
         let toolbar_changed = crate::ui::scratchpad_toolbar::sync(&mut s.studio, tx);
         let mut scratchpad_motion =
             crate::ui::scratchpad_footer::poll(&mut s.studio, tx) || toolbar_changed;
@@ -802,9 +804,7 @@ impl AppState {
                 tx.wake_after(std::time::Duration::from_secs_f64((0.3 - elapsed).max(0.0)));
             }
         }
-        let animating = s
-            .studio_fade
-            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() < 0.22)
+        let animating = s.studio_fade.is_some_and(|(at, _)| clock - at < 0.22)
             || s.studio_refusal
                 .is_some_and(|at| at.elapsed().as_secs_f32() < 2.8);
         let activity_motion = s.page == Page::Studio && s.studio.busy;
@@ -863,9 +863,8 @@ impl AppState {
         } else {
             s.studio.orb_last_tick = None;
         }
-        if s.studio_fade
-            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= 0.22)
-        {
+        let fade_finished = s.studio_fade.is_some_and(|(at, _)| clock - at >= 0.22);
+        if fade_finished {
             s.studio_fade = None;
         }
         if s.studio_refusal
@@ -939,6 +938,7 @@ impl AppState {
             || meter_changed
             || tooltip_changed
             || animating
+            || fade_finished
             || activity_motion
             || terminal_cursor_changed
             || session_motion
@@ -1058,7 +1058,7 @@ impl AppState {
         };
         if opening {
             self.studio_under_page = self.page;
-            self.studio_fade = Some((std::time::Instant::now(), true));
+            self.studio_fade = Some((self.frame_clock, true));
             self.studio_scroll_row = Some(path.clone());
         }
         self.page = Page::Studio;

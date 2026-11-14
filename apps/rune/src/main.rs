@@ -1364,7 +1364,7 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
     if event.is_command('b') || (s.page == Page::Studio && event.key == rune::Key::Escape) {
         if s.page == Page::Studio {
             s.page = s.studio_under_page;
-            s.studio_fade = Some((std::time::Instant::now(), false));
+            s.studio_fade = Some((s.frame_clock, false));
         } else {
             s.enter_studio();
         }

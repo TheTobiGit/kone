@@ -38,7 +38,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let mut stage = el().w_full().h_full().child(page);
     if s.page == Page::Studio || s.studio_fade.is_some_and(|(_, opening)| !opening) {
         let opacity = s.studio_fade.map_or(1.0, |(at, opening)| {
-            let x = (at.elapsed().as_secs_f32() / 0.22).clamp(0.0, 1.0);
+            let x = ((s.frame_clock - at) as f32 / 0.22).clamp(0.0, 1.0);
             let eased = x * x * (3.0 - 2.0 * x);
             if opening { eased } else { 1.0 - eased }
         });
