@@ -508,6 +508,8 @@ fn main() {
                 studio_overview_fixture(s, 1);
                 s.studio.overview = false;
                 s.open_studio_thread("review-two".into());
+                s.studio.error = None;
+                s.studio_scroll_row = Some(s.studio.project_path.clone());
             }),
             ("studio-bare-board", |s| {
                 studio_review(s);
@@ -702,16 +704,10 @@ fn studio_overview_fixture(s: &mut AppState, selection: usize) {
     s.studio_layout["rows"][0]["panes"].as_array_mut().unwrap().push(
         serde_json::json!({"id":"review-three","kind":"thread","width":0,"anchor":{"kind":"thread","threadId":"review-three"}}),
     );
-    s.studio.connected_identity = Some(state::StudioIdentity {
-        name: "Cinder".into(),
-        svg: review::fixture_avatar(),
-        avatar: None,
-    });
-    s.studio.items.push(state::StudioItem {
-        kind: "connected".into(),
-        text: "Cinder".into(),
-        ..Default::default()
-    });
+    if let Some(second) = s.studio_threads.get_mut("review-two") {
+        second.composer_open = false;
+    }
+    s.studio.providers[0].id = "gpt".into();
     s.studio.overview = true;
     s.studio.overview_selection = selection.min(2);
 }

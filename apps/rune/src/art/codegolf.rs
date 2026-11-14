@@ -180,9 +180,14 @@ impl CodeGolf {
         let time = *CAPTURE_TIME
             .get_or_init(|| {
                 let args: Vec<_> = std::env::args().collect();
-                args.windows(2)
-                    .find(|pair| pair[0] == "--at")
-                    .and_then(|pair| pair[1].parse::<f32>().ok())
+                std::env::var("KONE_CAPTURE_ART_TIME")
+                    .ok()
+                    .and_then(|time| time.parse().ok())
+                    .or_else(|| {
+                        args.windows(2)
+                            .find(|pair| pair[0] == "--at")
+                            .and_then(|pair| pair[1].parse::<f32>().ok())
+                    })
             })
             .as_ref()
             .unwrap_or(time);

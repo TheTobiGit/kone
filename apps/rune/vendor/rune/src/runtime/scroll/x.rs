@@ -263,10 +263,20 @@ impl<S: 'static> Runtime<S> {
             let (i, [x0, _, x1, _]) = self.highlight_target_in(&self.nodes, scope, key)?;
             Some((i, x0, (x1 - x0).max(0.0)))
         });
-        let Some((i, target_x, target_w)) = target else { return };
+        let Some((i, mut target_x, mut target_w)) = target else { return };
         let Some(v) = std::iter::successors(self.nodes[i].parent, |&p| self.nodes[p].parent)
             .find(|&p| self.nodes[p].scroll.is_some() && self.nodes[p].scroll_axes.x()) else { return };
         let view = &self.nodes[v];
+        // Scroll offsets use the viewport's content space. A scaled strip's
+        // layout boxes stay at their natural width, while its focus targets
+        // occupy the transformed footprint. Reveal that footprint, including
+        // nested scales and offsets, rather than scrolling to the layout box.
+        for p in std::iter::successors(Some(i), |&p| self.nodes[p].parent).take_while(|&p| p != v) {
+            let node = &self.nodes[p];
+            let origin = node.target[0] + node.local.w * node.vis.origin.unwrap_or([0.5, 0.5])[0];
+            target_x = origin + (target_x - origin) * node.static_scale + node.vis.offset[0];
+            target_w *= node.static_scale;
+        }
         let (left, width, viewport) = (f64::from(target_x - view.target[0]), f64::from(target_w), f64::from(view.local.w));
         let (margin, id) = (f64::from(view.scroll_edges.margin), view.id);
         // A vertical reveal may have just mounted rows (virtual ones) that widened the content.

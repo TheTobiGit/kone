@@ -252,6 +252,14 @@ fn provider_icon(provider: &str) -> &'static Icon {
     }
 }
 pub(super) fn brand_mark_size(provider: &str, size: f32, t: Palette) -> El {
+    if provider == "unknown" {
+        return el().w(size).h(size).center().child(
+            el().w(size * 0.375)
+                .h(size * 0.375)
+                .radius(size)
+                .fill(t.muted),
+        );
+    }
     let mark = match provider {
         "claudeAgent" => &STUDIO_PROVIDER_CLAUDE,
         "cursor" => &STUDIO_PROVIDER_CURSOR,
@@ -278,7 +286,7 @@ pub(super) fn provider_mark(state: Option<&StudioState>, t: Palette) -> El {
     let provider = state
         .and_then(|s| s.providers.get(s.provider_index))
         .map(|p| p.id.as_str())
-        .unwrap_or("codex");
+        .unwrap_or("unknown");
     let provider = if provider == "codex" && picker_fixture {
         "gpt"
     } else {
@@ -1973,7 +1981,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             .role("status")
             .label(overview_message),
     );
-    let mut plane = if let Some(selected) = s.studio.selection_text.as_ref()
+    let plane = if let Some(selected) = s.studio.selection_text.as_ref()
         && !s.studio.picker_open
         && !s.studio.handoff_picker
         && !selection_rects.is_empty()
@@ -2014,68 +2022,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         plane
     };
-    let focused_path = s
-        .selected_project
-        .and_then(|index| s.projects.get(index))
-        .map(|project| project.path.as_str());
-    let focused_width = s.studio_layout["rows"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter()
-                .find(|row| row["projectPath"].as_str() == focused_path)
-        })
-        .and_then(|row| row["panes"].as_array())
-        .and_then(|panes| panes.first())
-        .and_then(|pane| pane["width"].as_u64())
-        .map(|index| [840.0_f32, 960.0, 1120.0, 1240.0][(index as usize).min(3)]);
-    if s.studio.scratchpad.is_none()
-        && !s.studio.overview
-        && s.studio_column_hover.is_none()
-        && !s.conversation_search_open
-        && !s.studio_header_hover
-        && let Some(width) = focused_width
-    {
-        let left = ((viewport_w - 1292.0) / 2.0 + 156.0).max(8.0);
-        plane = plane.child(
-            row()
-                .pin(Some(left), Some(64.0), None, None)
-                .h(14.0)
-                .center_y()
-                .gap(8.0)
-                .opacity(0.42)
-                .child(label(format!("{width:.0}"), 10.0, 400.0, t.muted))
-                .child(icon(&CLOSE, 13.0).color(t.muted).offset(0.0, 1.0)),
-        );
-    }
-    let has_overlay = s.conversation_search_open
-        || s.studio_project_menu_open
-        || s.studio_insert_menu.is_some()
-        || s.studio.title_info_open;
-    let scene = if has_overlay {
-        plane
-    } else {
-        plane.child(
-            row()
-                .pin(Some(0.0), Some(27.2), None, None)
-                .offset(0.5, 0.0)
-                .w_full()
-                .h(2.0)
-                .justify_center()
-                .gap(6.0)
-                .child(el().w(13.0).h(2.0).radius(1.0).fill(t.ink.alpha(0.16)))
-                .child(
-                    el().w(if s.studio.scratchpad.is_some() {
-                        10.0
-                    } else {
-                        24.0
-                    })
-                    .h(2.0)
-                    .radius(1.0)
-                    .fill(t.ink),
-                ),
-        )
-    };
-    let mut output = el().w_full().h_full().child(scene);
+    let mut output = el().w_full().h_full().child(plane);
     if s.conversation_search_open {
         output = output.child(
             el().key("conversation-search-dim")
@@ -2529,7 +2476,11 @@ fn studio_row(
         .h_full()
         .gap(if s.studio.overview { 28.0 } else { 0.0 });
     if s.studio.overview {
-        rail = rail.role("list").label("Studio columns").focus_group();
+        rail = rail
+            .role("grid")
+            .label("Studio columns")
+            .focus_group()
+            .motion(rune::Spring::NONE);
     }
     let count = panes.map_or(0, Vec::len);
     let pane_widths: Vec<f32> = panes
@@ -2563,7 +2514,7 @@ fn studio_row(
             width
         };
         let start_pad = if s.studio.overview {
-            0.0
+            48.0
         } else {
             ((viewport_w - width) / 2.0 - 14.0).max(0.0)
         };
@@ -3151,6 +3102,7 @@ fn studio_row(
                 parked_body(
                     state,
                     &id,
+                    s.studio.overview.then_some((viewport_h, width)),
                     t,
                     crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
                 )
@@ -3187,7 +3139,7 @@ fn studio_row(
                     el().key(format!("studio-seam-{path}-0"))
                         .w(14.0)
                         .h(28.0)
-                        .offset(0.0, -16.3)
+                        .offset(0.0, -0.3)
                         .self_center()
                         .center()
                         .on_drawn_layout(move |s: &mut AppState, bounds| {
@@ -3232,7 +3184,7 @@ fn studio_row(
                 } else {
                     0.985
                 })
-                .pt(24.0)
+                .pt(if s.studio.overview { 0.0 } else { 56.0 })
                 .child(head.opacity(
                     if focused
                         && state.is_some_and(|state| {
@@ -3251,7 +3203,7 @@ fn studio_row(
                     .filter(|title| !title.is_empty())
                     .unwrap_or("New thread")
                     .to_owned();
-                let selected = s.studio.overview_selection == i;
+                let selected = focused;
                 let select_id = id.clone();
                 let select_path = path.clone();
                 let hovered = s.studio.overview_hovered.as_deref() == Some(id.as_str());
@@ -3260,29 +3212,44 @@ fn studio_row(
                 let fill = if selected && hovered {
                     crate::theme::mix_srgb(t.ground, t.accent, 0.035)
                 } else if hovered {
-                    crate::theme::mix_srgb(t.ground, t.hover, 0.45)
+                    // Opaque composition of the CSS hover mix over the overview backdrop.
+                    rune::color::hex(if t.dark { "#101012" } else { "#efeeec" }).unwrap()
                 } else {
                     t.ground
                 };
                 let caption = row()
                     .pin(Some(0.0), None, Some(0.0), Some(-32.0))
-                    .h(18.0)
+                    .h(19.375)
                     .center_y()
                     .justify_center()
                     .gap(5.0)
                     .scale(1.0 / k)
-                    .child(provider_mark(state, t).scale(0.8))
-                    .child(label(
-                        title.clone(),
-                        12.5,
-                        400.0,
-                        if hovered || selected { t.ink } else { t.muted },
-                    ));
+                    .origin(0.5, 0.0)
+                    .child(brand_mark_size(
+                        state
+                            .and_then(|state| state.providers.get(state.provider_index))
+                            .map_or("unknown", |provider| provider.id.as_str()),
+                        13.0,
+                        t,
+                    ))
+                    .child(
+                        text(title.clone())
+                            .font(TextStyle::new(12.5, 400.0).tracking(-0.125).lh(19.375))
+                            .color(if hovered || selected { t.ink } else { t.muted }),
+                    );
                 card = card
+                    .scale_motion(rune::Anim::INSTANT)
+                    .opacity_motion(rune::Anim::INSTANT)
                     .fill(fill)
                     .radius(12.0)
                     .border(
-                        if selected || hovered { 1.5 } else { 1.0 },
+                        if selected && hovered {
+                            2.0
+                        } else if selected || hovered {
+                            1.5
+                        } else {
+                            1.0
+                        },
                         if selected {
                             t.accent
                         } else if hovered {
@@ -3292,10 +3259,24 @@ fn studio_row(
                         },
                     )
                     .shadow(
-                        if selected || hovered { 3.0 } else { 2.0 },
-                        if selected || hovered { 12.0 } else { 8.0 },
+                        if hovered {
+                            4.0
+                        } else if selected {
+                            3.0
+                        } else {
+                            2.0
+                        },
+                        if selected && hovered {
+                            18.0
+                        } else if hovered {
+                            16.0
+                        } else if selected {
+                            12.0
+                        } else {
+                            8.0
+                        },
                         if selected {
-                            t.accent.alpha(0.18)
+                            t.accent.alpha(if hovered { 0.26 } else { 0.18 })
                         } else {
                             rune::Color::BLACK.alpha(if hovered { 0.07 } else { 0.04 })
                         },
@@ -3303,8 +3284,8 @@ fn studio_row(
                     .focusable(true)
                     .role("button")
                     .label(format!("{title}, column {} of {count}", i + 1))
-                    .focus_selected(selected)
-                    .focus_ring(2.0, 2.0, t.accent)
+                    .focus_selected(s.studio.overview_selection == i)
+                    .focus_ring(1.0, 0.0, rune::color::hex("#005fcc").unwrap())
                     .child(caption)
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.studio.overview = false;
@@ -3345,7 +3326,7 @@ fn studio_row(
                     el().key(format!("studio-seam-{path}-{}", i + 1))
                         .w(14.0)
                         .h(28.0)
-                        .offset(0.0, -16.3)
+                        .offset(0.0, -0.3)
                         .self_center()
                         .center()
                         .on_drawn_layout(move |s: &mut AppState, bounds| {
@@ -3380,7 +3361,7 @@ fn studio_row(
         }
     }
     let mut bar = row().w_full().h(32.0).px(32.0).justify_between().center_y();
-    if count > 1 {
+    if count > 1 && !s.studio.overview {
         let mut dashes = row().gap(6.0).center_y();
         for pane in panes.into_iter().flatten() {
             if let Some(thread) = pane["anchor"]["threadId"].as_str() {
@@ -3412,7 +3393,7 @@ fn studio_row(
             }
         }
         bar = bar.child(el().w(24.0)).child(
-            el().absolute((viewport_w - 100.0) / 2.0 - 32.0, 7.0)
+            el().absolute((viewport_w - 100.0) / 2.0, 18.2)
                 .w(100.0)
                 .h(20.0)
                 .center()
@@ -3421,7 +3402,7 @@ fn studio_row(
     } else {
         bar = bar.child(el().w(24.0));
     }
-    if count > 0 {
+    if count > 0 && !s.studio.overview {
         bar = bar.child(project_nav(s, t));
     }
     let content = if count == 0 {
@@ -3538,6 +3519,10 @@ fn studio_row(
                         if s.studio.overview { 48.0 } else { 0.0 },
                         if s.studio.overview { -14.0 } else { 0.0 },
                     )
+                    .offset_motion(rune::Curve::tween(
+                        duration,
+                        rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
+                    ))
                     .scale_motion(rune::Curve::tween(
                         duration,
                         rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
@@ -3560,8 +3545,20 @@ fn studio_row(
         } else {
             t.ground
         })
-        .child(bar)
-        .child(content);
+        .child(content)
+        .child(if s.studio.overview {
+            el()
+        } else {
+            bar.absolute(0.0, 0.0)
+        });
+    if s.studio.overview {
+        result = result.child(
+            text(project.name.clone())
+                .font(TextStyle::new(13.5, 600.0).tracking(-0.2025).lh(13.5))
+                .color(if selected_row { t.ink } else { t.ink_soft })
+                .absolute(48.0, 8.0),
+        );
+    }
     if let Some((menu_path, index, bounds)) = &s.studio_insert_menu
         && *menu_path == path
     {
@@ -3861,7 +3858,22 @@ fn search_hint(value: &str, t: Palette) -> El {
         .color(t.faint)
 }
 
-fn parked_body(state: &StudioState, id: &str, t: Palette, mark: u32) -> El {
+fn parked_body(
+    state: &StudioState,
+    id: &str,
+    overview: Option<(f32, f32)>,
+    t: Palette,
+    mark: u32,
+) -> El {
+    if state.items.is_empty()
+        && let Some((height, width)) = overview
+    {
+        return col()
+            .w_full()
+            .grow(1.0)
+            .shrink()
+            .child(empty_thread_art(height, width, true, false, mark));
+    }
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
@@ -4309,6 +4321,36 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
         );
     }
     strip
+}
+
+fn empty_thread_art(
+    viewport_height: f32,
+    col_width: f32,
+    overview: bool,
+    live: bool,
+    mark: u32,
+) -> El {
+    let height = (viewport_height.max(640.0) * 0.72).min(580.0);
+    let top = if overview {
+        26.296875
+    } else {
+        (viewport_height - height) * 0.5 - 89.203125
+    };
+    let cached_scale = if overview { 0.985 * 0.985 } else { 0.985 };
+    el().w_full()
+        .max_w(720.0)
+        .self_center()
+        .h(height)
+        .offset(0.0, top)
+        .child(
+            crate::codegolf::slot(
+                mark,
+                live,
+                [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
+            )
+            .w(col_width.min(720.0) * cached_scale)
+            .h(height * cached_scale),
+        )
 }
 
 fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32) -> El {
@@ -5592,27 +5634,13 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     // Only an empty thread keeps the codegolf art; a populated thread's head
     // carries the day and connected marks instead.
     let art = if s.studio.items.is_empty() {
-        let viewport_height = s.studio_viewport.1.max(640.0);
-        let height = (viewport_height * 0.72).min(580.0);
-        // ConversationThread centres its 72vh artwork in the reading area:
-        // body begins at 89.59375, with 24px top and 208px dock clearance.
-        let top = (viewport_height - height) * 0.5 - 89.203125;
-        el().w_full()
-            .max_w(720.0)
-            .self_center()
-            .h(height)
-            .offset(0.0, top)
-            // Canvas2D caches its backing/CSS size during the column's .985
-            // entrance transform; transform completion does not fire ResizeObserver.
-            .child(
-                crate::codegolf::slot(
-                    mark,
-                    s.art_focused,
-                    [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
-                )
-                .w(col_width.min(720.0) * 0.985)
-                .h(height * 0.985),
-            )
+        empty_thread_art(
+            s.studio_viewport.1,
+            col_width,
+            s.studio.overview,
+            s.art_focused,
+            mark,
+        )
     } else {
         el()
     };
@@ -5661,7 +5689,9 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 // The body's 208pt bottom padding (composer overlay clearance).
                 .child(el().h(208.0)),
         )
-        .child(if activity_plan {
+        .child(if s.studio.overview {
+            el()
+        } else if activity_plan {
             row()
                 .pin(Some(0.0), None, Some(0.0), Some(33.5))
                 .px(16.0)
@@ -5670,33 +5700,35 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
         } else {
             el()
         })
-        .child(if !activity_plan && !s.studio.subagents.is_empty() {
-            row()
-                .pin(Some(0.0), None, Some(0.0), Some(181.0))
-                .px(10.0)
-                .justify_end()
-                .child(
-                    row()
-                        .center_y()
-                        .gap(10.0)
-                        .items_end()
-                        .child(subagent_dock(s, t))
-                        .child(
-                            col()
-                                .w(44.0)
-                                .padding(3.0)
-                                .gap(4.0)
-                                .radius(14.0)
-                                .border(1.0, t.line)
-                                .fill(interaction_band(t))
-                                .child(dock_rail_tile("◫", "1", t))
-                                .child(dock_rail_tile("☷", "0/2", t))
-                                .child(dock_rail_tile("♙", "1", t)),
-                        ),
-                )
-        } else {
-            el()
-        })
+        .child(
+            if !s.studio.overview && !activity_plan && !s.studio.subagents.is_empty() {
+                row()
+                    .pin(Some(0.0), None, Some(0.0), Some(181.0))
+                    .px(10.0)
+                    .justify_end()
+                    .child(
+                        row()
+                            .center_y()
+                            .gap(10.0)
+                            .items_end()
+                            .child(subagent_dock(s, t))
+                            .child(
+                                col()
+                                    .w(44.0)
+                                    .padding(3.0)
+                                    .gap(4.0)
+                                    .radius(14.0)
+                                    .border(1.0, t.line)
+                                    .fill(interaction_band(t))
+                                    .child(dock_rail_tile("◫", "1", t))
+                                    .child(dock_rail_tile("☷", "0/2", t))
+                                    .child(dock_rail_tile("♙", "1", t)),
+                            ),
+                    )
+            } else {
+                el()
+            },
+        )
         .child(
             if s.studio.approval.is_some() || s.studio.question.is_some() {
                 el().key("approval-page-scrim")
@@ -5713,7 +5745,9 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
                 el()
             },
         )
-        .child(if activity_plan {
+        .child(if s.studio.overview {
+            el()
+        } else if activity_plan {
             row()
                 .pin(Some(0.0), None, Some(0.0), Some(14.0))
                 .px(16.0)
@@ -5735,6 +5769,40 @@ mod tests {
     use crate::state::{Page, Project, StudioItem};
     use rune::{Env, Runtime};
     use serde_json::json;
+
+    #[test]
+    fn overview_keyboard_focus_reveals_the_scaled_card_and_enter_selects_it() {
+        let mut state = AppState::default();
+        crate::studio_overview_fixture(&mut state, 0);
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        let before = rt.presented("studio-pane-review-two").unwrap().0;
+        for key in [rune::Key::Tab, rune::Key::Right] {
+            rt.key(rune::KeyEvent {
+                key,
+                mods: rune::Mods::default(),
+            });
+            rt.frame(0.0);
+        }
+        let after = rt.presented("studio-pane-review-two").unwrap().0;
+        assert!(
+            (before[0] - after[0]).abs() < 0.1,
+            "an already visible scaled card must stay in place"
+        );
+        assert_eq!(rt.state.studio.thread_id, "review-one");
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|el| el.key.as_deref() == Some("studio-pane-review-two") && el.focused)
+        );
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(!rt.state.studio.overview);
+        assert_eq!(rt.state.studio.thread_id, "review-two");
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

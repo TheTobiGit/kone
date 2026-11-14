@@ -2,6 +2,7 @@
 """Capture Rune scenes serially; each renderer gets its own timeout."""
 import argparse
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -35,6 +36,10 @@ for scene in scenes:
         output = args.outdir / f'{scene}-{theme}.png'
         output.unlink(missing_ok=True)
         command = [str(args.binary), '--scene', native_scene, '--theme', theme, '--size', args.size, '--scale', str(args.scale), '--snap', str(output)]
+        overview = scene.startswith('studio-overview')
+        tree = output.with_suffix('.json')
+        if overview:
+            command += ['--tree', str(tree)]
         with tempfile.TemporaryDirectory() as temp:
             script = args.script
             capture_at = args.at
@@ -57,7 +62,7 @@ for scene in scenes:
             elif script is None and scene == 'studio-overview-hover':
                 script = Path(temp) / 'overview-hover.json'
                 script.write_text(json.dumps({'events': [
-                    {'t': 1.3, 'type': 'move', 'x': 340, 'y': 250},
+                    {'t': 1.3, 'type': 'move', 'x': 840, 'y': 400},
                 ]}))
                 capture_at = capture_at if capture_at is not None else 2.0
             elif script is None and scene == 'studio-overview-focus':
@@ -73,9 +78,14 @@ for scene in scenes:
                 ]}))
                 # Pin the native easing at its halfway point even when the
                 # caller supplies a settled-frame time for the other scenes.
-                capture_at = 0.41
+                # Input dispatch precedes the frame clock: tween starts at 0.19.
+                capture_at = 0.40
             if script:
                 command += ['--script', str(script)]
+            if scene == 'studio-overview-mid':
+                # 100 Hz includes both the 200 ms key event and exactly 210 ms
+                # of elapsed animation; 60 Hz rounds the midpoint to 216.7 ms.
+                command += ['--fps', '100']
             if capture_at is not None:
                 command += ['--at', str(capture_at)]
             if native_scene.startswith('launcher-') and args.at is None:
@@ -85,6 +95,22 @@ for scene in scenes:
                 script.write_text(json.dumps({'events': [{'t': 1.3 + i / 120, 'type': 'move', 'x': 426 + i * 180 / 12, 'y': 428} for i in range(13)]}))
                 command += ['--script', str(script), '--at', '2.1']
             print(f'Capturing {scene} {theme}', flush=True)
-            subprocess.run(command, check=True, timeout=args.timeout)
+            env = os.environ.copy()
+            if overview:
+                env['KONE_CAPTURE_ART_TIME'] = '2.0'
+            subprocess.run(command, check=True, timeout=args.timeout, env=env)
         if not output.is_file() or output.stat().st_size == 0:
             raise RuntimeError(f'Capture did not produce {output}')
+        if overview:
+            report = json.loads(tree.read_text())
+            cards = [el for el in report['elements'] if el.get('key', '').startswith('studio-pane-')]
+            if len(cards) != 3:
+                raise RuntimeError(f'{scene}: expected three cards, got {len(cards)}')
+            zoomed = scene != 'studio-overview-in'
+            rail = next(el for el in report['elements'] if el.get('key', '').startswith('studio-rail-plane-'))
+            if (rail.get('role') == 'grid') != zoomed:
+                raise RuntimeError(f'{scene}: captured the wrong overview state')
+            if scene == 'studio-overview-focus' and not cards[1]['focusVisible']:
+                raise RuntimeError(f'{scene}: second card did not receive keyboard focus')
+            if scene == 'studio-overview-in' and abs(cards[1]['rect'][0] - 226) > 1:
+                raise RuntimeError(f'{scene}: selected column was not centered: {cards[1]["rect"]}')
