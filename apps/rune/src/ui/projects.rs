@@ -976,7 +976,7 @@ pub(super) fn sessions(
                 s.project_data.session_hover_progress(&id)
             };
             let mut metadata = row().gap(10.0).center_y();
-            let mono = TextStyle::new(11.0, 400.0).family(Family::Mono);
+            let mono = TextStyle::new(11.0, 400.0).family(Family::Mono).lh(14.0);
             metadata = metadata.child(
                 text(session.agent_name.clone())
                     .font(mono)
@@ -1307,7 +1307,7 @@ pub(super) fn sessions(
                         .gap(6.0)
                         .child(
                             text(session.title.clone())
-                                .font(TextStyle::new(16.0, 400.0).tracking(-0.16))
+                                .font(TextStyle::new(16.0, 400.0).lh(20.0).tracking(-0.16))
                                 .color(if hovered {
                                     t.ink
                                 } else if t.dark {

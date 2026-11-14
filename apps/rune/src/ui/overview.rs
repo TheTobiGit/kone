@@ -1105,7 +1105,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .child({
                     s.project_data.lazy.reduced.set(cx.is_reduced_motion());
                     let scroll = s.project_data.lazy.scroll.clone();
-                    let viewport = el().w_full().grow(1.0).min_h(0.0).child(
+                    let viewport = el().w_full().grow(1.0).min_h(0.0).offset(0.0, -2.0).child(
                         col()
                             .key("overview-sessions")
                             .w_full()
@@ -1188,18 +1188,65 @@ fn changes_panel(
             "Not a git repository"
         };
         let caption = if repo { "UP TO DATE" } else { "NOT TRACKED" };
-        let paper = |angle: f32| {
-            el().size(76.0, 92.0)
-                .radius(12.0)
-                .border(1.0, t.line)
-                .fill(t.raised_high)
-                .rotate(angle)
-                .shadow(
-                    0.0,
-                    4.0,
-                    Color::BLACK.alpha(if t.dark { 0.08 } else { 0.04 }),
-                )
+        let sheet_border = mix_srgb(t.raised_high, t.faint, if t.dark { 0.13 } else { 0.32 });
+        let front_border = mix_srgb(t.raised_high, t.faint, if t.dark { 0.27 } else { 0.36 });
+        let sheet_fill = if t.dark {
+            t.raised
+        } else {
+            mix_srgb(t.raised_high, t.ink, 0.016)
         };
+        let front_fill = if t.dark {
+            mix_srgb(t.raised, t.ink, 0.02)
+        } else {
+            t.raised_high
+        };
+        let front_mark = mix_srgb(t.raised_high, t.faint, if t.dark { 0.27 } else { 0.29 });
+        let paper = |left: f32, angle: f32| {
+            el().size(76.0, 92.0)
+                .pin(Some(left), Some(22.0), None, None)
+                .radius(12.0)
+                .border(1.0, sheet_border)
+                .fill(sheet_fill)
+                .origin(0.0, 0.0)
+                .rotate(angle)
+                .box_shadow(rune::Shadow {
+                    x: 0.0,
+                    y: 4.0,
+                    blur: 12.0,
+                    spread: 0.0,
+                    color: if t.dark {
+                        Color::BLACK.alpha(0.08)
+                    } else {
+                        rune::color::hex("#1e1b18").unwrap().alpha(0.04)
+                    },
+                    inset: false,
+                })
+        };
+        let glyph = el()
+            .size(180.0, 118.0)
+            .child(paper(26.0, -9.0_f32.to_radians()))
+            .child(paper(78.0, 9.0_f32.to_radians()))
+            .child(
+                el().size(76.0, 92.0)
+                    .pin(Some(52.0), Some(16.0), None, None)
+                    .radius(12.0)
+                    .border(1.0, front_border)
+                    .fill(front_fill)
+                    .box_shadow(rune::Shadow {
+                        x: 0.0,
+                        y: 6.0,
+                        blur: 16.0,
+                        spread: 0.0,
+                        color: if t.dark {
+                            Color::BLACK.alpha(0.11)
+                        } else {
+                            rune::color::hex("#1e1b18").unwrap().alpha(0.07)
+                        },
+                        inset: false,
+                    })
+                    .center()
+                    .child(el().size(14.0, 6.0).radius(3.0).fill(front_mark)),
+            );
         return panel
             .gap(14.0)
             .child(
@@ -1222,23 +1269,17 @@ fn changes_panel(
                 col()
                     .w_full()
                     .h(236.0)
+                    .offset(0.0, -2.0)
                     .center()
                     .gap(20.0)
-                    .child(
-                        row()
-                            .center_y()
-                            .child(paper(-0.157))
-                            .child(paper(0.0).offset(-32.0, -5.0))
-                            .child(paper(0.157).offset(-64.0, 0.0))
-                            .w(180.0),
-                    )
+                    .child(glyph)
                     .child(
                         text(if repo {
                             "No changes"
                         } else {
                             "Not tracked yet"
                         })
-                        .font(TextStyle::new(13.5, 400.0))
+                        .font(TextStyle::new(13.5, 400.0).lh(13.5).tracking(-0.1))
                         .color(t.ink_soft),
                     ),
             );
