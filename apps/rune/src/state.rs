@@ -694,16 +694,6 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
-        if s.studio.scratchpad.is_some()
-            && s.studio.scratchpad_load_request.is_none()
-            && s.studio.scratchpad_revision == 0
-            && s.bridge.is_some()
-        {
-            s.studio.scratchpad_load_request = s.request(
-                "scratchpad.list",
-                serde_json::json!({"projectPath":s.studio.project_path}),
-            );
-        }
         s.persist_scratchpad();
         let parked_pads: Vec<String> = s
             .studio_threads
@@ -1903,7 +1893,28 @@ impl AppState {
         state.scratchpad = Some(edit);
     }
 
+    pub fn retry_scratchpad_save(&mut self) {
+        self.studio.scratchpad_conflict = false;
+        self.studio.error = None;
+        self.persist_scratchpad();
+    }
+
     fn persist_scratchpad(&mut self) {
+        if self.studio.scratchpad_conflict {
+            return;
+        }
+        if self.studio.scratchpad.is_some()
+            && self.bridge.is_some()
+            && self.studio.scratchpad_revision == 0
+        {
+            if self.studio.scratchpad_load_request.is_none() {
+                self.studio.scratchpad_load_request = self.request(
+                    "scratchpad.list",
+                    serde_json::json!({"projectPath":self.studio.project_path}),
+                );
+            }
+            return;
+        }
         let Some(edit) = self.studio.scratchpad.as_ref() else {
             return;
         };
@@ -2476,6 +2487,13 @@ impl AppState {
         if let Some(id) = message.get("id").and_then(|v| v.as_u64()) {
             if self.studio.scratchpad_load_request == Some(id) {
                 self.studio.scratchpad_load_request = None;
+                if message.get("error").is_some() {
+                    self.studio.scratchpad_conflict = true;
+                    self.studio.error = Some(
+                        "Could not load the saved Scratchpad. Your edits are preserved.".into(),
+                    );
+                    return;
+                }
                 if let Some(record) = message["result"]
                     .as_array()
                     .and_then(|records| records.first())
@@ -2509,6 +2527,8 @@ impl AppState {
                     self.studio.scratchpad_saved = self.studio.scratchpad_saving.clone();
                 } else if message["result"]["conflict"].is_number() {
                     self.studio.scratchpad_conflict = true;
+                    self.studio.scratchpad_revision =
+                        message["result"]["conflict"].as_u64().unwrap_or(0) + 1;
                     self.studio.error = Some(
                         "Scratchpad changed elsewhere; your unsaved text is preserved.".into(),
                     );

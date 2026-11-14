@@ -848,41 +848,45 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         row()
             .w_full()
             .h(31.375)
+            .offset(0.0, -0.5)
             .center_y()
             .justify_between()
             .child(label("Name", 11.5, 400.0, t.muted))
             .child(
-                el().size(241.9, 23.375).clip_rounded(0.0).child(
-                    text_input(&state.title_draft, TextStyle::new(12.5, 400.0).lh(19.375))
-                        .key("studio-title-draft")
-                        .w(241.9)
-                        .h(23.375)
-                        .px(6.0)
-                        .py(2.0)
-                        .radius(7.0)
-                        .box_shadow(rune::Shadow {
-                            spread: 2.0,
-                            color: t.accent.alpha(0.45),
-                            ..Default::default()
-                        })
-                        .fill(t.hover)
-                        .color(t.ink)
-                        .align(rune::Align::End)
-                        .caret(
-                            if state.title_draft.range().0 == state.title_draft.range().1 {
-                                t.ink
-                            } else {
-                                t.ink.alpha(0.0)
-                            },
-                            t.accent.alpha(0.24),
-                        )
-                        .selection_color(t.accent.alpha(0.24))
-                        .selection_radius(0.0)
-                        .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
-                        .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
-                            s.commit_studio_title();
-                        }),
-                ),
+                el().size(241.9, 23.375)
+                    .offset(0.0, -0.5)
+                    .clip_rounded(0.0)
+                    .child(
+                        text_input(&state.title_draft, TextStyle::new(12.5, 400.0).lh(19.0))
+                            .key("studio-title-draft")
+                            .w(241.9)
+                            .h(23.375)
+                            .px(6.0)
+                            .py(2.0)
+                            .radius(7.0)
+                            .box_shadow(rune::Shadow {
+                                spread: 2.0,
+                                color: t.accent.alpha(0.45),
+                                ..Default::default()
+                            })
+                            .fill(t.hover)
+                            .color(t.ink)
+                            .align(rune::Align::End)
+                            .caret(
+                                if state.title_draft.range().0 == state.title_draft.range().1 {
+                                    t.ink
+                                } else {
+                                    t.ink.alpha(0.0)
+                                },
+                                t.accent.alpha(0.24),
+                            )
+                            .selection_color(t.accent.alpha(0.24))
+                            .selection_radius(0.0)
+                            .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
+                            .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
+                                s.commit_studio_title();
+                            }),
+                    ),
             )
     } else {
         info_row("Name", title_of(state))
@@ -1762,7 +1766,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                         })
                         .font(TextStyle::new(10.0, 400.0).family(Family::Named("Menlo")))
                         .color(t.muted)
-                        .offset(0.0, 1.5),
+                        .offset(0.0, 0.5),
                     )
                     .on_hover_change(move |s: &mut AppState, over, _| {
                         if over {
@@ -1830,11 +1834,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         (1292.0, 854.0)
     };
-    let mut plane =
-        col()
-            .w_full()
-            .h_full()
-            .child(crate::plasma::slot(s, cx, if t.dark { 0.5 } else { 1.0 }));
+    // ThreadStrip only mounts its floor plasma inside the empty-board chooser.
+    let mut plane = col().w_full().h_full();
     let rows = s.studio_layout["rows"].as_array();
     let mut selected_present = false;
     if let Some(rows) = rows {
@@ -2748,6 +2749,8 @@ fn studio_row(
                     s.studio_header_hover = over;
                 });
             let body = if let Some(pad) = state.and_then(|state| state.scratchpad.as_ref()) {
+                let edit_id = id.clone();
+                let retry_id = id.clone();
                 let input = text_input(
                     pad,
                     TextStyle::new(14.0, 400.0)
@@ -2759,10 +2762,62 @@ fn studio_row(
                 .grow(1.0)
                 .color(t.ink)
                 .placeholder("Write something…", t.placeholder)
-                .on_edit(|s: &mut AppState| {
-                    s.studio.scratchpad.as_mut().expect("scratchpad editor")
+                .on_edit(move |s: &mut AppState| {
+                    if s.studio.thread_id != edit_id {
+                        s.select_studio_project(project_index);
+                        s.open_studio_thread(edit_id.clone());
+                    }
+                    s.studio
+                        .scratchpad
+                        .get_or_insert_with(|| rune::TextEdit::default().rich())
                 });
-                col().w_full().grow(1.0).px(36.0).pt(24.0).child(input)
+                let mut body = col().w_full().grow(1.0).px(36.0).pt(24.0).child(input);
+                if state.is_some_and(|state| state.scratchpad_conflict) {
+                    body = body.child(
+                        row()
+                            .w_full()
+                            .gap(12.0)
+                            .py(12.0)
+                            .center_y()
+                            .child(
+                                label(
+                                    state.and_then(|state| state.error.clone()).unwrap_or_else(
+                                        || {
+                                            "Saved version changed. Your edits are preserved."
+                                                .into()
+                                        },
+                                    ),
+                                    12.0,
+                                    400.0,
+                                    t.muted,
+                                )
+                                .grow(1.0),
+                            )
+                            .child(
+                                el().px(10.0)
+                                    .py(6.0)
+                                    .radius(8.0)
+                                    .hover(t.hover)
+                                    .child(label(
+                                        if state.is_some_and(|state| state.scratchpad_revision == 0)
+                                        {
+                                            "Retry"
+                                        } else {
+                                            "Save my version"
+                                        },
+                                        12.0,
+                                        400.0,
+                                        t.ink,
+                                    ))
+                                    .on_press(move |s: &mut AppState| {
+                                        s.select_studio_project(project_index);
+                                        s.open_studio_thread(retry_id.clone());
+                                        s.retry_scratchpad_save();
+                                    }),
+                            ),
+                    );
+                }
+                body
             } else if state.is_some_and(|s| s.dormant) {
                 col()
                     .w_full()
@@ -2900,7 +2955,10 @@ fn studio_row(
             });
             if i == 0 {
                 let seam_key = format!("{path}-0");
-                let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str());
+                let hovered = s.studio_seam_hover.as_deref() == Some(seam_key.as_str())
+                    || s.studio_insert_menu
+                        .as_ref()
+                        .is_some_and(|(menu_path, seam, _)| menu_path == &path && *seam == 0);
                 let layout_key = seam_key.clone();
                 let press_key = seam_key.clone();
                 let menu_path = path.clone();
@@ -2908,9 +2966,10 @@ fn studio_row(
                     el().key(format!("studio-seam-{path}-0"))
                         .w(14.0)
                         .h(28.0)
+                        .offset(0.0, -16.3)
                         .self_center()
                         .center()
-                        .on_layout(move |s: &mut AppState, bounds| {
+                        .on_drawn_layout(move |s: &mut AppState, bounds| {
                             s.studio_seam_bounds.insert(layout_key.clone(), bounds);
                         })
                         .on_hover_change(move |s: &mut AppState, over, _| {
@@ -2922,7 +2981,6 @@ fn studio_row(
                         })
                         .child(
                             el().w(5.0)
-                                .offset(0.0, -12.0)
                                 .h(if hovered { 19.44 } else { 18.0 })
                                 .radius(3.0)
                                 .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -2984,9 +3042,10 @@ fn studio_row(
                 el().key(format!("studio-seam-{path}-{}", i + 1))
                     .w(14.0)
                     .h(28.0)
+                    .offset(0.0, -16.3)
                     .self_center()
                     .center()
-                    .on_layout(move |s: &mut AppState, bounds| {
+                    .on_drawn_layout(move |s: &mut AppState, bounds| {
                         s.studio_seam_bounds.insert(layout_key.clone(), bounds);
                     })
                     .on_hover_change(move |s: &mut AppState, over, _| {
@@ -2998,7 +3057,6 @@ fn studio_row(
                     })
                     .child(
                         el().w(5.0)
-                            .offset(0.0, -16.3)
                             .h(if hovered { 19.44 } else { 18.0 })
                             .radius(3.0)
                             .fill(t.ink.alpha(if hovered { 0.48 } else { 0.32 })),
@@ -3212,8 +3270,8 @@ fn studio_row(
             );
         let mut actions = col()
             .w_full()
-            .pl(12.0)
-            .pr(12.0)
+            .pl(13.0)
+            .pr(11.0)
             .pt(5.6)
             .pb(5.6)
             .gap(1.0)
@@ -5207,12 +5265,17 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
             .self_center()
             .h(height)
             .offset(0.0, top)
-            .center()
-            .child(crate::codegolf::slot(
-                mark,
-                s.art_focused,
-                [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
-            ))
+            // Canvas2D caches its backing/CSS size during the column's .985
+            // entrance transform; transform completion does not fire ResizeObserver.
+            .child(
+                crate::codegolf::slot(
+                    mark,
+                    s.art_focused,
+                    [217.0 / 255.0, 119.0 / 255.0, 87.0 / 255.0, 0.4],
+                )
+                .w(col_width.min(720.0) * 0.985)
+                .h(height * 0.985),
+            )
     } else {
         el()
     };

@@ -97,7 +97,7 @@ fn main() {
                 studio_menus(s);
                 s.studio.composer_open = false;
                 s.studio_insert_menu =
-                    Some(("/demo".into(), usize::MAX, [1066.5, 413.25, 14.0, 28.0]));
+                    Some(("/demo".into(), usize::MAX, [1065.5, 412.75, 14.0, 28.0]));
             }),
             ("studio-project-switch", |s| {
                 studio_menus(s);
