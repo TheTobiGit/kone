@@ -233,6 +233,11 @@ fn main() {
                 s.studio.composer_open = true;
                 s.studio.title = "Studio overview review".into();
                 s.studio.providers[0].id = "gpt".into();
+                s.studio.models[0].label = "GPT 6.1 Terra".into();
+                s.studio.fast_tier = true;
+                s.studio.context_usage = Some((4200, 10_000));
+                s.studio.context_auto_compact = true;
+                s.studio_column_hover = Some("review-one".into());
             }),
             ("studio-final-multi", studio_final_multi),
             ("studio-column-head", studio_column_head),

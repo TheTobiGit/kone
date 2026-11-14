@@ -612,7 +612,7 @@ fn context_tray(s: &AppState, project_name: &str, t: Palette) -> El {
             .radius(7.0)
             .child(icon(&FLASH_TRAY, 13.0).color(t.faint))
             .child(
-                text("Guest")
+                text("Default")
                     .font(TextStyle::new(11.5, 400.0).lh(14.0))
                     .color(t.ink.alpha(0.86)),
             )
@@ -802,7 +802,7 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .cursor(Cursor::Pointer)
         .opacity(0.92)
         .child(icon(mode_icon, 15.0).color(mode_hue))
-        .child(label(mode_label, 12.5, 500.0, t.ink))
+        .child(label(mode_label, 12.5, 400.0, t.ink))
         .on_press(|s: &mut AppState| s.cycle_studio_mode());
 
     let model_btn = {
@@ -1008,6 +1008,8 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
     let black = hex("#000000").unwrap();
     let surface = col()
         .w(card_w)
+        // The CSS surface border participates in layout around the panel.
+        .padding(1.0)
         .self_center()
         .mb(26.0 * tray_alpha)
         .radius(corner_r)
