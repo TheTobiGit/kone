@@ -114,7 +114,10 @@ pub(super) fn emit_block_decorations(
                         markers.push((indent, baseline, blk, list_counts[l]));
                     }
                 }
-                Block::Paragraph | Block::Quote | Block::Code => {
+                Block::Task(_) => {
+                    if !is_soft { markers.push((blk.indent_pt(spec.style.size) * s, baseline, blk, 0)); }
+                }
+                Block::Heading(_) | Block::Paragraph | Block::Quote | Block::Code => {
                     if !is_soft {
                         list_counts = [0; (MAX_LIST_LEVEL as usize) + 1];
                     }
@@ -147,7 +150,8 @@ pub(super) fn emit_block_decorations(
                 let indent = (blk.indent_pt(spec.style.size) * s).round();
                 markers.push((indent, baseline, blk, 1));
             }
-            Block::Paragraph => {}
+            Block::Task(_) => markers.push((blk.indent_pt(spec.style.size) * s, baseline, blk, 0)),
+            Block::Heading(_) | Block::Paragraph => {}
         }
     }
 
@@ -159,6 +163,17 @@ pub(super) fn emit_block_decorations(
         let mc = premul(marker_color, o, srgb);
         for (indent_px, baseline_y, blk, num) in markers {
             match blk {
+                Block::Task(checked) => {
+                    let size = 12.0 * s * tk;
+                    let x = origin[0] + (indent_px - 21.6 * s) * tk + glide[0];
+                    let y = baseline_y - 12.0 * s * tk + glide[1];
+                    let color = if checked { spec.rich_style.link } else { text_color.alpha(0.28) };
+                    let mut checkbox = rect_inst([x, y, size, size], if checked { premul(color, o, srgb) } else { [0.0; 4] }, 3.5 * s * tk, clip, fade);
+                    checkbox.border = premul(color, o, srgb);
+                    checkbox.params[0] = 1.5 * s * tk;
+                    instances.push(checkbox);
+                }
+
                 Block::Bullet(lvl) => {
                     let d = if tk == 1.0 { (4.5 * s).round().max(3.0) } else { (4.5 * s * tk).max(3.0 * tk) };
                     let cx = origin[0] + (indent_px - (7.0 * s).round()) * tk - d;

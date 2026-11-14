@@ -14,6 +14,10 @@ pub struct Span {
     pub weight: Option<f32>,
     pub mono: bool,
     pub size: Option<f32>,
+    /// Absolute line height in points for this run.
+    pub line_height: Option<f32>,
+    /// Absolute letter spacing in points for this run.
+    pub tracking: Option<f32>,
     pub color: Option<Color>,
     /// Rounded background behind the span's runs (inline code), padded by `bg_pad` points.
     pub bg: Option<Color>,
@@ -170,6 +174,8 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
             if s.size.is_some() {
                 m.size = s.size;
             }
+            if s.line_height.is_some() { m.line_height = s.line_height; }
+            if s.tracking.is_some() { m.tracking = s.tracking; }
             if s.color.is_some() {
                 m.color = s.color;
             }
@@ -188,6 +194,8 @@ pub(crate) fn flatten_spans(spans: &[Span]) -> Vec<Span> {
                 && last.weight == m.weight
                 && last.mono == m.mono
                 && last.size == m.size
+                && last.line_height == m.line_height
+                && last.tracking == m.tracking
                 && last.color == m.color
                 && last.bg == m.bg
                 && last.bg_pad == m.bg_pad

@@ -2049,6 +2049,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         );
         output = output.child(conversation_search_modal(s, t));
     }
+    if let Some(edit) = s.studio.scratchpad.as_ref()
+        && !edit.selected().trim().is_empty()
+        && s.studio.scratchpad_toolbar.dismissed != Some(edit.range())
+        && let (Some(first), Some(last)) = (selection_rects.first(), selection_rects.last())
+    {
+        output = output.child(super::scratchpad_toolbar::overlay(
+            s,
+            t,
+            super::scratchpad_toolbar::Anchor {
+                x: first[0] + first[2] / 2.0,
+                top: first[1],
+                bottom: last[1] + last[3],
+            },
+            (viewport_w, viewport_h),
+        ));
+    }
     output
 }
 
@@ -2554,6 +2570,8 @@ fn studio_row(
                         .center_y()
                         .child(if activity_fixture {
                             brand_mark_size("gpt", 14.0, t)
+                        } else if state.is_some_and(|s| s.scratchpad.is_some()) {
+                            icon(&INSERT_SCRATCHPAD, 15.0).color(t.muted)
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             icon(&TERMINAL, 15.0).color(t.muted).mr(8.0)
                         } else if state.is_some_and(|s| s.dormant) {
@@ -2753,15 +2771,25 @@ fn studio_row(
                 let retry_id = id.clone();
                 let input = text_input(
                     pad,
-                    TextStyle::new(14.0, 400.0)
+                    TextStyle::new(16.0, 400.0)
                         .family(Family::Named("Geist"))
-                        .lh(24.0),
+                        .lh(26.88),
                 )
                 .key(format!("scratchpad-editor-{id}"))
+                .rich_style(rune::RichStyle {
+                    dark: t.dark,
+                    code_fg: Some(t.ink),
+                    code_bg: t.ink.alpha(0.06),
+                    quote_bar: t.accent.alpha(0.45),
+                    marker: Some(t.muted),
+                    ..Default::default()
+                })
                 .w_full()
                 .grow(1.0)
                 .color(t.ink)
-                .placeholder("Write something…", t.placeholder)
+                .py(40.0)
+                .min_h(192.0)
+                .caret(t.accent, t.accent.alpha(0.24))
                 .on_edit(move |s: &mut AppState| {
                     if s.studio.thread_id != edit_id {
                         s.select_studio_project(project_index);
@@ -2771,7 +2799,46 @@ fn studio_row(
                         .scratchpad
                         .get_or_insert_with(|| rune::TextEdit::default().rich())
                 });
-                let mut body = col().w_full().grow(1.0).px(36.0).pt(24.0).child(input);
+                let mut doc = el()
+                    .w_full()
+                    .grow(1.0)
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .clip_fade_linear(0.0, 40.0, 0.0, 40.0)
+                    .child(input);
+                if pad.text.trim().is_empty() {
+                    doc = doc.child(
+                        label(
+                            "Notes, snippets, drafts. Type ## or - and it formats itself.",
+                            16.0,
+                            400.0,
+                            t.muted,
+                        )
+                        .font(
+                            TextStyle::new(16.0, 400.0)
+                                .family(Family::Named("Geist"))
+                                .lh(26.88),
+                        )
+                        .absolute(0.0, 40.0),
+                    );
+                }
+                let mut body = col()
+                    .w_full()
+                    .max_w(720.0)
+                    .self_center()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .mt(10.4)
+                    .mb(20.0)
+                    .child(doc)
+                    .child(super::scratchpad_footer::view(
+                        s,
+                        state.unwrap(),
+                        t,
+                        project_index,
+                        &id,
+                    ));
                 if state.is_some_and(|state| state.scratchpad_conflict) {
                     body = body.child(
                         row()
@@ -3270,8 +3337,8 @@ fn studio_row(
             );
         let mut actions = col()
             .w_full()
-            .pl(13.0)
-            .pr(11.0)
+            .pl(12.0)
+            .pr(12.0)
             .pt(5.6)
             .pb(5.6)
             .gap(1.0)

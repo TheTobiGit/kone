@@ -44,6 +44,14 @@ impl<S: 'static> Runtime<S> {
     pub(super) fn selection_boxes(&self) -> Vec<[f32; 4]> {
         let mut out = Vec::new();
         for (i, a, b) in self.selection_ranges() { self.text_boxes(&self.nodes, i, a, b, &mut out); }
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(inp) = &n.input
+                && inp.edit.focused && !inp.edit.is_secure()
+            {
+                let (a, b) = inp.edit.range();
+                self.text_boxes(&self.nodes, i, a, b, &mut out);
+            }
+        }
         out
     }
 
@@ -51,7 +59,16 @@ impl<S: 'static> Runtime<S> {
     /// runs: reusing a `memo` moves its nodes out of the last commit's, leaving placeholders
     /// the selection can't be found in.
     pub(crate) fn selection_by_path(&self) -> Vec<SelectedRange> {
-        self.selection_ranges().into_iter().map(|(i, a, b)| (self.nodes[i].path.clone(), a, b)).collect()
+        let mut ranges: Vec<_> = self.selection_ranges().into_iter().map(|(i, a, b)| (self.nodes[i].path.clone(), a, b)).collect();
+        for n in &self.nodes {
+            if let Some(inp) = &n.input
+                && inp.edit.focused && !inp.edit.is_secure()
+            {
+                let (a, b) = inp.edit.range();
+                if a != b { ranges.push((n.path.clone(), a, b)); }
+            }
+        }
+        ranges
     }
 
     /// The line boxes of `ranges` laid out in a measure's `nodes`, found there by path.

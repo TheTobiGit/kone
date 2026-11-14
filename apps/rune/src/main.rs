@@ -91,6 +91,126 @@ fn main() {
                 s.example_project();
                 s.page = Page::Overview;
             }),
+            ("studio-scratchpad-empty", |s| studio_scratchpad(s, "empty")),
+            ("studio-scratchpad-idle", |s| studio_scratchpad(s, "idle")),
+            ("studio-scratchpad-footer-hover", |s| {
+                studio_scratchpad(s, "footer-hover")
+            }),
+            ("studio-scratchpad-copy-hover", |s| {
+                studio_scratchpad(s, "copy-hover")
+            }),
+            ("studio-scratchpad-export-hover", |s| {
+                studio_scratchpad(s, "export-hover")
+            }),
+            ("studio-scratchpad-clear-hover", |s| {
+                studio_scratchpad(s, "clear-hover")
+            }),
+            ("studio-scratchpad-saving", |s| {
+                studio_scratchpad(s, "saving")
+            }),
+            ("studio-scratchpad-not-saved", |s| {
+                studio_scratchpad(s, "not-saved")
+            }),
+            ("studio-scratchpad-toolbar", |s| {
+                studio_scratchpad(s, "toolbar")
+            }),
+            ("studio-scratchpad-block-menu", |s| {
+                studio_scratchpad(s, "block-menu")
+            }),
+            ("studio-scratchpad-block-p", |s| {
+                studio_scratchpad(s, "block-p")
+            }),
+            ("studio-scratchpad-block-h1", |s| {
+                studio_scratchpad(s, "block-h1")
+            }),
+            ("studio-scratchpad-block-h2", |s| {
+                studio_scratchpad(s, "block-h2")
+            }),
+            ("studio-scratchpad-block-h3", |s| {
+                studio_scratchpad(s, "block-h3")
+            }),
+            ("studio-scratchpad-block-ul", |s| {
+                studio_scratchpad(s, "block-ul")
+            }),
+            ("studio-scratchpad-block-ol", |s| {
+                studio_scratchpad(s, "block-ol")
+            }),
+            ("studio-scratchpad-block-task", |s| {
+                studio_scratchpad(s, "block-task")
+            }),
+            ("studio-scratchpad-block-quote", |s| {
+                studio_scratchpad(s, "block-quote")
+            }),
+            ("studio-scratchpad-mark-bold", |s| {
+                studio_scratchpad(s, "mark-bold")
+            }),
+            ("studio-scratchpad-mark-italic", |s| {
+                studio_scratchpad(s, "mark-italic")
+            }),
+            ("studio-scratchpad-mark-strike", |s| {
+                studio_scratchpad(s, "mark-strike")
+            }),
+            ("studio-scratchpad-mark-code", |s| {
+                studio_scratchpad(s, "mark-code")
+            }),
+            ("studio-scratchpad-mark-combined", |s| {
+                studio_scratchpad(s, "mark-combined")
+            }),
+            ("studio-scratchpad-highlight-palette", |s| {
+                studio_scratchpad(s, "highlight-palette")
+            }),
+            ("studio-scratchpad-highlight-copper", |s| {
+                studio_scratchpad(s, "highlight-copper")
+            }),
+            ("studio-scratchpad-highlight-amber", |s| {
+                studio_scratchpad(s, "highlight-amber")
+            }),
+            ("studio-scratchpad-highlight-moss", |s| {
+                studio_scratchpad(s, "highlight-moss")
+            }),
+            ("studio-scratchpad-highlight-sky", |s| {
+                studio_scratchpad(s, "highlight-sky")
+            }),
+            ("studio-scratchpad-highlight-orchid", |s| {
+                studio_scratchpad(s, "highlight-orchid")
+            }),
+            ("studio-scratchpad-text-palette", |s| {
+                studio_scratchpad(s, "text-palette")
+            }),
+            ("studio-scratchpad-text-default", |s| {
+                studio_scratchpad(s, "text-default")
+            }),
+            ("studio-scratchpad-text-copper", |s| {
+                studio_scratchpad(s, "text-copper")
+            }),
+            ("studio-scratchpad-text-moss", |s| {
+                studio_scratchpad(s, "text-moss")
+            }),
+            ("studio-scratchpad-text-sky", |s| {
+                studio_scratchpad(s, "text-sky")
+            }),
+            ("studio-scratchpad-text-orchid", |s| {
+                studio_scratchpad(s, "text-orchid")
+            }),
+            ("studio-scratchpad-text-ash", |s| {
+                studio_scratchpad(s, "text-ash")
+            }),
+            ("studio-scratchpad-below", |s| studio_scratchpad(s, "below")),
+            ("studio-scratchpad-edge-left", |s| {
+                studio_scratchpad(s, "edge-left")
+            }),
+            ("studio-scratchpad-edge-right", |s| {
+                studio_scratchpad(s, "edge-right")
+            }),
+            ("studio-scratchpad-clear-progress", |s| {
+                studio_scratchpad(s, "clear-progress")
+            }),
+            ("studio-scratchpad-clear-cancel", |s| {
+                studio_scratchpad(s, "clear-cancel")
+            }),
+            ("studio-scratchpad-clear-complete", |s| {
+                studio_scratchpad(s, "clear-complete")
+            }),
             ("studio-review", studio_review),
             ("studio-column-head", studio_column_head),
             ("studio-insert-menu", |s| {
@@ -603,6 +723,112 @@ fn studio_menus(s: &mut AppState) {
         serde_json::json!(s.studio.thread_id);
 }
 
+fn studio_scratchpad(s: &mut AppState, scene: &str) {
+    use rune::{Block, Mark, TextEdit};
+    studio_menus(s);
+    s.studio.composer_open = false;
+    s.studio.title = "Scratchpad".into();
+    s.studio.thread_id = "studio-review-pad".into();
+    s.studio.context_usage = None;
+    s.studio.info_status = None;
+    s.projects[0].path = "/review/kone".into();
+    s.studio.project_path = "/review/kone".into();
+    s.studio_layout["rows"][0]["projectPath"] = serde_json::json!("/review/kone");
+    s.studio_layout["rows"][0]["focusedId"] = serde_json::json!(s.studio.thread_id);
+    let pane = &mut s.studio_layout["rows"][0]["panes"][0];
+    pane["id"] = serde_json::json!(s.studio.thread_id);
+    pane["kind"] = serde_json::json!("scratchpad");
+    pane["anchor"] = serde_json::json!({"kind":"scratchpad","threadId":s.studio.thread_id});
+    let mut edit =
+        TextEdit::from_html("<p>Notes, snippets, drafts.</p><p>Keep the useful pieces close.</p>")
+            .rich();
+    if scene == "empty" || scene == "clear-complete" {
+        edit.clear();
+    }
+    if scene == "below" {
+        edit = TextEdit::new(format!(
+            "Notes, snippets, drafts.\n{}",
+            "Keep the useful pieces close.\n".repeat(30)
+        ))
+        .rich();
+    }
+    if scene.starts_with("edge-") {
+        edit = TextEdit::new("Keep the useful pieces close. ".repeat(5)).rich();
+    }
+    let selected = !(matches!(
+        scene,
+        "empty"
+            | "idle"
+            | "footer-hover"
+            | "copy-hover"
+            | "export-hover"
+            | "clear-hover"
+            | "saving"
+            | "not-saved"
+    ) || scene.starts_with("clear-"));
+    if selected {
+        edit.focused = true;
+        let end = if scene == "edge-right" {
+            edit.text.len()
+        } else {
+            21
+        };
+        edit.set_selection(if scene == "edge-right" { end - 4 } else { 0 }, end);
+    }
+    if let Some(block) = match scene {
+        "block-h1" => Some(Block::Heading(1)),
+        "block-h2" => Some(Block::Heading(2)),
+        "block-h3" => Some(Block::Heading(3)),
+        "block-ul" => Some(Block::Bullet(0)),
+        "block-ol" => Some(Block::Numbered(0)),
+        "block-task" => Some(Block::Task(false)),
+        "block-quote" => Some(Block::Quote),
+        _ => None,
+    } {
+        edit.set_block(block);
+    }
+    for (name, mark) in [
+        ("bold", Mark::Bold),
+        ("italic", Mark::Italic),
+        ("strike", Mark::Strike),
+        ("code", Mark::Code),
+    ] {
+        if scene == format!("mark-{name}") || scene == "mark-combined" {
+            edit.toggle_mark(mark);
+        }
+    }
+    use ui::scratchpad_toolbar::Popover;
+    if scene == "block-menu" {
+        s.studio.scratchpad_toolbar.open = Some(Popover::Block);
+    }
+    if let Some(id) = scene.strip_prefix("highlight-") {
+        s.studio.scratchpad_toolbar.open = Some(Popover::Highlight);
+        if id != "palette" {
+            edit.toggle_mark(Mark::Highlight(id.into()));
+            s.studio.scratchpad_toolbar.highlight = id.into();
+        }
+    }
+    if let Some(id) = scene.strip_prefix("text-") {
+        s.studio.scratchpad_toolbar.open = Some(Popover::Text);
+        if id != "palette" && id != "default" {
+            edit.toggle_mark(Mark::TextColor(id.into()));
+            s.studio.scratchpad_toolbar.text = id.into();
+        }
+    }
+    s.studio.scratchpad_saved = edit.to_html();
+    s.studio.scratchpad_saved_at = (scene != "not-saved").then(|| "10:24 AM".into());
+    if scene == "saving" {
+        s.studio.scratchpad_save_request = Some(u64::MAX);
+    }
+    s.studio.scratchpad_toolbar.selection = Some(edit.range());
+    s.studio.scratchpad = Some(edit);
+    s.studio.scratchpad_revision = 2;
+    s.studio.scratchpad_id = "studio-review-pad".into();
+    if scene.ends_with("hover") || scene.starts_with("clear-") {
+        s.studio_column_hover = Some(s.studio.thread_id.clone());
+    }
+}
+
 fn studio_terminal_fixture(s: &mut AppState, running: bool) {
     s.studio.terminal_command = Some(if running {
         "npm run dev".into()
@@ -879,6 +1105,9 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
         s.conversation_search_open = !s.conversation_search_open;
         s.conversation_search.clear();
         s.conversation_search_selection = 0;
+        return true;
+    }
+    if s.page == Page::Studio && ui::scratchpad_toolbar::key(&mut s.studio, event) {
         return true;
     }
     if s.page == Page::Studio && AppState::studio_key(s, event, tx) {

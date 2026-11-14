@@ -166,6 +166,13 @@ impl AppState {
 #[derive(Default)]
 pub struct StudioState {
     pub scratchpad: Option<TextEdit>,
+    pub scratchpad_toolbar: crate::ui::scratchpad_toolbar::ToolbarState,
+    pub scratchpad_saved_at: Option<String>,
+    pub scratchpad_footer_hover: bool,
+    pub scratchpad_clear_started: Option<std::time::Instant>,
+    pub scratchpad_clear_progress: f32,
+    pub scratchpad_clear_hover: bool,
+    pub scratchpad_clear_key_held: bool,
     pub scratchpad_saved: String,
     pub scratchpad_saving: String,
     pub scratchpad_load_request: Option<u64>,
@@ -694,6 +701,8 @@ impl AppState {
     }
 
     pub fn poll(s: &mut Self, clock: f64, tx: &mut rune::Tx) -> bool {
+        crate::ui::scratchpad_toolbar::sync(&mut s.studio);
+        let mut scratchpad_motion = crate::ui::scratchpad_footer::poll(&mut s.studio, tx);
         s.persist_scratchpad();
         let parked_pads: Vec<String> = s
             .studio_threads
@@ -704,6 +713,8 @@ impl AppState {
         for id in parked_pads {
             let parked = s.studio_threads.remove(&id).unwrap();
             let focused = std::mem::replace(&mut s.studio, parked);
+            crate::ui::scratchpad_toolbar::sync(&mut s.studio);
+            scratchpad_motion |= crate::ui::scratchpad_footer::poll(&mut s.studio, tx);
             s.persist_scratchpad();
             let parked = std::mem::replace(&mut s.studio, focused);
             s.studio_threads.insert(id, parked);
@@ -868,6 +879,7 @@ impl AppState {
         }
         s.sync_project_watches();
         changed
+            || scratchpad_motion
             || title_blurred
             || tooltip_changed
             || animating
@@ -1888,6 +1900,11 @@ impl AppState {
         let text =
             std::fs::read_to_string(Self::scratchpad_path(&state.project_path)).unwrap_or_default();
         state.scratchpad_saved = text.clone();
+        state.scratchpad_saved_at = std::fs::metadata(Self::scratchpad_path(&state.project_path))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|at| crate::ui::scratchpad_footer::saved_time(at.as_millis() as u64));
         let mut edit = TextEdit::from_html(&text).rich();
         edit.focused = true;
         state.scratchpad = Some(edit);
@@ -1941,6 +1958,7 @@ impl AppState {
         }
         if std::fs::write(path, &body).is_ok() {
             self.studio.scratchpad_saved = body;
+            self.studio.scratchpad_saved_at = Some(crate::ui::scratchpad_footer::saved_time_now());
         }
     }
 
@@ -2514,6 +2532,9 @@ impl AppState {
                         *edit = TextEdit::from_html(&text).rich();
                     }
                     self.studio.scratchpad_saved = text;
+                    self.studio.scratchpad_saved_at = record["updatedAt"]
+                        .as_u64()
+                        .map(crate::ui::scratchpad_footer::saved_time);
                     self.studio.scratchpad_revision = record["revision"].as_u64().unwrap_or(0) + 1;
                 } else {
                     self.studio.scratchpad_revision = 1;
@@ -2525,6 +2546,12 @@ impl AppState {
                 if let Some(revision) = message["result"]["revision"].as_u64() {
                     self.studio.scratchpad_revision = revision + 1;
                     self.studio.scratchpad_saved = self.studio.scratchpad_saving.clone();
+                    self.studio.scratchpad_saved_at = Some(
+                        message["result"]["savedAt"]
+                            .as_u64()
+                            .map(crate::ui::scratchpad_footer::saved_time)
+                            .unwrap_or_else(crate::ui::scratchpad_footer::saved_time_now),
+                    );
                 } else if message["result"]["conflict"].is_number() {
                     self.studio.scratchpad_conflict = true;
                     self.studio.scratchpad_revision =

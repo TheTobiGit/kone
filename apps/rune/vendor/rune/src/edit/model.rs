@@ -18,6 +18,10 @@ pub enum Mark {
     Strike,
     Code,
     Link(String),
+    /// A named, theme-aware highlight wash.
+    Highlight(String),
+    /// A named, theme-aware foreground pen.
+    TextColor(String),
     /// An atomic inline object (an `@file` or `@agent` mention, an attachment) carrying the
     /// app's id; its text is the label. The caret steps over it, deleting takes it whole, a
     /// selection that touches it covers it, and typing never extends it. A field draws it as a
@@ -36,7 +40,9 @@ impl Mark {
             | (Mark::Strike, Mark::Strike)
             | (Mark::Code, Mark::Code)
             | (Mark::Link(_), Mark::Link(_))
-            | (Mark::Pill(_), Mark::Pill(_)) => true,
+            | (Mark::Pill(_), Mark::Pill(_))
+            | (Mark::Highlight(_), Mark::Highlight(_))
+            | (Mark::TextColor(_), Mark::TextColor(_)) => true,
             _ => false,
         }
     }
@@ -70,6 +76,8 @@ impl Mark {
             Mark::Code => 4,
             Mark::Link(_) => 5,
             Mark::Pill(_) => 6,
+            Mark::Highlight(_) => 7,
+            Mark::TextColor(_) => 8,
         }
     }
 }
@@ -97,6 +105,10 @@ impl MarkRange {
 pub enum Block {
     #[default]
     Paragraph,
+    /// Heading level, clamped to one through six when displayed.
+    Heading(u8),
+    /// A task list item and its checked state.
+    Task(bool),
     /// Bullet list item (`•`, `◦`, `▪`) at nesting level `0..=MAX_LIST_LEVEL`.
     Bullet(u8),
     /// Numbered list item (`1.`, `2.`, …) at nesting level `0..=MAX_LIST_LEVEL`.
@@ -109,7 +121,7 @@ pub enum Block {
 
 impl Block {
     pub fn is_list(self) -> bool {
-        matches!(self, Block::Bullet(_) | Block::Numbered(_))
+        matches!(self, Block::Bullet(_) | Block::Numbered(_) | Block::Task(_))
     }
 
     pub fn list_level(self) -> Option<u8> {
@@ -137,6 +149,8 @@ impl Block {
                 | (Block::Numbered(_), Block::Numbered(_))
                 | (Block::Quote, Block::Quote)
                 | (Block::Code, Block::Code)
+                | (Block::Heading(_), Block::Heading(_))
+                | (Block::Task(_), Block::Task(_))
         )
     }
 
@@ -148,6 +162,8 @@ impl Block {
             Block::Numbered(_) => 2,
             Block::Quote => 3,
             Block::Code => 4,
+            Block::Heading(_) => 5,
+            Block::Task(_) => 6,
         }
     }
 
@@ -155,7 +171,8 @@ impl Block {
     pub(crate) fn indent_pt(self, font_size: f32) -> f32 {
         let unit = (font_size * 1.45).round().max(18.0);
         match self {
-            Block::Paragraph => 0.0,
+            Block::Paragraph | Block::Heading(_) => 0.0,
+            Block::Task(_) => font_size * 1.25,
             Block::Bullet(l) | Block::Numbered(l) => unit * (l.min(MAX_LIST_LEVEL) as f32 + 1.0),
             Block::Quote => (font_size * 1.1).round().max(14.0),
             Block::Code => (font_size * 0.75).round().max(10.0),
@@ -177,6 +194,10 @@ pub struct ParagraphInfo {
 /// Visual palette for rich marks and block attributes inside [`text_input`](crate::text_input).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RichStyle {
+    /// Resolve named pens with the dark document palette.
+    pub dark: bool,
+    /// CSS-like document paragraph margins and block typography.
+    pub document_spacing: bool,
     pub code_fg: Option<Color>,
     pub code_bg: Color,
     pub code_block_bg: Color,
@@ -188,6 +209,8 @@ pub struct RichStyle {
 impl Default for RichStyle {
     fn default() -> Self {
         Self {
+            dark: false,
+            document_spacing: false,
             code_fg: None,
             code_bg: oklcha(0.55, 0.02, 260.0, 0.16),
             code_block_bg: oklcha(0.5, 0.02, 260.0, 0.12),
@@ -195,5 +218,34 @@ impl Default for RichStyle {
             quote_bar: oklcha(0.6, 0.04, 255.0, 0.45),
             marker: None,
         }
+    }
+}
+
+impl RichStyle {
+    /// Resolve a stored pen name without baking the current theme into document HTML.
+    pub fn pen_color(self, name: &str, highlight: bool) -> Color {
+        use crate::color::hex;
+        let (rgb, alpha) = if highlight {
+            match (name, self.dark) {
+                ("amber", _) => ("#eab308", 0.32),
+                ("moss", false) => ("#10b981", 0.26),
+                ("moss", true) => ("#10b981", 0.30),
+                ("sky", false) => ("#3884ff", 0.22),
+                ("sky", true) => ("#5698ff", 0.32),
+                ("orchid", false) => ("#a76af0", 0.24),
+                ("orchid", true) => ("#b27cf5", 0.32),
+                (_, false) => ("#d97757", 0.30),
+                (_, true) => ("#d97757", 0.36),
+            }
+        } else {
+            (match (name, self.dark) {
+                ("moss", false) => "#3f9e6f", ("moss", true) => "#5fc294",
+                ("sky", false) => "#4d86d8", ("sky", true) => "#7fa9f0",
+                ("orchid", false) => "#9268c9", ("orchid", true) => "#b58ae0",
+                ("ash", false) => "#8a8a90", ("ash", true) => "#9c9ca4",
+                (_, false) => "#c1613f", (_, true) => "#e8907a",
+            }, 1.0)
+        };
+        hex(rgb).unwrap_or(Color::TRANSPARENT).alpha(alpha)
     }
 }

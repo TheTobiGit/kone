@@ -10,6 +10,8 @@ pub(super) fn break_lines_with_blocks(
     font_size: f32,
     scale: f32,
     max_width: Option<f32>,
+    document_spacing: bool,
+    soft_breaks: &[u32],
 ) {
     let pills = layout.inline_boxes().filter(|b| b.id & PILL_BOX != 0).count() / 2;
     // `(para_idx, line_in_para)` and the room it gets instead: less to break before a chip, or
@@ -18,7 +20,7 @@ pub(super) fn break_lines_with_blocks(
     let mut caps: Vec<((usize, usize), f32)> = Vec::new();
     let mut lines_meta = Vec::new();
     for _ in 0..=2 * pills {
-        break_lines_capped(layout, blocks, font_size, scale, max_width, &caps, &mut lines_meta);
+        break_lines_capped(layout, blocks, font_size, scale, max_width, &caps, &mut lines_meta, document_spacing, soft_breaks);
         if max_width.is_none() || pills == 0 || !collect_misplaced_pills(layout, &lines_meta, &mut caps) {
             return;
         }
@@ -35,6 +37,8 @@ fn break_lines_capped(
     max_width: Option<f32>,
     caps: &[((usize, usize), f32)],
     out: &mut Vec<((usize, usize), f32)>,
+    document_spacing: bool,
+    soft_breaks: &[u32],
 ) {
     out.clear();
     let layout_max = max_width.unwrap_or(f32::MAX);
@@ -43,7 +47,29 @@ fn break_lines_capped(
     let (mut para_idx, mut line_in_para) = (0usize, 0usize);
     while !breaker.is_done() {
         let blk = blocks.get(para_idx).copied().unwrap_or(crate::edit::Block::Paragraph);
-        let indent = (blk.indent_pt(font_size) * scale).round();
+        let indent = if document_spacing {
+            use crate::edit::Block;
+            match blk { Block::Bullet(l) | Block::Numbered(l) => font_size * 1.25 * (l as f32 + 1.0),
+                Block::Task(_) => font_size * 1.25, Block::Quote => font_size * 0.85 + 2.0,
+                Block::Code => font_size * 0.85, _ => 0.0 } * scale
+        } else { (blk.indent_pt(font_size) * scale).round() };
+        if document_spacing && line_in_para == 0 {
+            use crate::edit::Block;
+            let previous = para_idx.checked_sub(1).and_then(|i| blocks.get(i)).copied().unwrap_or(Block::Paragraph);
+            let heading_size = |level| match level { 1 => 22.0, 2 => 19.0, 3 => 17.0, _ => 16.0 };
+            let mut gap = if para_idx == 0 || soft_breaks.binary_search(&(para_idx as u32)).is_ok() { 0.0 }
+                else if previous.is_list() && blk.is_list() { font_size * 0.12 }
+                else if previous == Block::Code && blk == Block::Code { 0.0 }
+                else { match previous {
+                    Block::Heading(level) => heading_size(level) * 0.35,
+                    Block::Code => font_size * 1.4,
+                    _ => font_size * 0.55,
+                }};
+            if let Block::Heading(level) = blk { if para_idx > 0 { gap = gap.max(heading_size(level) * 1.1); } }
+            if blk == Block::Code && (para_idx == 0 || previous != Block::Code) { gap += font_size * 0.7; }
+            let y = breaker.state().line_y() + (gap * scale) as f64;
+            breaker.state_mut().set_line_y(y);
+        }
         let right_pad = if blk == crate::edit::Block::Code { indent } else { 0.0 };
         let line_max = max_width
             .map_or(f32::MAX, |w| (w - indent - right_pad).max(1.0))

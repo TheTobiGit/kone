@@ -97,7 +97,7 @@ impl TextEdit {
 
         // Merge overlapping or adjacent ranges of the same mark kind.
         // For `Mark::Link`, later entries win over earlier overlapping links.
-        let mut by_kind: [Vec<MarkRange>; 7] = Default::default();
+        let mut by_kind: [Vec<MarkRange>; 9] = Default::default();
         for m in self.marks.drain(..) {
             if m.start < m.end {
                 by_kind[m.mark.kind_order() as usize].push(m);
@@ -120,7 +120,7 @@ impl TextEdit {
                         merged.push(m);
                     }
                 }
-            } else if kind_idx == 5 {
+            } else if matches!(kind_idx, 5 | 7 | 8) {
                 // `Mark::Link`: resolve overlaps so later links overwrite earlier ones, then merge adjacent equal URLs.
                 let mut bounds: Vec<(usize, usize)> = list.iter().map(|m| (m.start, m.end)).collect();
                 bounds.sort_unstable();

@@ -115,7 +115,7 @@ impl TextEdit {
                         // Shift+Return: soft line break keeping the current paragraph's block.
                         self.insert_newline(blk, true);
                     } else if m.shift || m.alt {
-                        self.insert_newline(blk, false);
+                        self.insert_newline(if matches!(blk, Block::Task(_)) { Block::Task(false) } else { blk }, false);
                     } else {
                         match blk {
                             Block::Code => {
@@ -127,7 +127,7 @@ impl TextEdit {
                                     self.insert_newline(Block::Code, false);
                                 }
                             }
-                            Block::Bullet(_) | Block::Numbered(_) => {
+                            Block::Bullet(_) | Block::Numbered(_) | Block::Task(_) => {
                                 // Return in an empty list item ends the list; otherwise continues it.
                                 if a == b && line_range.is_empty() {
                                     self.set_block(Block::Paragraph);
@@ -142,6 +142,7 @@ impl TextEdit {
                                     self.insert_newline(Block::Quote, false);
                                 }
                             }
+                            Block::Heading(_) => self.insert_newline(Block::Paragraph, false),
                             Block::Paragraph => {
                                 out.submit = true;
                             }
@@ -180,6 +181,7 @@ impl TextEdit {
                                     self.set_block(Block::Paragraph);
                                 }
                             }
+                            Block::Heading(_) | Block::Task(_) => self.set_block(Block::Paragraph),
                             Block::Quote | Block::Code => {
                                 if a == 0 || line_range.is_empty() {
                                     self.set_block(Block::Paragraph);

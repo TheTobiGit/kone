@@ -497,6 +497,8 @@ impl TextSystem {
         align: Alignment,
         wrap_anywhere: bool,
         cache: bool,
+        document_spacing: bool,
+        soft_breaks: &[u32],
     ) -> Rc<Layout<Ink>> {
         self.follow_language();
         let shared = (!cache).then(|| std::mem::replace(&mut self.layout_cx, LayoutContext::new()));
@@ -505,7 +507,13 @@ impl TextSystem {
         // breaking adds the width, alignment and block indents. A layout cached at one width
         // is re-broken at another rather than shaped again.
         let shape_key = shape.unwrap_or_else(|| shape_key(text, spans, style, scale, wrap_anywhere, pills));
-        let key = hash::break_key(shape_key, max_width, align, has_indented_blocks.then_some(blocks));
+        let mut key = hash::break_key(shape_key, max_width, align, has_indented_blocks.then_some(blocks));
+        if document_spacing {
+            use std::hash::{Hash, Hasher};
+            let mut h = hash::KeyHasher::default();
+            (key, true, soft_breaks).hash(&mut h);
+            key = h.finish();
+        }
         let g = self.generation;
         if cache && let Some(Entry { value: l, used, .. }) = self.layouts.get_mut(&key) {
             *used = g;
@@ -532,8 +540,8 @@ impl TextSystem {
             })
             .collect();
         let break_lines = |layout: &mut Layout<Ink>| {
-            if has_indented_blocks || !pills.is_empty() {
-                break_lines_with_blocks(layout, blocks, style.size, scale, max_width);
+            if has_indented_blocks || !pills.is_empty() || document_spacing {
+                break_lines_with_blocks(layout, blocks, style.size, scale, max_width, document_spacing, soft_breaks);
             } else {
                 layout.break_all_lines(max_width);
             }
@@ -750,12 +758,14 @@ impl TextSystem {
                     // paragraph's leading ratio, so its box fits inside the line instead of growing it
                     b.push(LineHeight::FontSizeRelative(style.line_px() / style.size), r.clone());
                 }
+                if let Some(height) = s.line_height { b.push(LineHeight::Absolute(height), r.clone()); }
+                if let Some(tracking) = s.tracking { b.push(StyleProperty::LetterSpacing(tracking), r.clone()); }
                 let resized = s.size.is_some() && style.optical_size == OpticalSize::Auto;
                 if resized || span_axes[i] != base_axes {
                     let settings = with_axes(variations(style, s.size.unwrap_or(style.size)), &span_axes[i]);
                     b.push(parley::FontVariations::List(std::borrow::Cow::Owned(settings)), r.clone());
                 }
-                if let Some(v) = span_spacing[i] {
+                if let Some(v) = span_spacing[i].filter(|_| s.tracking.is_none()) {
                     b.push(StyleProperty::LetterSpacing(v), r.clone());
                 }
             }

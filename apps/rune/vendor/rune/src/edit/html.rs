@@ -452,7 +452,9 @@ pub(crate) fn parse_html(html: &str) -> TextEdit {
                     }
                     "li" => {
                         in_li += 1;
-                        let blk = current_default_block(&list_stack, in_pre, in_quote, in_li);
+                        let blk = extract_attr(attrs, "data-checked").map_or_else(
+                            || current_default_block(&list_stack, in_pre, in_quote, in_li),
+                            |checked| Block::Task(checked == "true"));
                         start_new_paragraph(
                             &mut text,
                             &mut blocks,
@@ -495,7 +497,8 @@ pub(crate) fn parse_html(html: &str) -> TextEdit {
                         );
                     }
                     "p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                        let blk = current_default_block(&list_stack, in_pre, in_quote, in_li);
+                        let blk = if tag.starts_with('h') { Block::Heading(tag.as_bytes()[1] - b'0') }
+                            else { current_default_block(&list_stack, in_pre, in_quote, in_li) };
                         start_new_paragraph(
                             &mut text,
                             &mut blocks,
@@ -514,7 +517,8 @@ pub(crate) fn parse_html(html: &str) -> TextEdit {
                 let mut to_add = Vec::new();
                 let mut to_suppress = Vec::new();
                 match tag.as_str() {
-                    "b" | "strong" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => to_add.push(Mark::Bold),
+                    "b" | "strong" => to_add.push(Mark::Bold),
+                    "mark" => to_add.push(Mark::Highlight(extract_attr(attrs, "data-hl").unwrap_or_else(|| "copper".into()))),
                     "i" | "em" => to_add.push(Mark::Italic),
                     "u" | "ins" => to_add.push(Mark::Underline),
                     "s" | "del" | "strike" => to_add.push(Mark::Strike),
@@ -527,6 +531,8 @@ pub(crate) fn parse_html(html: &str) -> TextEdit {
                         }
                     }
                     "span" => {
+                        if let Some(name) = extract_attr(attrs, "data-tc") { to_add.push(Mark::TextColor(name)); }
+                        if let Some(name) = extract_attr(attrs, "data-hl") { to_add.push(Mark::Highlight(name)); }
                         if let Some(id) = extract_attr(attrs, "data-pill") {
                             to_add.push(Mark::Pill(id));
                         }
@@ -879,6 +885,19 @@ pub(crate) fn serialize_html(edit: &TextEdit, range: Range<usize>) -> String {
                 }
                 out.push_str("</blockquote>");
             }
+            Block::Heading(level) => {
+                let level = level.clamp(1, 6);
+                out.push_str(&format!("<h{level}>"));
+                serialize_inline(edit, paras[idx].1.clone(), &mut out);
+                out.push_str(&format!("</h{level}>"));
+                idx += 1;
+            }
+            Block::Task(checked) => {
+                out.push_str(if checked { "<ul><li data-checked=\"true\">" } else { "<ul><li data-checked=\"false\">" });
+                serialize_inline(edit, paras[idx].1.clone(), &mut out);
+                out.push_str("</li></ul>");
+                idx += 1;
+            }
             Block::Paragraph => {
                 out.push_str("<p>");
                 serialize_inline(edit, paras[idx].1.clone(), &mut out);
@@ -960,9 +979,13 @@ fn serialize_marks(edit: &TextEdit, range: Range<usize>, out: &mut String) {
             Mark::Strike => 4,
             Mark::Code => 5,
             Mark::Pill(_) => 6,
+            Mark::Highlight(_) => 7,
+            Mark::TextColor(_) => 8,
         });
         for m in &active {
             match m {
+                Mark::Highlight(name) => { out.push_str("<mark data-hl=\""); escape_html(name, out); out.push_str("\">"); }
+                Mark::TextColor(name) => { out.push_str("<span data-tc=\""); escape_html(name, out); out.push_str("\">"); }
                 Mark::Bold => out.push_str("<strong>"),
                 Mark::Italic => out.push_str("<em>"),
                 Mark::Underline => out.push_str("<u>"),
@@ -979,6 +1002,8 @@ fn serialize_marks(edit: &TextEdit, range: Range<usize>, out: &mut String) {
         escape_html(&edit.text[a..b], out);
         for m in active.iter().rev() {
             match m {
+                Mark::Highlight(_) => out.push_str("</mark>"),
+                Mark::TextColor(_) => out.push_str("</span>"),
                 Mark::Bold => out.push_str("</strong>"),
                 Mark::Italic => out.push_str("</em>"),
                 Mark::Underline => out.push_str("</u>"),

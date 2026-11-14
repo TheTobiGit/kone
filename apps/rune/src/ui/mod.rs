@@ -6,6 +6,8 @@ mod icon_motion;
 pub(crate) mod overview;
 mod pills;
 mod projects;
+pub(crate) mod scratchpad_footer;
+pub(crate) mod scratchpad_toolbar;
 mod sphere_face;
 pub(crate) mod start_motion;
 mod studio;

@@ -100,6 +100,15 @@ impl TextEdit {
                         ..Span::default()
                     });
                 }
+                Mark::Highlight(name) => {
+                    spans.push(Span { start: r_start, end: r_end,
+                        bg: Some(style.pen_color(name, true)), bg_pad: base_style.size * 0.08,
+                        ..Span::default() });
+                }
+                Mark::TextColor(name) => {
+                    spans.push(Span { start: r_start, end: r_end,
+                        color: Some(style.pen_color(name, false)), ..Span::default() });
+                }
                 Mark::Link(url) => {
                     spans.push(Span {
                         start: r_start,
@@ -114,6 +123,25 @@ impl TextEdit {
                 Mark::Pill(_) => {}
             }
         };
+
+        let display = self.display().0;
+        let blocks = self.display_blocks(&display);
+        let mut start = 0;
+        for (index, line) in display.split('\n').enumerate() {
+            if let Some(Block::Heading(level)) = blocks.get(index) {
+                let size = match level { 1 => 22.0, 2 => 19.0, 3 => 17.0, _ => 16.0 };
+                spans.push(Span { start: start as u32, end: (start + line.len() + usize::from(start + line.len() < display.len())) as u32,
+                    size: Some(size), weight: Some(600.0), line_height: Some(size * 1.3), tracking: Some(-0.015 * size), ..Span::default() });
+            }
+            if style.document_spacing && blocks.get(index) == Some(&Block::Code) {
+                spans.push(Span { start: start as u32, end: (start + line.len() + usize::from(start + line.len() < display.len())) as u32,
+                    size: Some(14.5), line_height: Some(23.2), mono: true, ..Span::default() });
+            }
+            if matches!(blocks.get(index), Some(Block::Task(true))) {
+                strikes.push((start as u32, (start + line.len()) as u32, None));
+            }
+            start += line.len() + 1;
+        }
 
         for m in &self.marks {
             for (ds, de) in self.map_range_to_display(m.start, m.end) {
