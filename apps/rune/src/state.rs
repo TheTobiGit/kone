@@ -104,6 +104,7 @@ pub struct AppState {
     pub studio_scroll_row: Option<String>,
     pub studio_column_hover: Option<String>,
     pub studio_header_hover: bool,
+    pub studio_fork_hover: bool,
     pub studio_seam_hover: Option<String>,
     pub studio_seam_bounds: std::collections::HashMap<String, [f32; 4]>,
     pub studio_insert_menu: Option<(String, usize, [f32; 4])>,
@@ -1172,10 +1173,7 @@ impl AppState {
             return;
         }
         let viewport = self.studio_viewport.0;
-        let first_width = [840.0_f32, 960.0, 1120.0, 1240.0]
-            [(panes[0]["width"].as_u64().unwrap_or(0) as usize).min(3)]
-        .min(viewport);
-        let mut left = 14.0 + ((viewport - first_width) / 2.0 - 14.0).max(0.0);
+        let mut left = 14.0;
         for pane in panes {
             let focused = pane["anchor"]["threadId"] == self.studio.thread_id;
             let mut width = [840.0_f32, 960.0, 1120.0, 1240.0]
@@ -1726,7 +1724,10 @@ impl AppState {
                 return true;
             }
             if s.studio_insert_menu.take().is_some() {
-                return true;
+                // Electron's window Escape handler dismisses the Studio plane
+                // before the insertion menu's key listener runs. Keep the panes,
+                // close the menu, and let app_key dismiss the plane as well.
+                return false;
             }
             if s.studio.picker_open || s.studio.mode_picker_open || s.studio.effort_picker_open {
                 s.cancel_handoff_picker();
@@ -3831,6 +3832,28 @@ mod start_actions_tests {
         assert!(s.studio.composer_open);
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
         assert!(!s.studio.composer_open);
+    }
+
+    #[test]
+    fn insertion_menu_escape_also_dismisses_the_studio_plane() {
+        let mut s = super::AppState {
+            page: Page::Studio,
+            studio_under_page: Page::Overview,
+            ..Default::default()
+        };
+        s.studio_insert_menu = Some(("/demo".into(), 2, [0.0; 4]));
+        let layout = s.studio_layout.clone();
+        assert!(crate::app_key(
+            &mut s,
+            &rune::KeyEvent {
+                key: rune::Key::Escape,
+                mods: rune::Mods::default()
+            },
+            &mut rune::Tx::default()
+        ));
+        assert!(s.studio_insert_menu.is_none());
+        assert_eq!(s.page, Page::Overview);
+        assert_eq!(s.studio_layout, layout);
     }
 
     #[test]

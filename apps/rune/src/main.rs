@@ -212,6 +212,7 @@ fn main() {
                 studio_scratchpad(s, "clear-complete")
             }),
             ("studio-review", studio_review),
+            ("studio-escape-row", studio_escape_row),
             ("studio-final", |s| {
                 studio_review(s);
                 s.studio_layout["rows"][0]["panes"]
@@ -539,6 +540,14 @@ fn main() {
                 s.studio.error = None;
                 s.studio_scroll_row = Some(s.studio.project_path.clone());
             }),
+            ("studio-meter-motion", |s| {
+                studio_overview_fixture(s, 1);
+                s.studio.overview = false;
+                s.open_studio_thread("review-two".into());
+                s.studio.context_usage = Some((4200, 10_000));
+                s.studio.error = None;
+                s.studio_scroll_row = Some(s.studio.project_path.clone());
+            }),
             ("studio-bare-board", |s| {
                 studio_review(s);
                 s.projects[0].path = "/review/kone".into();
@@ -685,6 +694,25 @@ fn main() {
         .font_smoothing(FontSmoothing::Off)
         .compositor(plasma::Plasma::default())
         .run();
+}
+
+fn studio_escape_row(s: &mut AppState) {
+    studio_overview_fixture(s, 1);
+    s.studio.overview = false;
+    s.open_studio_thread("review-two".into());
+    s.studio.error = None;
+    // Preserve the actual Overview data underneath the Studio plane so Escape
+    // returns to the same project surface from which the row was opened.
+    review::populate(s, Page::Overview);
+    let path = s.projects[0].path.clone();
+    s.studio.project_path = path.clone();
+    for thread in s.studio_threads.values_mut() {
+        thread.project_path = path.clone();
+    }
+    s.studio_layout["rows"][0]["projectPath"] = serde_json::json!(path);
+    s.studio_under_page = Page::Overview;
+    s.page = Page::Studio;
+    s.studio_scroll_row = Some(path);
 }
 
 fn studio_review(s: &mut AppState) {

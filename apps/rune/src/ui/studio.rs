@@ -391,6 +391,7 @@ fn fork_tool(
     tip: &'static str,
     state: Option<&StudioState>,
     t: Palette,
+    ink: rune::Color,
 ) -> El {
     let shown = state.and_then(|s| s.head_tooltip.as_deref()) == Some(tip);
     let mut button = el()
@@ -404,7 +405,7 @@ fn fork_tool(
         .center()
         .radius(6.0)
         .hover(t.hover)
-        .child(icon(glyph, 13.0).color(t.muted))
+        .child(icon(glyph, 13.0).color(ink))
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
             s.studio.head_tooltip = None;
             s.studio.head_tooltip_pending = if over {
@@ -423,11 +424,11 @@ fn fork_tool(
                 } else {
                     (20.0 - width) / 2.0
                 },
-                -26.0,
+                -26.3,
             )
             .w(width)
             .px(7.0)
-            .h(20.0)
+            .h(20.3)
             .center()
             .radius(6.0)
             .fill(t.ink)
@@ -454,10 +455,10 @@ fn head_tip(
                 } else {
                     (20.0 - width) / 2.0
                 },
-                -26.0,
+                -26.3,
             )
             .w(width)
-            .h(20.0)
+            .h(20.3)
             .center()
             .radius(6.0)
             .fill(t.ink)
@@ -467,6 +468,7 @@ fn head_tip(
     control
         .focusable(true)
         .role("button")
+        .label(tip.clone())
         .hover_group_focus()
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
             s.studio.head_tooltip = None;
@@ -808,7 +810,12 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio.title_info_open = false),
             );
-            title = title.child(thread_info_panel(state, t).absolute(-98.0, 23.0).raise());
+            title = title.child(
+                thread_info_panel(state, t)
+                    .focus_return("studio-title-info-trigger")
+                    .absolute(-98.0, 23.0)
+                    .raise(),
+            );
         }
     }
     title
@@ -2516,7 +2523,7 @@ fn studio_row(
         .collect();
     let overview_natural_width =
         pane_widths.iter().sum::<f32>() + 28.0 * count.saturating_sub(1) as f32;
-    let normal_start_pad = if count == 0 {
+    let normal_start_pad = if count != 1 {
         0.0
     } else {
         ((viewport_w - pane_widths[0]) / 2.0 - 14.0).max(0.0)
@@ -2537,8 +2544,10 @@ fn studio_row(
         };
         let start_pad = if s.studio.overview {
             48.0
-        } else {
+        } else if count == 1 {
             ((viewport_w - width) / 2.0 - 14.0).max(0.0)
+        } else {
+            0.0
         };
         rail = rail.child(el().w(start_pad).h_full());
     }
@@ -2582,6 +2591,14 @@ fn studio_row(
                     .is_some_and(|x| x.starts_with("activity-"))
             });
             let activity_hover = s.studio.conversation_fixture.as_deref() == Some("activity-hover");
+            let tools_revealed =
+                !handoff_fixture && show_tools && (!activity_fixture || activity_hover);
+            let tool_ink = t.muted.alpha(if tools_revealed { 1.0 } else { 0.0 });
+            let fork_revealed = handoff_fixture
+                || ((s.studio_column_hover.as_deref() == Some(id.as_str())
+                    || (focused && s.studio_fork_hover))
+                    && (!activity_fixture || activity_hover));
+            let fork_ink = t.muted.alpha(if fork_revealed { 1.0 } else { 0.0 });
             let head = row()
                 .offset(
                     0.0,
@@ -2599,37 +2616,33 @@ fn studio_row(
                     row()
                         .w(100.0)
                         .gap(2.0)
-                        .opacity(
-                            if handoff_fixture
-                                || (show_tools && (!activity_fixture || activity_hover))
-                            {
-                                1.0
-                            } else {
-                                0.0
-                            },
-                        )
                         .child(if has_thread && !side_chat {
-                            fork_tool(&SIDE_CHAT, "Open a side chat", state, t)
+                            fork_tool(&SIDE_CHAT, "Open a side chat", state, t, fork_ink)
                                 .on_press(|s: &mut AppState| s.create_continuation(false))
                         } else {
                             el().w(0.0)
                         })
                         .child(if has_thread && !side_chat {
-                            fork_tool(&HANDOFF, "Hand off to another provider", state, t)
+                            fork_tool(&HANDOFF, "Hand off to another provider", state, t, fork_ink)
                                 .on_press(|s: &mut AppState| s.open_handoff_picker())
                         } else {
                             el().w(0.0)
                         })
                         .child(if has_thread {
-                            fork_tool(&ARCHIVE, "Archive conversation", state, t).on_press({
-                                let id = id.clone();
-                                let path = path.clone();
-                                move |s: &mut AppState| {
-                                    s.archive_studio_thread(path.clone(), id.clone());
-                                }
-                            })
+                            fork_tool(&ARCHIVE, "Archive conversation", state, t, fork_ink)
+                                .on_press({
+                                    let id = id.clone();
+                                    let path = path.clone();
+                                    move |s: &mut AppState| {
+                                        s.archive_studio_thread(path.clone(), id.clone());
+                                    }
+                                })
                         } else {
                             el().w(0.0)
+                        })
+                        .hover_group_focus()
+                        .on_hover_focus_change(|s: &mut AppState, over, _| {
+                            s.studio_fork_hover = over;
                         }),
                 )
                 .child(
@@ -2741,16 +2754,6 @@ fn studio_row(
                 )
                 .child(
                     row()
-                        .opacity(
-                            if !handoff_fixture
-                                && show_tools
-                                && (!activity_fixture || activity_hover)
-                            {
-                                1.0
-                            } else {
-                                0.0
-                            },
-                        )
                         .w(100.0)
                         .justify_end()
                         .gap(2.0)
@@ -2776,7 +2779,7 @@ fn studio_row(
                                             .family(Family::Named("Geist"))
                                             .features("'tnum' 1"),
                                     )
-                                    .color(t.muted)
+                                    .color(tool_ink)
                                     .offset(0.5, -0.5),
                                 )
                                 .on_press_tx(move |s: &mut AppState, tx| {
@@ -2803,7 +2806,7 @@ fn studio_row(
                                 .center()
                                 .radius(6.0)
                                 .hover(t.hover)
-                                .child(icon(&REFRESH, 13.0).color(t.muted))
+                                .child(icon(&REFRESH, 13.0).color(tool_ink))
                         } else {
                             el().w(0.0)
                         })
@@ -2817,7 +2820,7 @@ fn studio_row(
                                 .radius(6.0)
                                 .hover(t.hover)
                                 .child(
-                                    icon(if zen { &SHRINK } else { &EXPAND }, 13.0).color(t.muted),
+                                    icon(if zen { &SHRINK } else { &EXPAND }, 13.0).color(tool_ink),
                                 )
                                 .on_press_tx(move |s: &mut AppState, tx| {
                                     s.select_studio_project(project_index);
@@ -2843,7 +2846,7 @@ fn studio_row(
                                 .center()
                                 .radius(6.0)
                                 .hover(t.hover)
-                                .child(icon(&CLOSE, 13.0).color(t.muted))
+                                .child(icon(&CLOSE, 13.0).color(tool_ink))
                                 .on_press(move |s: &mut AppState| {
                                     s.select_studio_project(project_index);
                                     s.close_studio_thread(&close_id);
@@ -2852,12 +2855,12 @@ fn studio_row(
                             state,
                             true,
                             t,
-                        )),
-                )
-                .hover_group_focus()
-                .on_hover_focus_change(|s: &mut AppState, over, _| {
-                    s.studio_header_hover = over;
-                });
+                        ))
+                        .hover_group_focus()
+                        .on_hover_focus_change(|s: &mut AppState, over, _| {
+                            s.studio_header_hover = over;
+                        }),
+                );
             let body = if let Some(pad) = state.and_then(|state| state.scratchpad.as_ref()) {
                 let edit_id = id.clone();
                 let retry_id = id.clone();
@@ -4411,7 +4414,11 @@ fn empty_thread_art(
             .clip_soft(0.0)
             .child(art.offset(0.0, (content_height - height) * 0.5))
     } else {
-        art
+        // ConversationThread's empty body fills the scrollport after its
+        // 24pt top padding and 208pt dock clearance. Its absolutely positioned
+        // art is centred in that remaining box, including when 72vh is capped.
+        let content_height = (row_height - 56.0 - 33.59 - 24.0 - 208.0).max(0.0);
+        art.offset(0.0, 24.0 + (content_height - height) * 0.5)
     }
 }
 
@@ -5847,6 +5854,76 @@ mod tests {
     use crate::state::{Page, Project, StudioItem};
     use rune::{Env, Runtime};
     use serde_json::json;
+
+    #[test]
+    fn column_tools_are_reachable_after_the_title_by_keyboard() {
+        let mut state = AppState::default();
+        crate::studio_overview_fixture(&mut state, 0);
+        state.studio.overview = false;
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        let mut reached = std::collections::HashSet::new();
+        for _ in 0..30 {
+            rt.key(rune::KeyEvent {
+                key: rune::Key::Tab,
+                mods: rune::Mods::default(),
+            });
+            rt.frame(0.0);
+            for el in rt.elements().iter().filter(|el| el.focused) {
+                if let Some(key) = &el.key {
+                    reached.insert(key.to_string());
+                }
+            }
+        }
+        for key in [
+            "studio-width-review-one",
+            "studio-zen-review-one",
+            "studio-close-review-one",
+        ] {
+            assert!(reached.contains(key), "Tab never reached {key}");
+        }
+    }
+
+    #[test]
+    fn populated_thread_fork_tools_are_keyboard_reachable_at_rest() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.state.studio_column_hover.is_none());
+        assert!(!rt.state.studio_fork_hover);
+        let mut reached = std::collections::HashSet::new();
+        for _ in 0..30 {
+            rt.key(rune::KeyEvent {
+                key: rune::Key::Tab,
+                mods: rune::Mods::default(),
+            });
+            rt.frame(0.0);
+            rt.frame(0.0);
+            for el in rt.elements().iter().filter(|el| el.focused) {
+                if let Some(key) = &el.key {
+                    reached.insert(key.to_string());
+                    if key.starts_with("studio-tool-") {
+                        assert!(
+                            rt.state.studio_fork_hover,
+                            "fork group not active for {key}"
+                        );
+                        assert!(!rt.state.studio_header_hover);
+                    }
+                }
+            }
+        }
+        for tip in [
+            "Open a side chat",
+            "Hand off to another provider",
+            "Archive conversation",
+        ] {
+            assert!(
+                reached.contains(&format!("studio-tool-{tip}")),
+                "Tab never reached {tip}"
+            );
+        }
+    }
 
     #[test]
     fn overview_keyboard_focus_reveals_the_scaled_card_and_enter_selects_it() {
