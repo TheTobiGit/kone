@@ -33,7 +33,12 @@ fn linear(c: vec3<f32>) -> vec3<f32> { return select(c/12.92,pow((c+0.055)/1.055
     if any(pixel<vec2(0.0)) || any(pixel>u.rect.zw) { discard; }
     let frag=vec2(pixel.x,u.rect.w-pixel.y);
     let uv=frag/u.rect.zw; let aspect=u.rect.z/max(u.rect.w,1.0);
-    let p=(uv-0.5)*vec2(aspect,1.0); let t=u.clock.x*(0.15*0.55); let dark=u.clock.y;
+    var p=(uv-0.5)*vec2(aspect,1.0);
+    // ClosingPlasma's pointer starts at the centre even in its non-interactive
+    // backdrop scenes, so retain its subtle inward warp around that point.
+    let d_mouse=length(p);
+    p*=1.0-0.02*(1.0-smoothstep(0.0,0.45,d_mouse));
+    let t=u.clock.x*(0.15*0.55); let dark=u.clock.y;
     let flow=vec2(fbm(p+vec2(t*0.2,t*0.1)),fbm(p+vec2(-t*0.1,t*0.3)));
     let n=fbm(p*2.0+flow*1.45);
     let ridges=pow(1.0-abs(snoise(p*4.0+n)*2.0),3.0);

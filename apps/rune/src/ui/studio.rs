@@ -243,10 +243,10 @@ static INSERT_SCRATCHPAD: Icon = Icon {
     view: 24.0,
     body: r#"<path d="M7 3.5H15L19 7.5V19C19 20.1046 18.1046 21 17 21H7C5.89543 21 5 20.1046 5 19V5.5C5 4.39543 5.89543 3.5 7 3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14.5 4V8H18.5M8 12H16M8 16H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
 };
-static ARROW_RIGHT: Icon = Icon {
-    name: "studio-arrow-right",
+static INSERT_CHEVRON: Icon = Icon {
+    name: "studio-insert-chevron",
     view: 24.0,
-    body: r#"<path d="M5 12H19M13 6L19 12L13 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M9 6L15 12L9 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 fn brand_mark(provider: &str, t: Palette) -> El {
@@ -844,9 +844,15 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                     .h(24.0)
                     .px(6.0)
                     .radius(6.0)
-                    .border(1.0, t.accent.alpha(0.24))
-                    .fill(t.field)
+                    .border(0.0, t.ink.alpha(0.0))
+                    .fill(if t.dark {
+                        crate::theme::mix_srgb(t.raised, t.ink, 0.08)
+                    } else {
+                        t.ground
+                    })
                     .color(t.ink)
+                    .align(rune::Align::End)
+                    .caret(t.ink.alpha(0.0), t.accent.alpha(0.24))
                     .selection_color(t.accent.alpha(0.24))
                     .on_edit(|s: &mut AppState| &mut s.studio.title_draft)
                     .on_submit(|s: &mut AppState, _: &mut rune::Tx| {
@@ -869,7 +875,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
     let mut rows = col()
         .w_full()
         .px(15.0)
-        .py(10.0)
+        .py(9.0)
         .child(name_row)
         .child(
             row()
@@ -902,7 +908,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .unwrap_or(&state.project_path)
             .to_owned();
         rows = rows
-            .child(label("PROJECT", 9.5, 400.0, t.faint).mt(10.0))
+            .child(label("PROJECT", 9.0, 400.0, t.faint).mt(10.0))
             .child(info_row("Repo", repo.clone()))
             .child(
                 row()
@@ -921,7 +927,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                     ),
             );
     }
-    rows = rows.child(label("USAGE", 9.5, 400.0, t.faint).mt(10.0));
+    rows = rows.child(label("USAGE", 9.0, 400.0, t.faint).mt(10.0));
     if let Some((used, window)) = state.context_usage {
         rows = rows.child(info_row(
             "In context",
@@ -940,7 +946,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         }
     }
     rows = rows
-        .child(label("IDENTITY", 9.5, 400.0, t.faint).mt(10.0))
+        .child(label("IDENTITY", 9.0, 400.0, t.faint).mt(10.0))
         .child(
             row()
                 .w_full()
@@ -966,7 +972,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                         .child(icon(&FOOTER_COPY01, 12.0).color(t.muted)),
                 ),
         );
-    rows = rows.child(label("EXPORT", 9.5, 400.0, t.faint).mt(10.0))
+    rows = rows.child(label("EXPORT", 9.0, 400.0, t.faint).mt(10.0))
         .child(row().w_full().h(32.0).center_y().justify_between()
             .child(label("Format", 11.5, 400.0, t.muted))
             .child(row().gap(12.0)
@@ -1022,13 +1028,32 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .px(15.0)
                 .center_y()
                 .gap(12.0)
+                .corners([18.0, 18.0, 0.0, 0.0])
                 .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
-                .child(label("Details", 13.0, 600.0, t.ink_soft))
+                .child(label("Details", 13.0, 500.0, t.ink_soft))
                 .child(label("Inbox", 13.0, 400.0, t.muted).grow(1.0))
                 .child(if let Some(status) = &state.info_status {
-                    label(format!("● {status}"), 11.5, 500.0, t.accent)
+                    row()
+                        .center_y()
+                        .gap(5.0)
+                        .child(el().size(6.0, 6.0).radius(3.0).fill(t.accent))
+                        .child(label(
+                            status.clone(),
+                            11.0,
+                            500.0,
+                            crate::theme::mix_srgb(t.accent, t.ink, 0.3),
+                        ))
                 } else if state.busy {
-                    label("● Working", 11.5, 500.0, t.accent)
+                    row()
+                        .center_y()
+                        .gap(5.0)
+                        .child(el().size(6.0, 6.0).radius(3.0).fill(t.accent))
+                        .child(label(
+                            "Working",
+                            11.0,
+                            500.0,
+                            crate::theme::mix_srgb(t.accent, t.ink, 0.3),
+                        ))
                 } else {
                     el()
                 }),
@@ -1606,7 +1631,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                 let row = row()
                     .key(format!("studio-project-switch-{index}"))
                     .w_full()
-                    .h(34.0)
+                    .h(28.0)
                     .px(10.0)
                     .center_y()
                     .radius(8.0)
@@ -1658,7 +1683,7 @@ fn project_nav(s: &AppState, t: Palette) -> El {
                     .absolute(-4096.0, -4096.0)
                     .on_press(|s: &mut AppState| s.studio_project_menu_open = false),
             );
-            nav = nav.child(menu.absolute(menu_x, 31.0).raise());
+            nav = nav.child(menu.absolute(menu_x, 34.5).raise());
         }
     }
     nav
@@ -1697,7 +1722,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     } else {
         (1292.0, 854.0)
     };
-    let mut plane = col().w_full().h_full();
+    let mut plane =
+        col()
+            .w_full()
+            .h_full()
+            .child(crate::plasma::slot(s, cx, if t.dark { 0.5 } else { 1.0 }));
     let rows = s.studio_layout["rows"].as_array();
     let mut selected_present = false;
     if let Some(rows) = rows {
@@ -1733,7 +1762,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             cx,
         ));
     }
-    plane = plane.child(crate::plasma::slot(s, cx, if t.dark { 0.5 } else { 1.0 }));
     let plane = col()
         .key("studio-plane")
         .w_full()
@@ -3034,18 +3062,17 @@ fn studio_row(
             .radius(18.0)
             .border(1.0, t.ink.alpha(0.08))
             .fill(t.raised)
-            .shadow(0.0, 10.0, rune::Color::BLACK.alpha(0.14))
             .offset_motion(Curve::tween(
                 0.18,
                 rune::Easing::cubic(0.22, 1.0, 0.36, 1.0),
             ))
             .child(
                 el().w_full()
-                    .h(38.0)
+                    .h(42.5)
                     .px(16.0)
                     .center_y()
                     .fill(crate::theme::mix_srgb(t.ground, t.ink, 0.02))
-                    .child(label("Insert", 13.0, 600.0, t.ink_soft)),
+                    .child(label("Insert", 13.0, 500.0, t.ink_soft)),
             );
         for (row_index, (glyph, title)) in [
             (&INSERT_THREAD, "New thread"),
@@ -3063,7 +3090,7 @@ fn studio_row(
                 .center_y()
                 .child(icon(glyph, 14.0).color(t.muted))
                 .child(label(title, 13.0, 500.0, t.ink_soft).grow(1.0))
-                .child(icon(&ARROW_RIGHT, 11.0).color(t.muted));
+                .child(icon(&INSERT_CHEVRON, 11.0).color(t.muted));
             action = action.on_hover_change(move |s: &mut AppState, over, _| {
                 if over {
                     s.studio_insert_selection = row_index;
@@ -3106,7 +3133,7 @@ fn studio_row(
             }
             menu = menu.child(action);
         }
-        result = result.child(menu.absolute(x.max(0.0), y.max(0.0)));
+        result = result.child(menu.child(el().h(13.0)).absolute(x.max(0.0), y.max(0.0)));
     }
     result
 }
@@ -3138,7 +3165,6 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
         .radius(16.0)
         .border(1.0, t.ink.alpha(0.08))
         .fill(t.raised)
-        .shadow(0.0, 28.0, rune::Color::BLACK.alpha(0.2))
         .child(
             row()
                 .w_full()
@@ -3153,7 +3179,7 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                         .w(390.0)
                         .h(40.0)
                         .color(t.ink)
-                        .offset(0.0, 8.0)
+                        .offset(0.0, 10.0)
                         .placeholder("Search across all conversations…", t.muted)
                         .on_edit(|s: &mut AppState| &mut s.conversation_search),
                 )
@@ -3222,7 +3248,8 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
                 .h(34.0)
                 .px(16.0)
                 .center_y()
-                .gap(16.0)
+                .gap(14.0)
+                .px(14.0)
                 .child(search_hint("↑↓ navigate", t))
                 .child(search_hint("↵ open", t))
                 .child(search_hint("esc close", t)),
@@ -3242,7 +3269,7 @@ fn conversation_search_modal(s: &AppState, t: Palette) -> El {
 fn search_hint(value: &str, t: Palette) -> El {
     text(value)
         .font(
-            TextStyle::new(10.0, 400.0)
+            TextStyle::new(10.5, 400.0)
                 .family(Family::SystemMono)
                 .tracking(0.0),
         )
