@@ -781,6 +781,8 @@ fn column_title(state: Option<&StudioState>, focused: bool, t: Palette) -> El {
             .label("Thread info")
             .expanded(state.is_some_and(|state| state.title_info_open))
             .focusable(true)
+            .radius(6.0)
+            .focus_ring(2.0, 2.0, t.ink.alpha(0.3))
             .on_key(|s: &mut AppState, event, _| {
                 if event.key == rune::Key::Enter {
                     s.studio.title_info_open = !s.studio.title_info_open;
@@ -1854,7 +1856,22 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         String::new()
     };
     // ThreadStrip only mounts its floor plasma inside the empty-board chooser.
-    let mut plane = col().w_full().h_full();
+    let row_count = s.studio_layout["rows"].as_array().map_or(0, Vec::len);
+    let multi_overview = s.studio.overview && row_count > 1;
+    let row_height = if multi_overview {
+        if row_count == 2 {
+            (viewport_h * 0.47 - 12.0).clamp(280.0, 480.0)
+        } else {
+            (viewport_h * 0.42).clamp(280.0, 460.0)
+        }
+    } else {
+        viewport_h
+    };
+    let mut plane = col()
+        .w_full()
+        .h_full()
+        .gap(if multi_overview { 24.0 } else { 0.0 })
+        .py(if multi_overview { 24.0 } else { 0.0 });
     let rows = s.studio_layout["rows"].as_array();
     let mut selected_present = false;
     if let Some(rows) = rows {
@@ -1872,7 +1889,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 saved,
                 index,
                 selected,
-                (viewport_w, viewport_h),
+                (viewport_w, row_height),
                 t,
                 cx,
             ));
@@ -2732,6 +2749,8 @@ fn studio_row(
                         .gap(2.0)
                         .child(head_tip(
                             el().key(format!("studio-width-{id}"))
+                                .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
+                                .focus_ring_halo(1.0, rune::Color::WHITE)
                                 .px(4.0)
                                 .h(20.0)
                                 .min_w(20.0)
@@ -2783,6 +2802,8 @@ fn studio_row(
                         })
                         .child(head_tip(
                             el().key(format!("studio-zen-{id}"))
+                                .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
+                                .focus_ring_halo(1.0, rune::Color::WHITE)
                                 .w(20.0)
                                 .h(20.0)
                                 .center()
@@ -2808,6 +2829,8 @@ fn studio_row(
                         ))
                         .child(head_tip(
                             el().key(format!("studio-close-{id}"))
+                                .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
+                                .focus_ring_halo(1.0, rune::Color::WHITE)
                                 .w(20.0)
                                 .h(20.0)
                                 .center()
@@ -3097,6 +3120,7 @@ fn studio_row(
             } else if focused {
                 focused_body(
                     s,
+                    viewport_h,
                     &project.name,
                     width,
                     t,
@@ -3106,7 +3130,9 @@ fn studio_row(
                 parked_body(
                     state,
                     &id,
-                    s.studio.overview.then_some((viewport_h, width)),
+                    s.studio
+                        .overview
+                        .then_some((s.studio_viewport.1, viewport_h, width)),
                     t,
                     crate::codegolf::MARK_BASE + (project_index * 256 + i) as u32,
                 )
@@ -3881,18 +3907,21 @@ fn search_hint(value: &str, t: Palette) -> El {
 fn parked_body(
     state: &StudioState,
     id: &str,
-    overview: Option<(f32, f32)>,
+    overview: Option<(f32, f32, f32)>,
     t: Palette,
     mark: u32,
 ) -> El {
     if state.items.is_empty()
-        && let Some((height, width)) = overview
+        && let Some((window_height, height, width)) = overview
     {
-        return col()
-            .w_full()
-            .grow(1.0)
-            .shrink()
-            .child(empty_thread_art(height, width, true, false, mark));
+        return col().w_full().grow(1.0).shrink().child(empty_thread_art(
+            window_height,
+            height,
+            width,
+            true,
+            false,
+            mark,
+        ));
     }
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
@@ -4345,13 +4374,18 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
 
 fn empty_thread_art(
     viewport_height: f32,
+    row_height: f32,
     col_width: f32,
     overview: bool,
     live: bool,
     mark: u32,
 ) -> El {
-    let height = (viewport_height.max(640.0) * 0.72).min(580.0);
-    let top = if overview { 26.296875 } else { 0.0 };
+    let height = (viewport_height * 0.72).min(580.0);
+    let top = if overview {
+        26.296875 + (row_height - viewport_height) * 0.5
+    } else {
+        0.0
+    };
     let cached_scale = 0.985 * 0.985;
     el().w_full()
         .max_w(720.0)
@@ -4369,7 +4403,14 @@ fn empty_thread_art(
         )
 }
 
-fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32) -> El {
+fn focused_body(
+    s: &AppState,
+    row_height: f32,
+    name: &str,
+    col_width: f32,
+    t: Palette,
+    mark: u32,
+) -> El {
     let activity_plan = s.studio.conversation_fixture.as_deref() == Some("activity-plan");
     let show_closing = s.studio.composer_closing_at.is_some();
     let track_w = (col_width - 32.0).clamp(0.0, 680.0);
@@ -5655,6 +5696,7 @@ fn focused_body(s: &AppState, name: &str, col_width: f32, t: Palette, mark: u32)
     let art = if s.studio.items.is_empty() {
         empty_thread_art(
             s.studio_viewport.1,
+            row_height,
             col_width,
             s.studio.overview,
             s.art_focused,

@@ -802,7 +802,7 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .cursor(Cursor::Pointer)
         .opacity(0.92)
         .child(icon(mode_icon, 15.0).color(mode_hue))
-        .child(label(mode_label, 12.5, 400.0, t.ink))
+        .child(label(mode_label, 12.5, 500.0, t.ink))
         .on_press(|s: &mut AppState| s.cycle_studio_mode());
 
     let model_btn = {
