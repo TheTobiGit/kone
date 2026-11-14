@@ -3233,7 +3233,7 @@ fn studio_row(
                     .filter(|title| !title.is_empty())
                     .unwrap_or("New thread")
                     .to_owned();
-                let selected = focused;
+                let selected = saved["focusedId"].as_str() == Some(thread);
                 let select_id = id.clone();
                 let select_path = path.clone();
                 let hovered = s.studio.overview_hovered.as_deref() == Some(id.as_str());

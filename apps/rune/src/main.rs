@@ -736,7 +736,7 @@ fn studio_overview_fixture(s: &mut AppState, selection: usize) {
 }
 
 fn studio_final_multi(s: &mut AppState) {
-    use state::{Project, StudioState};
+    use state::{Project, StudioProvider, StudioState};
     studio_overview_fixture(s, 0);
     s.projects = vec![
         Project {
@@ -771,6 +771,15 @@ fn studio_final_multi(s: &mut AppState) {
         s.studio_threads.insert(
             id.into(),
             StudioState {
+                providers: if id == "nova-one" {
+                    vec![StudioProvider {
+                        id: "cursor".into(),
+                        label: "Cursor".into(),
+                        supports_compaction: false,
+                    }]
+                } else {
+                    Vec::new()
+                },
                 thread_open: true,
                 thread_id: id.into(),
                 project_path: if id.starts_with("nova") {
