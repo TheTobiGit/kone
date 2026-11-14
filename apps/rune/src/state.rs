@@ -1210,11 +1210,6 @@ impl AppState {
                 .and_then(|row| row["panes"].as_array())
                 .map_or(0, Vec::len);
             match event.key {
-                rune::Key::Escape => {
-                    s.studio.overview = false;
-                    s.center_studio_column(tx);
-                    return true;
-                }
                 rune::Key::Left | rune::Key::Up => {
                     s.studio.overview_selection = s.studio.overview_selection.saturating_sub(1);
                     let path = s.studio.project_path.clone();
@@ -1656,6 +1651,13 @@ impl AppState {
                 s.studio.picker_opened_at = None;
                 s.studio.mode_picker_open = false;
                 s.studio.effort_picker_open = false;
+                return true;
+            }
+            // The strip's Escape handler runs after popovers and menus in
+            // Electron. Keep an open overview below those layers here too.
+            if s.studio.overview {
+                s.studio.overview = false;
+                s.center_studio_column(tx);
                 return true;
             }
             if s.studio.composer_open {
@@ -3627,13 +3629,14 @@ mod start_actions_tests {
     }
 
     #[test]
-    fn studio_escape_closes_pickers_then_composer_before_leaving_studio() {
+    fn studio_escape_closes_picker_then_overview_then_composer_before_leaving_studio() {
         let mut s = super::AppState {
             page: Page::Studio,
             ..Default::default()
         };
         s.studio.composer_open = true;
         s.studio.mode_picker_open = true;
+        s.studio.overview = true;
         s.composer.focused = true;
         let esc = rune::KeyEvent {
             key: rune::Key::Escape,
@@ -3642,6 +3645,11 @@ mod start_actions_tests {
         let mut tx = rune::Tx::default();
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
         assert!(!s.studio.mode_picker_open);
+        assert!(s.studio.overview);
+        assert!(s.studio.composer_open);
+
+        assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
+        assert!(!s.studio.overview);
         assert!(s.studio.composer_open);
 
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
