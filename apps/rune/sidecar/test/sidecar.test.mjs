@@ -80,12 +80,21 @@ test("project and Studio state survive a sidecar restart", async () => {
     await app.call("projects.pin", { path: "/tmp/one", pinned: true });
     await app.call("projects.remember", { path: "/tmp/two", name: "Two" });
     await app.call("studio.save", { layout: { version: 2, rows: [] } });
+    const scratchpad = { scratchpadId: "pad-review", projectPath: created.path, body: "<p>Notes <strong>persist</strong></p>", expectedRevision: 0 };
+    assert.equal((await app.call("scratchpad.save", scratchpad)).revision, 1);
+    assert.deepEqual(await app.call("scratchpad.save", { ...scratchpad, body: "stale edit" }), { conflict: 1 });
+    assert.deepEqual(await app.call("scratchpad.list", { projectPath: "/another-project" }), []);
     await app.close();
     app = await open();
     const list = await app.call("projects.list");
     assert.deepEqual(list.map((entry) => entry.name), ["One", "Two"]);
     assert.equal(list[0].pinned, true);
     assert.deepEqual(await app.call("studio.load"), { version: 2, rows: [], focusedRow: null });
+    const pads = await app.call("scratchpad.list", { projectPath: created.path });
+    assert.equal(pads.length, 1);
+    assert.equal(pads[0].id, scratchpad.scratchpadId);
+    assert.equal(pads[0].body, scratchpad.body);
+    assert.equal(pads[0].revision, 1);
     await app.close();
   } finally { app?.abort(); await rm(directory, { recursive: true, force: true }); }
 });
