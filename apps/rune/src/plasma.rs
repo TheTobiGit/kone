@@ -34,7 +34,7 @@ impl Pipeline {
         });
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("plasma"),
-            size: 48,
+            size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -119,6 +119,10 @@ impl Compositor<AppState> for Plasma {
                 site.data[0],
                 if site.srgb_blend { 1.0 } else { 0.0 },
                 site.data[1],
+                site.scale,
+                0.0,
+                0.0,
+                0.0,
             ]) {
                 values.extend_from_slice(&value.to_ne_bytes());
             }

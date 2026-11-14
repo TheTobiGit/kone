@@ -840,16 +840,16 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
             .child(
                 text_input(&state.title_draft, TextStyle::new(12.5, 500.0))
                     .key("studio-title-draft")
-                    .w(212.0)
-                    .h(24.0)
+                    .w(228.0)
+                    .h(20.0)
                     .px(6.0)
-                    .radius(6.0)
-                    .border(1.0, t.accent.alpha(0.45))
-                    .fill(if t.dark {
-                        crate::theme::mix_srgb(t.raised, t.ink, 0.08)
-                    } else {
-                        t.ground
+                    .radius(7.0)
+                    .box_shadow(rune::Shadow {
+                        spread: 2.0,
+                        color: t.accent.alpha(0.45),
+                        ..Default::default()
                     })
+                    .fill(t.hover)
                     .color(t.ink)
                     .align(rune::Align::End)
                     .caret(t.ink.alpha(0.0), t.accent.alpha(0.24))
@@ -1045,9 +1045,10 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
         .on_press(|_: &mut AppState| {})
         .w(320.0)
         .radius(18.0)
+        .clip_rounded(18.0)
         .border(1.0, t.ink.alpha(0.08))
         .fill(if t.dark {
-            t.raised
+            rune::color::hex("#171719").unwrap()
         } else {
             rune::color::hex("#fdfcf8").unwrap()
         })
@@ -1071,7 +1072,7 @@ fn thread_info_panel(state: &StudioState, t: Palette) -> El {
                 .gap(12.0)
                 .corners([18.0, 18.0, 0.0, 0.0])
                 .fill(if t.dark {
-                    crate::theme::mix_srgb(t.raised, t.ink, 0.02)
+                    crate::theme::mix_srgb(t.ground, t.ink, 0.02)
                 } else {
                     rune::color::hex("#f4f2ef").unwrap()
                 })
@@ -1121,7 +1122,7 @@ fn short_thread_id(id: &str) -> String {
 
 fn info_section(value: &str, t: Palette) -> El {
     text(value)
-        .font(TextStyle::new(10.0, 400.0).lh(15.0).tracking(0.6))
+        .font(TextStyle::new(9.5, 500.0).lh(15.0).tracking(0.6))
         .quarter_pixel_glyphs(cfg!(target_os = "macos"))
         .color(t.muted.alpha(0.8))
 }
@@ -3116,12 +3117,9 @@ fn studio_row(
             .key("studio-thread-insert-menu")
             .w(184.0)
             .radius(18.0)
+            .clip_rounded(18.0)
+            .border(1.0, t.ink.alpha(0.08))
             .fill(t.raised)
-            .box_shadow(rune::Shadow {
-                spread: 1.0,
-                color: t.ink.alpha(0.08),
-                ..Default::default()
-            })
             .pt(5.6)
             .offset_motion(Curve::tween(
                 0.18,
@@ -3129,7 +3127,7 @@ fn studio_row(
             ))
             .child(
                 el().w_full()
-                    .h(40.0)
+                    .h(38.0)
                     .px(16.0)
                     .center_y()
                     .corners([18.0, 18.0, 0.0, 0.0])
