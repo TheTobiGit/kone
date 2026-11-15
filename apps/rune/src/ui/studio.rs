@@ -3352,8 +3352,11 @@ fn studio_row(
                     .role("button")
                     .label(format!("{title}, column {} of {count}", i + 1))
                     .focus_selected(s.studio.overview_selection == i)
-                    .focus_ring(2.0, -1.0, rune::color::hex("#005fcc").unwrap())
-                    .focus_ring_halo(1.0, rune::Color::WHITE)
+                    .focus_ring(
+                        1.0,
+                        0.0,
+                        rune::color::hex(if t.dark { "#c3c3c3" } else { "#101010" }).unwrap(),
+                    )
                     .child(caption)
                     .on_press_tx(move |s: &mut AppState, tx| {
                         s.studio.overview = false;
