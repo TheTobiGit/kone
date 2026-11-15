@@ -5877,7 +5877,7 @@ fn focused_body(
                     Some(0.0),
                     None,
                     Some(0.0),
-                    Some(if s.studio.composer_open { 26.0 } else { 33.0 }),
+                    Some(if s.studio.composer_open { 19.0 } else { 33.0 }),
                 )
                 .px(16.0)
                 .justify_center()
