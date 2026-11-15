@@ -234,7 +234,8 @@ fn main() {
                 s.studio.composer_open = true;
                 s.studio.title = "Studio overview review".into();
                 s.studio.providers[0].id = "gpt".into();
-                s.studio.models[0].label = "GPT 6.1 Terra".into();
+                s.studio.models[0].id = "gpt-5.6-terra".into();
+                s.studio.models[0].label = "GPT-5.6-Terra".into();
                 s.studio.fast_tier = true;
                 s.studio.context_usage = Some((4200, 10_000));
                 s.studio.context_auto_compact = true;
@@ -747,6 +748,10 @@ fn studio_review(s: &mut AppState) {
     s.studio.composer_open = true;
     s.studio.thread_id = "review-one".into();
     s.studio.project_path = "/demo".into();
+    // Studio review scenes represent a focused desktop window. The native
+    // runtime receives this from the window focus callback; headless scenes do
+    // not receive that callback, so set it explicitly for deterministic art.
+    s.art_focused = true;
     s.studio.providers = vec![StudioProvider {
         supports_compaction: true,
         id: "codex".into(),
