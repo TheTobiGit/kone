@@ -5895,12 +5895,7 @@ fn focused_body(
                 .child(dock)
         } else {
             row()
-                .pin(
-                    Some(0.0),
-                    None,
-                    Some(0.0),
-                    Some(if s.studio.composer_open { 19.0 } else { 33.0 }),
-                )
+                .pin(Some(0.0), None, Some(0.0), Some(32.0))
                 .px(16.0)
                 .justify_center()
                 .child(dock)

@@ -239,7 +239,6 @@ fn main() {
                 s.studio.fast_tier = true;
                 s.studio.context_usage = Some((4200, 10_000));
                 s.studio.context_auto_compact = true;
-                s.studio_column_hover = Some("review-one".into());
             }),
             ("studio-final-multi", studio_final_multi),
             ("studio-column-head", studio_column_head),

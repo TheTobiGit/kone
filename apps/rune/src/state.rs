@@ -800,15 +800,15 @@ impl AppState {
         let mut tooltip_changed = false;
         // Input handlers run before poll advances the frame clock. Anchor new
         // transitions here rather than using the previous frame's timestamp.
-        if let Some((_, at)) = &mut s.studio.head_tooltip_pending {
-            if at.is_nan() {
-                *at = clock;
-            }
+        if let Some((_, at)) = &mut s.studio.head_tooltip_pending
+            && at.is_nan()
+        {
+            *at = clock;
         }
-        if let Some((at, _, _)) = &mut s.studio.head_tooltip_fade {
-            if at.is_nan() {
-                *at = clock;
-            }
+        if let Some((at, _, _)) = &mut s.studio.head_tooltip_fade
+            && at.is_nan()
+        {
+            *at = clock;
         }
         if let Some((tip, at)) = &s.studio.head_tooltip_pending {
             let elapsed = clock - at;
