@@ -415,7 +415,10 @@ fn fork_tool(
                 None
             };
         });
-    let width = (tip.chars().count() as f32 * 5.8 + 14.0).max(40.0);
+    // Electron's 11px Geist tooltip measures about 5.1px per character for
+    // these action labels. Keep the fixed padding separate so the bubble
+    // matches its CSS intrinsic width instead of drifting wider as text grows.
+    let width = (tip.chars().count() as f32 * 5.1 + 14.0).max(40.0);
     button = button.child(tooltip_motion(
         el().key(format!("studio-tooltip-{tip}"))
             .absolute(
