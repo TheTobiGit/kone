@@ -273,34 +273,12 @@ fn pretty_wrap(text: &str, spans: &[Span], style: TextStyle, max: f32) -> String
     String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
-trait WordRanges {
-    fn split_word_ranges(&self, offset: usize) -> Vec<std::ops::Range<usize>>;
-}
-impl WordRanges for str {
-    fn split_word_ranges(&self, offset: usize) -> Vec<std::ops::Range<usize>> {
-        let mut result = Vec::new();
-        let mut start = None;
-        for (i, ch) in self.char_indices() {
-            if ch.is_whitespace() {
-                if let Some(from) = start.take() {
-                    result.push(offset + from..offset + i);
-                }
-            } else if start.is_none() {
-                start = Some(i);
-            }
-        }
-        if let Some(from) = start {
-            result.push(offset + from..offset + self.len());
-        }
-        result
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct GreetingMotion {
-    project: String,
-    last_elapsed: f32,
-    segments: std::collections::HashMap<String, (f64, usize)>,
+    /// The last rendered sentence. A change (status arriving) restarts one
+    /// plain opacity fade instead of re-running per-word animations.
+    text: String,
+    at: f64,
 }
 
 /// The greeting's state sentence, assembled as tone-tagged segments like `HomeGreeting.vue`.
@@ -380,13 +358,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .and_then(|i| s.projects.get(i))
         .map(|p| p.name.as_str())
         .unwrap_or("");
-    let elapsed = if cx.is_reduced_motion() || !s.start_actions.live {
-        10.0
-    } else {
-        s.start_actions
-            .mounted
-            .map_or(0.0, |at| (s.start_actions.clock - at) as f32)
-    };
+    let elapsed =
+        if cx.is_reduced_motion() || !s.start_actions.live || s.project_data.overview_cached {
+            10.0
+        } else {
+            s.start_actions
+                .mounted
+                .map_or(0.0, |at| (s.start_actions.clock - at) as f32)
+        };
     let progress = |duration: f32| {
         super::start_motion::bezier([0.22, 1.0, 0.36, 1.0], (elapsed / duration).clamp(0.0, 1.0))
     };
@@ -726,72 +705,30 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .color(t.ink),
         );
     }
-    let greet_in = super::start_motion::bezier(
-        [0.22, 1.0, 0.36, 1.0],
-        ((elapsed - 0.03) / 0.4).clamp(0.0, 1.0),
-    );
-    // Keep content-keyed segments alive across status updates. Newly introduced segments
-    // start immediately; only the first page reveal carries the entrance delay.
+    // One plain fade for the whole greeting. When the status data arrives the
+    // sentence changes and this single fade restarts, rather than a staggered
+    // per-word reveal replaying on top of freshly wrapped text.
     let clock = s.start_actions.clock;
     let mut motion = s.greeting_motion.borrow_mut();
-    let initial =
-        motion.project != name || motion.segments.is_empty() || elapsed < motion.last_elapsed;
-    motion.last_elapsed = elapsed;
-    if initial {
-        motion.project = name.to_owned();
-        motion.segments.clear();
+    if motion.text != m.text {
+        motion.text = m.text.clone();
+        motion.at = clock;
     }
-    let mut occurrences = std::collections::HashMap::<String, usize>::new();
-    let mut active = std::collections::HashSet::new();
-    let mut rank = 0usize;
-    let mut words = Vec::new();
-    for (base, start, end) in &m.segments {
-        let occurrence = occurrences.entry(base.clone()).or_default();
-        let key = format!("{base}#{}", *occurrence);
-        *occurrence += 1;
-        active.insert(key.clone());
-        let ranges: Vec<_> = if base.starts_with("ink:") && *start <= 4 {
-            std::iter::once(*start..*end).collect()
-        } else {
-            m.text[*start..*end].split_word_ranges(*start)
-        };
-        let is_new = !motion.segments.contains_key(&key);
-        let entry = *motion.segments.entry(key).or_insert((
-            if initial {
-                clock - f64::from(elapsed) + 0.03
-            } else {
-                clock
-            },
-            rank,
-        ));
-        for (index, range) in ranges.into_iter().enumerate() {
-            words.push((range, entry.0, entry.1 + index));
-            if is_new {
-                rank += 1;
-            }
-        }
-    }
-    motion.segments.retain(|key, _| active.contains(key));
-    drop(motion);
-    let word_progress = |at: f64, rank: usize| {
-        if cx.is_reduced_motion() || !s.start_actions.live {
-            return 1.0;
-        }
+    let fade = if cx.is_reduced_motion() || !s.start_actions.live || s.project_data.overview_cached
+    {
+        1.0
+    } else {
         super::start_motion::bezier(
-            [0.16, 1.0, 0.3, 1.0],
-            ((clock - at - rank as f64 * 0.035) as f32 / 0.42).clamp(0.0, 1.0),
+            [0.22, 1.0, 0.36, 1.0],
+            ((clock - motion.at) / 0.3).clamp(0.0, 1.0) as f32,
         )
     };
-    let trigger_in = words
-        .first()
-        .map_or(1.0, |(_, at, rank)| word_progress(*at, *rank));
+    drop(motion);
     let css_ease = Easing::cubic(0.25, 0.1, 0.25, 1.0);
     let trigger = el()
         .key("overview-project-trigger")
-        .opacity(trigger_in)
+        .opacity(fade)
         .opacity_motion(now)
-        .offset(0.0, 6.0 * (1.0 - trigger_in))
-        .offset_motion(now)
         .absolute(-4.0, 35.0)
         .size(5.0 + name_space_w + 3.0 + 15.0 + 5.0, 39.5)
         .radius(9.0)
@@ -821,64 +758,23 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .offset(0.0, if s.overview_name_hover { 1.0 } else { 0.0 })
                 .offset_motion(Curve::tween(0.2, css_ease)),
         );
-    let settled = words
-        .iter()
-        .all(|(_, at, rank)| word_progress(*at, *rank) >= 1.0);
-    let mut base_spans = m.spans.clone();
-    if !settled {
-        base_spans.push(Span::new(0, wrapped.len()).color(t.ink_soft.alpha(0.0)));
-    }
-    let mut body = el().w(greeting_width).child(
+    let body = el().w(greeting_width).child(
         text(wrapped.clone())
-            .spans(base_spans)
+            .spans(m.spans.clone())
             .font(body_style)
             .w(greeting_width)
-            .color(if settled {
-                t.ink_soft
-            } else {
-                t.ink_soft.alpha(0.0)
-            })
+            .color(t.ink_soft)
             .wrap()
-            .pt(0.5),
+            .pt(0.5)
+            .opacity(fade)
+            .opacity_motion(now),
     );
-    for (range, at, rank) in words.into_iter().filter(|_| !settled) {
-        let progress = word_progress(at, rank);
-        let mut spans = m.spans.clone();
-        spans.push(Span::new(0, wrapped.len()).color(t.ink_soft.alpha(0.0)));
-        let color = m
-            .spans
-            .iter()
-            .find(|span| span.start as usize <= range.start && span.end as usize >= range.end)
-            .and_then(|span| span.color)
-            .unwrap_or(t.ink_soft);
-        spans.push(Span::new(range.start, range.end).color(color));
-        body = body.child(
-            text(wrapped.clone())
-                .spans(spans)
-                .font(body_style)
-                .w(greeting_width)
-                .color(t.ink_soft)
-                .wrap()
-                .pt(0.5)
-                .absolute(0.0, 0.0)
-                .opacity(progress)
-                .opacity_motion(now)
-                .offset(0.0, 6.0 * (1.0 - progress))
-                .offset_motion(now),
-        );
-    }
     let greeting = col()
         .on_layout(|s: &mut AppState, bounds| s.overview_greeting_bounds = bounds)
         .gap(2.0)
         .grow(1.0)
         .max_w(620.0)
-        .child(
-            hello
-                .opacity(greet_in)
-                .opacity_motion(now)
-                .offset(0.0, 10.0 * (1.0 - greet_in))
-                .offset_motion(now),
-        )
+        .child(hello.opacity(fade).opacity_motion(now))
         .child(body)
         .child(trigger);
     let mut picker = None;

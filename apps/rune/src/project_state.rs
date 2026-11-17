@@ -40,12 +40,25 @@ pub struct ProjectSession {
 enum Pending {
     List,
     Overview(String),
+    /// Fast status-only read for the project being opened. Its result fills the
+    /// greeting and changes panel before the full overview finishes loading.
+    OpenSummary(String),
     Sessions(String),
     HomeSessions(String),
     Summary(String),
     Watches,
     SessionAction(String),
     StudioArchive(String, String),
+}
+
+/// A status-only stand-in for `projects.overview`. The greeting, Git tab and
+/// changes panel only read `workingTree` and test `repository` for null, so a
+/// fresh `git status` can render them without waiting on readme/contributors.
+fn status_overview(tree: &Value) -> Value {
+    json!({
+        "repository": if tree.is_null() { Value::Null } else { json!({}) },
+        "workingTree": tree,
+    })
 }
 
 #[derive(Default)]
@@ -56,6 +69,13 @@ pub struct ProjectState {
     pub summaries: HashMap<String, Value>,
     watched_paths: Vec<String>,
     pub overview: Value,
+    /// Whether `overview` is the full sidecar result rather than a status-only
+    /// stand-in. A late fast read must not overwrite the full result.
+    pub overview_full: bool,
+    /// The entering project's status was already cached, so the overview has
+    /// nothing to wait for and should paint settled instead of replaying its
+    /// entrance animation on every open.
+    pub overview_cached: bool,
     pub sessions: Vec<ProjectSession>,
     pub home_sessions: Vec<ProjectSession>,
     pub lazy: LazySessions,
@@ -315,11 +335,27 @@ impl AppState {
         self.page = Page::Overview;
         self.project_data.lazy = Default::default();
         self.project_data.menu_path = None;
-        self.project_data
-            .pending
-            .retain(|_, pending| !matches!(pending, Pending::Overview(_) | Pending::Sessions(_)));
+        self.project_data.pending.retain(|_, pending| {
+            !matches!(
+                pending,
+                Pending::Overview(_) | Pending::OpenSummary(_) | Pending::Sessions(_)
+            )
+        });
         self.project_data.overview = Value::Null;
+        self.project_data.overview_full = false;
+        self.project_data.overview_cached = false;
+        // Coming from the projects list, the status is already cached — paint
+        // from it immediately instead of showing an empty greeting.
+        if let Some(tree) = self.project_data.summaries.get(&path).cloned() {
+            self.project_data.overview = status_overview(&tree);
+            self.project_data.overview_cached = true;
+        }
         self.project_data.sessions.clear();
+        self.project_request(
+            "projects.summary",
+            json!({"path": path}),
+            Pending::OpenSummary(path.clone()),
+        );
         self.project_request(
             "projects.remember",
             json!({"path": path, "name": name}),
@@ -441,8 +477,10 @@ impl AppState {
             self.project_data.pending.remove(&id)
         };
         let Some(pending) = pending else { return false };
-        if matches!(pending, Pending::Summary(_) | Pending::Watches)
-            && message.get("error").is_some()
+        if matches!(
+            pending,
+            Pending::Summary(_) | Pending::OpenSummary(_) | Pending::Watches
+        ) && message.get("error").is_some()
         {
             return true;
         }
@@ -558,6 +596,16 @@ impl AppState {
                     );
                 }
             }
+            Pending::OpenSummary(path) => {
+                if self
+                    .selected_project
+                    .and_then(|i| self.projects.get(i))
+                    .is_some_and(|p| p.path == path)
+                    && !self.project_data.overview_full
+                {
+                    self.project_data.overview = status_overview(result);
+                }
+            }
             Pending::Overview(path) => {
                 if self
                     .selected_project
@@ -565,6 +613,7 @@ impl AppState {
                     .is_some_and(|p| p.path == path)
                 {
                     self.project_data.overview = result.clone();
+                    self.project_data.overview_full = true;
                 }
             }
             Pending::Sessions(path) => {
@@ -645,6 +694,53 @@ fn sort_sessions(sessions: &mut [ProjectSession]) {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_a_project_paints_status_before_the_full_overview() {
+        let mut state = AppState::default();
+        state.projects.push(Project {
+            name: "B".into(),
+            path: "/b".into(),
+        });
+        state.selected_project = Some(0);
+        // Cached by the projects list: available on the first overview frame.
+        state
+            .project_data
+            .summaries
+            .insert("/b".into(), json!({"branch": "cached"}));
+        state.open_project("/b".into());
+        assert_eq!(
+            state.project_data.overview["workingTree"]["branch"],
+            "cached"
+        );
+
+        // A fresh status-only read still wins over the cached copy.
+        state
+            .project_data
+            .pending
+            .insert(1, Pending::OpenSummary("/b".into()));
+        state.project_message(&json!({"id":1,"result":{"branch":"fresh"}}));
+        assert_eq!(
+            state.project_data.overview["workingTree"]["branch"],
+            "fresh"
+        );
+
+        // The full result wins, and a late fast read must not replace it.
+        state
+            .project_data
+            .pending
+            .insert(2, Pending::Overview("/b".into()));
+        state.project_message(
+            &json!({"id":2,"result":{"workingTree":{"branch":"full"},"readme":{}}}),
+        );
+        assert_eq!(state.project_data.overview["workingTree"]["branch"], "full");
+        state
+            .project_data
+            .pending
+            .insert(3, Pending::OpenSummary("/b".into()));
+        state.project_message(&json!({"id":3,"result":{"branch":"late"}}));
+        assert_eq!(state.project_data.overview["workingTree"]["branch"], "full");
+    }
 
     #[test]
     fn sorting_keeps_pins_first_and_filters_names() {
