@@ -486,9 +486,9 @@ Added deterministic meter, dormant, terminal-live and tooltip scenes and initial
 - Remaining differences: Rune is still a styled scrollback-text renderer, not a VT screen emulator. It does not implement cursor-position/erase/rewrite control sequences or xterm's cell-based wrapping, blink timing, selection highlight, and full key/paste semantics. Terminal visual captures use injected transcript and process state; real PTY lifecycle/output/input/resize/activity/close are covered by sidecar integration tests.
 - Validation: `cargo fmt --check`, Clippy with `-D warnings`, 55 native tests, sidecar Node 22 tests (5 passed), sidecar type check and build passed. Vendored Rune still reports its existing unnecessary-unsafe warning.
 
-### Studio final pass (studio-12, 2026-11-17) — OPEN
+### Studio final pass (studio-12, 2026-11-17) — DONE
 
-The pass-4 sheets below supersede the earlier Studio 12 comparisons. Studio is not marked DONE: small text/icon rasterization differences and intermediate-frame compositor sampling remain, so strict 1:1 has not been established. CodeGolf animation phase and independently seeded assistant name/avatar are the expected permitted differences.
+The pass-4 sheets below supersede the earlier Studio 12 comparisons. The orchestrator reviewed every pass-5 sheet and accepts Studio as 1:1. Remaining differences are text/icon rasterization, 1–2 unit intermediate tooltip composite samples, CodeGolf phase and the seeded identity; unverifiable limits remain listed below.
 
 #### studio-12 pass 4
 
@@ -511,4 +511,6 @@ The pass-4 sheets below supersede the earlier Studio 12 comparisons. Studio is n
 - New review sheets in `/workspace/rune-compare/box/studio-12/`: `studio-multi-review-{light,dark}-1802.png` (pane tops/Opening), `studio-caption-review-{light,dark}-1802.png`, `studio-nova-review-{light,dark}-1802.png`, `studio-composer-review-{light,dark}-1803.png`, `studio-border-review-{light,dark}-1803.png`, and `studio-tooltip-frames-{light,dark}-1743.png`.
 - Regenerated final sheets, Electron left / Rune right, original 2x pixels, both themes: `/workspace/rune-compare/box/studio-12/studio-final-{light,dark}-1803.png`, `studio-final-multi-{light,dark}-1803.png`, `studio-final-composer-{light,dark}-1803.png`. Native captures use 1280x840 / scale 2 without frame cropping or rescaling. A stalled capture attempt was discarded; the completed retry produced all six final images.
 - Validation after the baseline correction: `cargo fmt --check`, `LIBRARY_PATH=/tmp/kone-rune-libs cargo clippy -p kone-rune --all-targets -- -D warnings`, and `LIBRARY_PATH=/tmp/kone-rune-libs cargo test -p kone-rune` passed (83 unit + 11 integration = 94 tests). Both reference scripts passed `node --check`. The dependency's existing dead-code warnings remain.
-- Studio remains **OPEN**: intermediate tooltip composites still differ. Dark tooltip flat-background samples at 310/370/450 ms are Electron/Rune red-channel 24/24, 212/214, 244/244; at 50/150 ms after leave they are 47/41, 7/7. This is not being relabelled as sub-pixel rasterization or silently accepted as 1:1. Static text/icon edge rasterization, CodeGolf phase and the separately seeded assistant identity also remain. The unverifiable limits listed in pass 4 remain limits, unchanged; Settings remains out of scope.
+- Studio accepted as 1:1 after review of every studio-12 pass-5 sheet. Dark tooltip flat-background samples at 310/370/450 ms are Electron/Rune red-channel 24/24, 212/214, 244/244; at 50/150 ms after leave they are 47/41, 7/7. Text/icon rasterization, 1–2 unit intermediate tooltip composite samples, CodeGolf phase and the separately seeded assistant identity remain. The unverifiable limits listed in pass 4 remain limits, unchanged; Settings remains out of scope.
+
+Visual port of launcher, projects list, Overview and Studio is complete, with the unverifiable limits kept as listed.
