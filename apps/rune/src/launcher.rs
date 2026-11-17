@@ -419,8 +419,10 @@ pub fn remember(s: &mut AppState, path: String, name: String) {
 }
 pub fn open_folder(s: &mut AppState, _tx: &mut Tx) {
     s.launcher.open(LauncherMode::Open);
-    s.launcher.anchor = s.launcher.home.clone();
-    browse(s, s.launcher.parent.clone(), Root::Jump);
+    // Root the trail at `/` so the home folder itself is listed as a crumb on
+    // the first listing, as it is after climbing to /Users and descending back.
+    s.launcher.anchor = "/".into();
+    browse(s, s.launcher.parent.clone(), Root::Keep);
 }
 fn browse(s: &mut AppState, path: String, root: Root) {
     let path = s.launcher.expand(&path).to_string_lossy().into_owned();
@@ -1954,6 +1956,20 @@ mod tests {
         );
         assert!(repository("https://example.com/owner/repo").is_none());
     }
+    #[test]
+    fn open_browser_lists_the_home_directory_as_a_crumb() {
+        let mut s = AppState::default();
+        let home = s.launcher.home.clone();
+        open_folder(&mut s, &mut Tx::default());
+        browser_completed(&mut s, &json!({"path": home, "entries": []}));
+        assert!(s.launcher.parent_of_anchor().is_none());
+        assert!(s
+            .launcher
+            .crumbs()
+            .iter()
+            .any(|(name, path)| !name.is_empty() && path == &home));
+    }
+
     #[test]
     fn stale_browser_results_and_cancelled_clone_do_not_open() {
         let mut s = AppState::default();
