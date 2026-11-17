@@ -19,10 +19,11 @@ const NOW: Curve = Curve::tween(0.0001, Easing::cubic(0.0, 0.0, 1.0, 1.0));
 /// `font-synthesis: none`, so every weight it asks for paints as Regular.
 const REGULAR: f32 = 400.0;
 
-/// Shared home-page chrome. The first-run screen uses the same outer inset
-/// as the populated projects list. Start actions stay centered in the
-/// content area; `CONTENT_PT` is the projects-list gap under the header.
+/// Shared home-page chrome. Start actions stay centered in the content area;
+/// `CONTENT_PT` is the projects-list gap under the header.
 pub(crate) const PAGE_PX: f32 = 64.0;
+/// The first-run screen uses a tighter horizontal inset than the projects list.
+const EMPTY_PAGE_PX: f32 = 24.0;
 pub(crate) const PAGE_PT: f32 = 20.0;
 pub(crate) const PAGE_PB: f32 = 64.0;
 pub(crate) const CONTENT_PT: f32 = 96.0;
@@ -281,7 +282,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             col()
                 .w_full()
                 .h_full()
-                .px(PAGE_PX)
+                .px(EMPTY_PAGE_PX)
                 .pt(PAGE_PT)
                 .pb(PAGE_PB)
                 .child(
