@@ -405,7 +405,7 @@ fn fork_tool(
         .center()
         .radius(6.0)
         .hover(t.hover)
-        .child(icon(glyph, 13.0).color(ink))
+        .child(icon(glyph, 13.0).color(ink).group_color(t.ink))
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
             if !over {
                 s.studio.head_tooltip_fade =
