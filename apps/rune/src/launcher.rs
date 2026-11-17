@@ -1963,11 +1963,12 @@ mod tests {
         open_folder(&mut s, &mut Tx::default());
         browser_completed(&mut s, &json!({"path": home, "entries": []}));
         assert!(s.launcher.parent_of_anchor().is_none());
-        assert!(s
-            .launcher
-            .crumbs()
-            .iter()
-            .any(|(name, path)| !name.is_empty() && path == &home));
+        assert!(
+            s.launcher
+                .crumbs()
+                .iter()
+                .any(|(name, path)| !name.is_empty() && path == &home)
+        );
     }
 
     #[test]
