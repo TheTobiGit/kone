@@ -112,6 +112,13 @@ static SELECTION_ADD: Icon = Icon {
     body: r#"<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
+// SolarChatRoundLineLinearIcon: dormant thread panes use the closed shell.
+static DORMANT_CHAT: Icon = Icon {
+    name: "studio-dormant-chat",
+    view: 24.0,
+    body: r#"<path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2S2 6.477 2 12c0 1.6.376 3.112 1.043 4.453c.178.356.237.763.134 1.148l-.595 2.226a1.3 1.3 0 0 0 1.591 1.592l2.226-.596a1.63 1.63 0 0 1 1.149.133A9.96 9.96 0 0 0 12 22Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 10.5h8M8 14h5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
+
 static SIDE_CHAT: Icon = Icon {
     name: "studio-side-chat",
     view: 24.0,
@@ -2652,7 +2659,7 @@ fn studio_row(
                 )
                 .w_full()
                 .px(6.4)
-                .h(33.59)
+                .h(if s.studio.overview { 29.79 } else { 33.59 })
                 .justify_between()
                 .child(
                     row()
@@ -2712,7 +2719,7 @@ fn studio_row(
                         } else if state.is_some_and(|s| s.terminal_command.is_some()) {
                             icon(&TERMINAL, 15.0).color(t.muted).mr(8.0)
                         } else if state.is_some_and(|s| s.dormant) {
-                            icon(&SIDE_CHAT, 15.0).color(t.muted)
+                            icon(&DORMANT_CHAT, 15.0).color(t.muted)
                         } else {
                             provider_mark(state, t)
                         })
@@ -2736,7 +2743,8 @@ fn studio_row(
                             },
                         )
                         .child(if state.is_some_and(|s| s.dormant) {
-                            label("New thread", 13.5, 400.0, t.ink)
+                            label("New thread", 13.5, 400.0, t.muted)
+                                .font(TextStyle::new(13.5, 400.0).tracking(-0.2025).lh(16.2))
                         } else if state.is_some_and(|s| s.scratchpad.is_some()) {
                             label("Scratchpad", 13.5, 400.0, t.ink).font(
                                 TextStyle::new(13.5, 400.0)
@@ -3061,12 +3069,11 @@ fn studio_row(
                     .clip_fade_linear(0.0, 14.0, 0.0, 176.0)
                     .child(body)
             } else if state.is_some_and(|s| s.dormant) {
-                col()
-                    .w_full()
-                    .grow(1.0)
-                    .items_center()
-                    .pt(40.0)
-                    .child(label("Opening…", 12.5, 400.0, t.muted).opacity(0.7))
+                col().w_full().grow(1.0).items_center().pt(64.0).child(
+                    label("Opening…", 12.5, 400.0, t.muted)
+                        .font(TextStyle::new(12.5, 400.0).tracking(-0.125).lh(19.375))
+                        .opacity(0.7),
+                )
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col().w_full().gap(0.0).selection_group(true);
                 let fixture_transcript =
