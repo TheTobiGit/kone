@@ -438,7 +438,7 @@ fn fork_tool(
             .center()
             .radius(6.0)
             .fill(t.ink)
-            .child(label(tip, 11.0, 500.0, t.ground)),
+            .child(label(tip, 11.0, 400.0, t.ground)),
         shown,
         state,
     ));
