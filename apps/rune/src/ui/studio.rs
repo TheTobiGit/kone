@@ -2631,8 +2631,8 @@ fn studio_row(
                 !s.dormant && s.terminal_command.is_none() && (!s.items.is_empty() || s.busy)
             });
             let side_chat = state.is_some_and(|s| s.side_chat);
-            // `.col__head`: 33.59 tall with its 20pt controls at the top and a
-            // 13.59pt run below (the body starts at +56 in the page).
+            // Hidden overview tools leave a 16.2pt title row plus 13.59pt padding;
+            // the normal header retains its 20pt controls.
             let activity_fixture = state.is_some_and(|state| {
                 state
                     .conversation_fixture
@@ -3072,6 +3072,8 @@ fn studio_row(
                 col().w_full().grow(1.0).items_center().pt(64.0).child(
                     label("Opening…", 12.5, 400.0, t.muted)
                         .font(TextStyle::new(12.5, 400.0).tracking(-0.125).lh(19.375))
+                        // Match Chromium's glyph baseline within the same line box.
+                        .offset(0.0, 1.25)
                         .opacity(0.7),
                 )
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
