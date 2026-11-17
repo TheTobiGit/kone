@@ -798,18 +798,6 @@ impl AppState {
             }
         }
         let mut tooltip_changed = false;
-        // Input handlers run before poll advances the frame clock. Anchor new
-        // transitions here rather than using the previous frame's timestamp.
-        if let Some((_, at)) = &mut s.studio.head_tooltip_pending
-            && at.is_nan()
-        {
-            *at = clock;
-        }
-        if let Some((at, _, _)) = &mut s.studio.head_tooltip_fade
-            && at.is_nan()
-        {
-            *at = clock;
-        }
         if let Some((tip, at)) = &s.studio.head_tooltip_pending {
             let elapsed = clock - at;
             if elapsed >= 0.3 {
@@ -3298,13 +3286,13 @@ mod tests {
     fn tooltip_uses_css_delay_and_ease_on_both_edges() {
         let mut s = AppState::default();
         let mut tx = rune::Tx::default();
-        s.studio.head_tooltip_pending = Some(("tip".into(), f64::NAN));
+        s.studio.head_tooltip_pending = Some(("tip".into(), 1.0));
         AppState::poll(&mut s, 1.0, &mut tx);
         for (elapsed, expected) in [(0.25, 0.0), (0.31, 0.070806), (0.37, 0.873539), (0.45, 1.0)] {
             AppState::poll(&mut s, 1.0 + elapsed, &mut tx);
             assert!((s.studio.head_tooltip_opacity - expected).abs() < 0.0001);
         }
-        s.studio.head_tooltip_fade = Some((f64::NAN, 1.0, false));
+        s.studio.head_tooltip_fade = Some((2.0, 1.0, false));
         AppState::poll(&mut s, 2.0, &mut tx);
         AppState::poll(&mut s, 2.05, &mut tx);
         assert!((s.studio.head_tooltip_opacity - 0.294389).abs() < 0.0001);

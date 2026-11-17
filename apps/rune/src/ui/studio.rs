@@ -407,13 +407,13 @@ fn fork_tool(
         .hover(t.hover)
         .child(icon(glyph, 13.0).color(ink).group_color(t.ink))
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
+            tx.wake_after(std::time::Duration::ZERO);
             if !over {
                 s.studio.head_tooltip_fade =
                     Some((s.studio.motion_clock, s.studio.head_tooltip_opacity, false));
             }
             s.studio.head_tooltip_pending = if over {
-                tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.into(), f64::NAN))
+                Some((tip.into(), s.studio.motion_clock))
             } else {
                 None
             };
@@ -478,13 +478,13 @@ fn head_tip(
         .label(tip.clone())
         .hover_group_focus()
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
+            tx.wake_after(std::time::Duration::ZERO);
             if !over {
                 s.studio.head_tooltip_fade =
                     Some((s.studio.motion_clock, s.studio.head_tooltip_opacity, false));
             }
             s.studio.head_tooltip_pending = if over {
-                tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.clone(), f64::NAN))
+                Some((tip.clone(), s.studio.motion_clock))
             } else {
                 None
             };
