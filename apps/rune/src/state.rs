@@ -232,6 +232,8 @@ pub struct StudioState {
     pub side_chat: bool,
     pub head_tooltip: Option<String>,
     pub head_tooltip_pending: Option<(String, f64)>,
+    pub head_tooltip_fade: Option<(f64, f32, bool)>,
+    pub head_tooltip_opacity: f32,
     pub motion_clock: f64,
     pub meter_enter_at: Option<f64>,
     pub meter_progress: Option<f32>,
@@ -796,14 +798,41 @@ impl AppState {
             }
         }
         let mut tooltip_changed = false;
+        // Input handlers run before poll advances the frame clock. Anchor new
+        // transitions here rather than using the previous frame's timestamp.
+        if let Some((_, at)) = &mut s.studio.head_tooltip_pending {
+            if at.is_nan() {
+                *at = clock;
+            }
+        }
+        if let Some((at, _, _)) = &mut s.studio.head_tooltip_fade {
+            if at.is_nan() {
+                *at = clock;
+            }
+        }
         if let Some((tip, at)) = &s.studio.head_tooltip_pending {
             let elapsed = clock - at;
             if elapsed >= 0.3 {
                 s.studio.head_tooltip = Some(tip.clone());
+                s.studio.head_tooltip_fade = Some((at + 0.3, 0.0, true));
                 s.studio.head_tooltip_pending = None;
                 tooltip_changed = true;
             } else {
                 tx.wake_after(std::time::Duration::from_secs_f64((0.3 - elapsed).max(0.0)));
+            }
+        }
+        if let Some((at, from, showing)) = s.studio.head_tooltip_fade {
+            let progress = ((clock - at) / 0.12).clamp(0.0, 1.0) as f32;
+            let eased = rune::Easing::EASE.eval(progress);
+            s.studio.head_tooltip_opacity = from + (if showing { 1.0 } else { 0.0 } - from) * eased;
+            tooltip_changed = true;
+            if progress < 1.0 {
+                tx.wake_after(std::time::Duration::from_millis(8));
+            } else {
+                s.studio.head_tooltip_fade = None;
+                if !showing {
+                    s.studio.head_tooltip = None;
+                }
             }
         }
         let animating = s.studio_fade.is_some_and(|(at, _)| clock - at < 0.22)
@@ -3264,6 +3293,25 @@ impl AppState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tooltip_uses_css_delay_and_ease_on_both_edges() {
+        let mut s = AppState::default();
+        let mut tx = rune::Tx::default();
+        s.studio.head_tooltip_pending = Some(("tip".into(), f64::NAN));
+        AppState::poll(&mut s, 1.0, &mut tx);
+        for (elapsed, expected) in [(0.25, 0.0), (0.31, 0.070806), (0.37, 0.873539), (0.45, 1.0)] {
+            AppState::poll(&mut s, 1.0 + elapsed, &mut tx);
+            assert!((s.studio.head_tooltip_opacity - expected).abs() < 0.0001);
+        }
+        s.studio.head_tooltip_fade = Some((f64::NAN, 1.0, false));
+        AppState::poll(&mut s, 2.0, &mut tx);
+        AppState::poll(&mut s, 2.05, &mut tx);
+        assert!((s.studio.head_tooltip_opacity - 0.294389).abs() < 0.0001);
+        AppState::poll(&mut s, 2.15, &mut tx);
+        assert_eq!(s.studio.head_tooltip_opacity, 0.0);
+        assert!(s.studio.head_tooltip.is_none());
+    }
 
     #[test]
     fn continuation_focuses_child_beside_source_after_focus_changes() {

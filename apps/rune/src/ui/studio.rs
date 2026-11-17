@@ -407,10 +407,13 @@ fn fork_tool(
         .hover(t.hover)
         .child(icon(glyph, 13.0).color(ink))
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
-            s.studio.head_tooltip = None;
+            if !over {
+                s.studio.head_tooltip_fade =
+                    Some((s.studio.motion_clock, s.studio.head_tooltip_opacity, false));
+            }
             s.studio.head_tooltip_pending = if over {
                 tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.into(), s.studio.motion_clock))
+                Some((tip.into(), f64::NAN))
             } else {
                 None
             };
@@ -437,6 +440,7 @@ fn fork_tool(
             .fill(t.ink)
             .child(label(tip, 11.0, 500.0, t.ground)),
         shown,
+        state,
     ));
     button
 }
@@ -458,6 +462,7 @@ fn head_tip(
             .fill(t.ink)
             .child(label(tip.clone(), 11.0, 400.0, t.ground)),
         shown,
+        state,
     );
     control = control.child(if right {
         bubble.pin(None, None, Some(0.0), Some(26.0))
@@ -473,24 +478,38 @@ fn head_tip(
         .label(tip.clone())
         .hover_group_focus()
         .on_hover_focus_change(move |s: &mut AppState, over, tx| {
-            s.studio.head_tooltip = None;
+            if !over {
+                s.studio.head_tooltip_fade =
+                    Some((s.studio.motion_clock, s.studio.head_tooltip_opacity, false));
+            }
             s.studio.head_tooltip_pending = if over {
                 tx.wake_after(std::time::Duration::from_millis(300));
-                Some((tip.clone(), s.studio.motion_clock))
+                Some((tip.clone(), f64::NAN))
             } else {
                 None
             };
         })
 }
 
-fn tooltip_motion(mut element: El, shown: bool) -> El {
-    let ease = rune::Easing::cubic(0.25, 0.1, 0.25, 1.0);
-    element = element
-        .offset(0.0, if shown { 0.0 } else { 2.0 })
-        .opacity(if shown { 1.0 } else { 0.0 })
-        .offset_motion(Curve::tween(0.12, ease))
-        .opacity_motion(Curve::tween(0.12, ease));
+fn tooltip_motion(element: El, shown: bool, state: Option<&StudioState>) -> El {
+    // Sample the CSS transition on the frame clock. This avoids a second
+    // compositor transition (and its carried velocity) on show and hide.
+    let opacity = if shown {
+        state.map_or(1.0, |s| {
+            if s.head_tooltip_fade.is_none() {
+                1.0
+            } else {
+                s.head_tooltip_opacity
+            }
+        })
+    } else {
+        0.0
+    };
     element
+        .offset(0.0, 2.0 * (1.0 - opacity))
+        .opacity(opacity)
+        .offset_motion(rune::Anim::INSTANT)
+        .opacity_motion(rune::Anim::INSTANT)
 }
 
 static METER_TRACK: Icon = Icon {
@@ -2621,7 +2640,7 @@ fn studio_row(
                 || ((s.studio_column_hover.as_deref() == Some(id.as_str())
                     || (focused && s.studio_fork_hover))
                     && (!activity_fixture || activity_hover));
-            let fork_ink = t.muted.alpha(if fork_revealed { 1.0 } else { 0.0 });
+            let fork_ink = t.muted;
             let head = row()
                 .offset(
                     0.0,
@@ -2639,6 +2658,8 @@ fn studio_row(
                     row()
                         .w(100.0)
                         .gap(2.0)
+                        .opacity(if fork_revealed { 1.0 } else { 0.0 })
+                        .opacity_motion(Curve::tween(0.2, rune::Easing::EASE))
                         .child(if has_thread && !side_chat {
                             fork_tool(&SIDE_CHAT, "Open a side chat", state, t, fork_ink)
                                 .on_press(|s: &mut AppState| s.create_continuation(false))
