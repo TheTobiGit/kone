@@ -822,19 +822,25 @@ fn studio_final_multi(s: &mut AppState) {
     s.studio.title = "Studio overview review".into();
     s.studio.context_usage = Some((4200, 10_000));
     s.studio.composer_open = false;
+    // The reference cannot attach additional blank sessions without a live
+    // agent. Preserve its actual dormant panes instead of hiding their labels.
+    if let Some(second) = s.studio_threads.get_mut("review-two") {
+        second.dormant = true;
+    }
     for id in ["review-three", "nova-one", "nova-two"] {
         s.studio_threads.insert(
             id.into(),
             StudioState {
                 providers: if id == "nova-one" {
                     vec![StudioProvider {
-                        id: "cursor".into(),
-                        label: "Cursor".into(),
+                        id: "claudeAgent".into(),
+                        label: "Claude".into(),
                         supports_compaction: false,
                     }]
                 } else {
                     Vec::new()
                 },
+                dormant: id == "review-three",
                 thread_open: true,
                 thread_id: id.into(),
                 project_path: if id.starts_with("nova") {

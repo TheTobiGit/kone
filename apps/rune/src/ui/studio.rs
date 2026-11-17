@@ -3300,6 +3300,9 @@ fn studio_row(
                 } else {
                     t.ground
                 };
+                let provider = state
+                    .and_then(|state| state.providers.get(state.provider_index))
+                    .map_or("unknown", |provider| provider.id.as_str());
                 let caption = row()
                     .pin(Some(0.0), None, Some(0.0), Some(-32.0))
                     .h(19.375)
@@ -3309,14 +3312,9 @@ fn studio_row(
                     .scale(1.0 / k)
                     .origin(0.5, 0.0)
                     .child(
-                        brand_mark_size(
-                            state
-                                .and_then(|state| state.providers.get(state.provider_index))
-                                .map_or("unknown", |provider| provider.id.as_str()),
-                            13.0,
-                            t,
-                        )
-                        .color(if hovered || selected {
+                        brand_mark_size(provider, 13.0, t).color(if provider == "claudeAgent" {
+                            t.accent
+                        } else if hovered || selected {
                             t.ink
                         } else {
                             t.muted
