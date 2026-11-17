@@ -68,6 +68,15 @@ static FOLDER_FINDER: Icon = Icon {
     body: r#"<path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12ZM12.9896 2.5C12.1238 3.78525 10.5163 7.71349 10.0737 11.5798C9.98097 12.3899 9.9346 12.795 10.1905 13.1176C10.2151 13.1486 10.2474 13.1843 10.2757 13.212C10.5708 13.5 11.0149 13.5 11.9031 13.5C12.3889 13.5 12.6317 13.5 12.7766 13.6314C12.7923 13.6457 12.8051 13.6588 12.819 13.6748C12.9468 13.8225 12.9383 14.072 12.9212 14.5709C12.8685 16.1156 12.9401 19.0524 14 21.5M7 8v2m10-2v2M7 16.5C10.5 18.5 13.5 18.5 17 16.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+fn back_to_projects(s: &mut AppState) {
+    s.refresh_project_list();
+    s.page = if s.projects.is_empty() {
+        Page::Empty
+    } else {
+        Page::Projects
+    };
+}
+
 fn overview_folder(
     s: &AppState,
     name: &str,
@@ -462,19 +471,20 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .no_focus_ring()
                 .hover_group_focus()
                 .cursor(Cursor::Pointer)
+                .on_key(|s: &mut AppState, event, _| {
+                    if event.key == rune::Key::Enter {
+                        back_to_projects(s);
+                        true
+                    } else {
+                        false
+                    }
+                })
                 .child(
                     icon(&BACK, 18.0)
                         .color(t.muted.alpha(0.7))
                         .group_color(t.ink),
                 )
-                .on_press(|s: &mut AppState| {
-                    s.refresh_project_list();
-                    s.page = if s.projects.is_empty() {
-                        Page::Empty
-                    } else {
-                        Page::Projects
-                    };
-                }),
+                .on_press(back_to_projects),
         );
     let mut avatar = el()
         .w(84.0)
@@ -794,6 +804,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .focusable(true)
         .focus_ring(2.0, 1.0, t.ink.alpha(0.26))
         .cursor(Cursor::Pointer)
+        .on_key(|s: &mut AppState, event, _| {
+            if event.key == rune::Key::Enter {
+                s.overview_switcher_open = !s.overview_switcher_open;
+                true
+            } else {
+                false
+            }
+        })
         .on_press(|s: &mut AppState| s.overview_switcher_open = !s.overview_switcher_open)
         .child(
             icon(&CHEVRON, 15.0)
@@ -885,6 +903,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             (projects.len() as f32 * 32.0 + 6.0).min(s.overview_viewport.1.max(1.0) * 0.35);
         for (_, project) in projects {
             let path = project.path.clone();
+            let enter_path = path.clone();
             let branch = s
                 .project_data
                 .summaries
@@ -931,6 +950,15 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                             .color(t.muted)
                             .truncate(),
                     )
+                    .on_key(move |s: &mut AppState, event, _| {
+                        if event.key == rune::Key::Enter {
+                            s.overview_switcher_open = false;
+                            s.open_project(enter_path.clone());
+                            true
+                        } else {
+                            false
+                        }
+                    })
                     .on_press(move |s: &mut AppState| {
                         s.overview_switcher_open = false;
                         s.open_project(path.clone());
@@ -1753,4 +1781,76 @@ fn count_up(value: i64, elapsed: f32, duration: f32) -> i64 {
         1.0 - 2.0_f32.powf(-10.0 * x)
     };
     (value as f32 * eased).round() as i64
+}
+
+#[cfg(test)]
+mod navigation_key_tests {
+    use super::*;
+    use crate::state::Project;
+    use rune::{Env, Key, KeyEvent, Mods, Runtime};
+
+    fn focus_label(rt: &mut Runtime<AppState>, label: &str) {
+        for _ in 0..48 {
+            if rt
+                .elements()
+                .iter()
+                .any(|element| element.focused && element.label.as_deref() == Some(label))
+            {
+                return;
+            }
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+        }
+        panic!("could not focus {label}");
+    }
+
+    #[test]
+    fn enter_on_the_overview_back_button_returns_to_projects() {
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, Page::Overview);
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env::default());
+        rt.frame(0.0);
+        focus_label(&mut rt, "Back to projects");
+
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.update(|s, _| assert_eq!(s.page, Page::Projects));
+    }
+
+    #[test]
+    fn enter_on_a_project_switcher_choice_opens_that_project() {
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, Page::Overview);
+        state.projects.extend([
+            Project {
+                name: "nova".into(),
+                path: "/review/nova".into(),
+            },
+            Project {
+                name: "atlas".into(),
+                path: "/review/atlas".into(),
+            },
+        ]);
+        state.overview_switcher_open = true;
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env::default());
+        rt.frame(0.0);
+        focus_label(&mut rt, "nova");
+
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.update(|s, _| {
+            assert_eq!(s.selected_project, Some(1));
+            assert_eq!(s.page, Page::Overview);
+            assert!(!s.overview_switcher_open);
+        });
+    }
 }

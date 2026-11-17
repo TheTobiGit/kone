@@ -577,6 +577,16 @@ fn main() {
                 }
             }),
             ("projects-review", |s| review::populate(s, Page::Projects)),
+            ("actions-1-projects", |s| {
+                actions_1_review(s, Page::Projects)
+            }),
+            ("actions-1-overview", |s| {
+                actions_1_review(s, Page::Overview)
+            }),
+            ("actions-1-switcher", |s| {
+                actions_1_review(s, Page::Overview);
+                s.overview_switcher_open = true;
+            }),
             ("projects-skeletons", |s| {
                 review::populate(s, Page::Projects);
                 s.project_data.lazy.ready = 0;
@@ -770,6 +780,60 @@ fn studio_review(s: &mut AppState) {
         ..StudioState::default()
     };
     s.studio_threads.insert("review-two".into(), second);
+}
+
+fn actions_1_review(s: &mut AppState, page: Page) {
+    review::populate(s, page);
+    studio_review(s);
+    s.projects = vec![
+        state::Project {
+            name: "kone".into(),
+            path: "/review/kone".into(),
+        },
+        state::Project {
+            name: "nova".into(),
+            path: "/review/nova".into(),
+        },
+        state::Project {
+            name: "atlas".into(),
+            path: "/review/atlas".into(),
+        },
+    ];
+    s.selected_project = Some(0);
+    s.page = page;
+    s.studio_under_page = Page::Overview;
+    s.studio_layout_ready = true;
+    s.studio_layout["focusedRow"] = "/review/kone".into();
+    s.studio_layout["rows"][0]["projectPath"] = "/review/kone".into();
+    s.studio.project_path = "/review/kone".into();
+    s.studio_threads.clear();
+    let mut second = state::StudioState {
+        thread_open: true,
+        composer_open: true,
+        thread_id: "review-two".into(),
+        project_path: "/review/kone".into(),
+        ..Default::default()
+    };
+    second.items.push(state::StudioItem {
+        id: "review-two-user".into(),
+        kind: "user".into(),
+        text: "Continue the project navigation review".into(),
+        ..Default::default()
+    });
+    s.studio_threads.insert("review-two".into(), second);
+    let mut recent = state::StudioState {
+        thread_open: true,
+        thread_id: "all-mock-1".into(),
+        project_path: "/review/kone".into(),
+        ..Default::default()
+    };
+    recent.items.push(state::StudioItem {
+        id: "all-mock-1-user".into(),
+        kind: "user".into(),
+        text: "Wire up the Droid bridge protocol".into(),
+        ..Default::default()
+    });
+    s.studio_threads.insert("all-mock-1".into(), recent);
 }
 
 fn studio_overview_fixture(s: &mut AppState, selection: usize) {

@@ -444,6 +444,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .enumerate()
         .map(|(position, (i, p))| {
             let path = p.path.clone();
+            let enter_path = path.clone();
             let hover_path = path.clone();
             let press_path = path.clone();
             let pin_path = path.clone();
@@ -569,6 +570,14 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                         }
                         rune::Phase::Up => s.project_data.pressed_project = None,
                         rune::Phase::Move => {}
+                    })
+                    .on_key(move |s: &mut AppState, event, _| {
+                        if event.key == rune::Key::Enter && s.launcher.mode.is_none() {
+                            s.open_project(enter_path.clone());
+                            true
+                        } else {
+                            false
+                        }
                     })
                     .on_press(move |s: &mut AppState| {
                         if s.launcher.mode.is_none() {
@@ -969,6 +978,8 @@ pub(super) fn sessions(
                     .is_none_or(|at| s.project_data.lazy.clock - at < 0.46);
             let id = session.id.clone();
             let path = session.project_path.clone();
+            let enter_id = id.clone();
+            let enter_path = path.clone();
             let hovered = s.project_data.hovered_session.as_deref() == Some(id.as_str());
             let hover_progress = if s.project_data.lazy.reduced.get() {
                 f32::from(hovered)
@@ -1334,6 +1345,20 @@ pub(super) fn sessions(
                         s.project_data.hovered_session = None;
                     }
                 })
+                .on_key(move |s: &mut AppState, event, _| {
+                    if event.key != rune::Key::Enter {
+                        return false;
+                    }
+                    if masked {
+                        return true;
+                    }
+                    if home {
+                        s.open_home_session(enter_path.clone(), enter_id.clone());
+                    } else {
+                        s.open_recent_session(enter_id.clone());
+                    }
+                    true
+                })
                 .on_press(move |s: &mut AppState| {
                     if masked {
                         return;
@@ -1495,6 +1520,43 @@ mod session_tests {
             assert!(s.project_data.pressed_project.is_none());
         });
     }
+
+    #[test]
+    fn enter_on_a_focused_project_card_opens_its_project() {
+        use rune::{Env, Key, KeyEvent, Mods, Runtime};
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, crate::state::Page::Projects);
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env::default());
+        rt.frame(0.0);
+
+        for _ in 0..24 {
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+            if rt
+                .elements()
+                .iter()
+                .any(|element| element.key.as_deref() == Some("project-0") && element.focused)
+            {
+                break;
+            }
+        }
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|element| element.key.as_deref() == Some("project-0") && element.focused)
+        );
+
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.update(|s, _| assert_eq!(s.page, crate::state::Page::Overview));
+    }
+
     #[test]
     fn focus_aware_hover_notifies_once_per_group_transition() {
         use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, col, el};

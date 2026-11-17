@@ -803,6 +803,34 @@ mod tests {
         );
         assert_eq!(state.project_data.home_sessions[0].project_path, "/b");
     }
+
+    #[test]
+    fn opening_home_session_switches_project_before_opening_its_thread_in_studio() {
+        let mut state = AppState::default();
+        state.projects = vec![
+            Project {
+                name: "Alpha".into(),
+                path: "/alpha".into(),
+            },
+            Project {
+                name: "Beta".into(),
+                path: "/beta".into(),
+            },
+        ];
+        state.selected_project = Some(0);
+        state.page = Page::Projects;
+        state.studio_layout_ready = true;
+
+        state.open_home_session("/beta".into(), "beta-thread".into());
+
+        assert_eq!(state.selected_project, Some(1));
+        assert_eq!(state.page, Page::Studio);
+        assert_eq!(state.studio_under_page, Page::Overview);
+        assert_eq!(state.studio.project_path, "/beta");
+        assert_eq!(state.studio.thread_id, "beta-thread");
+        assert!(state.studio.thread_open);
+        assert_eq!(state.studio_layout["focusedRow"], "/beta");
+    }
 }
 
 #[cfg(test)]

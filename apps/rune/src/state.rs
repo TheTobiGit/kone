@@ -3922,6 +3922,61 @@ mod start_actions_tests {
     }
 
     #[test]
+    fn ctrl_tab_shows_the_next_recent_project_and_commits_on_control_release() {
+        let mut s = super::AppState {
+            page: Page::Overview,
+            projects: vec![
+                super::Project {
+                    name: "kone".into(),
+                    path: "/kone".into(),
+                },
+                super::Project {
+                    name: "nova".into(),
+                    path: "/nova".into(),
+                },
+                super::Project {
+                    name: "atlas".into(),
+                    path: "/atlas".into(),
+                },
+            ],
+            selected_project: Some(0),
+            ..Default::default()
+        };
+        for (path, last_opened_at) in [("/kone", 3), ("/nova", 2), ("/atlas", 1)] {
+            s.project_data.metadata.insert(
+                path.into(),
+                crate::project_state::ProjectMeta {
+                    pinned: false,
+                    last_opened_at,
+                },
+            );
+        }
+        let mut tx = rune::Tx::default();
+        let tab = rune::KeyEvent {
+            key: rune::Key::Tab,
+            mods: rune::Mods {
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        assert!(crate::app_key(&mut s, &tab, &mut tx));
+        assert_eq!(s.cycle_paths, ["/kone", "/nova", "/atlas"]);
+        assert_eq!(s.cycle_index, 1);
+
+        let release = rune::KeyEvent {
+            key: rune::Key::Modifier {
+                modifier: rune::Modifier::ControlLeft,
+                pressed: false,
+            },
+            mods: rune::Mods::default(),
+        };
+        assert!(crate::app_key(&mut s, &release, &mut tx));
+        assert!(s.cycle_paths.is_empty());
+        assert_eq!(s.selected_project, Some(1));
+        assert_eq!(s.projects[s.selected_project.unwrap()].path, "/nova");
+    }
+
+    #[test]
     fn studio_overlay_escape_closes_only_the_top_layer() {
         let mut s = super::AppState {
             page: Page::Studio,
