@@ -168,7 +168,7 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
 static PLUS_SIGN: Icon = Icon {
     name: "composer-plus",
     view: 24.0,
-    body: r#"<path d="M12 4V20M20 12H4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+    body: r#"<path d="M12 4V20M20 12H4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
 static MODE_ASK: Icon = Icon {
