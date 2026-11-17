@@ -2658,7 +2658,7 @@ fn studio_row(
                     row()
                         .w(100.0)
                         .gap(2.0)
-                        .opacity(if fork_revealed { 1.0 } else { 0.0 })
+                        .group_opacity(if fork_revealed { 1.0 } else { 0.0 }, 1.0)
                         .opacity_motion(Curve::tween(0.2, rune::Easing::EASE))
                         .child(if has_thread && !side_chat {
                             fork_tool(&SIDE_CHAT, "Open a side chat", state, t, fork_ink)
