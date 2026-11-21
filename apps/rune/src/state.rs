@@ -1691,12 +1691,7 @@ impl AppState {
                     s.center_studio_column(tx);
                     return true;
                 }
-                rune::Key::Up | rune::Key::Down => {
-                    let id = s.studio.thread_id.clone();
-                    s.step_studio_width(&id, if event.key == rune::Key::Up { 1 } else { -1 });
-                    s.center_studio_column(tx);
-                    return true;
-                }
+                rune::Key::Up | rune::Key::Down => return s.studio_width_chord(event, tx),
                 _ => {}
             }
         }
@@ -1909,6 +1904,23 @@ impl AppState {
     }
 
     /// Grows or shrinks a pane one width rung, stopping at the narrowest and widest.
+    /// Cmd/Ctrl+Shift+Up/Down grows or shrinks the focused pane. Focused editors call this before
+    /// their own keys, as Electron's window listener takes the chord from a focused textarea.
+    pub fn studio_width_chord(&mut self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+        let step = match event.key {
+            rune::Key::Up => 1,
+            rune::Key::Down => -1,
+            _ => return false,
+        };
+        if !event.mods.cmd || !event.mods.shift || event.mods.alt {
+            return false;
+        }
+        let id = self.studio.thread_id.clone();
+        self.step_studio_width(&id, step);
+        self.center_studio_column(tx);
+        true
+    }
+
     pub fn step_studio_width(&mut self, thread: &str, step: i64) {
         let path = self.studio.project_path.clone();
         if let Some(pane) = self.studio_layout["rows"]
@@ -2221,6 +2233,7 @@ impl AppState {
         }
         self.persist_scratchpad();
         let path = self.studio.project_path.clone();
+        self.ensure_studio_row(&path);
         let id = format!("scratchpad:{path}");
         self.park_studio_thread();
         if let Some(row) = self.studio_layout["rows"]
@@ -2239,6 +2252,23 @@ impl AppState {
         self.persist_studio_layout();
     }
 
+    /// Adds an empty row for a project that has none yet, so a new pane has a row to land in.
+    fn ensure_studio_row(&mut self, path: &str) {
+        if self.studio_layout["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["projectPath"] == path))
+        {
+            return;
+        }
+        if !self.studio_layout["rows"].is_array() {
+            self.studio_layout["rows"] = serde_json::json!([]);
+        }
+        if let Some(rows) = self.studio_layout["rows"].as_array_mut() {
+            rows.push(serde_json::json!({"projectPath": path, "panes": []}));
+        }
+        self.studio_scroll_row = Some(path.to_owned());
+    }
+
     pub fn insert_studio_terminal(&mut self, at: usize) {
         if !self.studio_layout_ready {
             return;
@@ -2250,6 +2280,7 @@ impl AppState {
             .as_nanos();
         let terminal_id = format!("{}-{time}", std::process::id());
         let thread = format!("terminal:{terminal_id}");
+        self.ensure_studio_row(&path);
         self.park_studio_thread();
         if let Some(panes) = self.studio_layout["rows"]
             .as_array_mut()
