@@ -4984,7 +4984,12 @@ fn focused_body(
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
-        if is_activity && s.studio.busy && item.kind == "assistant_text" {
+        // Only the running turn's text folds into its activity; earlier replies stay.
+        if is_activity
+            && s.studio.busy
+            && item.kind == "assistant_text"
+            && last_user.is_none_or(|user| index > user)
+        {
             continue;
         }
         let activity_row_open = s.studio.activity_expanded.contains(&item.id);
@@ -5102,6 +5107,7 @@ fn focused_body(
                 ),
             "assistant_text" => {
                 let mut turn = col()
+                    .key(format!("studio-reply-{}", item.id))
                     .w_full()
                     .gap(if is_activity { 8.0 } else { 15.0 })
                     .opacity(
@@ -6229,6 +6235,39 @@ mod tests {
         let s = &rt.state;
         assert!(s.studio.items.iter().all(|item| item.kind != "user"));
         assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
+    fn a_running_follow_up_keeps_earlier_replies_visible() {
+        let mut s = queue_state(true);
+        s.studio.queued_turns.clear();
+        for (id, kind, text) in [
+            ("u1", "user", "first ask"),
+            ("c1", "tool_call", "ls"),
+            ("a1", "assistant_text", "earlier reply"),
+            ("u2", "user", "follow-up"),
+            ("c2", "tool_call", "cargo test"),
+            ("a2", "assistant_text", "running reply"),
+        ] {
+            s.studio.items.push(StudioItem {
+                id: id.into(),
+                kind: kind.into(),
+                text: text.into(),
+                name: if kind == "tool_call" {
+                    "Bash".into()
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            });
+        }
+        s.studio_layout = json!({"version":2,"focusedRow":"/kone","rows":[
+            {"projectPath":"/kone","focusedId":"t","panes":[{"id":"t","anchor":{"threadId":"t"}}]}
+        ]});
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("studio-reply-a1").is_some());
+        assert!(rt.find("studio-reply-a2").is_none());
     }
 
     #[test]
