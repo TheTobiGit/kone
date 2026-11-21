@@ -94,6 +94,8 @@ pub struct LauncherState {
     pub name: TextEdit,
     pub url: TextEdit,
     pub parent: String,
+    /// `useGitClone`'s destination, kept apart from the create flow's as Electron keeps it.
+    pub clone_parent: String,
     pub error: Option<String>,
     pub busy: bool,
     pub request_id: Option<u64>,
@@ -120,7 +122,6 @@ pub struct LauncherState {
     repo_name: TextEdit,
     command: TextEdit,
     public: bool,
-    cancelling: bool,
     progress: f64,
     sweep_started: Option<f64>,
     stage: String,
@@ -157,6 +158,7 @@ impl Default for LauncherState {
             name: TextEdit::default(),
             url: TextEdit::default(),
             parent: home.clone(),
+            clone_parent: home.clone(),
             error: None,
             busy: false,
             request_id: None,
@@ -179,7 +181,6 @@ impl Default for LauncherState {
             repo_name: TextEdit::default(),
             command: TextEdit::default(),
             public: false,
-            cancelling: false,
             progress: 0.0,
             sweep_started: None,
             stage: String::new(),
@@ -315,6 +316,14 @@ impl LauncherState {
                 .map_or("/".into(), |p| p.to_string_lossy().into_owned()),
         )
     }
+    /// The folder the form creates or clones into.
+    fn dest(&self) -> &str {
+        if self.mode == Some(LauncherMode::Clone) {
+            &self.clone_parent
+        } else {
+            &self.parent
+        }
+    }
     fn submittable(&self) -> bool {
         match self.mode {
             Some(LauncherMode::Clone) => repository(&self.url.text).is_some(),
@@ -325,6 +334,7 @@ impl LauncherState {
     pub fn fixture(&mut self, mode: LauncherMode) {
         self.home = "/Users/you".into();
         self.parent = self.home.clone();
+        self.clone_parent = self.home.clone();
         self.anchor = self.home.clone();
         self.open(mode);
         if mode == LauncherMode::Open {
@@ -394,28 +404,52 @@ fn folder_name(path: &str) -> String {
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
 }
-/// `owner/repo` from any GitHub reference form.
+/// `parseRepoRef`: `owner/repo`, a github.com web URL (any path, query or hash after the
+/// repo), `github.com/owner/repo` or `git@github.com:owner/repo`, each with an optional
+/// `.git`. Owner and repo are `[\w.-]+`.
 fn repo_parts(input: &str) -> Option<(String, String)> {
-    let input = input.trim().trim_end_matches('/');
-    let path = input
-        .strip_prefix("git@github.com:")
-        .or_else(|| input.strip_prefix("https://github.com/"))
-        .or_else(|| input.strip_prefix("http://github.com/"))
-        .or_else(|| input.strip_prefix("github.com/"))
-        .unwrap_or(input);
-    let mut parts = path.split(['/', '?', '#']);
-    let owner = parts.next()?;
-    let repo = parts.next()?.trim_end_matches(".git");
-    if owner.is_empty()
-        || repo.is_empty()
-        || !owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        || !repo
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-    {
-        return None;
-    }
-    Some((owner.into(), repo.into()))
+    let s = input.trim().trim_end_matches('/');
+    let lower = s.to_ascii_lowercase();
+    let path = if lower.starts_with("git@github.com:") {
+        &s["git@github.com:".len()..]
+    } else if lower.starts_with("https://") || lower.starts_with("http://") {
+        let rest = &s[s.find("://")? + 3..];
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = rest[..end].rsplit('@').next()?;
+        let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
+        if !port.is_empty() && port.parse::<u16>().is_err() {
+            return None;
+        }
+        let host = host.to_ascii_lowercase();
+        if host.strip_prefix("www.").unwrap_or(&host) != "github.com" {
+            return None;
+        }
+        let path = &rest[end..];
+        &path[..path.find(['?', '#']).unwrap_or(path.len())]
+    } else if lower.starts_with("github.com/") {
+        &s["github.com/".len()..]
+    } else {
+        let (owner, repo) = s.split_once('/')?;
+        if !repo_word(owner) || !repo_word(repo) {
+            return None;
+        }
+        s
+    };
+    let mut segs = path.split('/').filter(|seg| !seg.is_empty());
+    let owner = segs.next()?;
+    let repo = segs.next()?;
+    let repo = match repo.len().checked_sub(4) {
+        Some(cut) if repo.is_char_boundary(cut) && repo[cut..].eq_ignore_ascii_case(".git") => {
+            &repo[..cut]
+        }
+        _ => repo,
+    };
+    (repo_word(owner) && repo_word(repo)).then(|| (owner.into(), repo.into()))
+}
+fn repo_word(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
 }
 fn repository(input: &str) -> Option<(String, String)> {
     repo_parts(input).map(|(owner, repo)| {
@@ -508,7 +542,11 @@ fn choose(s: &mut AppState, path: String) {
         let name = folder_name(&path);
         s.launcher.exit(Some((path, name)));
     } else {
-        s.launcher.parent = path;
+        if s.launcher.mode == Some(LauncherMode::Clone) {
+            s.launcher.clone_parent = path;
+        } else {
+            s.launcher.parent = path;
+        }
         s.launcher.view = View::Form;
         s.launcher.focus_form();
     }
@@ -656,11 +694,6 @@ pub fn browser_failed(s: &mut AppState, _message: &str) {
 pub fn completed(s: &mut AppState, result: &Value) {
     s.launcher.busy = false;
     s.launcher.request_id = None;
-    if s.launcher.cancelling {
-        s.launcher.cancelling = false;
-        s.launcher.exit(None);
-        return;
-    }
     if let (Some(path), Some(name)) = (result["path"].as_str(), result["name"].as_str()) {
         s.launcher.progress = 1.0;
         if s.launcher.mode == Some(LauncherMode::Clone) {
@@ -675,17 +708,12 @@ pub fn completed(s: &mut AppState, result: &Value) {
 pub fn failed(s: &mut AppState, message: &str) {
     s.launcher.busy = false;
     s.launcher.request_id = None;
-    if s.launcher.cancelling {
-        s.launcher.cancelling = false;
-        s.launcher.exit(None);
+    let fallback = if s.launcher.mode == Some(LauncherMode::Clone) {
+        "Clone failed"
     } else {
-        let fallback = if s.launcher.mode == Some(LauncherMode::Clone) {
-            "Clone failed"
-        } else {
-            "Couldn’t create the project"
-        };
-        s.launcher.error = Some(peel_error(message, fallback));
-    }
+        "Couldn’t create the project"
+    };
+    s.launcher.error = Some(peel_error(message, fallback));
 }
 
 /// `peelIpcError`: drops the thrown error's name, git's `fatal:` and the `[kone:KIND]`
@@ -747,15 +775,14 @@ pub fn progress(s: &mut AppState, params: &Value) {
         .unwrap_or("Cloning…")
         .to_owned();
 }
+/// `GitHubCloneModal.cancel`: a clone in flight is aborted and the card closes at once, its
+/// late reply ignored. A finished clone's "Done" beat can't be cancelled.
 fn cancel(s: &mut AppState) {
-    if s.launcher.cancelling {
-        return;
-    }
     if s.launcher.busy && s.launcher.mode == Some(LauncherMode::Clone) {
-        if let Some(id) = s.launcher.request_id {
-            s.launcher.cancelling = true;
+        if let Some(id) = s.launcher.request_id.take() {
             s.request("projects.cancelClone", json!({"requestId": id}));
         }
+        s.launcher.exit(None);
     } else {
         s.launcher.close();
     }
@@ -777,15 +804,18 @@ fn submit(s: &mut AppState) {
         };
         (
             "projects.clone",
-            json!({"name": name, "parent": s.launcher.parent, "url": url}),
+            json!({"name": name, "parent": s.launcher.dest(), "url": url}),
         )
     } else {
         ("projects.create", create_params(&s.launcher))
     };
     s.launcher.error = None;
     s.launcher.progress = 0.0;
-    s.launcher.stage.clear();
-    s.launcher.cancelling = false;
+    s.launcher.stage = if mode == LauncherMode::Clone {
+        "Connecting to github.com…".into()
+    } else {
+        String::new()
+    };
     s.launcher.request_id = s.request(method, params);
     s.launcher.busy = s.launcher.request_id.is_some();
     s.launcher.sweep_started = s.launcher.busy.then_some(PENDING);
@@ -1084,7 +1114,7 @@ fn destination(s: &AppState, t: Palette, verb: &'static str) -> El {
     let l = &s.launcher;
     let on = l.hover == Hover::Dest;
     let fade = Curve::tween(0.18, CSS_EASE);
-    let path = l.collapse(&l.parent);
+    let path = l.collapse(l.dest());
     // Liberation Mono's baseline sits 1 pt under Geist's at 13 px in a 20.15 pt line.
     let underline_y = 13.0 * LH / 2.0 + 13.0 * 0.4 + 1.0;
     row()
@@ -1107,7 +1137,7 @@ fn destination(s: &AppState, t: Palette, verb: &'static str) -> El {
             if s.launcher.busy {
                 return;
             }
-            let path = s.launcher.parent.clone();
+            let path = s.launcher.dest().to_owned();
             s.launcher.anchor = s.launcher.home.clone();
             s.launcher.typed = false;
             s.launcher.path.focused = true;
@@ -1173,7 +1203,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
     let busy = l.busy || l.after.is_some();
     let cancel_button = band_action(
         "launcher-cancel",
-        !(busy && !cloning),
+        l.after.is_none() && !(l.busy && !cloning),
         vec![word("Cancel", 14.0, t.muted)],
     )
     .on_press(|s: &mut AppState| cancel(s));
@@ -1303,7 +1333,7 @@ fn progress_view(s: &AppState, t: Palette) -> El {
     } else {
         l.name.text.trim().to_owned()
     };
-    let into = l.collapse(&format!("{}/{}", l.parent.trim_end_matches('/'), name));
+    let into = l.collapse(&format!("{}/{}", l.dest().trim_end_matches('/'), name));
     let head = row()
         .w_full()
         .gap(8.0)
@@ -1357,8 +1387,6 @@ fn progress_view(s: &AppState, t: Palette) -> El {
         } else {
             "Ready".to_owned()
         }
-    } else if l.cancelling {
-        "Cancelling…".to_owned()
     } else if cloning {
         if l.stage.is_empty() {
             "Cloning…".to_owned()
@@ -2291,6 +2319,38 @@ mod tests {
             "repo"
         );
         assert!(repository("https://example.com/owner/repo").is_none());
+        let parts = |s: &str| repo_parts(s).map(|(o, r)| format!("{o}/{r}"));
+        for ok in [
+            "vercel/next.js",
+            " my_org/repo.GIT/ ",
+            "https://www.GitHub.com/vercel/next.js/tree/canary?tab=readme#top",
+            "HTTP://github.com:443/vercel/next.js.git",
+            "https://user@github.com:/vercel/next.js",
+            "github.com/vercel//next.js",
+            "GIT@github.com:vercel/next.js.git",
+        ] {
+            assert!(parts(ok).is_some(), "{ok}");
+        }
+        assert_eq!(parts(" my_org/repo.GIT/ ").as_deref(), Some("my_org/repo"));
+        assert_eq!(
+            parts("github.com/vercel//next.js").as_deref(),
+            Some("vercel/next.js")
+        );
+        for bad in [
+            "",
+            "vercel",
+            "vercel/next.js/tree/canary",
+            "vercel/next.js?x",
+            "https://gitlab.com/vercel/next.js",
+            "https://github.com/vercel",
+            "github.com/vercel/next.js?x",
+            "https://github.com:abc/vercel/next.js",
+            "https://github.com:99999/vercel/next.js",
+            "owner/.git",
+            "own er/repo",
+        ] {
+            assert!(parts(bad).is_none(), "{bad}");
+        }
     }
     #[test]
     fn typed_paths_are_trimmed_expanded_and_lose_trailing_slashes() {
@@ -2395,8 +2455,9 @@ mod tests {
         assert_eq!(s.launcher.current_path, "/new");
         s.launcher.open(LauncherMode::Clone);
         s.launcher.busy = true;
-        s.launcher.cancelling = true;
         s.launcher.request_id = Some(3);
+        cancel(&mut s);
+        assert!(s.launcher.request_id.is_none());
         s.studio_message(json!({"id": 3, "result": {"path": "/cloned", "name": "cloned"}}));
         // The card plays its exit before it unmounts.
         assert!(s.launcher.closing.is_some());
@@ -2406,6 +2467,17 @@ mod tests {
         tick(&mut s, 10.0 + EXIT, &mut tx);
         assert!(s.launcher.mode.is_none());
         assert!(s.pending_project_path.is_none());
+    }
+    #[test]
+    fn clone_and_create_keep_their_own_destination() {
+        let mut s = AppState::default();
+        s.launcher.fixture(LauncherMode::Clone);
+        s.launcher.view = View::Browser;
+        choose(&mut s, "/Users/you/src".into());
+        assert_eq!(s.launcher.clone_parent, "/Users/you/src");
+        assert_eq!(s.launcher.parent, "/Users/you");
+        s.launcher.open(LauncherMode::Create);
+        assert_eq!(s.launcher.dest(), "/Users/you");
     }
     #[test]
     fn the_card_shows_on_its_second_frame_and_refocuses_its_field() {
