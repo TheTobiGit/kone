@@ -1800,15 +1800,7 @@ impl AppState {
             && matches!(event.key, rune::Key::Up | rune::Key::Down)
         {
             let step: isize = if event.key == rune::Key::Up { -1 } else { 1 };
-            let path = s.studio_layout["rows"].as_array().and_then(|rows| {
-                let index = rows
-                    .iter()
-                    .position(|r| r["projectPath"] == s.studio.project_path)?;
-                rows.get(index.checked_add_signed(step)?)?["projectPath"]
-                    .as_str()
-                    .map(str::to_owned)
-            });
-            if let Some(path) = path
+            if let Some(path) = s.studio_row_step(step)
                 && let Some(index) = s.projects.iter().position(|p| p.path == path)
             {
                 s.select_studio_project(index);
@@ -1844,6 +1836,19 @@ impl AppState {
             return true;
         }
         false
+    }
+
+    /// The project path `step` rows away from the open one. A row with no saved panes
+    /// is drawn below the saved rows, so it steps from just past the last of them.
+    fn studio_row_step(&self, step: isize) -> Option<String> {
+        let rows = self.studio_layout["rows"].as_array()?;
+        let index = rows
+            .iter()
+            .position(|r| r["projectPath"] == self.studio.project_path)
+            .unwrap_or(rows.len());
+        rows.get(index.checked_add_signed(step)?)?["projectPath"]
+            .as_str()
+            .map(str::to_owned)
     }
 
     pub fn close_studio_thread(&mut self, thread: &str) {
@@ -3647,6 +3652,8 @@ mod tests {
         assert_eq!(rows[0]["projectPath"], "/b");
         assert!(!s.studio.thread_open);
         assert_eq!(s.studio.project_path, "/a");
+        assert_eq!(s.studio_row_step(-1).as_deref(), Some("/b"));
+        assert_eq!(s.studio_row_step(1), None);
     }
 
     #[test]
