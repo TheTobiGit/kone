@@ -256,6 +256,11 @@ pub struct StudioState {
     pub handoff_picker: bool,
     /// Reply anchor for a branch created through the continuation picker.
     pub branch_block_id: Option<String>,
+    /// The user request being edited in place, by item id.
+    pub user_edit: Option<String>,
+    pub user_edit_draft: TextEdit,
+    /// The pending continuation is an edit fork, whose first turn is already running.
+    pub fork_running: bool,
     pub handoff_staged: bool,
     pub handoff_query: TextEdit,
     pub handoff_selection: Option<(usize, Vec<StudioModel>, usize, String)>,
@@ -569,6 +574,7 @@ fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
             }
             out.push(StudioItem {
                 id: block["id"].as_str().unwrap_or("").into(),
+                block_id: block["id"].as_str().map(str::to_owned),
                 kind: "user".into(),
                 text: block["text"].as_str().unwrap_or("").into(),
                 at,
@@ -1707,6 +1713,10 @@ impl AppState {
             }
         }
         if event.key == rune::Key::Escape {
+            if s.studio.user_edit.is_some() {
+                s.cancel_user_edit();
+                return true;
+            }
             if s.studio.handoff_picker {
                 s.cancel_handoff_picker();
                 return true;
@@ -2368,6 +2378,7 @@ impl AppState {
             existing["focusedId"] = focused_id.into();
         } else {
             rows.push(serde_json::json!({"projectPath": path, "panes": [pane], "focusedId": self.studio.thread_id}));
+            self.studio_scroll_row = Some(path.clone());
         }
         self.studio_layout = serde_json::json!({"version": 2, "rows": rows, "focusedRow": path});
         self.request(
@@ -2382,6 +2393,26 @@ impl AppState {
         {
             return;
         }
+        self.show_provider(index);
+    }
+
+    /// Select the model a reopened thread last used, once its provider's models are known.
+    fn apply_restore_model(&mut self) {
+        let Some(index) = self
+            .studio
+            .restore_model
+            .as_ref()
+            .and_then(|model| self.studio.models.iter().position(|m| &m.id == model))
+        else {
+            return;
+        };
+        self.studio.model_index = index;
+        self.studio.restore_model = None;
+    }
+
+    /// Point the composer at a provider and load its models, without the picker's started guard:
+    /// a thread's own history says which provider it runs on.
+    fn show_provider(&mut self, index: usize) {
         self.studio.provider_index = index;
         let provider = self.studio.providers[index].id.clone();
         self.studio.models = self
@@ -2391,6 +2422,7 @@ impl AppState {
             .cloned()
             .unwrap_or_default();
         self.studio.model_index = 0;
+        self.apply_restore_model();
         self.studio.models_request =
             self.request("agent.models", serde_json::json!({"provider": provider}));
         if let Some(request) = self.studio.models_request {
@@ -2470,6 +2502,54 @@ impl AppState {
         self.studio.handoff_picker = false;
         self.studio.branch_block_id = None;
         self.studio.handoff_staged = false;
+    }
+
+    pub fn start_user_edit(&mut self, item_id: String, text: String) {
+        self.studio.user_edit_draft = TextEdit::new(text);
+        self.studio.user_edit_draft.anchor = 0;
+        self.studio.user_edit_draft.focused = true;
+        self.studio.user_edit = Some(item_id);
+    }
+
+    pub fn cancel_user_edit(&mut self) {
+        self.studio.user_edit = None;
+        self.studio.user_edit_draft = TextEdit::default();
+    }
+
+    /// Electron's edit-and-resend: an edit of the last request is sent as a new turn, and an
+    /// edit of an earlier one forks the thread at that request and opens the fork beside it.
+    pub fn save_user_edit(&mut self, tx: &mut rune::Tx) {
+        let Some(item_id) = self.studio.user_edit.clone() else {
+            return;
+        };
+        let text = self.studio.user_edit_draft.text.trim().to_owned();
+        if text.is_empty() || self.studio.busy {
+            return;
+        }
+        let last_user = self.studio.items.iter().rev().find(|i| i.kind == "user");
+        if last_user.is_some_and(|i| i.id == item_id) {
+            self.cancel_user_edit();
+            self.send_studio_input(text, false, tx);
+            return;
+        }
+        let Some(block_id) = self
+            .studio
+            .items
+            .iter()
+            .find(|i| i.id == item_id)
+            .and_then(|i| i.block_id.clone())
+        else {
+            return;
+        };
+        if self.studio.continuation_request.is_some() {
+            return;
+        }
+        self.cancel_user_edit();
+        self.studio.fork_running = true;
+        self.studio.continuation_request = self.request(
+            "agent.forkAtBlock",
+            serde_json::json!({"sourceThreadId": self.studio.thread_id, "blockId": block_id, "editedText": text}),
+        );
     }
 
     pub fn create_continuation(&mut self, handoff: bool) {
@@ -2872,6 +2952,7 @@ impl AppState {
             }
             if self.studio.continuation_request == Some(id) {
                 self.studio.continuation_request = None;
+                let forked = std::mem::take(&mut self.studio.fork_running);
                 if let Some(error) = message["error"]["message"].as_str() {
                     self.studio.error = Some(error.to_owned());
                     return;
@@ -2888,6 +2969,16 @@ impl AppState {
                         })
                         .map(|i| i + 1);
                     self.open_studio_thread(thread.to_owned());
+                    // The fork's session is live (the sidecar started it for the first turn),
+                    // and that turn starts before its pane exists, so its events were dropped;
+                    // the sidecar reports whether it is still running.
+                    if forked {
+                        self.studio.started = true;
+                        if message["result"]["running"] == true {
+                            self.studio.busy = true;
+                            self.studio.turn_started = Some(std::time::SystemTime::now());
+                        }
+                    }
                     if let Some(at) = position {
                         if let Some(panes) = self.studio_layout["rows"]
                             .as_array_mut()
@@ -2929,7 +3020,7 @@ impl AppState {
                 if let Some(provider) = result["provider"].as_str()
                     && let Some(index) = self.studio.providers.iter().position(|p| p.id == provider)
                 {
-                    self.select_provider(index);
+                    self.show_provider(index);
                 }
                 self.studio.items = history_items(result);
                 return;
@@ -3120,8 +3211,17 @@ impl AppState {
                         .get(self.studio.provider_index)
                         .is_some_and(|active| active.id == provider)
                     {
+                        // A refresh keeps the model already chosen from the cached catalog.
+                        let chosen = self
+                            .studio
+                            .models
+                            .get(self.studio.model_index)
+                            .map(|m| m.id.clone());
+                        self.studio.model_index = chosen
+                            .and_then(|id| models.iter().position(|m| m.id == id))
+                            .unwrap_or(0);
                         self.studio.models = models;
-                        self.studio.model_index = 0;
+                        self.apply_restore_model();
                     }
                 }
             } else if self.studio.models_request == Some(id) {
@@ -3742,7 +3842,9 @@ impl StartActionsState {
 
 #[cfg(test)]
 mod start_actions_tests {
-    use super::{Page, StartActionsState, StudioModel, StudioProvider};
+    use super::{
+        AppState, Page, StartActionsState, StudioItem, StudioModel, StudioProvider, TextEdit,
+    };
 
     #[test]
     fn studio_overview_toggles_navigates_and_enters_a_column() {
@@ -4260,5 +4362,145 @@ mod start_actions_tests {
         assert_eq!(s.studio.effort, "high");
         s.cycle_studio_effort();
         assert_eq!(s.studio.effort, "xhigh");
+    }
+
+    fn edit_state() -> AppState {
+        let mut s = AppState::default();
+        s.studio.thread_id = "source".into();
+        s.studio_layout_ready = true;
+        s.projects = vec![super::Project {
+            name: "Project".into(),
+            path: "/p".into(),
+        }];
+        s.selected_project = Some(0);
+        s.studio.project_path = "/p".into();
+        s.studio.providers = vec![StudioProvider {
+            id: "codex".into(),
+            label: "Codex".into(),
+            supports_compaction: false,
+        }];
+        let user = |id: &str, text: &str| StudioItem {
+            id: id.into(),
+            block_id: Some(id.into()),
+            kind: "user".into(),
+            text: text.into(),
+            ..Default::default()
+        };
+        s.studio.items = vec![user("u1", "first"), user("u2", "second")];
+        s
+    }
+
+    #[test]
+    fn editing_an_earlier_request_forks_instead_of_sending() {
+        let mut s = edit_state();
+        let mut tx = rune::Tx::default();
+        s.start_user_edit("u1".into(), "first".into());
+        s.studio.user_edit_draft = TextEdit::new("first, edited".to_owned());
+        s.save_user_edit(&mut tx);
+        assert!(s.studio.user_edit.is_none());
+        assert_eq!(s.studio.items.len(), 2);
+        // No sidecar in tests: the fork request reached `request`, which reports it.
+        assert_eq!(
+            s.studio.error.as_deref(),
+            Some("Agent service is unavailable")
+        );
+    }
+
+    #[test]
+    fn an_edit_fork_opens_running_beside_its_source() {
+        let mut s = edit_state();
+        s.studio_layout = serde_json::json!({"version":2,"focusedRow":"/p","rows":[{
+            "projectPath":"/p","focusedId":"source","panes":[
+                {"id":"source","kind":"thread","anchor":{"kind":"thread","threadId":"source"}},
+                {"id":"other","kind":"thread","anchor":{"kind":"thread","threadId":"other"}}
+            ]
+        }]});
+        s.studio.fork_running = true;
+        s.studio.continuation_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":true}}));
+        assert_eq!(s.studio.thread_id, "fork");
+        assert!(s.studio.busy && s.studio.started);
+        let panes = s.studio_layout["rows"][0]["panes"].as_array().unwrap();
+        assert_eq!(panes[1]["anchor"]["threadId"], "fork");
+        assert!(!s.studio_threads["source"].fork_running);
+    }
+
+    #[test]
+    fn an_edit_fork_that_already_finished_opens_idle() {
+        let mut s = edit_state();
+        s.studio.fork_running = true;
+        s.studio.continuation_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":false}}));
+        assert_eq!(s.studio.thread_id, "fork");
+        assert!(!s.studio.busy && s.studio.started);
+    }
+
+    #[test]
+    fn an_edit_fork_takes_its_provider_from_history_though_started() {
+        let mut s = edit_state();
+        s.studio.providers.push(StudioProvider {
+            id: "claudeAgent".into(),
+            label: "Claude".into(),
+            supports_compaction: true,
+        });
+        s.studio.provider_index = 1;
+        s.studio.fork_running = true;
+        s.studio.continuation_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":true}}));
+        let model = |id: &str| StudioModel {
+            id: id.into(),
+            label: id.into(),
+            efforts: Vec::new(),
+            default_effort: None,
+        };
+        s.studio
+            .model_catalog
+            .insert("codex".into(), vec![model("first"), model("inherited")]);
+        s.studio.history_request = Some(43);
+        s.studio_message(serde_json::json!({"id":43,"result":{
+            "provider":"codex", "model":"inherited", "blocks":[]
+        }}));
+        assert_eq!(s.studio.provider_index, 0);
+        assert_eq!(s.studio.models[s.studio.model_index].id, "inherited");
+        assert!(s.studio.restore_model.is_none());
+        s.studio.models_request = Some(44);
+        s.studio.model_catalog_requests.insert(44, "codex".into());
+        s.studio_message(serde_json::json!({"id":44,"result":[
+            {"id":"first","label":"First"}, {"id":"inherited","label":"Inherited"}
+        ]}));
+        assert_eq!(s.studio.models[s.studio.model_index].id, "inherited");
+    }
+
+    #[test]
+    fn editing_the_last_request_resends_it_as_a_new_turn() {
+        let mut s = edit_state();
+        let mut tx = rune::Tx::default();
+        s.start_user_edit("u2".into(), "second".into());
+        s.studio.user_edit_draft = TextEdit::new("second, edited".to_owned());
+        s.save_user_edit(&mut tx);
+        assert!(s.studio.user_edit.is_none());
+        assert!(
+            s.studio
+                .items
+                .iter()
+                .any(|i| i.kind == "user" && i.text == "second, edited")
+        );
+    }
+
+    #[test]
+    fn request_edits_wait_for_the_running_turn_and_need_text() {
+        let mut s = edit_state();
+        let mut tx = rune::Tx::default();
+        s.start_user_edit("u1".into(), "first".into());
+        s.studio.busy = true;
+        s.save_user_edit(&mut tx);
+        assert_eq!(s.studio.user_edit.as_deref(), Some("u1"));
+        s.studio.busy = false;
+        s.studio.user_edit_draft = TextEdit::new("   ".to_owned());
+        s.save_user_edit(&mut tx);
+        assert_eq!(s.studio.user_edit.as_deref(), Some("u1"));
+        assert!(s.studio.error.is_none());
+        s.cancel_user_edit();
+        assert!(s.studio.user_edit.is_none());
     }
 }

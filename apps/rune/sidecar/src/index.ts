@@ -356,6 +356,11 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
       if (result.status === "created") broadcast({ type: method === "agent.sideChat" ? "thread.sidechat-created" : "thread.handoff-created", threadId: result.threadId, provider: result.provider, at: Date.now(), source: "kone.store", sourceThreadId: result.sourceThreadId, requestId: result.requestId });
       return result;
     }
+    case "agent.forkAtBlock": {
+      const input = z.object({ sourceThreadId: z.string().min(1), blockId: z.string().min(1), editedText: z.string().trim().min(1) }).parse(params);
+      const created = await dispatcher.forkThreadTurn({ requestId: randomUUID(), threadId: randomUUID(), ...input });
+      return { ...created, running: service.isThreadBusy(created.threadId) };
+    }
     case "agent.compact": return service.compactThread(thread.parse(params).threadId);
     case "agent.interrupt": return service.interruptTurn(thread.parse(params).threadId);
     case "agent.stop": return service.stopSession(thread.parse(params).threadId);
