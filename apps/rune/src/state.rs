@@ -1800,15 +1800,7 @@ impl AppState {
             && matches!(event.key, rune::Key::Up | rune::Key::Down)
         {
             let step: isize = if event.key == rune::Key::Up { -1 } else { 1 };
-            let path = s.studio_layout["rows"].as_array().and_then(|rows| {
-                let index = rows
-                    .iter()
-                    .position(|r| r["projectPath"] == s.studio.project_path)?;
-                rows.get(index.checked_add_signed(step)?)?["projectPath"]
-                    .as_str()
-                    .map(str::to_owned)
-            });
-            if let Some(path) = path
+            if let Some(path) = s.studio_row_step(step)
                 && let Some(index) = s.projects.iter().position(|p| p.path == path)
             {
                 s.select_studio_project(index);
@@ -1846,8 +1838,28 @@ impl AppState {
         false
     }
 
+    /// The project path `step` rows away from the open one. A row with no saved panes
+    /// is drawn below the saved rows, so it steps from just past the last of them.
+    fn studio_row_step(&self, step: isize) -> Option<String> {
+        let rows = self.studio_layout["rows"].as_array()?;
+        let index = rows
+            .iter()
+            .position(|r| r["projectPath"] == self.studio.project_path)
+            .unwrap_or(rows.len());
+        rows.get(index.checked_add_signed(step)?)?["projectPath"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
     pub fn close_studio_thread(&mut self, thread: &str) {
         let path = self.studio.project_path.clone();
+        self.close_studio_pane(&path, thread);
+    }
+
+    /// Closes the pane hosting `thread` in the row for `path`. Focus moves to the right
+    /// neighbour, else the left, and a row left with no panes is dropped, as Electron's
+    /// `saveRow` does. Closing in a background row leaves the focused row alone.
+    pub fn close_studio_pane(&mut self, path: &str, thread: &str) {
         let terminal_id = self
             .studio_threads
             .get(thread)
@@ -1864,26 +1876,38 @@ impl AppState {
             );
         }
         let mut next = None;
-        if let Some(row) = self.studio_layout["rows"]
-            .as_array_mut()
-            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
-            && let Some(panes) = row["panes"].as_array_mut()
+        if let Some(rows) = self.studio_layout["rows"].as_array_mut()
+            && let Some(at) = rows.iter().position(|r| r["projectPath"] == path)
         {
-            let index = panes.iter().position(|p| p["anchor"]["threadId"] == thread);
-            if let Some(index) = index {
-                panes.remove(index);
+            let row = &mut rows[at];
+            let mut closed_id = None;
+            let mut next_id = None;
+            if let Some(panes) = row["panes"].as_array_mut() {
+                let index = panes.iter().position(|p| p["anchor"]["threadId"] == thread);
+                if let Some(index) = index {
+                    closed_id = panes.remove(index)["id"].as_str().map(str::to_owned);
+                }
+                let neighbour = panes.get(index.unwrap_or(0).min(panes.len().saturating_sub(1)));
+                next = neighbour
+                    .and_then(|p| p["anchor"]["threadId"].as_str())
+                    .map(str::to_owned);
+                next_id = neighbour.and_then(|p| p["id"].as_str()).map(str::to_owned);
             }
-            next = panes
-                .get(index.unwrap_or(0).min(panes.len().saturating_sub(1)))
-                .and_then(|p| p["anchor"]["threadId"].as_str())
-                .map(str::to_owned);
+            if row["panes"].as_array().is_some_and(Vec::is_empty) {
+                rows.remove(at);
+            } else if closed_id.is_some()
+                && row["focusedId"].as_str() == closed_id.as_deref()
+                && let Some(next_id) = next_id
+            {
+                row["focusedId"] = next_id.into();
+            }
         }
-        if self.studio.thread_id == thread {
+        if self.studio.project_path == path && self.studio.thread_id == thread {
             if let Some(next) = next {
                 self.open_studio_thread(next);
             } else {
                 self.park_studio_thread();
-                self.studio.project_path = path;
+                self.studio.project_path = path.to_owned();
                 self.studio.thread_open = false;
             }
         }
@@ -3582,6 +3606,54 @@ mod tests {
             1
         );
         assert_eq!(s.studio_layout["rows"][0]["focusedId"], "a");
+    }
+
+    fn two_row_layout() -> AppState {
+        let mut s = AppState::default();
+        for path in ["/a", "/b"] {
+            s.projects.push(Project {
+                name: path.trim_start_matches('/').into(),
+                path: path.into(),
+            });
+        }
+        s.selected_project = Some(0);
+        s.studio_layout_ready = true;
+        s.studio.project_path = "/a".into();
+        s.studio.thread_id = "a1".into();
+        s.studio.thread_open = true;
+        s.studio_layout = json!({"version":2, "focusedRow":"/a", "rows":[
+            {"projectPath":"/a", "focusedId":"a1", "panes":[{"id":"a1", "anchor":{"threadId":"a1"}}]},
+            {"projectPath":"/b", "focusedId":"b2", "panes":[
+                {"id":"b1", "anchor":{"threadId":"b1"}},
+                {"id":"b2", "anchor":{"threadId":"b2"}}
+            ]}
+        ]});
+        s
+    }
+
+    #[test]
+    fn closing_a_background_pane_keeps_the_focused_row_and_thread() {
+        let mut s = two_row_layout();
+        s.close_studio_pane("/b", "b2");
+        assert_eq!(s.studio_layout["focusedRow"], "/a");
+        assert_eq!(s.studio.thread_id, "a1");
+        assert_eq!(s.studio.project_path, "/a");
+        let row = &s.studio_layout["rows"][1];
+        assert_eq!(row["panes"].as_array().unwrap().len(), 1);
+        assert_eq!(row["focusedId"], "b1");
+    }
+
+    #[test]
+    fn closing_a_rows_last_pane_drops_the_row() {
+        let mut s = two_row_layout();
+        s.close_studio_thread("a1");
+        let rows = s.studio_layout["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["projectPath"], "/b");
+        assert!(!s.studio.thread_open);
+        assert_eq!(s.studio.project_path, "/a");
+        assert_eq!(s.studio_row_step(-1).as_deref(), Some("/b"));
+        assert_eq!(s.studio_row_step(1), None);
     }
 
     #[test]
