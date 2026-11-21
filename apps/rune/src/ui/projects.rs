@@ -1200,6 +1200,12 @@ pub(super) fn sessions(
                                         s.project_data.delete_hold = None;
                                         true
                                     })
+                                    .on_physical_input(|s: &mut AppState, event, _| {
+                                        if matches!(event, rune::PhysicalInput::FocusLost) {
+                                            s.project_data.delete_hold = None;
+                                        }
+                                        false
+                                    })
                                     .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
                                         rune::Phase::Down => {
                                             s.project_data.delete_hold = Some((
@@ -1607,6 +1613,30 @@ mod session_tests {
             rt.frame(0.0);
             rt.update(|s, _| assert!(s.project_data.delete_hold.is_none()));
         }
+
+        let held = |rt: &mut Runtime<AppState>| {
+            let on = std::cell::Cell::new(false);
+            rt.update(|s, _| on.set(s.project_data.delete_hold.is_some()));
+            on.get()
+        };
+        rt.key(key(Key::Enter));
+        rt.frame(0.0);
+        assert!(held(&mut rt));
+        rt.window_focus(false);
+        rt.frame(0.0);
+        assert!(!held(&mut rt), "the window losing focus retracts the hold");
+        rt.window_focus(true);
+        rt.frame(0.0);
+        assert!(focused(&rt));
+        rt.key(key(Key::Enter));
+        rt.frame(0.0);
+        assert!(held(&mut rt));
+        rt.key(key(Key::Tab));
+        rt.frame(0.0);
+        assert!(
+            !held(&mut rt),
+            "focus moving off the button retracts the hold"
+        );
     }
 
     #[test]
