@@ -3142,9 +3142,11 @@ fn studio_row(
                             true
                         })
                         .on_input_paste(|s: &mut AppState, content, _| {
-                            s.terminal_write(
-                                content.text().replace("\r\n", "\r").replace('\n', "\r"),
+                            let sequence = crate::terminal::paste_sequence(
+                                &content.text(),
+                                &s.studio.terminal_output,
                             );
+                            s.terminal_write(sequence);
                             true
                         })
                 } else {

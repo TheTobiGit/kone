@@ -123,7 +123,24 @@ pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<
 
 /// Whether the output last switched the cursor keys to application mode (`CSI ? 1 h`).
 pub fn application_cursor(output: &str) -> bool {
-    match (output.rfind("\x1b[?1h"), output.rfind("\x1b[?1l")) {
+    private_mode(output, 1)
+}
+
+/// Pasted text as xterm.js sends it: line breaks become Return, wrapped in `CSI 200~` and
+/// `CSI 201~` when the shell turned on bracketed paste (`CSI ? 2004 h`), so it waits for Enter.
+pub fn paste_sequence(text: &str, output: &str) -> String {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    if private_mode(output, 2004) {
+        format!("\x1b[200~{text}\x1b[201~")
+    } else {
+        text
+    }
+}
+
+fn private_mode(output: &str, mode: u16) -> bool {
+    let on = output.rfind(&format!("\x1b[?{mode}h"));
+    let off = output.rfind(&format!("\x1b[?{mode}l"));
+    match (on, off) {
         (Some(on), Some(off)) => on > off,
         (on, _) => on.is_some(),
     }
@@ -536,7 +553,7 @@ fn active<'a>(main: &'a mut Screen, alternate: &'a mut Option<Screen>) -> &'a mu
 #[cfg(test)]
 mod tests {
     use super::screen_lines;
-    use super::{application_cursor, key_sequence};
+    use super::{application_cursor, key_sequence, paste_sequence};
 
     fn key(key: rune::Key, mods: rune::Mods) -> rune::KeyEvent {
         rune::KeyEvent { key, mods }
@@ -603,6 +620,16 @@ mod tests {
             "a bare command chord stays with the app"
         );
         assert_eq!(enc(Key::Enter, plain), None, "Enter flushes through submit");
+    }
+
+    #[test]
+    fn paste_is_bracketed_while_the_shell_asks_for_it() {
+        assert_eq!(paste_sequence("ls\npwd", "$ "), "ls\rpwd");
+        assert_eq!(
+            paste_sequence("ls\r\npwd", "\x1b[?2004h$ "),
+            "\x1b[200~ls\rpwd\x1b[201~"
+        );
+        assert_eq!(paste_sequence("ls", "\x1b[?2004h$ vim\x1b[?2004l"), "ls");
     }
 
     #[test]
