@@ -6148,6 +6148,34 @@ mod tests {
     }
 
     #[test]
+    fn typing_with_nothing_focused_opens_the_composer_with_that_character() {
+        let mut s = AppState::default();
+        crate::studio_overview_fixture(&mut s, 0);
+        s.studio.overview = false;
+        s.studio.thread_open = true;
+        s.composer.clear();
+        assert!(!s.studio.composer_open);
+        let mut tx = rune::Tx::default();
+        let typed = |key: &str, ctrl: bool| rune::KeyEvent {
+            key: rune::Key::Text(key.into()),
+            mods: rune::Mods {
+                ctrl,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(!crate::app_key(&mut s, &typed("x", true), &mut tx));
+        assert!(!s.studio.composer_open, "a chord does not compose");
+        assert!(crate::app_key(&mut s, &typed("h", false), &mut tx));
+        assert!(s.studio.composer_open);
+        assert!(s.composer.focused);
+        assert_eq!(s.composer.text, "h");
+        assert!(
+            !crate::app_key(&mut s, &typed("i", false), &mut tx),
+            "an open composer types for itself"
+        );
+    }
+
+    #[test]
     fn column_tools_are_reachable_after_the_title_by_keyboard() {
         let mut state = AppState::default();
         crate::studio_overview_fixture(&mut state, 0);

@@ -1648,6 +1648,9 @@ impl AppState {
                 return true;
             }
         }
+        if s.type_to_compose(event) {
+            return true;
+        }
         if !event.mods.cmd {
             return false;
         }
@@ -1872,6 +1875,37 @@ impl AppState {
             pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
         }
         self.persist_studio_layout();
+    }
+
+    /// Electron's type-to-compose: a character typed while nothing has focus and the focused
+    /// thread's composer is closed opens it with that character at the end of the draft.
+    fn type_to_compose(&mut self, event: &rune::KeyEvent) -> bool {
+        let rune::Key::Text(text) = &event.key else {
+            return false;
+        };
+        let thread = &self.studio.thread_id;
+        if text.chars().count() != 1
+            || event.mods.cmd
+            || event.mods.ctrl
+            || event.mods.alt
+            || self.studio.composer_open
+            || self.studio.overview
+            || !self.studio.thread_open
+            || thread.starts_with("terminal:")
+            || thread.starts_with("scratchpad:")
+            || self.studio.approval.is_some()
+            || self.conversation_search_open
+            || self.studio_project_menu_open
+            || self.studio_insert_menu.is_some()
+        {
+            return false;
+        }
+        self.open_composer();
+        let end = self.composer.text.len();
+        self.composer.focus = end;
+        self.composer.anchor = end;
+        self.composer.paste(text);
+        true
     }
 
     /// Grows or shrinks a pane one width rung, stopping at the narrowest and widest.
