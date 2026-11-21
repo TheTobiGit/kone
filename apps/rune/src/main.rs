@@ -1368,7 +1368,7 @@ fn app_key(s: &mut AppState, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool 
         }
     }
     if s.launcher.mode.is_some() {
-        return false;
+        return crate::launcher::type_to_path(s, event);
     }
     if s.page == Page::Studio && event.is_command('f') {
         s.conversation_search_open = !s.conversation_search_open;

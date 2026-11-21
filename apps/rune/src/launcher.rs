@@ -113,6 +113,9 @@ pub struct LauncherState {
     root: Root,
     /// The last navigation was typed into the address bar (a failure shakes it).
     typed: bool,
+    /// Hand keyboard focus back from the address bar on the next tick, for blurs that land
+    /// outside a handler (a typed jump's listing).
+    blur_path: bool,
     remote: bool,
     repo_name: TextEdit,
     command: TextEdit,
@@ -171,6 +174,7 @@ impl Default for LauncherState {
             anchor: home.clone(),
             root: Root::Keep,
             typed: false,
+            blur_path: false,
             remote: false,
             repo_name: TextEdit::default(),
             command: TextEdit::default(),
@@ -443,6 +447,9 @@ fn browse(s: &mut AppState, path: String, root: Root) {
     }
 }
 fn complete_path(s: &mut AppState, draft: String) {
+    if draft.ends_with('/') {
+        return;
+    }
     let expanded = s.launcher.expand(&draft);
     let Some(parent) = expanded.parent() else {
         return;
@@ -480,6 +487,17 @@ pub fn completion_completed(s: &mut AppState, result: &Value) {
         s.launcher.path.focus = s.launcher.path.text.len();
     }
 }
+/// Whether the field's selection is the suffix the last completion appended, rather than a
+/// selection the user made.
+fn completion_shown(l: &LauncherState) -> bool {
+    let p = &l.path;
+    let draft = &l.completion_draft;
+    !draft.is_empty()
+        && p.anchor != p.focus
+        && p.anchor.min(p.focus) == draft.len()
+        && p.anchor.max(p.focus) == p.text.len()
+        && p.text.starts_with(draft.as_str())
+}
 fn choose(s: &mut AppState, path: String) {
     if path.is_empty() {
         return;
@@ -509,6 +527,82 @@ fn descend(s: &mut AppState, path: String) {
         browse(s, path, Root::Keep);
     }
 }
+/// `goToPath`'s reading of a typed address: trimmed, `~` expanded and trailing slashes
+/// dropped. `None` for an empty field.
+fn typed_target(l: &LauncherState, draft: &str) -> Option<String> {
+    let raw = draft.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let expanded = l.expand(raw).to_string_lossy().into_owned();
+    let trimmed = expanded.trim_end_matches('/');
+    Some(if trimmed.is_empty() {
+        "/".into()
+    } else {
+        trimmed.to_owned()
+    })
+}
+/// Enter in the address bar (`submitPath`): jump to the typed folder. The folder already in
+/// focus only blurs the field, an empty one shakes it, and a jump in flight ignores it.
+fn submit_path(s: &mut AppState, tx: &mut Tx) {
+    if s.launcher.browser_request_id.is_some() {
+        return;
+    }
+    let draft = s.launcher.path.text.clone();
+    let l = &mut s.launcher;
+    let Some(target) = typed_target(l, &draft) else {
+        l.path.text = l.address(&l.current_path.clone());
+        l.path.anchor = l.path.text.len();
+        l.path.focus = l.path.text.len();
+        l.path_error = Some(PENDING);
+        return;
+    };
+    if target == l.current_path {
+        l.path.text = l.address(&target);
+        l.path.anchor = l.path.text.len();
+        l.path.focus = l.path.text.len();
+        l.path.focused = false;
+        tx.blur();
+        return;
+    }
+    l.typed = true;
+    browse(s, target, Root::Jump);
+}
+/// `FolderBrowser`'s type-to-focus: a printable key while the address bar is unfocused moves
+/// into it, seeded with the folder in focus plus a trailing slash, and types there.
+pub fn type_to_path(s: &mut AppState, event: &rune::KeyEvent) -> bool {
+    let l = &mut s.launcher;
+    if l.mode != Some(LauncherMode::Open)
+        || l.view != View::Browser
+        || l.path.focused
+        || l.closing.is_some()
+        || l.current_path.is_empty()
+    {
+        return false;
+    }
+    let Key::Text(typed) = &event.key else {
+        return false;
+    };
+    let m = event.mods;
+    if typed.chars().count() != 1 || typed.as_str() == " " || m.cmd || m.ctrl || m.alt || m.logo {
+        return false;
+    }
+    let base = l.address(&l.current_path.clone());
+    let seed = if base.ends_with('/') {
+        base
+    } else {
+        format!("{base}/")
+    };
+    let draft = format!("{seed}{typed}");
+    l.path.text = draft.clone();
+    l.path.anchor = draft.len();
+    l.path.focus = draft.len();
+    l.path.focused = true;
+    if !typed.contains('/') {
+        complete_path(s, draft);
+    }
+    true
+}
 pub fn browser_completed(s: &mut AppState, result: &Value) {
     let Some(path) = result["path"].as_str() else {
         return;
@@ -537,6 +631,11 @@ pub fn browser_completed(s: &mut AppState, result: &Value) {
         })
         .collect();
     l.read_error = false;
+    if l.typed {
+        // A typed jump that landed hands the keyboard back to the list (`pathInput.blur()`).
+        l.path.focused = false;
+        l.blur_path = true;
+    }
     l.typed = false;
     l.pull.clear();
 }
@@ -706,6 +805,10 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         return false;
     };
     let mut changed = false;
+    if std::mem::take(&mut l.blur_path) {
+        tx.blur();
+        changed = true;
+    }
     let mounted = *l.mounted_at.get_or_insert(clock);
     if clock - mounted < 0.24 || l.shown_at.is_some_and(|at| clock - at < 0.42) {
         tx.wake_after(Duration::ZERO);
@@ -1614,37 +1717,44 @@ fn browser(s: &AppState, t: Palette) -> El {
         .offset(shake, mono_nudge(11.5, 11.5 * LH))
         .offset_motion(NOW)
         .on_edit(|s: &mut AppState| &mut s.launcher.path)
-        .on_key(|s: &mut AppState, event, _| {
-            if event.key == Key::Escape {
+        .on_input_key(move |s: &mut AppState, event, tx| {
+            let l = &s.launcher;
+            // Embedded, an untouched field passes Escape on so the modal goes back to the form.
+            if event.key == Key::Escape
+                && (!embedded || l.path.text != l.address(&l.current_path.clone()))
+            {
                 let l = &mut s.launcher;
                 l.path.text = l.address(&l.current_path.clone());
                 l.path.anchor = l.path.text.len();
                 l.path.focus = l.path.text.len();
                 l.path.focused = false;
+                tx.blur();
                 true
-            } else if matches!(event.key, Key::Tab | Key::Right)
-                && s.launcher.path.anchor != s.launcher.path.focus
-            {
+            } else if matches!(event.key, Key::Tab | Key::Right) && completion_shown(&s.launcher) {
                 s.launcher.path.anchor = s.launcher.path.focus.max(s.launcher.path.anchor);
                 s.launcher.path.focus = s.launcher.path.anchor;
                 true
             } else if let Key::Text(inserted) = &event.key {
-                if s.launcher.path.anchor == s.launcher.path.focus
-                    && s.launcher.path.focus == s.launcher.path.text.len()
-                    && !inserted.contains('/')
-                {
-                    complete_path(s, format!("{}{}", s.launcher.path.text, inserted));
+                let shown = completion_shown(&s.launcher);
+                let p = &mut s.launcher.path;
+                if inserted.contains('/') && shown {
+                    // `/` accepts the selected completion, then types after it.
+                    let end = p.anchor.max(p.focus);
+                    p.anchor = end;
+                    p.focus = end;
+                } else if p.anchor.max(p.focus) == p.text.len() && !inserted.contains('/') {
+                    // Typing over a shown completion narrows it: the draft is what the field
+                    // holds once the key replaces the selection.
+                    let start = p.anchor.min(p.focus);
+                    let draft = format!("{}{}", &p.text[..start], inserted);
+                    complete_path(s, draft);
                 }
                 false
             } else {
                 false
             }
         })
-        .on_submit(|s: &mut AppState, _| {
-            let p = s.launcher.path.text.clone();
-            s.launcher.typed = true;
-            browse(s, p, Root::Jump);
-        });
+        .on_submit(submit_path);
     let back = band_action(
         "launcher-back",
         true,
@@ -1654,7 +1764,15 @@ fn browser(s: &AppState, t: Palette) -> El {
             t.muted,
         )],
     )
-    .on_press(|s: &mut AppState| s.launcher.close());
+    .on_press(|s: &mut AppState| s.launcher.close())
+    // Return on a focused Cancel cancels; it would otherwise reach the default Open button.
+    .on_key(|s: &mut AppState, event, _| {
+        let enter = event.key == Key::Enter && event.mods == rune::Mods::default();
+        if enter {
+            s.launcher.close();
+        }
+        enter
+    });
 
     let enter = Transition::offset(0.0, 24.0)
         .combined(Transition::opacity())
@@ -1668,7 +1786,13 @@ fn browser(s: &AppState, t: Palette) -> El {
         row.offset(x, y)
             .offset_motion(Curve::tween(if active { 0.35 } else { 0.6 }, EASE))
     };
-    let mut list = col().w_full().items_start().py(4.0);
+    // Up and Down move between the rows, as `FolderBrowser`'s arrow handler does.
+    let mut list = col()
+        .w_full()
+        .items_start()
+        .py(4.0)
+        .role("list")
+        .focus_group();
     if let Some(parent) = l.parent_of_anchor() {
         let label = if parent == "/" {
             "/".to_owned()
@@ -1780,6 +1904,13 @@ fn browser(s: &AppState, t: Palette) -> El {
         }
         choose(s, path);
     });
+    // Enter away from the field and rows opens the folder in focus; embedded in create or
+    // clone, Enter stays with the host form.
+    let choose_button = if l.mode == Some(LauncherMode::Open) {
+        choose_button.default_button()
+    } else {
+        choose_button
+    };
     let thumb = l.browser_thumb.clone();
     let thumb_hit = l.browser_thumb_hit.clone();
     let track_hit = l.browser_track_hit.clone();
@@ -1823,9 +1954,20 @@ fn browser(s: &AppState, t: Palette) -> El {
             }
         })
         .child(list.pr(10.0));
-    col()
-        .w_full()
-        .child(header(vec![address, back]))
+    // A modal always keeps focus inside, so the standalone browser itself takes it when the
+    // address bar lets go: Return there reaches the Open button and typing comes back to the
+    // field, as with Electron's focus on the dialog body.
+    let body = col().w_full();
+    let body = if embedded {
+        body
+    } else {
+        body.key("launcher-browser")
+            .focusable(true)
+            .tab_index(1)
+            .no_focus_ring()
+            .on_key(|s: &mut AppState, event, _| type_to_path(s, event))
+    };
+    body.child(header(vec![address, back]))
         .child(
             panel(t, true).pl(16.0).py(16.0).child(
                 el().w_full()
@@ -2018,6 +2160,102 @@ mod tests {
     }
 
     #[test]
+    fn escape_in_the_address_bar_restores_it_before_closing() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        rt.key(key(rune::Key::Text("D".into())));
+        rt.frame(5.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/D");
+        rt.key(key(rune::Key::Escape));
+        rt.frame(6.0 / 60.0);
+        rt.frame(7.0 / 60.0);
+        assert!(rt.state.launcher.closing.is_none());
+        assert_eq!(rt.state.launcher.path.text, "~/");
+        assert!(!rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Text("P".into())));
+        rt.frame(8.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/P");
+        assert!(rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(9.0 / 60.0);
+        assert!(!rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(10.0 / 60.0);
+        assert!(rt.state.launcher.closing.is_some());
+    }
+    #[test]
+    fn escape_in_an_embedded_browser_goes_back_to_the_form() {
+        let mut state = AppState::default();
+        state.launcher.fixture_create_browser();
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        rt.state.launcher.path.focused = true;
+        rt.frame(4.0 / 60.0);
+        rt.key(key(rune::Key::Text("D".into())));
+        rt.frame(5.0 / 60.0);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(6.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/");
+        assert!(rt.state.launcher.view == View::Browser);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(7.0 / 60.0);
+        assert!(rt.state.launcher.view == View::Form);
+    }
+    #[test]
+    fn slash_over_a_selection_the_user_made_replaces_it() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        let p = &mut rt.state.launcher.path;
+        p.focused = true;
+        p.anchor = 0;
+        p.focus = p.text.len();
+        rt.frame(4.0 / 60.0);
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Text("/".into()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(5.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "/");
+    }
+    #[test]
+    fn clicking_the_address_bar_focuses_it_over_the_browser() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        state.launcher.path.focused = false;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        assert!(!rt.state.launcher.path.focused);
+        let (x, y) = rt.find("launcher-path").expect("address bar mounted");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(5.0 / 60.0);
+        assert!(rt.state.launcher.path.focused);
+    }
+    #[test]
     fn browser_scrollbar_track_pages_the_list() {
         let mut state = AppState::default();
         state.launcher.fixture_create_browser();
@@ -2054,6 +2292,80 @@ mod tests {
         );
         assert!(repository("https://example.com/owner/repo").is_none());
     }
+    #[test]
+    fn typed_paths_are_trimmed_expanded_and_lose_trailing_slashes() {
+        let mut s = AppState::default();
+        s.launcher.home = "/home/u".into();
+        let l = &s.launcher;
+        assert_eq!(
+            typed_target(l, "  ~/code/kone/ ").as_deref(),
+            Some("/home/u/code/kone")
+        );
+        assert_eq!(typed_target(l, "~").as_deref(), Some("/home/u"));
+        assert_eq!(typed_target(l, "/tmp//").as_deref(), Some("/tmp"));
+        assert_eq!(typed_target(l, "/").as_deref(), Some("/"));
+        assert!(typed_target(l, "   ").is_none());
+    }
+
+    #[test]
+    fn submitting_the_folder_in_focus_blurs_without_listing() {
+        let mut s = AppState::default();
+        s.launcher.home = "/home/u".into();
+        s.launcher.open(LauncherMode::Open);
+        s.launcher.view = View::Browser;
+        s.launcher.current_path = "/home/u/code".into();
+        s.launcher.path.text = "~/code/".into();
+        s.launcher.path.focused = true;
+        submit_path(&mut s, &mut Tx::default());
+        assert!(!s.launcher.path.focused);
+        assert!(s.launcher.browser_request_id.is_none());
+        assert_eq!(s.launcher.path.text, "~/code");
+        s.launcher.path.text = "  ".into();
+        submit_path(&mut s, &mut Tx::default());
+        assert!(s.launcher.path_error.is_some());
+        assert_eq!(s.launcher.path.text, "~/code");
+    }
+
+    #[test]
+    fn a_landed_typed_jump_blurs_the_address_bar() {
+        let mut s = AppState::default();
+        s.launcher.open(LauncherMode::Open);
+        s.launcher.path.focused = true;
+        s.launcher.typed = true;
+        browser_completed(&mut s, &json!({"path": "/tmp", "entries": []}));
+        assert!(!s.launcher.path.focused);
+        s.launcher.path.focused = true;
+        browser_completed(&mut s, &json!({"path": "/var", "entries": []}));
+        assert!(s.launcher.path.focused);
+    }
+
+    #[test]
+    fn typing_away_from_the_address_bar_moves_into_it() {
+        let mut s = AppState::default();
+        s.launcher.home = "/home/u".into();
+        s.launcher.open(LauncherMode::Open);
+        s.launcher.view = View::Browser;
+        s.launcher.current_path = "/home/u/code".into();
+        s.launcher.path.focused = false;
+        let key = |k: &str, cmd: bool| rune::KeyEvent {
+            key: Key::Text(k.into()),
+            mods: rune::Mods {
+                cmd,
+                ..Default::default()
+            },
+        };
+        assert!(!type_to_path(&mut s, &key("k", true)));
+        assert!(!type_to_path(&mut s, &key(" ", false)));
+        assert!(!s.launcher.path.focused);
+        assert!(type_to_path(&mut s, &key("k", false)));
+        assert!(s.launcher.path.focused);
+        assert_eq!(s.launcher.path.text, "~/code/k");
+        assert_eq!(s.launcher.path.focus, s.launcher.path.text.len());
+        s.launcher.path.focused = false;
+        s.launcher.mode = Some(LauncherMode::Create);
+        assert!(!type_to_path(&mut s, &key("k", false)));
+    }
+
     #[test]
     fn open_browser_lists_the_home_directory_as_a_crumb() {
         let mut s = AppState::default();
