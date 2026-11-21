@@ -70,9 +70,19 @@ impl Screen {
 /// application's DECCKM mode. Command-modified keys stay with the app (copy, paste, shortcuts).
 pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<String> {
     use rune::Key;
-    if event.mods.cmd {
-        return None;
-    }
+    // Off macOS, Ctrl is the command key: Rune reports Ctrl+C as `Command('c')`. Like xterm.js
+    // there, it goes to the shell, except Ctrl+V and Ctrl+Shift chords (paste, copy, shortcuts).
+    let control = !cfg!(target_os = "macos") && event.mods.ctrl;
+    let key = match &event.key {
+        Key::Command(c) if control => {
+            if *c == 'v' || event.mods.shift {
+                return None;
+            }
+            Key::Text(c.to_string())
+        }
+        _ if event.mods.cmd && !control => return None,
+        key => key.clone(),
+    };
     let cursor = |key: char| {
         if application_cursor {
             format!("\x1bO{key}")
@@ -80,7 +90,7 @@ pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<
             format!("\x1b[{key}")
         }
     };
-    let sequence = match &event.key {
+    let sequence = match &key {
         Key::Up => cursor('A'),
         Key::Down => cursor('B'),
         Key::Right => cursor('C'),
@@ -565,6 +575,33 @@ mod tests {
             ..Mods::default()
         };
         assert_eq!(enc(Key::Text("c".into()), cmd), None, "Cmd+C stays a copy");
+        // Rune reports physical Ctrl+C off macOS as `Command('c')` with both cmd and ctrl.
+        let native_ctrl = Mods {
+            cmd: true,
+            ctrl: true,
+            ..Mods::default()
+        };
+        let ctrl_c = enc(Key::Command('c'), native_ctrl);
+        if cfg!(target_os = "macos") {
+            assert_eq!(ctrl_c, None);
+        } else {
+            assert_eq!(
+                ctrl_c.as_deref(),
+                Some("\x03"),
+                "Ctrl+C interrupts the shell"
+            );
+            assert_eq!(enc(Key::Command('v'), native_ctrl), None, "Ctrl+V pastes");
+            let copy = Mods {
+                shift: true,
+                ..native_ctrl
+            };
+            assert_eq!(enc(Key::Command('c'), copy), None, "Ctrl+Shift+C copies");
+        }
+        assert_eq!(
+            enc(Key::Command('c'), cmd),
+            None,
+            "a bare command chord stays with the app"
+        );
         assert_eq!(enc(Key::Enter, plain), None, "Enter flushes through submit");
     }
 
