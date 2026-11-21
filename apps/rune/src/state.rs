@@ -322,6 +322,15 @@ pub struct StudioState {
     pub turn_interrupted: bool,
     pub turn_title: String,
     pub pending_send: Option<String>,
+    /// Files picked or dropped onto the composer for the next request.
+    pub attachments: Vec<crate::composer_attachments::PendingAttachment>,
+    pub attachment_seq: u64,
+    pub attachment_notice: Option<(String, std::time::Instant)>,
+    pub attachment_drag: bool,
+    /// A sent request still uploading its files.
+    pub upload_turn: Option<crate::composer_attachments::UploadTurn>,
+    /// Uploaded attachments the next `agent.send` carries.
+    pub turn_attachments: Vec<serde_json::Value>,
     pub queued_turns: Vec<(String, String)>,
     /// The transcript block id each queued turn's request is journaled under.
     pub queued_blocks: std::collections::HashMap<String, String>,
@@ -402,6 +411,8 @@ pub struct StudioItem {
     pub status: String,
     pub tasks: Vec<serde_json::Value>,
     pub detail: String,
+    /// A request's attached file names.
+    pub attachments: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -582,6 +593,12 @@ fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
                 kind: "user".into(),
                 text: block["text"].as_str().unwrap_or("").into(),
                 at,
+                attachments: block["attachments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a["name"].as_str().map(str::to_owned))
+                    .collect(),
                 ..Default::default()
             });
         } else {
@@ -596,6 +613,7 @@ fn history_items(result: &serde_json::Value) -> Vec<StudioItem> {
                     status: item["status"].as_str().unwrap_or("").into(),
                     tasks: item["tasks"].as_array().cloned().unwrap_or_default(),
                     detail: item["detail"].as_str().unwrap_or("").to_owned(),
+                    attachments: Vec::new(),
                 });
             }
         }
@@ -961,7 +979,9 @@ impl AppState {
             }
         }
         s.sync_project_watches();
+        let notice_expired = s.expire_attachment_notice(tx);
         changed
+            || notice_expired
             || scratchpad_motion
             || title_blurred
             || meter_changed
@@ -1225,6 +1245,9 @@ impl AppState {
     pub fn studio_key(s: &mut Self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
         if s.page != Page::Studio {
             return false;
+        }
+        if s.terminal_clipboard_chord(event, false, tx) {
+            return true;
         }
         if event.is_command('o') && event.mods.shift {
             let panes = s.studio_layout["rows"]
@@ -2305,6 +2328,59 @@ impl AppState {
         self.persist_studio_layout();
     }
 
+    /// Off macOS, Ctrl+Shift+C copies the selected output of any terminal pane, and from a
+    /// focused terminal field Ctrl+Shift+V pastes the clipboard into its PTY, as xterm.js
+    /// terminals bind them. Plain Ctrl+C and Ctrl+V stay with the shell and the field's paste.
+    pub fn terminal_clipboard_chord(
+        &mut self,
+        event: &rune::KeyEvent,
+        focused_terminal: bool,
+        tx: &mut rune::Tx,
+    ) -> bool {
+        let m = event.mods;
+        if cfg!(target_os = "macos") || !m.ctrl || !m.shift || m.alt {
+            return false;
+        }
+        match event.key {
+            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'c') => {
+                let Some(text) = tx
+                    .text_selection()
+                    .filter(|selection| {
+                        let mut texts = selection.texts().iter().filter(|t| t.is_selected());
+                        texts.clone().next().is_some()
+                            && texts.all(|t| t.path().contains("terminal-output-"))
+                    })
+                    .map(|selection| selection.text().to_owned())
+                    .filter(|text| !text.is_empty())
+                else {
+                    return false;
+                };
+                tx.copy(text);
+                true
+            }
+            // A click on the output leaves nothing focused but keeps the terminal the
+            // target, as xterm.js does; another focused field keeps its own paste.
+            rune::Key::Command(c)
+                if c.eq_ignore_ascii_case(&'v')
+                    && (focused_terminal
+                        || (tx.focused().is_none()
+                            && !self.studio.overview
+                            && self.studio.terminal_command.is_some())) =>
+            {
+                tx.read_clipboard(|s: &mut AppState, content, _| {
+                    if content.text().is_empty() {
+                        return;
+                    }
+                    let sequence =
+                        crate::terminal::paste_sequence(content.text(), &s.studio.terminal_output);
+                    s.terminal_write(sequence);
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn terminal_write(&mut self, input: String) {
         let Some(terminal_id) = self.studio.terminal_session_id.clone() else {
             return;
@@ -2313,6 +2389,18 @@ impl AppState {
             "terminal.write",
             serde_json::json!({"terminalId": terminal_id, "data": input}),
         );
+    }
+
+    /// Sends text an input method committed into the terminal field, so it reaches the shell
+    /// before the next key instead of waiting for Enter.
+    pub fn flush_terminal_field(&mut self) {
+        let text = self.studio.terminal_input.text.clone();
+        if text.is_empty() {
+            return;
+        }
+        self.studio.terminal_input.clear();
+        self.studio.terminal_input.focused = true;
+        self.terminal_write(text);
     }
 
     pub fn resize_terminal(&mut self, cols: u16, rows: u16) {
@@ -2618,14 +2706,24 @@ impl AppState {
     }
 
     fn send_studio_input(&mut self, input: String, from_composer: bool, tx: &mut rune::Tx) {
-        if input.is_empty() {
+        let with_files = from_composer && !self.studio.attachments.is_empty();
+        // A request is valid with text, attachments, or both.
+        if input.is_empty() && !with_files {
+            return;
+        }
+        if with_files && self.studio.upload_turn.is_some() {
             return;
         }
         if self.studio.busy {
             if self.studio.started {
-                self.dispatch_studio_send(input);
                 if from_composer {
                     self.composer.clear();
+                }
+                if with_files {
+                    let files = std::mem::take(&mut self.studio.attachments);
+                    self.upload_then_send(input, None, files);
+                } else {
+                    self.dispatch_studio_send(input);
                 }
             }
             return;
@@ -2638,18 +2736,18 @@ impl AppState {
         let Some(project) = self.selected_project.and_then(|i| self.projects.get(i)) else {
             return;
         };
-        let cwd = project.path.clone();
-        let Some(provider) = self
+        let _ = project;
+        if self
             .studio
             .providers
             .get(self.studio.provider_index)
-            .map(|p| p.id.clone())
-        else {
+            .is_none()
+        {
             self.studio.error = Some(
                 "No available agent provider. Install and sign in to a provider first.".into(),
             );
             return;
-        };
+        }
         if self.studio.thread_id.is_empty() {
             let time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2666,20 +2764,55 @@ impl AppState {
         if self.studio.turn_title.is_empty() {
             self.studio.turn_title = input.clone();
         }
+        if self.studio.turn_title.is_empty()
+            && let Some(file) = self.studio.attachments.first().filter(|_| with_files)
+        {
+            self.studio.turn_title = file.name.clone();
+        }
         if from_composer {
             self.composer.clear();
         }
+        let files = if with_files {
+            std::mem::take(&mut self.studio.attachments)
+        } else {
+            Vec::new()
+        };
+        let item_id = format!("user-{}", self.studio.items.len());
         self.studio.items.push(StudioItem {
-            id: format!("user-{}", self.studio.items.len()),
+            id: item_id.clone(),
             kind: "user".into(),
             text: input.clone(),
             name: String::new(),
+            attachments: files.iter().map(|f| f.name.clone()).collect(),
             ..Default::default()
         });
         tx.scroll_to_bottom(format!("studio-transcript-{}", self.studio.thread_id));
+        if files.is_empty() {
+            self.continue_studio_send(input);
+        } else {
+            self.upload_then_send(input, Some(item_id), files);
+        }
+    }
+
+    /// Sends a request already on screen: on the live session, or by starting one.
+    pub(crate) fn continue_studio_send(&mut self, input: String) {
         if self.studio.started {
             self.dispatch_studio_send(input);
         } else {
+            let cwd = self
+                .selected_project
+                .and_then(|i| self.projects.get(i))
+                .map(|p| p.path.clone());
+            let provider = self
+                .studio
+                .providers
+                .get(self.studio.provider_index)
+                .map(|p| p.id.clone());
+            let (Some(cwd), Some(provider)) = (cwd, provider) else {
+                self.studio.turn_attachments.clear();
+                self.studio.busy = false;
+                return;
+            };
             self.studio.pending_send = Some(input);
             let model = self
                 .studio
@@ -2713,6 +2846,10 @@ impl AppState {
             .get(self.studio.model_index)
             .map(|m| m.id.clone());
         let mut params = serde_json::json!({"threadId": self.studio.thread_id, "input": input});
+        let attachments = std::mem::take(&mut self.studio.turn_attachments);
+        if !attachments.is_empty() {
+            params["attachments"] = attachments.into();
+        }
         if let Some(model) = model {
             params["model"] = model.into();
         }
@@ -2785,13 +2922,7 @@ impl AppState {
                     "terminal.output" => {
                         if let Some(data) = params["data"].as_str() {
                             state.terminal_output.push_str(data);
-                            if state.terminal_output.len() > 512 * 1024 {
-                                let mut cut = state.terminal_output.len() - 512 * 1024;
-                                while !state.terminal_output.is_char_boundary(cut) {
-                                    cut += 1;
-                                }
-                                state.terminal_output.drain(..cut);
-                            }
+                            crate::terminal::trim_output(&mut state.terminal_output, 512 * 1024);
                         }
                     }
                     "terminal.activity" => {
@@ -2847,6 +2978,10 @@ impl AppState {
                             state.discover_request,
                         ]
                         .contains(&Some(id))
+                            || state
+                                .upload_turn
+                                .as_ref()
+                                .is_some_and(|turn| turn.requests.contains(&id))
                     })
             })
             .map(|(thread, _)| thread.clone());
@@ -3131,6 +3266,9 @@ impl AppState {
                 });
                 return;
             }
+            if self.upload_reply(id, &message) {
+                return;
+            }
             if self.studio.compact_request == Some(id) {
                 self.studio.compact_request = None;
                 self.studio.compact_error = message["error"]["message"].as_str().map(str::to_owned);
@@ -3150,6 +3288,8 @@ impl AppState {
                 );
                 if self.studio.start_request == Some(id) {
                     self.studio.pending_send = None;
+                    self.studio.upload_turn = None;
+                    self.studio.turn_attachments.clear();
                     self.studio.busy = false;
                     self.studio.start_request = None;
                 }
@@ -3240,7 +3380,9 @@ impl AppState {
                 self.studio.started = true;
                 self.studio.connected_identity = StudioIdentity::from_value(&result["identity"]);
                 self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
-                if let Some(input) = self.studio.pending_send.take() {
+                if let Some(input) = self.studio.pending_send.take()
+                    && !self.upload_after_start(&input)
+                {
                     self.dispatch_studio_send(input);
                 }
             }
@@ -3257,10 +3399,12 @@ impl AppState {
             self.studio.pending_send = None;
             self.studio.start_request = None;
             self.studio.send_request = None;
+            self.studio.upload_turn = None;
             for state in self.studio_threads.values_mut() {
                 state.error = Some(detail.clone());
                 state.busy = false;
                 state.pending_send = None;
+                state.upload_turn = None;
                 state.start_request = None;
                 state.send_request = None;
             }
@@ -3387,6 +3531,7 @@ impl AppState {
                     kind: item["kind"].as_str().unwrap_or("").to_owned(),
                     text: item["text"].as_str().unwrap_or("").to_owned(),
                     name: item["name"].as_str().unwrap_or("").to_owned(),
+                    attachments: Vec::new(),
                     status: item["status"]
                         .as_str()
                         .unwrap_or(if event["type"] == "item.completed" {

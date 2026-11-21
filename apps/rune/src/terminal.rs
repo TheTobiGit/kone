@@ -65,6 +65,116 @@ impl Screen {
     }
 }
 
+/// The bytes a focused terminal sends for a key, as xterm.js does: printable text goes
+/// straight to the PTY, Ctrl+letter becomes its control byte, and cursor keys follow the
+/// application's DECCKM mode. Command-modified keys stay with the app (copy, paste, shortcuts).
+pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<String> {
+    use rune::Key;
+    // Off macOS, Ctrl is the command key: Rune reports Ctrl+C as `Command('c')`. Like xterm.js
+    // there, it goes to the shell, except Ctrl+V and Ctrl+Shift chords (paste, copy, shortcuts).
+    let control = !cfg!(target_os = "macos") && event.mods.ctrl;
+    let key = match &event.key {
+        Key::Command(c) if control => {
+            if *c == 'v' || event.mods.shift {
+                return None;
+            }
+            Key::Text(c.to_string())
+        }
+        _ if event.mods.cmd && !control => return None,
+        key => key.clone(),
+    };
+    let cursor = |key: char| {
+        if application_cursor {
+            format!("\x1bO{key}")
+        } else {
+            format!("\x1b[{key}")
+        }
+    };
+    let sequence = match &key {
+        Key::Up => cursor('A'),
+        Key::Down => cursor('B'),
+        Key::Right => cursor('C'),
+        Key::Left => cursor('D'),
+        Key::Home => cursor('H'),
+        Key::End => cursor('F'),
+        Key::PageUp => "\x1b[5~".into(),
+        Key::PageDown => "\x1b[6~".into(),
+        Key::Tab if event.mods.shift => "\x1b[Z".into(),
+        Key::Tab => "\t".into(),
+        Key::Escape => "\x1b".into(),
+        Key::Delete => "\x1b[3~".into(),
+        Key::Backspace if event.mods.ctrl => "\x08".into(),
+        Key::Backspace => "\x7f".into(),
+        // Windows reports AltGr as Ctrl+Alt; the character it typed is text, not a chord.
+        // A Ctrl+Alt key that typed nothing arrives as a command and stays a control chord.
+        Key::Text(text)
+            if cfg!(target_os = "windows")
+                && event.mods.ctrl
+                && event.mods.alt
+                && matches!(event.key, Key::Text(_)) =>
+        {
+            text.clone()
+        }
+        Key::Text(text) if event.mods.ctrl => {
+            let ch = text.chars().next()?;
+            match ch.to_ascii_lowercase() {
+                c @ ('a'..='z' | '[' | '\\' | ']') => ((c as u8) & 0x1f) as char,
+                ' ' | '@' | '2' => '\0',
+                _ => return None,
+            }
+            .to_string()
+        }
+        Key::Text(text) if event.mods.alt => format!("\x1b{text}"),
+        Key::Text(text) => text.clone(),
+        _ => return None,
+    };
+    Some(sequence)
+}
+
+/// Whether the output last switched the cursor keys to application mode (`CSI ? 1 h`).
+pub fn application_cursor(output: &str) -> bool {
+    private_mode(output, 1)
+}
+
+/// Pasted text as xterm.js sends it: line breaks become Return, wrapped in `CSI 200~` and
+/// `CSI 201~` when the shell turned on bracketed paste (`CSI ? 2004 h`), so it waits for Enter.
+pub fn paste_sequence(text: &str, output: &str) -> String {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    if private_mode(output, 2004) {
+        format!("\x1b[200~{text}\x1b[201~")
+    } else {
+        text
+    }
+}
+
+/// Drops the oldest output past `limit` bytes. A cursor-key or bracketed-paste mode switched on
+/// only in the dropped part is written back at the front, so the mode outlives the scrollback.
+pub fn trim_output(output: &mut String, limit: usize) {
+    if output.len() <= limit {
+        return;
+    }
+    let modes = [1, 2004].map(|mode| (mode, private_mode(output, mode)));
+    let mut cut = output.len() - limit;
+    while !output.is_char_boundary(cut) {
+        cut += 1;
+    }
+    output.drain(..cut);
+    for (mode, on) in modes {
+        if on && !private_mode(output, mode) {
+            output.insert_str(0, &format!("\x1b[?{mode}h"));
+        }
+    }
+}
+
+fn private_mode(output: &str, mode: u16) -> bool {
+    let on = output.rfind(&format!("\x1b[?{mode}h"));
+    let off = output.rfind(&format!("\x1b[?{mode}l"));
+    match (on, off) {
+        (Some(on), Some(off)) => on > off,
+        (on, _) => on.is_some(),
+    }
+}
+
 /// Materialize a terminal's scrollback as rows, applying VT cursor and erase commands.
 /// `rows` is the live terminal height; `limit` caps retained main-screen history.
 pub fn screen_lines(
@@ -472,6 +582,121 @@ fn active<'a>(main: &'a mut Screen, alternate: &'a mut Option<Screen>) -> &'a mu
 #[cfg(test)]
 mod tests {
     use super::screen_lines;
+    use super::{application_cursor, key_sequence, paste_sequence, trim_output};
+
+    fn key(key: rune::Key, mods: rune::Mods) -> rune::KeyEvent {
+        rune::KeyEvent { key, mods }
+    }
+
+    #[test]
+    fn keys_encode_like_xterm() {
+        use rune::{Key, Mods};
+        let plain = Mods::default();
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        let enc = |k, m| key_sequence(&key(k, m), false);
+        assert_eq!(enc(Key::Text("a".into()), plain).as_deref(), Some("a"));
+        assert_eq!(enc(Key::Text("c".into()), ctrl).as_deref(), Some("\x03"));
+        assert_eq!(enc(Key::Text("D".into()), ctrl).as_deref(), Some("\x04"));
+        assert_eq!(enc(Key::Backspace, plain).as_deref(), Some("\x7f"));
+        assert_eq!(enc(Key::Up, plain).as_deref(), Some("\x1b[A"));
+        assert_eq!(
+            key_sequence(&key(Key::Up, plain), true).as_deref(),
+            Some("\x1bOA")
+        );
+        let shift = Mods {
+            shift: true,
+            ..Mods::default()
+        };
+        assert_eq!(enc(Key::Tab, shift).as_deref(), Some("\x1b[Z"));
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        assert_eq!(enc(Key::Text("b".into()), alt).as_deref(), Some("\x1bb"));
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        assert_eq!(enc(Key::Text("c".into()), cmd), None, "Cmd+C stays a copy");
+        // Rune reports physical Ctrl+C off macOS as `Command('c')` with both cmd and ctrl.
+        let native_ctrl = Mods {
+            cmd: true,
+            ctrl: true,
+            ..Mods::default()
+        };
+        let ctrl_c = enc(Key::Command('c'), native_ctrl);
+        if cfg!(target_os = "macos") {
+            assert_eq!(ctrl_c, None);
+        } else {
+            assert_eq!(
+                ctrl_c.as_deref(),
+                Some("\x03"),
+                "Ctrl+C interrupts the shell"
+            );
+            assert_eq!(enc(Key::Command('v'), native_ctrl), None, "Ctrl+V pastes");
+            let copy = Mods {
+                shift: true,
+                ..native_ctrl
+            };
+            assert_eq!(enc(Key::Command('c'), copy), None, "Ctrl+Shift+C copies");
+        }
+        assert_eq!(
+            enc(Key::Command('c'), cmd),
+            None,
+            "a bare command chord stays with the app"
+        );
+        let altgr = Mods {
+            cmd: true,
+            ctrl: true,
+            alt: true,
+            ..Mods::default()
+        };
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                enc(Key::Text("@".into()), altgr).as_deref(),
+                Some("@"),
+                "AltGr+Q"
+            );
+            assert_eq!(
+                enc(Key::Command('b'), altgr).as_deref(),
+                Some("\x02"),
+                "Ctrl+Alt+B on a US layout"
+            );
+        }
+        assert_eq!(enc(Key::Enter, plain), None, "Enter flushes through submit");
+    }
+
+    #[test]
+    fn paste_is_bracketed_while_the_shell_asks_for_it() {
+        assert_eq!(paste_sequence("ls\npwd", "$ "), "ls\rpwd");
+        assert_eq!(
+            paste_sequence("ls\r\npwd", "\x1b[?2004h$ "),
+            "\x1b[200~ls\rpwd\x1b[201~"
+        );
+        assert_eq!(paste_sequence("ls", "\x1b[?2004h$ vim\x1b[?2004l"), "ls");
+    }
+
+    #[test]
+    fn trimmed_scrollback_keeps_the_terminal_modes() {
+        let mut output = format!("\x1b[?2004h\x1b[?1h{}", "x".repeat(64));
+        trim_output(&mut output, 16);
+        assert!(output.ends_with(&"x".repeat(16)));
+        assert!(application_cursor(&output));
+        assert_eq!(paste_sequence("ls", &output), "\x1b[200~ls\x1b[201~");
+        let mut off = format!("\x1b[?2004h{}\x1b[?2004l$ ", "x".repeat(64));
+        trim_output(&mut off, 16);
+        assert_eq!(paste_sequence("ls", &off), "ls");
+    }
+
+    #[test]
+    fn application_cursor_follows_the_last_decckm_switch() {
+        assert!(!application_cursor("$ ls"));
+        assert!(application_cursor("\x1b[?1h vim"));
+        assert!(!application_cursor("\x1b[?1h vim \x1b[?1l$ "));
+    }
 
     #[test]
     fn carriage_return_and_erase_rewrite_the_current_row() {
