@@ -1728,9 +1728,12 @@ fn browser(s: &AppState, t: Palette) -> El {
                     let end = p.anchor.max(p.focus);
                     p.anchor = end;
                     p.focus = end;
-                } else if p.anchor == p.focus && p.focus == p.text.len() && !inserted.contains('/')
-                {
-                    complete_path(s, format!("{}{}", s.launcher.path.text, inserted));
+                } else if p.anchor.max(p.focus) == p.text.len() && !inserted.contains('/') {
+                    // Typing over a shown completion narrows it: the draft is what the field
+                    // holds once the key replaces the selection.
+                    let start = p.anchor.min(p.focus);
+                    let draft = format!("{}{}", &p.text[..start], inserted);
+                    complete_path(s, draft);
                 }
                 false
             } else {
