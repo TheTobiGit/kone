@@ -4432,9 +4432,8 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .child(label(input.clone(), 11.5, 400.0, t.ink).grow(1.0).shrink())
                 .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.faint))
                 .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
-                    .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
-                        s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": send_now_id}));
-                        s.request("agent.steer", serde_json::json!({"threadId": s.studio.thread_id, "input": send_now_input, "dispatchMode": "steer"}));
+                    .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press_tx(move |s: &mut AppState, tx| {
+                        s.send_queued_now(&send_now_id, send_now_input.clone(), tx);
                     }))
                 .child(el().ml(-4.0).key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
                     .w(45.921875).gap(3.5).child(icon(&QUEUE_EDIT, 12.0).color(t.muted)).child(label("Edit", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
@@ -4985,7 +4984,12 @@ fn focused_body(
         if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
             continue;
         }
-        if is_activity && s.studio.busy && item.kind == "assistant_text" {
+        // Only the running turn's text folds into its activity; earlier replies stay.
+        if is_activity
+            && s.studio.busy
+            && item.kind == "assistant_text"
+            && last_user.is_none_or(|user| index > user)
+        {
             continue;
         }
         let activity_row_open = s.studio.activity_expanded.contains(&item.id);
@@ -5103,6 +5107,7 @@ fn focused_body(
                 ),
             "assistant_text" => {
                 let mut turn = col()
+                    .key(format!("studio-reply-{}", item.id))
                     .w_full()
                     .gap(if is_activity { 8.0 } else { 15.0 })
                     .opacity(
@@ -5800,7 +5805,8 @@ fn focused_body(
         .min_h(0.0)
         .child(
             col()
-                .key("studio-transcript")
+                // Keyed per thread so each one opens at its own end, not at the last offset.
+                .key(format!("studio-transcript-{}", s.studio.thread_id))
                 .w_full()
                 .grow(1.0)
                 .shrink()
@@ -6148,6 +6154,147 @@ mod tests {
                 "beta row still at {beta_y}"
             );
         }
+    }
+
+    fn queue_state(busy: bool) -> AppState {
+        let mut s = AppState {
+            page: Page::Studio,
+            studio_layout_ready: true,
+            ..Default::default()
+        };
+        s.projects = vec![Project {
+            name: "kone".into(),
+            path: "/kone".into(),
+        }];
+        s.selected_project = Some(0);
+        s.studio.project_path = "/kone".into();
+        s.studio.thread_id = "t".into();
+        s.studio.thread_open = true;
+        s.studio.started = true;
+        s.studio.busy = busy;
+        s.studio.providers = vec![crate::state::StudioProvider {
+            id: "claudeAgent".into(),
+            label: "Claude".into(),
+            supports_compaction: false,
+        }];
+        s.studio.queued_turns = vec![("q1".into(), "run the tests".into())];
+        s.composer.text = "half-written draft".into();
+        s
+    }
+
+    #[test]
+    fn send_now_on_an_idle_thread_starts_the_turn_and_keeps_the_draft() {
+        let mut rt = Runtime::new(
+            queue_state(false),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert_eq!(s.composer.text, "half-written draft");
+        assert!(
+            s.studio
+                .items
+                .iter()
+                .any(|item| item.kind == "user" && item.text == "run the tests")
+        );
+    }
+
+    #[test]
+    fn send_now_on_a_running_thread_steers_instead_of_starting_a_turn() {
+        let mut rt = Runtime::new(
+            queue_state(true),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert_eq!(s.composer.text, "half-written draft");
+        assert!(s.studio.items.iter().all(|item| item.kind != "user"));
+        assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
+    fn send_now_steers_a_promoted_follow_up_that_started_after_the_turn_ended() {
+        let mut rt = Runtime::new(
+            queue_state(false),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, _| {
+            s.studio_message(json!({"method":"agent.event", "params":{"threadId":"t", "type":"turn.started", "turnId":"turn-2"}}));
+        });
+        assert!(rt.state.studio.busy);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert!(s.studio.items.iter().all(|item| item.kind != "user"));
+        assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
+    fn a_running_follow_up_keeps_earlier_replies_visible() {
+        let mut s = queue_state(true);
+        s.studio.queued_turns.clear();
+        for (id, kind, text) in [
+            ("u1", "user", "first ask"),
+            ("c1", "tool_call", "ls"),
+            ("a1", "assistant_text", "earlier reply"),
+            ("u2", "user", "follow-up"),
+            ("c2", "tool_call", "cargo test"),
+            ("a2", "assistant_text", "running reply"),
+        ] {
+            s.studio.items.push(StudioItem {
+                id: id.into(),
+                kind: kind.into(),
+                text: text.into(),
+                name: if kind == "tool_call" {
+                    "Bash".into()
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            });
+        }
+        s.studio_layout = json!({"version":2,"focusedRow":"/kone","rows":[
+            {"projectPath":"/kone","focusedId":"t","panes":[{"id":"t","anchor":{"threadId":"t"}}]}
+        ]});
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("studio-reply-a1").is_some());
+        assert!(rt.find("studio-reply-a2").is_none());
+    }
+
+    #[test]
+    fn each_thread_mounts_its_own_transcript_viewport() {
+        let mut s = queue_state(false);
+        s.studio.queued_turns.clear();
+        s.studio.items.push(StudioItem {
+            id: "a1".into(),
+            kind: "assistant".into(),
+            text: "first thread".into(),
+            ..Default::default()
+        });
+        s.studio_layout = json!({"version":2,"focusedRow":"/kone","rows":[
+            {"projectPath":"/kone","focusedId":"t","panes":[
+                {"id":"t","anchor":{"threadId":"t"}},
+                {"id":"other","anchor":{"threadId":"other"}}
+            ]}
+        ]});
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("studio-transcript-t").is_some());
+        rt.update(|s, _| {
+            s.studio.thread_id = "other".into();
+        });
+        rt.frame(0.0);
+        assert!(rt.find("studio-transcript-other").is_some());
+        assert!(rt.find("studio-transcript-t").is_none());
     }
 
     #[test]
