@@ -66,8 +66,6 @@ impl Profile {
 #[derive(Default)]
 pub struct AppState {
     pub art_focused: bool,
-    /// The terminal output selected in any pane, for Ctrl+Shift+C off macOS.
-    pub terminal_selection: Option<String>,
     pub(crate) chooser_magnet: StartActionsState,
     pub profile: Profile,
     pub profile_hover: bool,
@@ -2226,7 +2224,16 @@ impl AppState {
         }
         match event.key {
             rune::Key::Command(c) if c.eq_ignore_ascii_case(&'c') => {
-                let Some(text) = self.terminal_selection.clone() else {
+                let Some(text) = tx
+                    .text_selection()
+                    .filter(|selection| {
+                        let mut texts = selection.texts().iter().filter(|t| t.is_selected());
+                        texts.clone().next().is_some()
+                            && texts.all(|t| t.path().contains("terminal-output-"))
+                    })
+                    .map(|selection| selection.text().to_owned())
+                    .filter(|text| !text.is_empty())
+                else {
                     return false;
                 };
                 tx.copy(text);

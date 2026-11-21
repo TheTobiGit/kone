@@ -3077,15 +3077,10 @@ fn studio_row(
                 )
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
                 let mut output = col()
+                    .key(format!("terminal-output-{id}"))
                     .w_full()
                     .gap(0.0)
-                    .selection_group(true)
-                    .on_selection_change(|s: &mut AppState, change, _| {
-                        s.terminal_selection = change
-                            .selection()
-                            .map(|selection| selection.text().to_owned())
-                            .filter(|text| !text.is_empty());
-                    });
+                    .selection_group(true);
                 let fixture_transcript =
                     terminal.terminal_output == "kone terminal (dev mock)\r\n$ ";
                 let cursor_visible =
@@ -6203,6 +6198,7 @@ mod tests {
             pane.terminal_output = "$ ".into();
         }
         let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.on_key = Some(crate::app_key);
         let clipboard = rune::clipboard::memory();
         rt.use_clipboard(&clipboard);
         rt.frame(0.0);
@@ -6228,24 +6224,52 @@ mod tests {
             },
         };
 
-        rt.state.terminal_selection = Some("total 0".into());
+        let output = rt
+            .elements()
+            .iter()
+            .find(|el| {
+                el.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("terminal-output-"))
+            })
+            .map(|el| el.rect)
+            .expect("the terminal shows its output");
+        let y = output[1] + 8.0;
+        rt.pointer_down(output[0] + 1.0, y);
+        rt.pointer_move(output[0] + 40.0, y);
+        rt.pointer_up(output[0] + 40.0, y);
+        rt.frame(3.0 / 60.0);
         rt.state.studio.error = None;
         rt.key(chord('c'));
-        rt.frame(3.0 / 60.0);
-        assert_eq!(
-            clipboard.text().as_deref().map(String::as_str),
-            Some("total 0"),
-            "Ctrl+Shift+C copies the selected output"
+        rt.frame(4.0 / 60.0);
+        let copied = clipboard.text().map(|text| text.to_string());
+        assert!(
+            copied
+                .as_deref()
+                .is_some_and(|text| !text.is_empty() && "$ ".starts_with(text)),
+            "Ctrl+Shift+C copies the selected output, got {copied:?}"
         );
         assert!(
             rt.state.studio.error.is_none(),
             "and sends nothing to the PTY"
         );
 
-        clipboard.set_text("ls -la");
-        rt.key(chord('v'));
-        rt.frame(4.0 / 60.0);
+        // A click on the output clears the selection, so copy has nothing stale to take,
+        // and paste still reaches the shell.
+        rt.pointer_down(output[0] + 20.0, y);
+        rt.pointer_up(output[0] + 20.0, y);
         rt.frame(5.0 / 60.0);
+        clipboard.set_text("ls -la");
+        rt.key(chord('c'));
+        rt.frame(6.0 / 60.0);
+        assert_eq!(
+            clipboard.text().as_deref().map(String::as_str),
+            Some("ls -la"),
+            "no selection, nothing copied"
+        );
+        rt.key(chord('v'));
+        rt.frame(7.0 / 60.0);
+        rt.frame(8.0 / 60.0);
         // Without a sidecar the write reports the service as unavailable, which
         // shows the clipboard reached `terminal.write`.
         assert!(
