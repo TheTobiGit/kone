@@ -177,7 +177,15 @@ fn overview_folder(
         .offset(0.0, (if inline { 10.0 } else { 44.0 }) * (1.0 - progress))
         .scale((if inline { 0.97 } else { 0.94 }) + (if inline { 0.03 } else { 0.06 }) * progress);
     if inline {
-        if s.overview_viewport.0 > 860.0 {
+        // The viewport is recorded by `on_layout`, so it is still zero on the
+        // first build. Use the same fallback as `view` or the folder is laid out
+        // left-aligned and then jumps right on the first hover-driven rebuild.
+        let viewport_width = if s.overview_viewport.0 > 0.0 {
+            s.overview_viewport.0
+        } else {
+            1280.0
+        };
+        if viewport_width > 860.0 {
             content = content.items_end();
         }
         content = content.child(tile).child(actions);
