@@ -267,6 +267,18 @@ impl AppState {
             }
             return;
         }
+        // The request's bubble lists only the files that went with it.
+        if let Some(item) = turn
+            .item
+            .as_ref()
+            .and_then(|id| self.studio.items.iter_mut().find(|i| &i.id == id))
+        {
+            item.attachments = turn
+                .uploaded
+                .iter()
+                .filter_map(|(_, a)| a["name"].as_str().map(str::to_owned))
+                .collect();
+        }
         self.studio.turn_attachments = turn.uploaded.into_iter().map(|(_, a)| a).collect();
         self.continue_studio_send(turn.input);
     }
@@ -366,6 +378,33 @@ mod tests {
             Some("Agent service is unavailable")
         );
         assert!(s.studio.turn_attachments.is_empty());
+    }
+
+    #[test]
+    fn a_rejected_file_leaves_the_sent_bubble() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "t".into();
+        s.studio.started = true;
+        s.studio.busy = true;
+        s.studio.items.push(crate::state::StudioItem {
+            id: "user-0".into(),
+            kind: "user".into(),
+            text: "see attached".into(),
+            attachments: vec!["a.txt".into(), "empty.png".into()],
+            ..Default::default()
+        });
+        s.studio.upload_turn = Some(UploadTurn {
+            input: "see attached".into(),
+            item: Some("user-0".into()),
+            requests: vec![7, 8],
+            ..Default::default()
+        });
+        let ok = json!({"id":7,"result":{"type":"file","id":"att_1","name":"a.txt","mimeType":"text/plain","sizeBytes":3}});
+        let failed = json!({"id":8,"error":{"message":"Attachment is empty."}});
+        assert!(s.upload_reply(8, &failed));
+        assert!(s.upload_reply(7, &ok));
+        let item = s.studio.items.iter().find(|i| i.id == "user-0").unwrap();
+        assert_eq!(item.attachments, vec!["a.txt".to_owned()]);
     }
 
     #[test]
