@@ -1115,6 +1115,8 @@ pub(super) fn sessions(
                 }
                 let delete_id = id.clone();
                 let delete_path = path.clone();
+                let key_hold_id = id.clone();
+                let key_hold_path = path.clone();
                 let holding = s
                     .project_data
                     .delete_hold
@@ -1141,7 +1143,10 @@ pub(super) fn sessions(
                                     .radius(7.0)
                                     .role("button")
                                     .label("Hold to delete conversation")
-                                    .hover_group()
+                                    .key(format!("session-delete-{id}"))
+                                    .focusable(true)
+                                    .focus_ring(2.0, 0.0, danger.alpha(0.42))
+                                    .hover_group_focus()
                                     .cursor(Cursor::Pointer)
                                     .scale(if holding.is_some() { 0.97 } else { 1.0 })
                                     .scale_motion(Curve::tween(0.12, COLORS_EASE))
@@ -1175,6 +1180,32 @@ pub(super) fn sessions(
                                                     .group_color(danger),
                                             ),
                                     )
+                                    .on_key(move |s: &mut AppState, event, _| {
+                                        if !is_hold_key(&event.key) {
+                                            return false;
+                                        }
+                                        if s.project_data.delete_hold.is_none() {
+                                            s.project_data.delete_hold = Some((
+                                                std::time::Instant::now(),
+                                                key_hold_path.clone(),
+                                                key_hold_id.clone(),
+                                            ));
+                                        }
+                                        true
+                                    })
+                                    .on_key_up(|s: &mut AppState, event, _| {
+                                        if !is_hold_key(&event.key) {
+                                            return false;
+                                        }
+                                        s.project_data.delete_hold = None;
+                                        true
+                                    })
+                                    .on_physical_input(|s: &mut AppState, event, _| {
+                                        if matches!(event, rune::PhysicalInput::FocusLost) {
+                                            s.project_data.delete_hold = None;
+                                        }
+                                        false
+                                    })
                                     .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
                                         rune::Phase::Down => {
                                             s.project_data.delete_hold = Some((
@@ -1494,6 +1525,12 @@ pub(super) fn identity_lead(
         )
 }
 
+/// `HoldToConfirm`'s keys: Space or Return held starts the hold, auto-repeat is ignored and
+/// releasing either retracts it.
+fn is_hold_key(key: &rune::Key) -> bool {
+    matches!(key, rune::Key::Enter) || matches!(key, rune::Key::Text(t) if t == " ")
+}
+
 static PROVIDER_DOT: Icon = Icon {
     name: "provider-dot",
     view: 24.0,
@@ -1519,6 +1556,87 @@ mod session_tests {
             assert_eq!(s.page, crate::state::Page::Overview);
             assert!(s.project_data.pressed_project.is_none());
         });
+    }
+
+    #[test]
+    fn space_or_return_held_on_delete_runs_the_hold_and_release_retracts_it() {
+        use rune::{Env, Key, KeyEvent, Mods, Runtime};
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, crate::state::Page::Projects);
+        let id = state.project_data.home_sessions[0].id.clone();
+        let target = format!("session-delete-{id}");
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env::default());
+        rt.frame(0.0);
+        let focused = |rt: &Runtime<AppState>| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(target.as_str()) && e.focused)
+        };
+        let key = |key: Key| KeyEvent {
+            key,
+            mods: Mods::default(),
+        };
+        for _ in 0..60 {
+            rt.key(key(Key::Tab));
+            rt.frame(0.0);
+            for _ in 0..2 {
+                rt.update(|s, _| s.project_data.lazy.clock += 1.0);
+                rt.frame(0.0);
+            }
+            if focused(&rt) {
+                break;
+            }
+        }
+        assert!(focused(&rt), "delete button takes keyboard focus");
+
+        for hold in [Key::Text(" ".into()), Key::Enter] {
+            rt.key(key(hold.clone()));
+            rt.frame(0.0);
+            let at = std::cell::Cell::new(None);
+            rt.update(|s, _| at.set(s.project_data.delete_hold.as_ref().map(|h| h.0)));
+            let started = at.get();
+            assert!(started.is_some(), "{hold:?} starts the hold");
+            rt.key(key(hold.clone()));
+            rt.update(|s, _| {
+                assert_eq!(
+                    s.project_data.delete_hold.as_ref().map(|h| h.0),
+                    started,
+                    "repeat"
+                );
+                assert_eq!(
+                    s.page,
+                    crate::state::Page::Projects,
+                    "{hold:?} doesn't open the row"
+                );
+            });
+            rt.key_up(key(hold));
+            rt.frame(0.0);
+            rt.update(|s, _| assert!(s.project_data.delete_hold.is_none()));
+        }
+
+        let held = |rt: &mut Runtime<AppState>| {
+            let on = std::cell::Cell::new(false);
+            rt.update(|s, _| on.set(s.project_data.delete_hold.is_some()));
+            on.get()
+        };
+        rt.key(key(Key::Enter));
+        rt.frame(0.0);
+        assert!(held(&mut rt));
+        rt.window_focus(false);
+        rt.frame(0.0);
+        assert!(!held(&mut rt), "the window losing focus retracts the hold");
+        rt.window_focus(true);
+        rt.frame(0.0);
+        assert!(focused(&rt));
+        rt.key(key(Key::Enter));
+        rt.frame(0.0);
+        assert!(held(&mut rt));
+        rt.key(key(Key::Tab));
+        rt.frame(0.0);
+        assert!(
+            !held(&mut rt),
+            "focus moving off the button retracts the hold"
+        );
     }
 
     #[test]
