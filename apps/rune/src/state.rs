@@ -1669,6 +1669,34 @@ impl AppState {
             s.center_studio_column(tx);
             return true;
         }
+        if event.mods.shift && !event.mods.alt {
+            let at = s.studio_focused_pane_index().map_or(usize::MAX, |i| i + 1);
+            match event.key {
+                rune::Key::Command('t') => {
+                    s.insert_studio_terminal(at);
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                rune::Key::Command('n') => {
+                    // The scratchpad is one per row: focus it when it is already open.
+                    let id = format!("scratchpad:{}", s.studio.project_path);
+                    if s.studio_scratchpad_open() {
+                        s.open_studio_thread(id);
+                    } else {
+                        s.insert_studio_scratchpad(at);
+                    }
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                rune::Key::Up | rune::Key::Down => {
+                    let id = s.studio.thread_id.clone();
+                    s.step_studio_width(&id, if event.key == rune::Key::Up { 1 } else { -1 });
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if event.mods.alt && event.key == rune::Key::Enter && !event.mods.shift {
             let id = s.studio.thread_id.clone();
             s.toggle_studio_zen(&id);
@@ -1844,6 +1872,32 @@ impl AppState {
             pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
         }
         self.persist_studio_layout();
+    }
+
+    /// Grows or shrinks a pane one width rung, stopping at the narrowest and widest.
+    pub fn step_studio_width(&mut self, thread: &str, step: i64) {
+        let path = self.studio.project_path.clone();
+        if let Some(pane) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+            .and_then(|panes| panes.iter_mut().find(|p| p["anchor"]["threadId"] == thread))
+            && !pane["zen"].as_bool().unwrap_or(false)
+        {
+            let width = pane["width"].as_i64().unwrap_or(0);
+            pane["width"] = (width + step).clamp(0, 3).into();
+        }
+        self.persist_studio_layout();
+    }
+
+    fn studio_focused_pane_index(&self) -> Option<usize> {
+        self.studio_layout["rows"]
+            .as_array()?
+            .iter()
+            .find(|r| r["projectPath"] == self.studio.project_path)?["panes"]
+            .as_array()?
+            .iter()
+            .position(|p| p["anchor"]["threadId"] == self.studio.thread_id)
     }
 
     fn persist_studio_layout(&mut self) {

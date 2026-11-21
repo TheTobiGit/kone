@@ -6072,6 +6072,82 @@ mod tests {
     }
 
     #[test]
+    fn studio_shortcuts_open_panes_and_step_widths_like_electron() {
+        let mut s = AppState::default();
+        crate::studio_overview_fixture(&mut s, 0);
+        s.studio.overview = false;
+        s.studio_layout_ready = true;
+        let mut tx = rune::Tx::default();
+        let mut chord = |s: &mut AppState, key: rune::Key| {
+            let event = rune::KeyEvent {
+                key,
+                mods: rune::Mods {
+                    cmd: true,
+                    shift: true,
+                    ..rune::Mods::default()
+                },
+            };
+            assert!(
+                crate::app_key(s, &event, &mut tx),
+                "{:?} is handled",
+                event.key
+            );
+        };
+        let panes = |s: &AppState| {
+            s.studio_layout["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["projectPath"] == s.studio.project_path)
+                .unwrap()["panes"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let before = panes(&s).len();
+        let source = s.studio.thread_id.clone();
+        let source_at = panes(&s)
+            .iter()
+            .position(|p| p["anchor"]["threadId"] == source)
+            .unwrap();
+
+        chord(&mut s, rune::Key::Command('t'));
+        assert!(s.studio.thread_id.starts_with("terminal:"));
+        assert_eq!(panes(&s).len(), before + 1);
+        assert_eq!(
+            panes(&s)[source_at + 1]["anchor"]["threadId"],
+            s.studio.thread_id.as_str(),
+            "the terminal opens beside the focused pane"
+        );
+
+        chord(&mut s, rune::Key::Command('n'));
+        assert!(s.studio.thread_id.starts_with("scratchpad:"));
+        assert_eq!(panes(&s).len(), before + 2);
+        s.open_studio_thread(source.clone());
+        chord(&mut s, rune::Key::Command('n'));
+        assert!(s.studio.thread_id.starts_with("scratchpad:"));
+        assert_eq!(panes(&s).len(), before + 2, "one scratchpad per row");
+
+        s.open_studio_thread(source.clone());
+        let width = |s: &AppState| {
+            panes(s)
+                .iter()
+                .find(|p| p["anchor"]["threadId"] == source)
+                .unwrap()["width"]
+                .as_i64()
+                .unwrap_or(0)
+        };
+        for _ in 0..4 {
+            chord(&mut s, rune::Key::Down);
+        }
+        assert_eq!(width(&s), 0, "shrink stops at the narrowest rung");
+        for _ in 0..5 {
+            chord(&mut s, rune::Key::Up);
+        }
+        assert_eq!(width(&s), 3, "grow stops at the widest rung");
+    }
+
+    #[test]
     fn column_tools_are_reachable_after_the_title_by_keyboard() {
         let mut state = AppState::default();
         crate::studio_overview_fixture(&mut state, 0);
