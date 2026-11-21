@@ -113,6 +113,9 @@ pub struct LauncherState {
     root: Root,
     /// The last navigation was typed into the address bar (a failure shakes it).
     typed: bool,
+    /// Hand keyboard focus back from the address bar on the next tick, for blurs that land
+    /// outside a handler (a typed jump's listing).
+    blur_path: bool,
     remote: bool,
     repo_name: TextEdit,
     command: TextEdit,
@@ -171,6 +174,7 @@ impl Default for LauncherState {
             anchor: home.clone(),
             root: Root::Keep,
             typed: false,
+            blur_path: false,
             remote: false,
             repo_name: TextEdit::default(),
             command: TextEdit::default(),
@@ -529,7 +533,7 @@ fn typed_target(l: &LauncherState, draft: &str) -> Option<String> {
 }
 /// Enter in the address bar (`submitPath`): jump to the typed folder. The folder already in
 /// focus only blurs the field, an empty one shakes it, and a jump in flight ignores it.
-fn submit_path(s: &mut AppState) {
+fn submit_path(s: &mut AppState, tx: &mut Tx) {
     if s.launcher.browser_request_id.is_some() {
         return;
     }
@@ -547,6 +551,7 @@ fn submit_path(s: &mut AppState) {
         l.path.anchor = l.path.text.len();
         l.path.focus = l.path.text.len();
         l.path.focused = false;
+        tx.blur();
         return;
     }
     l.typed = true;
@@ -618,6 +623,7 @@ pub fn browser_completed(s: &mut AppState, result: &Value) {
     if l.typed {
         // A typed jump that landed hands the keyboard back to the list (`pathInput.blur()`).
         l.path.focused = false;
+        l.blur_path = true;
     }
     l.typed = false;
     l.pull.clear();
@@ -788,6 +794,10 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         return false;
     };
     let mut changed = false;
+    if std::mem::take(&mut l.blur_path) {
+        tx.blur();
+        changed = true;
+    }
     let mounted = *l.mounted_at.get_or_insert(clock);
     if clock - mounted < 0.24 || l.shown_at.is_some_and(|at| clock - at < 0.42) {
         tx.wake_after(Duration::ZERO);
@@ -1696,13 +1706,14 @@ fn browser(s: &AppState, t: Palette) -> El {
         .offset(shake, mono_nudge(11.5, 11.5 * LH))
         .offset_motion(NOW)
         .on_edit(|s: &mut AppState| &mut s.launcher.path)
-        .on_key(|s: &mut AppState, event, _| {
+        .on_input_key(|s: &mut AppState, event, tx| {
             if event.key == Key::Escape {
                 let l = &mut s.launcher;
                 l.path.text = l.address(&l.current_path.clone());
                 l.path.anchor = l.path.text.len();
                 l.path.focus = l.path.text.len();
                 l.path.focused = false;
+                tx.blur();
                 true
             } else if matches!(event.key, Key::Tab | Key::Right)
                 && s.launcher.path.anchor != s.launcher.path.focus
@@ -1726,7 +1737,7 @@ fn browser(s: &AppState, t: Palette) -> El {
                 false
             }
         })
-        .on_submit(|s: &mut AppState, _| submit_path(s));
+        .on_submit(submit_path);
     let back = band_action(
         "launcher-back",
         true,
@@ -1918,10 +1929,20 @@ fn browser(s: &AppState, t: Palette) -> El {
             }
         })
         .child(list.pr(10.0));
-    col()
-        .w_full()
-        .on_key(|s: &mut AppState, event, _| type_to_path(s, event))
-        .child(header(vec![address, back]))
+    // A modal always keeps focus inside, so the standalone browser itself takes it when the
+    // address bar lets go: Return there reaches the Open button and typing comes back to the
+    // field, as with Electron's focus on the dialog body.
+    let body = col().w_full();
+    let body = if embedded {
+        body
+    } else {
+        body.key("launcher-browser")
+            .focusable(true)
+            .tab_index(1)
+            .no_focus_ring()
+            .on_key(|s: &mut AppState, event, _| type_to_path(s, event))
+    };
+    body.child(header(vec![address, back]))
         .child(
             panel(t, true).pl(16.0).py(16.0).child(
                 el().w_full()
@@ -2114,6 +2135,56 @@ mod tests {
     }
 
     #[test]
+    fn escape_in_the_address_bar_restores_it_before_closing() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        rt.key(key(rune::Key::Text("D".into())));
+        rt.frame(5.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/D");
+        rt.key(key(rune::Key::Escape));
+        rt.frame(6.0 / 60.0);
+        rt.frame(7.0 / 60.0);
+        assert!(rt.state.launcher.closing.is_none());
+        assert_eq!(rt.state.launcher.path.text, "~/");
+        assert!(!rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Text("P".into())));
+        rt.frame(8.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/P");
+        assert!(rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(9.0 / 60.0);
+        assert!(!rt.state.launcher.path.focused);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(10.0 / 60.0);
+        assert!(rt.state.launcher.closing.is_some());
+    }
+    #[test]
+    fn clicking_the_address_bar_focuses_it_over_the_browser() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        state.launcher.path.focused = false;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        assert!(!rt.state.launcher.path.focused);
+        let (x, y) = rt.find("launcher-path").expect("address bar mounted");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(5.0 / 60.0);
+        assert!(rt.state.launcher.path.focused);
+    }
+    #[test]
     fn browser_scrollbar_track_pages_the_list() {
         let mut state = AppState::default();
         state.launcher.fixture_create_browser();
@@ -2174,12 +2245,12 @@ mod tests {
         s.launcher.current_path = "/home/u/code".into();
         s.launcher.path.text = "~/code/".into();
         s.launcher.path.focused = true;
-        submit_path(&mut s);
+        submit_path(&mut s, &mut Tx::default());
         assert!(!s.launcher.path.focused);
         assert!(s.launcher.browser_request_id.is_none());
         assert_eq!(s.launcher.path.text, "~/code");
         s.launcher.path.text = "  ".into();
-        submit_path(&mut s);
+        submit_path(&mut s, &mut Tx::default());
         assert!(s.launcher.path_error.is_some());
         assert_eq!(s.launcher.path.text, "~/code");
     }
