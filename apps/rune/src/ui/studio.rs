@@ -5038,6 +5038,14 @@ fn focused_body(
                         .color(t.ink)
                         .on_edit(|s: &mut AppState| &mut s.studio.user_edit_draft)
                         .on_submit(|s: &mut AppState, tx: &mut rune::Tx| s.save_user_edit(tx))
+                        .on_key(|s: &mut AppState, event, _| {
+                            // The field would take Escape as a blur; Electron cancels the edit.
+                            if event.key != rune::Key::Escape {
+                                return false;
+                            }
+                            s.cancel_user_edit();
+                            true
+                        })
                     } else {
                         text(item.text.clone())
                             .key(format!("studio-user-text-{user_count}"))
