@@ -487,6 +487,17 @@ pub fn completion_completed(s: &mut AppState, result: &Value) {
         s.launcher.path.focus = s.launcher.path.text.len();
     }
 }
+/// Whether the field's selection is the suffix the last completion appended, rather than a
+/// selection the user made.
+fn completion_shown(l: &LauncherState) -> bool {
+    let p = &l.path;
+    let draft = &l.completion_draft;
+    !draft.is_empty()
+        && p.anchor != p.focus
+        && p.anchor.min(p.focus) == draft.len()
+        && p.anchor.max(p.focus) == p.text.len()
+        && p.text.starts_with(draft.as_str())
+}
 fn choose(s: &mut AppState, path: String) {
     if path.is_empty() {
         return;
@@ -1706,8 +1717,12 @@ fn browser(s: &AppState, t: Palette) -> El {
         .offset(shake, mono_nudge(11.5, 11.5 * LH))
         .offset_motion(NOW)
         .on_edit(|s: &mut AppState| &mut s.launcher.path)
-        .on_input_key(|s: &mut AppState, event, tx| {
-            if event.key == Key::Escape {
+        .on_input_key(move |s: &mut AppState, event, tx| {
+            let l = &s.launcher;
+            // Embedded, an untouched field passes Escape on so the modal goes back to the form.
+            if event.key == Key::Escape
+                && (!embedded || l.path.text != l.address(&l.current_path.clone()))
+            {
                 let l = &mut s.launcher;
                 l.path.text = l.address(&l.current_path.clone());
                 l.path.anchor = l.path.text.len();
@@ -1715,15 +1730,14 @@ fn browser(s: &AppState, t: Palette) -> El {
                 l.path.focused = false;
                 tx.blur();
                 true
-            } else if matches!(event.key, Key::Tab | Key::Right)
-                && s.launcher.path.anchor != s.launcher.path.focus
-            {
+            } else if matches!(event.key, Key::Tab | Key::Right) && completion_shown(&s.launcher) {
                 s.launcher.path.anchor = s.launcher.path.focus.max(s.launcher.path.anchor);
                 s.launcher.path.focus = s.launcher.path.anchor;
                 true
             } else if let Key::Text(inserted) = &event.key {
+                let shown = completion_shown(&s.launcher);
                 let p = &mut s.launcher.path;
-                if inserted.contains('/') && p.anchor != p.focus {
+                if inserted.contains('/') && shown {
                     // `/` accepts the selected completion, then types after it.
                     let end = p.anchor.max(p.focus);
                     p.anchor = end;
@@ -1750,7 +1764,15 @@ fn browser(s: &AppState, t: Palette) -> El {
             t.muted,
         )],
     )
-    .on_press(|s: &mut AppState| s.launcher.close());
+    .on_press(|s: &mut AppState| s.launcher.close())
+    // Return on a focused Cancel cancels; it would otherwise reach the default Open button.
+    .on_key(|s: &mut AppState, event, _| {
+        let enter = event.key == Key::Enter && event.mods == rune::Mods::default();
+        if enter {
+            s.launcher.close();
+        }
+        enter
+    });
 
     let enter = Transition::offset(0.0, 24.0)
         .combined(Transition::opacity())
@@ -2169,6 +2191,52 @@ mod tests {
         rt.key(key(rune::Key::Escape));
         rt.frame(10.0 / 60.0);
         assert!(rt.state.launcher.closing.is_some());
+    }
+    #[test]
+    fn escape_in_an_embedded_browser_goes_back_to_the_form() {
+        let mut state = AppState::default();
+        state.launcher.fixture_create_browser();
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        rt.state.launcher.path.focused = true;
+        rt.frame(4.0 / 60.0);
+        rt.key(key(rune::Key::Text("D".into())));
+        rt.frame(5.0 / 60.0);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(6.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "~/");
+        assert!(rt.state.launcher.view == View::Browser);
+        rt.key(key(rune::Key::Escape));
+        rt.frame(7.0 / 60.0);
+        assert!(rt.state.launcher.view == View::Form);
+    }
+    #[test]
+    fn slash_over_a_selection_the_user_made_replaces_it() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        let p = &mut rt.state.launcher.path;
+        p.focused = true;
+        p.anchor = 0;
+        p.focus = p.text.len();
+        rt.frame(4.0 / 60.0);
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Text("/".into()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(5.0 / 60.0);
+        assert_eq!(rt.state.launcher.path.text, "/");
     }
     #[test]
     fn clicking_the_address_bar_focuses_it_over_the_browser() {
