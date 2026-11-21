@@ -153,7 +153,10 @@ impl AppState {
     /// The live trigger, unless Escape or a pick put the menu away. `@` names files, so it
     /// stays shut while a turn runs; `/` rows are local UI and never do.
     pub fn composer_trigger(&self) -> Option<Trigger> {
-        if !self.studio.composer_menu_armed {
+        let dismissed = self.studio.composer_menu_dismissed.as_ref();
+        if dismissed.is_some_and(|(text, focus)| {
+            *text == self.composer.text && *focus == self.composer.focus
+        }) {
             return None;
         }
         let trigger = detect_token(&self.composer.text, self.composer.focus)?;
@@ -184,9 +187,40 @@ impl AppState {
             .collect()
     }
 
-    fn close_composer_menu(&mut self) {
-        self.studio.composer_menu_armed = false;
+    pub(crate) fn close_composer_menu(&mut self) {
+        self.studio.composer_menu_dismissed =
+            Some((self.composer.text.clone(), self.composer.focus));
         self.studio.composer_menu_index = 0;
+    }
+
+    /// The menu's keys. The composer routes its focused keys here before the editor sees them,
+    /// so a pick, a move or a dismissal never also edits the draft or blurs the field.
+    pub fn composer_menu_key(&mut self, event: &rune::KeyEvent) -> bool {
+        if matches!(
+            event.key,
+            rune::Key::Text(_) | rune::Key::Backspace | rune::Key::Delete
+        ) {
+            self.studio.composer_menu_index = 0;
+            return false;
+        }
+        let Some(trigger) = self.composer_trigger() else {
+            return false;
+        };
+        let count = self.composer_menu_rows(&trigger).len();
+        if count == 0 || event.mods.cmd || event.mods.ctrl || event.mods.alt {
+            return false;
+        }
+        let index = self.studio.composer_menu_index.min(count - 1);
+        match event.key {
+            rune::Key::Escape => self.close_composer_menu(),
+            rune::Key::Down => self.studio.composer_menu_index = (index + 1) % count,
+            rune::Key::Up => self.studio.composer_menu_index = (index + count - 1) % count,
+            rune::Key::Enter | rune::Key::Tab if !event.mods.shift => {
+                return self.accept_composer_row(index);
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Accept a menu row. Returns false when no menu is showing that row.
@@ -265,7 +299,6 @@ mod tests {
         s.composer.text = text.into();
         s.composer.focus = text.len();
         s.composer.anchor = text.len();
-        s.studio.composer_menu_armed = true;
         s.studio.thread_id = "t".into();
         s
     }
@@ -363,7 +396,7 @@ mod tests {
             s.composer.focus,
             "look at @apps/web/app/composables/useAgent.ts ".len()
         );
-        assert!(!s.studio.composer_menu_armed);
+        assert!(s.composer_trigger().is_none());
     }
 
     #[test]
@@ -387,7 +420,7 @@ mod tests {
     #[test]
     fn a_typed_leading_command_runs_instead_of_sending() {
         let mut s = with_history(composer("/compact keep the tests"));
-        s.studio.composer_menu_armed = false;
+        s.close_composer_menu();
         let mut tx = rune::Tx::default();
         s.send_studio(&mut tx);
         // No sidecar in tests: the compact request reached `request`, which reports it.

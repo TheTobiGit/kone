@@ -374,7 +374,6 @@ fn main() {
                 s.composer.text = "/".into();
                 s.composer.focus = 1;
                 s.composer.anchor = 1;
-                s.studio.composer_menu_armed = true;
             }),
             ("studio-composer-attachments", |s| {
                 studio_composer(s, "attachments");
@@ -398,7 +397,6 @@ fn main() {
                 s.composer.text = "@".into();
                 s.composer.focus = 1;
                 s.composer.anchor = 1;
-                s.studio.composer_menu_armed = true;
             }),
             ("studio-picker-mention-chip", |s| {
                 studio_composer(s, "picker-mention-chip");

@@ -303,9 +303,9 @@ pub struct StudioState {
     pub workspace_tray_open: bool,
     pub picker_open: bool,
     pub picker_opened_at: Option<std::time::Instant>,
-    /// The `@`/`/` menu shows for the trigger under the caret; Escape or a pick puts it away
-    /// until the next keystroke.
-    pub composer_menu_armed: bool,
+    /// The `@`/`/` menu shows for the trigger under the caret. Escape or a pick puts it away
+    /// for the draft and caret it saw, so the next edit or caret move brings it back.
+    pub composer_menu_dismissed: Option<(String, usize)>,
     pub composer_menu_index: usize,
     pub effort_picker_open: bool,
     pub mode_picker_open: bool,
@@ -1606,33 +1606,8 @@ impl AppState {
                 return true;
             }
         }
-        if let Some(trigger) = s.composer_trigger() {
-            let count = s.composer_menu_rows(&trigger).len();
-            if count > 0 {
-                match event.key {
-                    rune::Key::Escape => {
-                        s.studio.composer_menu_armed = false;
-                        s.studio.composer_menu_index = 0;
-                        return true;
-                    }
-                    rune::Key::Down | rune::Key::Up => {
-                        let index = s.studio.composer_menu_index.min(count - 1);
-                        s.studio.composer_menu_index = if event.key == rune::Key::Down {
-                            (index + 1) % count
-                        } else {
-                            (index + count - 1) % count
-                        };
-                        return true;
-                    }
-                    rune::Key::Enter | rune::Key::Tab => {
-                        let index = s.studio.composer_menu_index.min(count - 1);
-                        if s.accept_composer_row(index) {
-                            return true;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        if s.composer_menu_key(event) {
+            return true;
         }
         if event.key == rune::Key::Escape {
             if s.studio.user_edit.is_some() {
@@ -4065,7 +4040,6 @@ mod start_actions_tests {
             ..Default::default()
         };
         s.studio.composer_open = true;
-        s.studio.composer_menu_armed = true;
         s.studio.conversation_fixture = Some("composer-picker-mention".into());
         s.composer.text = "@main".into();
         s.composer.focus = s.composer.text.len();
@@ -4075,7 +4049,7 @@ mod start_actions_tests {
         };
         let mut tx = rune::Tx::default();
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
-        assert!(!s.studio.composer_menu_armed);
+        assert!(s.composer_trigger().is_none());
         assert!(s.studio.composer_open);
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
         assert!(!s.studio.composer_open);
