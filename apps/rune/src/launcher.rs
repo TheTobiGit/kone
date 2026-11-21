@@ -415,7 +415,11 @@ fn repo_parts(input: &str) -> Option<(String, String)> {
     } else if lower.starts_with("https://") || lower.starts_with("http://") {
         let rest = &s[s.find("://")? + 3..];
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        let host = rest[..end].rsplit('@').next()?.split(':').next()?;
+        let authority = rest[..end].rsplit('@').next()?;
+        let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
+        if !port.is_empty() && port.parse::<u16>().is_err() {
+            return None;
+        }
         let host = host.to_ascii_lowercase();
         if host.strip_prefix("www.").unwrap_or(&host) != "github.com" {
             return None;
@@ -2321,6 +2325,7 @@ mod tests {
             " my_org/repo.GIT/ ",
             "https://www.GitHub.com/vercel/next.js/tree/canary?tab=readme#top",
             "HTTP://github.com:443/vercel/next.js.git",
+            "https://user@github.com:/vercel/next.js",
             "github.com/vercel//next.js",
             "GIT@github.com:vercel/next.js.git",
         ] {
@@ -2339,6 +2344,8 @@ mod tests {
             "https://gitlab.com/vercel/next.js",
             "https://github.com/vercel",
             "github.com/vercel/next.js?x",
+            "https://github.com:abc/vercel/next.js",
+            "https://github.com:99999/vercel/next.js",
             "owner/.git",
             "own er/repo",
         ] {
