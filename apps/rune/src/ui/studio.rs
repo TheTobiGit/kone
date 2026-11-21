@@ -3076,7 +3076,16 @@ fn studio_row(
                         .opacity(0.7),
                 )
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
-                let mut output = col().w_full().gap(0.0).selection_group(true);
+                let mut output = col()
+                    .w_full()
+                    .gap(0.0)
+                    .selection_group(true)
+                    .on_selection_change(|s: &mut AppState, change, _| {
+                        s.studio.terminal_selection = change
+                            .selection()
+                            .map(|selection| selection.text().to_owned())
+                            .filter(|text| !text.is_empty());
+                    });
                 let fixture_transcript =
                     terminal.terminal_output == "kone terminal (dev mock)\r\n$ ";
                 let cursor_visible =
@@ -3127,6 +3136,9 @@ fn studio_row(
                         // Every key goes to the PTY as it is typed, like xterm.js; text an
                         // IME commits into the field goes as soon as it lands.
                         .on_input_key(|s: &mut AppState, ev, tx| {
+                            if s.terminal_clipboard_chord(ev, tx) {
+                                return true;
+                            }
                             if ev.key == rune::Key::Enter && !ev.mods.cmd {
                                 s.submit_terminal_input(tx);
                                 return true;
@@ -6178,6 +6190,69 @@ mod tests {
             rt.state.studio.terminal_input.text, "",
             "committed text does not wait for Enter behind later keys"
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_c_and_v_copy_and_paste_in_the_focused_terminal() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        crate::studio_terminal_fixture(&mut state, false);
+        state.studio.terminal_output = "$ ".into();
+        if let Some(pane) = state.studio_threads.get_mut("review-one") {
+            pane.terminal_output = "$ ".into();
+        }
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        let clipboard = rune::clipboard::memory();
+        rt.use_clipboard(&clipboard);
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let key = rt
+            .elements()
+            .iter()
+            .find_map(|el| el.key.clone().filter(|k| k.starts_with("terminal-input-")))
+            .expect("the live terminal has an input");
+        let (x, y) = rt.find(&key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        assert!(rt.state.studio.terminal_command.is_some());
+        rt.state.studio.terminal_session_id = Some("pty".into());
+        let chord = |c| rune::KeyEvent {
+            key: rune::Key::Command(c),
+            mods: rune::Mods {
+                ctrl: true,
+                cmd: true,
+                shift: true,
+                ..rune::Mods::default()
+            },
+        };
+
+        rt.state.studio.terminal_selection = Some("total 0".into());
+        rt.state.studio.error = None;
+        rt.key(chord('c'));
+        rt.frame(3.0 / 60.0);
+        assert_eq!(
+            clipboard.text().as_deref().map(String::as_str),
+            Some("total 0"),
+            "Ctrl+Shift+C copies the selected output"
+        );
+        assert!(
+            rt.state.studio.error.is_none(),
+            "and sends nothing to the PTY"
+        );
+
+        clipboard.set_text("ls -la");
+        rt.key(chord('v'));
+        rt.frame(4.0 / 60.0);
+        rt.frame(5.0 / 60.0);
+        // Without a sidecar the write reports the service as unavailable, which
+        // shows the clipboard reached `terminal.write`.
+        assert!(
+            rt.state.studio.error.is_some(),
+            "Ctrl+Shift+V pastes the clipboard into the PTY"
+        );
+        assert_eq!(rt.state.studio.terminal_input.text, "");
     }
 
     #[test]

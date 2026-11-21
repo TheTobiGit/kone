@@ -270,6 +270,8 @@ pub struct StudioState {
     pub terminal_command: Option<String>,
     pub terminal_session_id: Option<String>,
     pub terminal_output: String,
+    /// The terminal output the pointer last selected, for Ctrl+Shift+C off macOS.
+    pub terminal_selection: Option<String>,
     pub terminal_input: TextEdit,
     pub terminal_cursor_visible: bool,
     pub terminal_cursor_blink_at: Option<std::time::Instant>,
@@ -1246,6 +1248,9 @@ impl AppState {
         if s.page != Page::Studio {
             return false;
         }
+        if s.terminal_clipboard_chord(event, tx) {
+            return true;
+        }
         if event.is_command('o') && event.mods.shift {
             let panes = s.studio_layout["rows"]
                 .as_array()
@@ -2204,6 +2209,41 @@ impl AppState {
         self.studio.composer_open = false;
         self.ensure_terminal_open(&thread);
         self.persist_studio_layout();
+    }
+
+    /// Off macOS, Ctrl+Shift+C copies the selected terminal output and Ctrl+Shift+V pastes
+    /// the clipboard into the PTY, as xterm.js terminals bind them. Plain Ctrl+C and Ctrl+V
+    /// stay with the shell and the field's paste.
+    pub fn terminal_clipboard_chord(&mut self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+        let m = event.mods;
+        if cfg!(target_os = "macos")
+            || !m.ctrl
+            || !m.shift
+            || m.alt
+            || self.studio.terminal_command.is_none()
+        {
+            return false;
+        }
+        match event.key {
+            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'c') => {
+                if let Some(text) = self.studio.terminal_selection.clone() {
+                    tx.copy(text);
+                }
+                true
+            }
+            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'v') => {
+                tx.read_clipboard(|s: &mut AppState, content, _| {
+                    if content.text().is_empty() {
+                        return;
+                    }
+                    let sequence =
+                        crate::terminal::paste_sequence(content.text(), &s.studio.terminal_output);
+                    s.terminal_write(sequence);
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn terminal_write(&mut self, input: String) {
