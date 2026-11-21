@@ -2678,13 +2678,7 @@ impl AppState {
                     "terminal.output" => {
                         if let Some(data) = params["data"].as_str() {
                             state.terminal_output.push_str(data);
-                            if state.terminal_output.len() > 512 * 1024 {
-                                let mut cut = state.terminal_output.len() - 512 * 1024;
-                                while !state.terminal_output.is_char_boundary(cut) {
-                                    cut += 1;
-                                }
-                                state.terminal_output.drain(..cut);
-                            }
+                            crate::terminal::trim_output(&mut state.terminal_output, 512 * 1024);
                         }
                     }
                     "terminal.activity" => {

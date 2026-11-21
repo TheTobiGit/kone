@@ -141,6 +141,25 @@ pub fn paste_sequence(text: &str, output: &str) -> String {
     }
 }
 
+/// Drops the oldest output past `limit` bytes. A cursor-key or bracketed-paste mode switched on
+/// only in the dropped part is written back at the front, so the mode outlives the scrollback.
+pub fn trim_output(output: &mut String, limit: usize) {
+    if output.len() <= limit {
+        return;
+    }
+    let modes = [1, 2004].map(|mode| (mode, private_mode(output, mode)));
+    let mut cut = output.len() - limit;
+    while !output.is_char_boundary(cut) {
+        cut += 1;
+    }
+    output.drain(..cut);
+    for (mode, on) in modes {
+        if on && !private_mode(output, mode) {
+            output.insert_str(0, &format!("\x1b[?{mode}h"));
+        }
+    }
+}
+
 fn private_mode(output: &str, mode: u16) -> bool {
     let on = output.rfind(&format!("\x1b[?{mode}h"));
     let off = output.rfind(&format!("\x1b[?{mode}l"));
@@ -557,7 +576,7 @@ fn active<'a>(main: &'a mut Screen, alternate: &'a mut Option<Screen>) -> &'a mu
 #[cfg(test)]
 mod tests {
     use super::screen_lines;
-    use super::{application_cursor, key_sequence, paste_sequence};
+    use super::{application_cursor, key_sequence, paste_sequence, trim_output};
 
     fn key(key: rune::Key, mods: rune::Mods) -> rune::KeyEvent {
         rune::KeyEvent { key, mods }
@@ -647,6 +666,18 @@ mod tests {
             "\x1b[200~ls\rpwd\x1b[201~"
         );
         assert_eq!(paste_sequence("ls", "\x1b[?2004h$ vim\x1b[?2004l"), "ls");
+    }
+
+    #[test]
+    fn trimmed_scrollback_keeps_the_terminal_modes() {
+        let mut output = format!("\x1b[?2004h\x1b[?1h{}", "x".repeat(64));
+        trim_output(&mut output, 16);
+        assert!(output.ends_with(&"x".repeat(16)));
+        assert!(application_cursor(&output));
+        assert_eq!(paste_sequence("ls", &output), "\x1b[200~ls\x1b[201~");
+        let mut off = format!("\x1b[?2004h{}\x1b[?2004l$ ", "x".repeat(64));
+        trim_output(&mut off, 16);
+        assert_eq!(paste_sequence("ls", &off), "ls");
     }
 
     #[test]
