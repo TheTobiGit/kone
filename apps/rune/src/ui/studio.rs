@@ -3076,7 +3076,11 @@ fn studio_row(
                         .opacity(0.7),
                 )
             } else if let Some(terminal) = state.filter(|s| s.terminal_command.is_some()) {
-                let mut output = col().w_full().gap(0.0).selection_group(true);
+                let mut output = col()
+                    .key(format!("terminal-output-{id}"))
+                    .w_full()
+                    .gap(0.0)
+                    .selection_group(true);
                 let fixture_transcript =
                     terminal.terminal_output == "kone terminal (dev mock)\r\n$ ";
                 let cursor_visible =
@@ -3124,35 +3128,35 @@ fn studio_row(
                         .color(t.ink)
                         .on_edit(|s: &mut AppState| &mut s.studio.terminal_input)
                         .on_submit(AppState::submit_terminal_input)
-                        .on_key(|s: &mut AppState, ev, tx| {
-                            let sequence = match ev.key {
-                                rune::Key::Up => Some("\x1b[A"),
-                                rune::Key::Down => Some("\x1b[B"),
-                                rune::Key::Right => Some("\x1b[C"),
-                                rune::Key::Left => Some("\x1b[D"),
-                                rune::Key::Home => Some("\x1b[H"),
-                                rune::Key::End => Some("\x1b[F"),
-                                rune::Key::PageUp => Some("\x1b[5~"),
-                                rune::Key::PageDown => Some("\x1b[6~"),
-                                rune::Key::Tab => Some("\t"),
-                                rune::Key::Escape => Some("\x1b"),
-                                rune::Key::Delete => Some("\x1b[3~"),
-                                _ => None,
+                        // Every key goes to the PTY as it is typed, like xterm.js; text an
+                        // IME commits into the field goes as soon as it lands.
+                        .on_input_key(|s: &mut AppState, ev, tx| {
+                            if s.terminal_clipboard_chord(ev, true, tx) {
+                                return true;
+                            }
+                            if ev.key == rune::Key::Enter && !ev.mods.cmd {
+                                s.submit_terminal_input(tx);
+                                return true;
+                            }
+                            let app_cursor =
+                                crate::terminal::application_cursor(&s.studio.terminal_output);
+                            let Some(sequence) = crate::terminal::key_sequence(ev, app_cursor)
+                            else {
+                                return false;
                             };
-                            if let Some(sequence) = sequence {
-                                s.terminal_write(sequence.into());
-                                tx.live_only();
-                                return true;
-                            }
-                            if ev.mods.ctrl
-                                && let rune::Key::Text(text) = &ev.key
-                                && let Some(ch) = text.chars().next()
-                            {
-                                let control = (ch.to_ascii_lowercase() as u8 & 0x1f) as char;
-                                s.terminal_write(control.to_string());
-                                return true;
-                            }
-                            false
+                            s.flush_terminal_field();
+                            s.terminal_write(sequence);
+                            tx.live_only();
+                            true
+                        })
+                        .on_input_change(|s: &mut AppState, _| s.flush_terminal_field())
+                        .on_input_paste(|s: &mut AppState, content, _| {
+                            let sequence = crate::terminal::paste_sequence(
+                                content.text(),
+                                &s.studio.terminal_output,
+                            );
+                            s.terminal_write(sequence);
+                            true
                         })
                 } else {
                     el().w_full().h(40.0)
@@ -6115,6 +6119,164 @@ mod tests {
         press(&mut rt, rune::Key::Tab);
         assert!(rt.state.studio.picker_open, "Tab picks too");
         assert_eq!(rt.state.composer.text, "");
+    }
+
+    #[test]
+    fn the_focused_terminal_sends_each_key_to_the_pty() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        crate::studio_terminal_fixture(&mut state, false);
+        state.studio.terminal_output = "$ ".into();
+        if let Some(pane) = state.studio_threads.get_mut("review-one") {
+            pane.terminal_output = "$ ".into();
+        }
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let key = rt
+            .elements()
+            .iter()
+            .find_map(|el| el.key.clone().filter(|k| k.starts_with("terminal-input-")))
+            .expect("the live terminal has an input");
+        let (x, y) = rt.find(&key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        rt.state.studio.terminal_session_id = Some("pty".into());
+        let mut t = 3.0;
+        for (key, ctrl) in [
+            (rune::Key::Text("l".into()), false),
+            (rune::Key::Up, false),
+            (rune::Key::Escape, false),
+            (rune::Key::Text("c".into()), true),
+        ] {
+            rt.state.studio.error = None;
+            rt.key(rune::KeyEvent {
+                key: key.clone(),
+                mods: rune::Mods {
+                    ctrl,
+                    ..rune::Mods::default()
+                },
+            });
+            rt.frame(t / 60.0);
+            t += 1.0;
+            // Without a sidecar the write reports the service as unavailable, which
+            // shows the key reached `terminal.write` instead of the field's editor.
+            assert!(rt.state.studio.error.is_some(), "{key:?} goes to the PTY");
+            assert_eq!(
+                rt.state.studio.terminal_input.text, "",
+                "{key:?} skips the field"
+            );
+        }
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|el| el.focused && el.key.as_deref() == Some(key.as_str())),
+            "Escape goes to the shell instead of blurring the terminal"
+        );
+        rt.state.studio.error = None;
+        rt.ime(rune::Ime::Commit("日本".into()));
+        rt.frame(t / 60.0);
+        assert!(
+            rt.state.studio.error.is_some(),
+            "an IME commit goes to the PTY"
+        );
+        assert_eq!(
+            rt.state.studio.terminal_input.text, "",
+            "committed text does not wait for Enter behind later keys"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_c_and_v_copy_and_paste_in_the_focused_terminal() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        crate::studio_terminal_fixture(&mut state, false);
+        state.studio.terminal_output = "$ ".into();
+        if let Some(pane) = state.studio_threads.get_mut("review-one") {
+            pane.terminal_output = "$ ".into();
+        }
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.on_key = Some(crate::app_key);
+        let clipboard = rune::clipboard::memory();
+        rt.use_clipboard(&clipboard);
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let key = rt
+            .elements()
+            .iter()
+            .find_map(|el| el.key.clone().filter(|k| k.starts_with("terminal-input-")))
+            .expect("the live terminal has an input");
+        let (x, y) = rt.find(&key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        assert!(rt.state.studio.terminal_command.is_some());
+        rt.state.studio.terminal_session_id = Some("pty".into());
+        let chord = |c| rune::KeyEvent {
+            key: rune::Key::Command(c),
+            mods: rune::Mods {
+                ctrl: true,
+                cmd: true,
+                shift: true,
+                ..rune::Mods::default()
+            },
+        };
+
+        let output = rt
+            .elements()
+            .iter()
+            .find(|el| {
+                el.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("terminal-output-"))
+            })
+            .map(|el| el.rect)
+            .expect("the terminal shows its output");
+        let y = output[1] + 8.0;
+        rt.pointer_down(output[0] + 1.0, y);
+        rt.pointer_move(output[0] + 40.0, y);
+        rt.pointer_up(output[0] + 40.0, y);
+        rt.frame(3.0 / 60.0);
+        rt.state.studio.error = None;
+        rt.key(chord('c'));
+        rt.frame(4.0 / 60.0);
+        let copied = clipboard.text().map(|text| text.to_string());
+        assert!(
+            copied
+                .as_deref()
+                .is_some_and(|text| !text.is_empty() && "$ ".starts_with(text)),
+            "Ctrl+Shift+C copies the selected output, got {copied:?}"
+        );
+        assert!(
+            rt.state.studio.error.is_none(),
+            "and sends nothing to the PTY"
+        );
+
+        // A click on the output clears the selection, so copy has nothing stale to take,
+        // and paste still reaches the shell.
+        rt.pointer_down(output[0] + 20.0, y);
+        rt.pointer_up(output[0] + 20.0, y);
+        rt.frame(5.0 / 60.0);
+        clipboard.set_text("ls -la");
+        rt.key(chord('c'));
+        rt.frame(6.0 / 60.0);
+        assert_eq!(
+            clipboard.text().as_deref().map(String::as_str),
+            Some("ls -la"),
+            "no selection, nothing copied"
+        );
+        rt.key(chord('v'));
+        rt.frame(7.0 / 60.0);
+        rt.frame(8.0 / 60.0);
+        // Without a sidecar the write reports the service as unavailable, which
+        // shows the clipboard reached `terminal.write`.
+        assert!(
+            rt.state.studio.error.is_some(),
+            "Ctrl+Shift+V pastes the clipboard into the PTY"
+        );
+        assert_eq!(rt.state.studio.terminal_input.text, "");
     }
 
     #[test]

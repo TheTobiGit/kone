@@ -1246,6 +1246,9 @@ impl AppState {
         if s.page != Page::Studio {
             return false;
         }
+        if s.terminal_clipboard_chord(event, false, tx) {
+            return true;
+        }
         if event.is_command('o') && event.mods.shift {
             let panes = s.studio_layout["rows"]
                 .as_array()
@@ -2206,6 +2209,59 @@ impl AppState {
         self.persist_studio_layout();
     }
 
+    /// Off macOS, Ctrl+Shift+C copies the selected output of any terminal pane, and from a
+    /// focused terminal field Ctrl+Shift+V pastes the clipboard into its PTY, as xterm.js
+    /// terminals bind them. Plain Ctrl+C and Ctrl+V stay with the shell and the field's paste.
+    pub fn terminal_clipboard_chord(
+        &mut self,
+        event: &rune::KeyEvent,
+        focused_terminal: bool,
+        tx: &mut rune::Tx,
+    ) -> bool {
+        let m = event.mods;
+        if cfg!(target_os = "macos") || !m.ctrl || !m.shift || m.alt {
+            return false;
+        }
+        match event.key {
+            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'c') => {
+                let Some(text) = tx
+                    .text_selection()
+                    .filter(|selection| {
+                        let mut texts = selection.texts().iter().filter(|t| t.is_selected());
+                        texts.clone().next().is_some()
+                            && texts.all(|t| t.path().contains("terminal-output-"))
+                    })
+                    .map(|selection| selection.text().to_owned())
+                    .filter(|text| !text.is_empty())
+                else {
+                    return false;
+                };
+                tx.copy(text);
+                true
+            }
+            // A click on the output leaves nothing focused but keeps the terminal the
+            // target, as xterm.js does; another focused field keeps its own paste.
+            rune::Key::Command(c)
+                if c.eq_ignore_ascii_case(&'v')
+                    && (focused_terminal
+                        || (tx.focused().is_none()
+                            && !self.studio.overview
+                            && self.studio.terminal_command.is_some())) =>
+            {
+                tx.read_clipboard(|s: &mut AppState, content, _| {
+                    if content.text().is_empty() {
+                        return;
+                    }
+                    let sequence =
+                        crate::terminal::paste_sequence(content.text(), &s.studio.terminal_output);
+                    s.terminal_write(sequence);
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn terminal_write(&mut self, input: String) {
         let Some(terminal_id) = self.studio.terminal_session_id.clone() else {
             return;
@@ -2214,6 +2270,18 @@ impl AppState {
             "terminal.write",
             serde_json::json!({"terminalId": terminal_id, "data": input}),
         );
+    }
+
+    /// Sends text an input method committed into the terminal field, so it reaches the shell
+    /// before the next key instead of waiting for Enter.
+    pub fn flush_terminal_field(&mut self) {
+        let text = self.studio.terminal_input.text.clone();
+        if text.is_empty() {
+            return;
+        }
+        self.studio.terminal_input.clear();
+        self.studio.terminal_input.focused = true;
+        self.terminal_write(text);
     }
 
     pub fn resize_terminal(&mut self, cols: u16, rows: u16) {
@@ -2735,13 +2803,7 @@ impl AppState {
                     "terminal.output" => {
                         if let Some(data) = params["data"].as_str() {
                             state.terminal_output.push_str(data);
-                            if state.terminal_output.len() > 512 * 1024 {
-                                let mut cut = state.terminal_output.len() - 512 * 1024;
-                                while !state.terminal_output.is_char_boundary(cut) {
-                                    cut += 1;
-                                }
-                                state.terminal_output.drain(..cut);
-                            }
+                            crate::terminal::trim_output(&mut state.terminal_output, 512 * 1024);
                         }
                     }
                     "terminal.activity" => {
