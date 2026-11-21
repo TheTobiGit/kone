@@ -3107,6 +3107,7 @@ impl AppState {
                 );
                 if self.studio.start_request == Some(id) {
                     self.studio.pending_send = None;
+                    self.studio.upload_turn = None;
                     self.studio.turn_attachments.clear();
                     self.studio.busy = false;
                     self.studio.start_request = None;
@@ -3198,7 +3199,9 @@ impl AppState {
                 self.studio.started = true;
                 self.studio.connected_identity = StudioIdentity::from_value(&result["identity"]);
                 self.studio.worktree_path = result["worktreePath"].as_str().map(str::to_owned);
-                if let Some(input) = self.studio.pending_send.take() {
+                if let Some(input) = self.studio.pending_send.take()
+                    && !self.upload_after_start(&input)
+                {
                     self.dispatch_studio_send(input);
                 }
             }
@@ -3215,10 +3218,12 @@ impl AppState {
             self.studio.pending_send = None;
             self.studio.start_request = None;
             self.studio.send_request = None;
+            self.studio.upload_turn = None;
             for state in self.studio_threads.values_mut() {
                 state.error = Some(detail.clone());
                 state.busy = false;
                 state.pending_send = None;
+                state.upload_turn = None;
                 state.start_request = None;
                 state.send_request = None;
             }

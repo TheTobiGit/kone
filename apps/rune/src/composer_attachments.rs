@@ -32,6 +32,8 @@ pub struct UploadTurn {
     pub item: Option<String>,
     pub requests: Vec<u64>,
     pub uploaded: Vec<(u64, serde_json::Value)>,
+    /// Files held until `agent.start` creates the thread they are registered under.
+    pub deferred: Vec<PendingAttachment>,
 }
 
 pub fn ext_badge(name: &str) -> String {
@@ -152,6 +154,42 @@ impl AppState {
     /// Uploads the request's files, then sends it once every upload has answered. A file that
     /// can't be read or uploaded is dropped rather than sinking the whole send, like Electron.
     pub(crate) fn upload_then_send(
+        &mut self,
+        input: String,
+        item: Option<String>,
+        files: Vec<PendingAttachment>,
+    ) {
+        if !self.studio.started {
+            // The sidecar registers an upload under its thread's row, which only
+            // `agent.start` creates; upload once the start lands.
+            self.studio.upload_turn = Some(UploadTurn {
+                item,
+                deferred: files,
+                ..Default::default()
+            });
+            self.continue_studio_send(input);
+            if self.studio.start_request.is_none() {
+                self.studio.upload_turn = None;
+            }
+            return;
+        }
+        self.start_uploads(input, item, files);
+    }
+
+    /// Uploads the files held for a new thread once its start lands; false when none were.
+    pub(crate) fn upload_after_start(&mut self, input: &str) -> bool {
+        let Some(turn) = self
+            .studio
+            .upload_turn
+            .take_if(|turn| !turn.deferred.is_empty())
+        else {
+            return false;
+        };
+        self.start_uploads(input.to_owned(), turn.item, turn.deferred);
+        true
+    }
+
+    fn start_uploads(
         &mut self,
         input: String,
         item: Option<String>,
@@ -305,7 +343,7 @@ mod tests {
             input: "see attached".into(),
             item: None,
             requests: vec![7, 8],
-            uploaded: Vec::new(),
+            ..Default::default()
         });
         let ok = json!({"id":7,"result":{"type":"file","id":"att_1","name":"a.txt","mimeType":"text/plain","sizeBytes":3}});
         assert!(s.upload_reply(7, &ok));
@@ -356,6 +394,46 @@ mod tests {
         assert!(s.studio.attachment_notice.is_none());
     }
 
+    fn missing_file() -> PendingAttachment {
+        PendingAttachment {
+            id: 1,
+            path: scratch("missing").join("gone.txt"),
+            name: "gone.txt".into(),
+            mime_type: "text/plain".into(),
+            image: false,
+            size_bytes: 1,
+            ext: "TXT".into(),
+        }
+    }
+
+    #[test]
+    fn a_new_thread_uploads_only_after_its_start_lands() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "t".into();
+        s.upload_then_send("see attached".into(), None, vec![missing_file()]);
+        assert!(
+            s.studio.attachment_notice.is_none(),
+            "nothing is read before the thread exists"
+        );
+
+        s.studio.start_request = Some(5);
+        s.studio.pending_send = Some("see attached".into());
+        s.studio.upload_turn = Some(UploadTurn {
+            deferred: vec![missing_file()],
+            ..Default::default()
+        });
+        s.studio_message(json!({"id":5,"result":{}}));
+        assert!(s.studio.started);
+        assert!(s.studio.upload_turn.is_none());
+        assert!(
+            s.studio
+                .attachment_notice
+                .as_ref()
+                .is_some_and(|n| n.0.starts_with("Could not read")),
+            "the held file is read once the start lands"
+        );
+    }
+
     #[test]
     fn uploads_keep_the_order_they_were_picked_in() {
         let mut s = AppState::default();
@@ -392,7 +470,7 @@ mod tests {
             input: String::new(),
             item: Some("user-0".into()),
             requests: vec![3],
-            uploaded: Vec::new(),
+            ..Default::default()
         });
         assert!(s.upload_reply(3, &json!({"id":3,"error":{"message":"nope"}})));
         assert!(s.studio.items.is_empty() && !s.studio.busy);
