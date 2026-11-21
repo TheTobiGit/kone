@@ -2490,13 +2490,36 @@ impl AppState {
 
     pub fn send_studio(&mut self, tx: &mut rune::Tx) {
         let input = self.composer.text.trim().to_owned();
+        self.send_studio_input(input, true, tx);
+    }
+
+    /// Electron's send-now: a queued follow-up steers a running turn and otherwise starts one,
+    /// leaving the composer draft alone.
+    pub fn send_queued_now(&mut self, queue_id: &str, input: String, tx: &mut rune::Tx) {
+        self.request(
+            "agent.queueCancel",
+            serde_json::json!({"threadId": self.studio.thread_id, "queueId": queue_id}),
+        );
+        if self.studio.busy {
+            self.request(
+                "agent.steer",
+                serde_json::json!({"threadId": self.studio.thread_id, "input": input, "dispatchMode": "steer"}),
+            );
+        } else {
+            self.send_studio_input(input, false, tx);
+        }
+    }
+
+    fn send_studio_input(&mut self, input: String, from_composer: bool, tx: &mut rune::Tx) {
         if input.is_empty() {
             return;
         }
         if self.studio.busy {
             if self.studio.started {
                 self.dispatch_studio_send(input);
-                self.composer.clear();
+                if from_composer {
+                    self.composer.clear();
+                }
             }
             return;
         }
@@ -2536,7 +2559,9 @@ impl AppState {
         if self.studio.turn_title.is_empty() {
             self.studio.turn_title = input.clone();
         }
-        self.composer.clear();
+        if from_composer {
+            self.composer.clear();
+        }
         self.studio.items.push(StudioItem {
             id: format!("user-{}", self.studio.items.len()),
             kind: "user".into(),
@@ -2544,7 +2569,7 @@ impl AppState {
             name: String::new(),
             ..Default::default()
         });
-        tx.scroll_to_bottom("studio-transcript");
+        tx.scroll_to_bottom(format!("studio-transcript-{}", self.studio.thread_id));
         if self.studio.started {
             self.dispatch_studio_send(input);
         } else {

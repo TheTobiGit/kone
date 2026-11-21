@@ -4432,9 +4432,8 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .child(label(input.clone(), 11.5, 400.0, t.ink).grow(1.0).shrink())
                 .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.faint))
                 .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
-                    .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
-                        s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": send_now_id}));
-                        s.request("agent.steer", serde_json::json!({"threadId": s.studio.thread_id, "input": send_now_input, "dispatchMode": "steer"}));
+                    .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press_tx(move |s: &mut AppState, tx| {
+                        s.send_queued_now(&send_now_id, send_now_input.clone(), tx);
                     }))
                 .child(el().ml(-4.0).key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
                     .w(45.921875).gap(3.5).child(icon(&QUEUE_EDIT, 12.0).color(t.muted)).child(label("Edit", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
@@ -5800,7 +5799,8 @@ fn focused_body(
         .min_h(0.0)
         .child(
             col()
-                .key("studio-transcript")
+                // Keyed per thread so each one opens at its own end, not at the last offset.
+                .key(format!("studio-transcript-{}", s.studio.thread_id))
                 .w_full()
                 .grow(1.0)
                 .shrink()
@@ -6148,6 +6148,95 @@ mod tests {
                 "beta row still at {beta_y}"
             );
         }
+    }
+
+    fn queue_state(busy: bool) -> AppState {
+        let mut s = AppState {
+            page: Page::Studio,
+            studio_layout_ready: true,
+            ..Default::default()
+        };
+        s.projects = vec![Project {
+            name: "kone".into(),
+            path: "/kone".into(),
+        }];
+        s.selected_project = Some(0);
+        s.studio.project_path = "/kone".into();
+        s.studio.thread_id = "t".into();
+        s.studio.thread_open = true;
+        s.studio.started = true;
+        s.studio.busy = busy;
+        s.studio.providers = vec![crate::state::StudioProvider {
+            id: "claudeAgent".into(),
+            label: "Claude".into(),
+            supports_compaction: false,
+        }];
+        s.studio.queued_turns = vec![("q1".into(), "run the tests".into())];
+        s.composer.text = "half-written draft".into();
+        s
+    }
+
+    #[test]
+    fn send_now_on_an_idle_thread_starts_the_turn_and_keeps_the_draft() {
+        let mut rt = Runtime::new(
+            queue_state(false),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert_eq!(s.composer.text, "half-written draft");
+        assert!(
+            s.studio
+                .items
+                .iter()
+                .any(|item| item.kind == "user" && item.text == "run the tests")
+        );
+    }
+
+    #[test]
+    fn send_now_on_a_running_thread_steers_instead_of_starting_a_turn() {
+        let mut rt = Runtime::new(
+            queue_state(true),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert_eq!(s.composer.text, "half-written draft");
+        assert!(s.studio.items.iter().all(|item| item.kind != "user"));
+        assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
+    fn each_thread_mounts_its_own_transcript_viewport() {
+        let mut s = queue_state(false);
+        s.studio.queued_turns.clear();
+        s.studio.items.push(StudioItem {
+            id: "a1".into(),
+            kind: "assistant".into(),
+            text: "first thread".into(),
+            ..Default::default()
+        });
+        s.studio_layout = json!({"version":2,"focusedRow":"/kone","rows":[
+            {"projectPath":"/kone","focusedId":"t","panes":[
+                {"id":"t","anchor":{"threadId":"t"}},
+                {"id":"other","anchor":{"threadId":"other"}}
+            ]}
+        ]});
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("studio-transcript-t").is_some());
+        rt.update(|s, _| {
+            s.studio.thread_id = "other".into();
+        });
+        rt.frame(0.0);
+        assert!(rt.find("studio-transcript-other").is_some());
+        assert!(rt.find("studio-transcript-t").is_none());
     }
 
     #[test]
