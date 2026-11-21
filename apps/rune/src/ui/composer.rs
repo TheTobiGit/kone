@@ -764,7 +764,9 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .w_full()
         .on_edit(|s: &mut AppState| &mut s.composer)
         .on_submit(AppState::send_studio)
-        .on_input_key(|s: &mut AppState, ev, _| s.composer_menu_key(ev));
+        .on_input_key(|s: &mut AppState, ev, tx| {
+            s.studio_width_chord(ev, tx) || s.composer_menu_key(ev)
+        });
     let mut field_box = el()
         .w_full()
         .pt(16.0)

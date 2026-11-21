@@ -1671,6 +1671,9 @@ impl AppState {
                 return true;
             }
         }
+        if s.type_to_compose(event) {
+            return true;
+        }
         if !event.mods.cmd {
             return false;
         }
@@ -1691,6 +1694,29 @@ impl AppState {
             s.cycle_studio_width(&id);
             s.center_studio_column(tx);
             return true;
+        }
+        if event.mods.shift && !event.mods.alt {
+            let at = s.studio_focused_pane_index().map_or(usize::MAX, |i| i + 1);
+            match event.key {
+                rune::Key::Command('t') => {
+                    s.insert_studio_terminal(at);
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                rune::Key::Command('n') => {
+                    // The scratchpad is one per row: focus it when it is already open.
+                    let id = format!("scratchpad:{}", s.studio.project_path);
+                    if s.studio_scratchpad_open() {
+                        s.open_studio_thread(id);
+                    } else {
+                        s.insert_studio_scratchpad(at);
+                    }
+                    s.center_studio_column(tx);
+                    return true;
+                }
+                rune::Key::Up | rune::Key::Down => return s.studio_width_chord(event, tx),
+                _ => {}
+            }
         }
         if event.mods.alt && event.key == rune::Key::Enter && !event.mods.shift {
             let id = s.studio.thread_id.clone();
@@ -1867,6 +1893,80 @@ impl AppState {
             pane["width"] = ((pane["width"].as_u64().unwrap_or(0) + 1) % 4).into();
         }
         self.persist_studio_layout();
+    }
+
+    /// Electron's type-to-compose: a character typed while nothing has focus and the focused
+    /// thread's composer is closed opens it with that character at the end of the draft.
+    fn type_to_compose(&mut self, event: &rune::KeyEvent) -> bool {
+        let rune::Key::Text(text) = &event.key else {
+            return false;
+        };
+        let thread = &self.studio.thread_id;
+        if text.chars().count() != 1
+            || event.mods.cmd
+            || event.mods.ctrl
+            || event.mods.alt
+            || self.studio.composer_open
+            || self.studio.overview
+            || !self.studio.thread_open
+            || thread.starts_with("terminal:")
+            || thread.starts_with("scratchpad:")
+            || self.studio.approval.is_some()
+            || self.conversation_search_open
+            || self.studio_project_menu_open
+            || self.studio_insert_menu.is_some()
+        {
+            return false;
+        }
+        self.open_composer();
+        let end = self.composer.text.len();
+        self.composer.focus = end;
+        self.composer.anchor = end;
+        self.composer.paste(text);
+        true
+    }
+
+    /// Grows or shrinks a pane one width rung, stopping at the narrowest and widest.
+    /// Cmd/Ctrl+Shift+Up/Down grows or shrinks the focused pane. Focused editors call this before
+    /// their own keys, as Electron's window listener takes the chord from a focused textarea.
+    pub fn studio_width_chord(&mut self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+        let step = match event.key {
+            rune::Key::Up => 1,
+            rune::Key::Down => -1,
+            _ => return false,
+        };
+        if !event.mods.cmd || !event.mods.shift || event.mods.alt {
+            return false;
+        }
+        let id = self.studio.thread_id.clone();
+        self.step_studio_width(&id, step);
+        self.center_studio_column(tx);
+        true
+    }
+
+    pub fn step_studio_width(&mut self, thread: &str, step: i64) {
+        let path = self.studio.project_path.clone();
+        if let Some(pane) = self.studio_layout["rows"]
+            .as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|r| r["projectPath"] == path))
+            .and_then(|r| r["panes"].as_array_mut())
+            .and_then(|panes| panes.iter_mut().find(|p| p["anchor"]["threadId"] == thread))
+            && !pane["zen"].as_bool().unwrap_or(false)
+        {
+            let width = pane["width"].as_i64().unwrap_or(0);
+            pane["width"] = (width + step).clamp(0, 3).into();
+        }
+        self.persist_studio_layout();
+    }
+
+    fn studio_focused_pane_index(&self) -> Option<usize> {
+        self.studio_layout["rows"]
+            .as_array()?
+            .iter()
+            .find(|r| r["projectPath"] == self.studio.project_path)?["panes"]
+            .as_array()?
+            .iter()
+            .position(|p| p["anchor"]["threadId"] == self.studio.thread_id)
     }
 
     fn persist_studio_layout(&mut self) {
@@ -2156,6 +2256,7 @@ impl AppState {
         }
         self.persist_scratchpad();
         let path = self.studio.project_path.clone();
+        self.ensure_studio_row(&path);
         let id = format!("scratchpad:{path}");
         self.park_studio_thread();
         if let Some(row) = self.studio_layout["rows"]
@@ -2174,6 +2275,23 @@ impl AppState {
         self.persist_studio_layout();
     }
 
+    /// Adds an empty row for a project that has none yet, so a new pane has a row to land in.
+    fn ensure_studio_row(&mut self, path: &str) {
+        if self.studio_layout["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["projectPath"] == path))
+        {
+            return;
+        }
+        if !self.studio_layout["rows"].is_array() {
+            self.studio_layout["rows"] = serde_json::json!([]);
+        }
+        if let Some(rows) = self.studio_layout["rows"].as_array_mut() {
+            rows.push(serde_json::json!({"projectPath": path, "panes": []}));
+        }
+        self.studio_scroll_row = Some(path.to_owned());
+    }
+
     pub fn insert_studio_terminal(&mut self, at: usize) {
         if !self.studio_layout_ready {
             return;
@@ -2185,6 +2303,7 @@ impl AppState {
             .as_nanos();
         let terminal_id = format!("{}-{time}", std::process::id());
         let thread = format!("terminal:{terminal_id}");
+        self.ensure_studio_row(&path);
         self.park_studio_thread();
         if let Some(panes) = self.studio_layout["rows"]
             .as_array_mut()

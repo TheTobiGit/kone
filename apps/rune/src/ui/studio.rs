@@ -2921,8 +2921,9 @@ fn studio_row(
                         .lh(26.88),
                 )
                 .key(format!("scratchpad-editor-{id}"))
-                .on_input_key(|s: &mut AppState, event, _| {
-                    super::scratchpad_toolbar::key(&mut s.studio, event)
+                .on_input_key(|s: &mut AppState, event, tx| {
+                    s.studio_width_chord(event, tx)
+                        || super::scratchpad_toolbar::key(&mut s.studio, event)
                 })
                 .rich_style(rune::RichStyle {
                     dark: t.dark,
@@ -6119,6 +6120,180 @@ mod tests {
         press(&mut rt, rune::Key::Tab);
         assert!(rt.state.studio.picker_open, "Tab picks too");
         assert_eq!(rt.state.composer.text, "");
+    }
+
+    #[test]
+    fn the_focused_composer_gives_width_chords_to_the_pane() {
+        let mut state = AppState::default();
+        crate::studio_composer(&mut state, "picker-slash");
+        state.studio_layout_ready = true;
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let (x, y) = rt.find("studio-composer").expect("the composer is open");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        let width = |s: &AppState| {
+            s.studio_layout["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|r| r["panes"].as_array().into_iter().flatten())
+                .find(|p| p["anchor"]["threadId"] == s.studio.thread_id)
+                .map(|p| p["width"].as_i64().unwrap_or(0))
+                .expect("the focused pane is in the layout")
+        };
+        let before = width(&rt.state);
+        let key = if before < 3 {
+            rune::Key::Up
+        } else {
+            rune::Key::Down
+        };
+        rt.key(rune::KeyEvent {
+            key,
+            mods: rune::Mods {
+                cmd: true,
+                shift: true,
+                ..rune::Mods::default()
+            },
+        });
+        rt.frame(3.0 / 60.0);
+        assert_ne!(width(&rt.state), before, "the chord resizes the pane");
+    }
+
+    #[test]
+    fn new_pane_shortcuts_add_a_row_to_an_empty_project() {
+        let mut s = AppState::default();
+        crate::studio_overview_fixture(&mut s, 0);
+        s.studio.overview = false;
+        s.studio_layout_ready = true;
+        s.studio_layout = serde_json::json!({"version": 2, "rows": []});
+        let mut tx = rune::Tx::default();
+        let event = rune::KeyEvent {
+            key: rune::Key::Command('n'),
+            mods: rune::Mods {
+                cmd: true,
+                shift: true,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(crate::app_key(&mut s, &event, &mut tx));
+        let row = s.studio_layout["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["projectPath"] == s.studio.project_path)
+            .expect("the project gets a row")
+            .clone();
+        let panes = row["panes"].as_array().unwrap();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["kind"], "scratchpad");
+        assert_eq!(row["focusedId"], panes[0]["id"]);
+    }
+
+    #[test]
+    fn studio_shortcuts_open_panes_and_step_widths_like_electron() {
+        let mut s = AppState::default();
+        crate::studio_overview_fixture(&mut s, 0);
+        s.studio.overview = false;
+        s.studio_layout_ready = true;
+        let mut tx = rune::Tx::default();
+        let mut chord = |s: &mut AppState, key: rune::Key| {
+            let event = rune::KeyEvent {
+                key,
+                mods: rune::Mods {
+                    cmd: true,
+                    shift: true,
+                    ..rune::Mods::default()
+                },
+            };
+            assert!(
+                crate::app_key(s, &event, &mut tx),
+                "{:?} is handled",
+                event.key
+            );
+        };
+        let panes = |s: &AppState| {
+            s.studio_layout["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["projectPath"] == s.studio.project_path)
+                .unwrap()["panes"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let before = panes(&s).len();
+        let source = s.studio.thread_id.clone();
+        let source_at = panes(&s)
+            .iter()
+            .position(|p| p["anchor"]["threadId"] == source)
+            .unwrap();
+
+        chord(&mut s, rune::Key::Command('t'));
+        assert!(s.studio.thread_id.starts_with("terminal:"));
+        assert_eq!(panes(&s).len(), before + 1);
+        assert_eq!(
+            panes(&s)[source_at + 1]["anchor"]["threadId"],
+            s.studio.thread_id.as_str(),
+            "the terminal opens beside the focused pane"
+        );
+
+        chord(&mut s, rune::Key::Command('n'));
+        assert!(s.studio.thread_id.starts_with("scratchpad:"));
+        assert_eq!(panes(&s).len(), before + 2);
+        s.open_studio_thread(source.clone());
+        chord(&mut s, rune::Key::Command('n'));
+        assert!(s.studio.thread_id.starts_with("scratchpad:"));
+        assert_eq!(panes(&s).len(), before + 2, "one scratchpad per row");
+
+        s.open_studio_thread(source.clone());
+        let width = |s: &AppState| {
+            panes(s)
+                .iter()
+                .find(|p| p["anchor"]["threadId"] == source)
+                .unwrap()["width"]
+                .as_i64()
+                .unwrap_or(0)
+        };
+        for _ in 0..4 {
+            chord(&mut s, rune::Key::Down);
+        }
+        assert_eq!(width(&s), 0, "shrink stops at the narrowest rung");
+        for _ in 0..5 {
+            chord(&mut s, rune::Key::Up);
+        }
+        assert_eq!(width(&s), 3, "grow stops at the widest rung");
+    }
+
+    #[test]
+    fn typing_with_nothing_focused_opens_the_composer_with_that_character() {
+        let mut s = AppState::default();
+        crate::studio_overview_fixture(&mut s, 0);
+        s.studio.overview = false;
+        s.studio.thread_open = true;
+        s.composer.clear();
+        assert!(!s.studio.composer_open);
+        let mut tx = rune::Tx::default();
+        let typed = |key: &str, ctrl: bool| rune::KeyEvent {
+            key: rune::Key::Text(key.into()),
+            mods: rune::Mods {
+                ctrl,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(!crate::app_key(&mut s, &typed("x", true), &mut tx));
+        assert!(!s.studio.composer_open, "a chord does not compose");
+        assert!(crate::app_key(&mut s, &typed("h", false), &mut tx));
+        assert!(s.studio.composer_open);
+        assert!(s.composer.focused);
+        assert_eq!(s.composer.text, "h");
+        assert!(
+            !crate::app_key(&mut s, &typed("i", false), &mut tx),
+            "an open composer types for itself"
+        );
     }
 
     #[test]
