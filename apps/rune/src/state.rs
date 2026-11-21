@@ -3323,18 +3323,34 @@ impl AppState {
                 let Some(row) = row.map(|i| self.studio.queued_turns.remove(i)) else {
                     return;
                 };
-                // A queued request only enters the transcript once it runs, at the tail so it
-                // precedes its reply, as Electron's session reducer rebuilds it on promotion.
+                // A queued request only enters the transcript once it runs, as Electron's
+                // session reducer rebuilds it on promotion. The service announces the promotion
+                // only after the provider accepted the turn, so its reply may already be on
+                // screen: the request goes right above that turn's first item, else at the tail.
                 if event["type"] == "turn.promoted" {
                     let item_id = block.clone().unwrap_or_else(|| format!("queued-{id}"));
                     self.studio.items.retain(|item| item.id != item_id);
-                    self.studio.items.push(StudioItem {
-                        id: item_id,
-                        block_id: block,
-                        kind: "user".into(),
-                        text: row.1,
-                        ..Default::default()
-                    });
+                    let turn_block = event["turnId"]
+                        .as_str()
+                        .map(|turn| format!("{}::{turn}", self.studio.thread_id));
+                    let at = turn_block
+                        .and_then(|turn| {
+                            self.studio
+                                .items
+                                .iter()
+                                .position(|item| item.block_id.as_deref() == Some(turn.as_str()))
+                        })
+                        .unwrap_or(self.studio.items.len());
+                    self.studio.items.insert(
+                        at,
+                        StudioItem {
+                            id: item_id,
+                            block_id: block,
+                            kind: "user".into(),
+                            text: row.1,
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             "thread.state.changed" if event["state"] == "compacted" => {
@@ -3481,6 +3497,57 @@ mod tests {
         assert_eq!(users[0].text, "run the tests");
         assert_eq!(users[0].block_id.as_deref(), Some("b1"));
         assert!(s.studio.queued_turns.is_empty() && s.studio.queued_blocks.is_empty());
+    }
+
+    #[test]
+    fn a_promoted_request_sits_above_a_reply_that_arrived_first() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "t".into();
+        let event = |body: serde_json::Value| {
+            let mut params = body;
+            params["threadId"] = "t".into();
+            json!({"method":"agent.event","params":params})
+        };
+        let reply = |turn: &str, item: &str, text: &str| {
+            json!({"type":"item.completed","turnId":turn,
+                "item":{"itemId":item,"kind":"assistant_message","text":text}})
+        };
+        s.studio_message(event(json!({"type":"turn.started","turnId":"u1"})));
+        s.studio_message(event(reply("u1", "a1", "first reply")));
+        s.studio_message(event(
+            json!({"type":"turn.queued","queueId":"q1","userBlockId":"b1","input":"follow up"}),
+        ));
+        s.studio_message(event(json!({"type":"turn.completed","turnId":"u1"})));
+        // The service dispatches the queued turn and only then announces the promotion, so
+        // the provider's reply can land first.
+        s.studio_message(event(json!({"type":"turn.started","turnId":"u2"})));
+        s.studio_message(event(reply("u2", "a2", "second reply")));
+        s.studio_message(event(
+            json!({"type":"turn.promoted","queueId":"q1","turnId":"u2"}),
+        ));
+        let order: Vec<_> = s.studio.items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(order, ["first reply", "follow up", "second reply"]);
+
+        // Promoted before its reply: the request takes the tail and the reply follows it.
+        s.studio_message(event(json!({"type":"turn.completed","turnId":"u2"})));
+        s.studio_message(event(
+            json!({"type":"turn.queued","queueId":"q2","userBlockId":"b2","input":"one more"}),
+        ));
+        s.studio_message(event(
+            json!({"type":"turn.promoted","queueId":"q2","turnId":"u3"}),
+        ));
+        s.studio_message(event(reply("u3", "a3", "third reply")));
+        let order: Vec<_> = s.studio.items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "first reply",
+                "follow up",
+                "second reply",
+                "one more",
+                "third reply"
+            ]
+        );
     }
 
     #[test]
