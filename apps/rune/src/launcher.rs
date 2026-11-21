@@ -84,6 +84,10 @@ enum Root {
 const EXIT: f64 = 0.24;
 /// A start time a handler set before it could read the poll clock.
 const PENDING: f64 = f64::INFINITY;
+/// How long a finished create (`useCreateProject`) or clone (`useGitClone`) holds its
+/// full readout before the card exits.
+const CREATE_SETTLE: f64 = 0.46;
+const CLONE_SETTLE: f64 = 0.42;
 
 pub struct LauncherState {
     pub mode: Option<LauncherMode>,
@@ -127,6 +131,8 @@ pub struct LauncherState {
     closing: Option<f64>,
     /// A project to open once the exit finishes.
     after: Option<(String, String)>,
+    /// When the finished readout began holding before the exit.
+    settle: Option<f64>,
     /// When the address bar's shake began.
     path_error: Option<f64>,
     clock: f64,
@@ -180,6 +186,7 @@ impl Default for LauncherState {
             shown_at: None,
             closing: None,
             after: None,
+            settle: None,
             path_error: None,
             clock: 0.0,
             hover: Hover::None,
@@ -204,6 +211,7 @@ impl LauncherState {
         self.shown_at = None;
         self.closing = None;
         self.after = None;
+        self.settle = None;
         self.hover = Hover::None;
         match mode {
             LauncherMode::Create => self.name.focused = true,
@@ -214,7 +222,7 @@ impl LauncherState {
     /// Cancel, Escape or the scrim: back to the form from an embedded browser or
     /// the More panel, else play the exit.
     pub fn close(&mut self) {
-        if self.busy {
+        if self.busy || self.settle.is_some() {
             return;
         }
         self.browser_request_id = None;
@@ -556,7 +564,11 @@ pub fn completed(s: &mut AppState, result: &Value) {
     }
     if let (Some(path), Some(name)) = (result["path"].as_str(), result["name"].as_str()) {
         s.launcher.progress = 1.0;
-        s.launcher.exit(Some((path.to_owned(), name.to_owned())));
+        if s.launcher.mode == Some(LauncherMode::Clone) {
+            s.launcher.stage = "Done".into();
+        }
+        s.launcher.after = Some((path.to_owned(), name.to_owned()));
+        s.launcher.settle = Some(PENDING);
     } else {
         s.launcher.error = Some("The project could not be opened.".into());
     }
@@ -568,8 +580,60 @@ pub fn failed(s: &mut AppState, message: &str) {
         s.launcher.cancelling = false;
         s.launcher.exit(None);
     } else {
-        s.launcher.error = Some(message.to_owned());
+        let fallback = if s.launcher.mode == Some(LauncherMode::Clone) {
+            "Clone failed"
+        } else {
+            "Couldn’t create the project"
+        };
+        s.launcher.error = Some(peel_error(message, fallback));
     }
+}
+
+/// `peelIpcError`: drops the thrown error's name, git's `fatal:` and the `[kone:KIND]`
+/// marker, so the card shows only the underlying message.
+fn peel_error(message: &str, fallback: &str) -> String {
+    let mut m = message.trim();
+    if let Some(rest) = m.strip_prefix("Error invoking remote method '")
+        && let Some(i) = rest.find("':")
+    {
+        m = rest[i + 2..].trim_start();
+    }
+    if let Some(i) = m.find("Error:")
+        && m[..i]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        m = m[i + 6..].trim_start();
+    }
+    if m.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("fatal:")) {
+        m = m[6..].trim_start();
+    }
+    if let Some((kind, rest)) = m.strip_prefix("[kone:").and_then(|r| r.split_once(']')) {
+        let word = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if word && (rest.is_empty() || rest.starts_with(' ')) {
+            m = rest.strip_prefix(' ').unwrap_or(rest);
+        }
+    }
+    let m = m.trim();
+    if m.is_empty() { fallback } else { m }.to_owned()
+}
+
+/// `useCreateProject.create`'s options: a remote implies git, a README needs git, and the
+/// remote's name and visibility only travel with a remote.
+fn create_params(l: &LauncherState) -> Value {
+    let name = l.name.text.trim();
+    let git = l.use_git || l.remote;
+    let mut params = json!({"name": name, "parent": l.parent, "git": git, "readme": git && l.readme, "remote": l.remote});
+    if l.remote {
+        let repo = l.repo_name.text.trim();
+        params["repoName"] = json!(if repo.is_empty() { name } else { repo });
+        params["visibility"] = json!(if l.public { "public" } else { "private" });
+    }
+    let command = l.command.text.trim();
+    if !command.is_empty() {
+        params["command"] = json!(command);
+    }
+    params
 }
 pub fn progress(s: &mut AppState, params: &Value) {
     if params["requestId"].as_u64() != s.launcher.request_id {
@@ -598,29 +662,27 @@ fn cancel(s: &mut AppState) {
     }
 }
 fn submit(s: &mut AppState) {
-    if s.launcher.busy || s.launcher.closing.is_some() || !s.launcher.submittable() {
+    if s.launcher.busy
+        || s.launcher.settle.is_some()
+        || s.launcher.closing.is_some()
+        || !s.launcher.submittable()
+    {
         return;
     }
     let Some(mode) = s.launcher.mode else {
         return;
     };
-    let (name, url) = if mode == LauncherMode::Clone {
+    let (method, params) = if mode == LauncherMode::Clone {
         let Some((name, url)) = repository(&s.launcher.url.text) else {
             return;
         };
-        (name, Some(url))
+        (
+            "projects.clone",
+            json!({"name": name, "parent": s.launcher.parent, "url": url}),
+        )
     } else {
-        (s.launcher.name.text.trim().to_owned(), None)
+        ("projects.create", create_params(&s.launcher))
     };
-    let method = if mode == LauncherMode::Clone {
-        "projects.clone"
-    } else {
-        "projects.create"
-    };
-    let mut params = json!({"name":name,"parent":s.launcher.parent,"git":s.launcher.use_git,"readme":s.launcher.readme,"remote":s.launcher.remote,"repoName":s.launcher.repo_name.text,"visibility":if s.launcher.public { "public" } else { "private" },"command":s.launcher.command.text});
-    if let Some(url) = url {
-        params["url"] = json!(url);
-    }
     s.launcher.error = None;
     s.launcher.progress = 0.0;
     s.launcher.stage.clear();
@@ -669,6 +731,26 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::ZERO);
         changed = true;
     }
+    if let Some(at) = l.settle {
+        let at = if at == PENDING {
+            l.settle = Some(clock);
+            clock
+        } else {
+            at
+        };
+        let hold = if mode == LauncherMode::Clone {
+            CLONE_SETTLE
+        } else {
+            CREATE_SETTLE
+        };
+        if clock - at < hold {
+            tx.wake_after(Duration::from_secs_f64(hold - (clock - at)));
+            return true;
+        }
+        l.settle = None;
+        let after = l.after.take();
+        l.exit(after);
+    }
     match l.closing {
         Some(PENDING) => {
             l.closing = Some(clock);
@@ -682,6 +764,22 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
             l.view = View::Form;
             l.error = None;
             l.busy = false;
+            // `pages/index.vue` resets the flow on create, clone and cancel alike. A GitHub
+            // remote is a real side effect, so it never carries into the next open.
+            match mode {
+                LauncherMode::Create => {
+                    l.name.clear();
+                    l.command.clear();
+                    l.remote = false;
+                    l.repo_name.clear();
+                }
+                LauncherMode::Clone => {
+                    l.url.clear();
+                    l.progress = 0.0;
+                    l.stage.clear();
+                }
+                LauncherMode::Open => {}
+            }
             if let Some((path, name)) = l.after.take() {
                 remember(s, path, name);
             }
@@ -969,7 +1067,7 @@ fn panel(t: Palette, bottom_band: bool) -> El {
 fn create_form(s: &AppState, t: Palette) -> El {
     let l = &s.launcher;
     let cloning = l.mode == Some(LauncherMode::Clone);
-    let busy = l.busy || (l.closing.is_some() && l.after.is_some());
+    let busy = l.busy || l.after.is_some();
     let cancel_button = band_action(
         "launcher-cancel",
         !(busy && !cloning),
@@ -1096,7 +1194,7 @@ fn create_form(s: &AppState, t: Palette) -> El {
 fn progress_view(s: &AppState, t: Palette) -> El {
     let l = &s.launcher;
     let cloning = l.mode == Some(LauncherMode::Clone);
-    let done = l.closing.is_some() && l.after.is_some();
+    let done = l.after.is_some();
     let name = if cloning {
         repository(&l.url.text).map(|(n, _)| n).unwrap_or_default()
     } else {
@@ -2014,5 +2112,72 @@ mod tests {
         assert!(s.launcher.mode.is_some());
         tick(&mut s, 0.1 + EXIT + 1e-6, &mut tx);
         assert!(s.launcher.mode.is_none() && !s.launcher.shown);
+    }
+    #[test]
+    fn create_options_follow_use_create_project() {
+        let mut l = LauncherState {
+            parent: "/home/me".into(),
+            name: TextEdit::new("  site "),
+            readme: true,
+            command: TextEdit::new("   "),
+            repo_name: TextEdit::new("ignored"),
+            ..LauncherState::default()
+        };
+        assert_eq!(
+            create_params(&l),
+            json!({"name": "site", "parent": "/home/me", "git": false, "readme": false, "remote": false})
+        );
+        l.remote = true;
+        l.repo_name = TextEdit::new(" ");
+        l.command = TextEdit::new(" bun create vite . ");
+        assert_eq!(
+            create_params(&l),
+            json!({"name": "site", "parent": "/home/me", "git": true, "readme": true, "remote": true, "repoName": "site", "visibility": "private", "command": "bun create vite ."})
+        );
+    }
+    #[test]
+    fn a_finished_create_holds_its_readout_then_opens_and_resets() {
+        let mut s = AppState::default();
+        s.launcher.open(LauncherMode::Create);
+        s.launcher.name = TextEdit::new("site");
+        s.launcher.use_git = true;
+        s.launcher.remote = true;
+        s.launcher.repo_name = TextEdit::new("site-repo");
+        s.launcher.command = TextEdit::new("make");
+        s.launcher.busy = true;
+        s.launcher.request_id = Some(4);
+        s.studio_message(json!({"id": 4, "result": {"path": "/home/me/site", "name": "site"}}));
+        let mut tx = Tx::default();
+        tick(&mut s, 1.0, &mut tx);
+        s.launcher.close();
+        tick(&mut s, 1.0 + CREATE_SETTLE - 0.01, &mut tx);
+        assert!(s.launcher.closing.is_none() && s.launcher.after.is_some());
+        tick(&mut s, 1.0 + CREATE_SETTLE + 1e-6, &mut tx);
+        assert!(s.launcher.closing.is_some());
+        tick(&mut s, 1.0 + CREATE_SETTLE + EXIT + 1e-5, &mut tx);
+        assert!(s.launcher.mode.is_none());
+        assert!(s.launcher.name.text.is_empty() && s.launcher.command.text.is_empty());
+        assert!(!s.launcher.remote && s.launcher.repo_name.text.is_empty());
+        assert!(s.launcher.use_git);
+    }
+    #[test]
+    fn errors_are_peeled_like_peel_ipc_error() {
+        let fallback = "Couldn’t create the project";
+        assert_eq!(
+            peel_error(
+                "GitError: fatal: [kone:AUTH_FAILURE] bad credentials",
+                fallback
+            ),
+            "bad credentials"
+        );
+        assert_eq!(
+            peel_error("A folder already exists at /a/b", fallback),
+            "A folder already exists at /a/b"
+        );
+        assert_eq!(peel_error("Error: ", fallback), fallback);
+        assert_eq!(
+            peel_error("[kone:lower-case] kept", fallback),
+            "[kone:lower-case] kept"
+        );
     }
 }

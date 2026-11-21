@@ -2921,12 +2921,7 @@ impl AppState {
                     return;
                 }
                 if let Some(error) = message.get("error") {
-                    crate::launcher::failed(
-                        self,
-                        error["message"]
-                            .as_str()
-                            .unwrap_or("Project creation failed"),
-                    );
+                    crate::launcher::failed(self, error["message"].as_str().unwrap_or_default());
                 } else {
                     crate::launcher::completed(self, &message["result"]);
                 }
