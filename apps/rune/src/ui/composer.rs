@@ -580,15 +580,10 @@ fn context_tray(s: &AppState, project_name: &str, t: Palette) -> El {
                 .filter(|n| !n.is_empty())
         })
     });
-    let thread_title = if s.studio.turn_title.is_empty() {
-        if s.studio.title.is_empty() {
-            "New thread"
-        } else {
-            s.studio.title.as_str()
-        }
-    } else {
-        s.studio.turn_title.as_str()
-    };
+    let thread_title = [s.studio.title.as_str(), s.studio.turn_title.as_str()]
+        .into_iter()
+        .find(|title| !title.is_empty())
+        .unwrap_or("New thread");
 
     let who_item = if let Some(id) = &s.studio.connected_identity {
         row()

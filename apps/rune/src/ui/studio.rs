@@ -4996,6 +4996,7 @@ fn focused_body(
         let line = match item.kind.as_str() {
             "user" => {
                 user_count += 1;
+                let editing = s.studio.user_edit.as_deref() == Some(item.id.as_str());
                 let rail = if s.studio.busy
                     && !s
                         .studio
@@ -5012,7 +5013,7 @@ fn focused_body(
                 // midline, corners down 12pt at the avatar column, and stops
                 // 7.7pt above the speaker row (constants assume the fixture's
                 // single-line bubbles).
-                row()
+                let bubble = row()
                     .w_full()
                     .center_y()
                     .child(el().w(25.0))
@@ -5022,7 +5023,22 @@ fn focused_body(
                             .fill(rail)
                             .shadow(1.0, 1.0, connector_shadow),
                     )
-                    .child(
+                    .child(if editing {
+                        text_input(
+                            &s.studio.user_edit_draft,
+                            TextStyle::new(14.0, 400.0).lh(22.68),
+                        )
+                        .key("studio-user-edit")
+                        .label("Edit request")
+                        .w(576.0)
+                        .px(15.0)
+                        .py(10.0)
+                        .corners([16.0, 16.0, 5.0, 16.0])
+                        .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09))
+                        .color(t.ink)
+                        .on_edit(|s: &mut AppState| &mut s.studio.user_edit_draft)
+                        .on_submit(|s: &mut AppState, tx: &mut rune::Tx| s.save_user_edit(tx))
+                    } else {
                         text(item.text.clone())
                             .key(format!("studio-user-text-{user_count}"))
                             .selectable(true)
@@ -5032,8 +5048,8 @@ fn focused_body(
                             .px(15.0)
                             .py(10.0)
                             .corners([16.0, 16.0, 5.0, 16.0])
-                            .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09)),
-                    )
+                            .fill(crate::theme::mix_srgb(t.ground, t.accent, 0.09))
+                    })
                     .child(icon(&CONNECTOR_CORNER, 12.0).color(rail).pin(
                         Some(13.0),
                         Some(21.33),
@@ -5046,7 +5062,18 @@ fn focused_body(
                             .h(55.67)
                             .fill(rail)
                             .shadow(1.0, 1.0, connector_shadow),
-                    )
+                    );
+                let editable = s.studio.conversation_fixture.is_none()
+                    && !item.text.is_empty()
+                    && (item.block_id.is_some() || Some(index) == last_user);
+                if editable {
+                    col()
+                        .w_full()
+                        .child(bubble)
+                        .child(user_edit_footer(s, item, editing, &t))
+                } else {
+                    col().w_full().child(bubble)
+                }
             }
             "compaction" => row().w_full().justify_center().child(
                 text(if s.studio.conversation_fixture.is_some() {
@@ -6520,4 +6547,56 @@ mod handoff_picker_tests {
         assert!(rt.state.studio.handoff_picker);
         assert!(rt.state.studio.continuation_request.is_none());
     }
+}
+
+fn user_edit_footer(
+    s: &AppState,
+    item: &crate::state::StudioItem,
+    editing: bool,
+    t: &Palette,
+) -> El {
+    let action = |key: String, label: &'static str, ink: rune::Color| {
+        el().key(key)
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .px(6.0)
+            .py(2.0)
+            .radius(6.0)
+            .hover(t.hover)
+            .child(
+                text(label)
+                    .font(TextStyle::new(12.0, 400.0).lh(18.6))
+                    .color(ink),
+            )
+    };
+    let mut footer = row().w_full().justify_end().gap(2.0).pr(4.0).mt(4.0);
+    if editing {
+        let can_save = !s.studio.user_edit_draft.text.trim().is_empty() && !s.studio.busy;
+        footer = footer
+            .child(
+                action("studio-user-edit-cancel".into(), "Cancel", t.muted)
+                    .on_press(|s: &mut AppState| s.cancel_user_edit()),
+            )
+            .child(
+                action(
+                    "studio-user-edit-save".into(),
+                    "Save & resend",
+                    if can_save { t.ink } else { t.muted },
+                )
+                .on_press_tx(|s: &mut AppState, tx: &mut rune::Tx| s.save_user_edit(tx)),
+            );
+    } else {
+        let id = item.id.clone();
+        let text_value = item.text.clone();
+        footer = footer.child(
+            action(
+                format!("studio-user-edit-start-{}", item.id),
+                "Edit",
+                t.muted,
+            )
+            .on_press(move |s: &mut AppState| s.start_user_edit(id.clone(), text_value.clone())),
+        );
+    }
+    footer
 }
