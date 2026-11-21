@@ -4012,7 +4012,9 @@ fn parked_body(
     }
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
-        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
+        if item.kind == "connected"
+            || (item.text.is_empty() && item.name.is_empty() && item.attachments.is_empty())
+        {
             continue;
         }
         let value = if item.kind == "tool_call" {
@@ -4981,7 +4983,9 @@ fn focused_body(
         if activity_fixture && !s.studio.activity_open && item.kind == "tool_call" {
             continue;
         }
-        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
+        if item.kind == "connected"
+            || (item.text.is_empty() && item.name.is_empty() && item.attachments.is_empty())
+        {
             continue;
         }
         // Only the running turn's text folds into its activity; earlier replies stay.
