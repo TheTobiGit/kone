@@ -5085,6 +5085,9 @@ fn focused_body(
                         .child(bubble)
                         .children(files)
                         .child(user_edit_footer(s, item, editing, &t))
+                } else if item.text.is_empty() && !editing {
+                    // A request of only files shows just their chips, no empty bubble.
+                    col().w_full().children(files)
                 } else {
                     col().w_full().child(bubble).children(files)
                 }
@@ -5967,6 +5970,43 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn eight_attachment_chips_and_the_notice_fit_the_composer() {
+        let mut state = AppState::default();
+        crate::studio_composer(&mut state, "picker-slash");
+        for id in 1..=8 {
+            state
+                .studio
+                .attachments
+                .push(crate::composer_attachments::PendingAttachment {
+                    id,
+                    path: format!("{id}.txt").into(),
+                    name: format!("{id}.txt"),
+                    mime_type: "text/plain".into(),
+                    image: false,
+                    size_bytes: 1,
+                    ext: "TXT".into(),
+                });
+        }
+        state.studio.attachment_notice = Some((
+            "Up to 8 attachments per message.".into(),
+            std::time::Instant::now(),
+        ));
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let (row, _) = rt
+            .presented("studio-attachments")
+            .expect("the chip row shows");
+        for key in ["studio-attachment-8", "studio-attachment-notice"] {
+            let (r, _) = rt.presented(key).expect(key);
+            assert!(
+                r[0] >= row[0] && r[0] + r[2] <= row[0] + row[2] + 0.5,
+                "{key} stays inside the composer: {r:?} in {row:?}"
+            );
+        }
+    }
+
+    #[test]
     fn one_escape_in_the_request_editor_cancels_the_edit() {
         let mut state = AppState::default();
         crate::studio_column_head(&mut state);
@@ -6679,7 +6719,7 @@ fn user_attachments(item: &crate::state::StudioItem, t: &Palette) -> Option<El> 
     if item.attachments.is_empty() {
         return None;
     }
-    let mut chips = row().w_full().wrap().justify_end().gap(6.0).pt(6.0);
+    let mut chips = row().w_full().flex_wrap().justify_end().gap(6.0).pt(6.0);
     for name in &item.attachments {
         let ext = crate::composer_attachments::ext_badge(name);
         chips = chips.child(

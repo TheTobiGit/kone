@@ -125,7 +125,7 @@ fn attachment_chips(s: &AppState, t: Palette) -> Option<El> {
     let mut chips = row()
         .key("studio-attachments")
         .w_full()
-        .wrap()
+        .flex_wrap()
         .gap(6.0)
         .pt(12.0)
         .px(14.0)
@@ -168,7 +168,7 @@ fn attachment_chips(s: &AppState, t: Palette) -> Option<El> {
         );
     }
     if let Some(notice) = notice {
-        chips = chips.child(label(notice, 11.5, 400.0, t.muted));
+        chips = chips.child(label(notice, 11.5, 400.0, t.muted).key("studio-attachment-notice"));
     }
     Some(chips)
 }
