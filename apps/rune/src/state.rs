@@ -2196,6 +2196,18 @@ impl AppState {
         );
     }
 
+    /// Sends text an input method committed into the terminal field, so it reaches the shell
+    /// before the next key instead of waiting for Enter.
+    pub fn flush_terminal_field(&mut self) {
+        let text = self.studio.terminal_input.text.clone();
+        if text.is_empty() {
+            return;
+        }
+        self.studio.terminal_input.clear();
+        self.studio.terminal_input.focused = true;
+        self.terminal_write(text);
+    }
+
     pub fn resize_terminal(&mut self, cols: u16, rows: u16) {
         let Some(terminal_id) = self.studio.terminal_session_id.clone() else {
             return;

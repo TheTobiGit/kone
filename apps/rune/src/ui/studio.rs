@@ -3124,8 +3124,8 @@ fn studio_row(
                         .color(t.ink)
                         .on_edit(|s: &mut AppState| &mut s.studio.terminal_input)
                         .on_submit(AppState::submit_terminal_input)
-                        // Every key goes to the PTY as it is typed, like xterm.js; Enter
-                        // flushes anything an IME left in the field first.
+                        // Every key goes to the PTY as it is typed, like xterm.js; text an
+                        // IME commits into the field goes as soon as it lands.
                         .on_input_key(|s: &mut AppState, ev, tx| {
                             if ev.key == rune::Key::Enter && !ev.mods.cmd {
                                 s.submit_terminal_input(tx);
@@ -3137,10 +3137,12 @@ fn studio_row(
                             else {
                                 return false;
                             };
+                            s.flush_terminal_field();
                             s.terminal_write(sequence);
                             tx.live_only();
                             true
                         })
+                        .on_input_change(|s: &mut AppState, _| s.flush_terminal_field())
                         .on_input_paste(|s: &mut AppState, content, _| {
                             let sequence = crate::terminal::paste_sequence(
                                 &content.text(),
@@ -6118,6 +6120,17 @@ mod tests {
                 .iter()
                 .any(|el| el.focused && el.key.as_deref() == Some(key.as_str())),
             "Escape goes to the shell instead of blurring the terminal"
+        );
+        rt.state.studio.error = None;
+        rt.ime(rune::Ime::Commit("日本".into()));
+        rt.frame(t / 60.0);
+        assert!(
+            rt.state.studio.error.is_some(),
+            "an IME commit goes to the PTY"
+        );
+        assert_eq!(
+            rt.state.studio.terminal_input.text, "",
+            "committed text does not wait for Enter behind later keys"
         );
     }
 
