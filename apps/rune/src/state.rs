@@ -2396,6 +2396,20 @@ impl AppState {
         self.show_provider(index);
     }
 
+    /// Select the model a reopened thread last used, once its provider's models are known.
+    fn apply_restore_model(&mut self) {
+        let Some(index) = self
+            .studio
+            .restore_model
+            .as_ref()
+            .and_then(|model| self.studio.models.iter().position(|m| &m.id == model))
+        else {
+            return;
+        };
+        self.studio.model_index = index;
+        self.studio.restore_model = None;
+    }
+
     /// Point the composer at a provider and load its models, without the picker's started guard:
     /// a thread's own history says which provider it runs on.
     fn show_provider(&mut self, index: usize) {
@@ -2408,6 +2422,7 @@ impl AppState {
             .cloned()
             .unwrap_or_default();
         self.studio.model_index = 0;
+        self.apply_restore_model();
         self.studio.models_request =
             self.request("agent.models", serde_json::json!({"provider": provider}));
         if let Some(request) = self.studio.models_request {
@@ -3198,6 +3213,7 @@ impl AppState {
                     {
                         self.studio.models = models;
                         self.studio.model_index = 0;
+                        self.apply_restore_model();
                     }
                 }
             } else if self.studio.models_request == Some(id) {
@@ -4423,9 +4439,28 @@ mod start_actions_tests {
         s.studio.fork_running = true;
         s.studio.continuation_request = Some(42);
         s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":true}}));
+        let model = |id: &str| StudioModel {
+            id: id.into(),
+            label: id.into(),
+            efforts: Vec::new(),
+            default_effort: None,
+        };
+        s.studio
+            .model_catalog
+            .insert("codex".into(), vec![model("first"), model("inherited")]);
         s.studio.history_request = Some(43);
-        s.studio_message(serde_json::json!({"id":43,"result":{"provider":"codex","blocks":[]}}));
+        s.studio_message(serde_json::json!({"id":43,"result":{
+            "provider":"codex", "model":"inherited", "blocks":[]
+        }}));
         assert_eq!(s.studio.provider_index, 0);
+        assert_eq!(s.studio.models[s.studio.model_index].id, "inherited");
+        s.studio.restore_model = Some("inherited".into());
+        s.studio.models_request = Some(44);
+        s.studio.model_catalog_requests.insert(44, "codex".into());
+        s.studio_message(serde_json::json!({"id":44,"result":[
+            {"id":"first","label":"First"}, {"id":"inherited","label":"Inherited"}
+        ]}));
+        assert_eq!(s.studio.models[s.studio.model_index].id, "inherited");
     }
 
     #[test]
