@@ -331,6 +331,32 @@ mod tests {
     }
 
     #[test]
+    fn an_upload_reply_reaches_its_thread_after_a_pane_switch() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "front".into();
+        let mut back = crate::state::StudioState {
+            thread_id: "back".into(),
+            started: true,
+            busy: true,
+            ..Default::default()
+        };
+        back.upload_turn = Some(UploadTurn {
+            input: "x".into(),
+            requests: vec![9],
+            ..Default::default()
+        });
+        s.studio_threads.insert("back".into(), back);
+        s.studio_message(json!({"id":9,"error":{"message":"nope"}}));
+        let back = &s.studio_threads["back"];
+        assert!(
+            back.upload_turn.is_none(),
+            "the parked thread took its reply"
+        );
+        assert!(back.attachment_notice.is_some());
+        assert!(s.studio.attachment_notice.is_none());
+    }
+
+    #[test]
     fn uploads_keep_the_order_they_were_picked_in() {
         let mut s = AppState::default();
         s.studio.upload_turn = Some(UploadTurn {

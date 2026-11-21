@@ -2797,6 +2797,10 @@ impl AppState {
                             state.discover_request,
                         ]
                         .contains(&Some(id))
+                            || state
+                                .upload_turn
+                                .as_ref()
+                                .is_some_and(|turn| turn.requests.contains(&id))
                     })
             })
             .map(|(thread, _)| thread.clone());
