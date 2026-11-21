@@ -568,7 +568,8 @@ impl AppState {
                             .to_owned(),
                     );
                 } else {
-                    self.close_studio_thread(&id);
+                    self.close_studio_pane(&path, &id);
+                    self.studio_threads.remove(&id);
                     self.project_request(
                         "history.list",
                         json!({"projectPath": path}),
