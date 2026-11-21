@@ -2948,11 +2948,15 @@ impl AppState {
                         })
                         .map(|i| i + 1);
                     self.open_studio_thread(thread.to_owned());
-                    // A fork's first turn starts before its pane exists, so its events were
-                    // dropped; the sidecar reports whether that turn is still running.
-                    if forked && message["result"]["running"] == true {
-                        self.studio.busy = true;
-                        self.studio.turn_started = Some(std::time::SystemTime::now());
+                    // The fork's session is live (the sidecar started it for the first turn),
+                    // and that turn starts before its pane exists, so its events were dropped;
+                    // the sidecar reports whether it is still running.
+                    if forked {
+                        self.studio.started = true;
+                        if message["result"]["running"] == true {
+                            self.studio.busy = true;
+                            self.studio.turn_started = Some(std::time::SystemTime::now());
+                        }
                     }
                     if let Some(at) = position {
                         if let Some(panes) = self.studio_layout["rows"]
@@ -4385,9 +4389,7 @@ mod start_actions_tests {
         s.studio.continuation_request = Some(42);
         s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":true}}));
         assert_eq!(s.studio.thread_id, "fork");
-        assert!(s.studio.busy);
-        // The first follow-up goes through `agent.start`, which re-adopts an idle-closed session.
-        assert!(!s.studio.started);
+        assert!(s.studio.busy && s.studio.started);
         let panes = s.studio_layout["rows"][0]["panes"].as_array().unwrap();
         assert_eq!(panes[1]["anchor"]["threadId"], "fork");
         assert!(!s.studio_threads["source"].fork_running);
@@ -4400,7 +4402,7 @@ mod start_actions_tests {
         s.studio.continuation_request = Some(42);
         s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":false}}));
         assert_eq!(s.studio.thread_id, "fork");
-        assert!(!s.studio.busy);
+        assert!(!s.studio.busy && s.studio.started);
     }
 
     #[test]
