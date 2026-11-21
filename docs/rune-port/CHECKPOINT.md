@@ -1,5 +1,25 @@
 # Current Rune port checkpoint
 
+## Current status (2026-11-21)
+
+Checked through Rune [`3b0e9f5a`](https://github.com/TheTobiGit/kone/commit/3b0e9f5a79a87c93461c12a60c394f2ac657c3c5) against Electron [`b6886c16`](https://github.com/TheTobiGit/kone/commit/b6886c166e591fb0d8c3f747ccee02e370dd5f6e). Scope is the empty launcher, projects list, project Overview and Studio. Git, Files, Space, Inbox, Bench and other portals are excluded; Settings needs separate approval.
+
+The visual review covered the recorded fixtures, not full interaction parity or all of current Electron. The [actions audit](ACTIONS-AUDIT.md) tracks the remaining behavior gaps, including the browser's address-bar-to-row focus, session-action keyboard behavior and newer Studio changes. Live authenticated agent flows, restart persistence, native resize and live PTY remain outside the final Studio fixture review.
+
+### Landed since the visual handoff
+
+| Change | What landed |
+|---|---|
+| actions-1 ([`fd7d95e0`](https://github.com/TheTobiGit/kone/commit/fd7d95e0)) | Project open, change and back navigation; Ctrl+Tab project cycling; Studio summon and layered Escape; opening the exact recent thread. See the [actions-1 evidence](#actions-1--project-open-switch-and-back-navigation-2026-11-17) below for capture limits. |
+| actions-2 ([#33](https://github.com/TheTobiGit/kone/pull/33)) | Create normalizes git/README/remote options, keeps the final progress readout before exiting, simplifies errors and no longer carries a GitHub remote into the next form. |
+| actions-3 ([#34](https://github.com/TheTobiGit/kone/pull/34)) | Open and embedded folder browsers handle typed paths, completion, row navigation, Escape and Enter. The PR exercised Open against the real sidecar; Down from the address bar into the first row is still missing. |
+| actions-4 ([#35](https://github.com/TheTobiGit/kone/pull/35)) | Clone mirrors GitHub repo parsing, uses a destination separate from Create and closes immediately on cancel without opening a late result. The completed readout cannot be cancelled. |
+| Launcher and Overview follow-ups | The empty launcher uses 24 pt horizontal padding ([`f0ead152`](https://github.com/TheTobiGit/kone/commit/f0ead152)); the initial Open browser shows the home crumb ([`f7a1e97c`](https://github.com/TheTobiGit/kone/commit/f7a1e97c)). Overview renders cached project details in one fade ([`5c898f32`](https://github.com/TheTobiGit/kone/commit/5c898f32)) and uses a 1280 pt width fallback before the first layout measurement ([`196e9214`](https://github.com/TheTobiGit/kone/commit/196e9214)). |
+
+## Historical review and handoff notes
+
+The entries below record what was measured, known or planned at each milestone. Their status labels and old handoff steps are not the current backlog.
+
 ## Launcher modals (Create / Open / Clone) — DONE (2026-11-10)
 
 `launcher.rs` was rebuilt from the Vue sources (`db751a6e`, `0687658e`). The Create, Open and Clone cards now match Electron at 2x in light and dark: at rest, hovered, with an error, on the More panel and mid-clone. Measured text, panel and band edges agree to within 1 device px.
@@ -38,7 +58,7 @@
 
 ## Start screen (no project) — DONE (2026-11-10)
 
-The no-project start screen matches Electron 1:1 at 2x in light and dark, at rest, on hover and mid-gesture (`30196eb1`). **Next: the projects list** (`ui/projects.rs`, `--scene projects-review`).
+The no-project start screen matched the reviewed Electron fixtures at 2x in light and dark, at rest, on hover and mid-gesture (`30196eb1`).
 
 - Side-by-sides (Electron | Rune): `/workspace/rune-compare/start-final-{light,dark}.png`, `start-final-hover-{light,dark}.png`, `start-final-hover-light-mid250ms.png`. Mean pixel difference is about 1 of 255, and is mostly text antialiasing and plasma noise.
 - `ui/start_motion.rs` holds the per-frame glyph gestures: plus stems and arms, the folder (back/paper rise plus the projective perspective(70px) flap), and the GitHub tail morph and cat transform. These follow motion's keyframes (one ease per segment, transform-box fill-box, origin 50% 50%). It also holds the rotating wordmark, with springs at stiffness 300 and damping 25, motion's rest thresholds and a 0.03 s stagger.
@@ -101,7 +121,7 @@ Landed since the last checkpoint:
 - Sidecar (root): `history.delete` with worktree cleanup; zod `protocol.ts` validates agent.start/send/steer and studio.save; frame limit raised to 64 MiB.
 - CodeGolf art (Ezra): `art/codegolf.rs` + `.wgsl` compiles and is in the module tree but is NOT yet drawn by Studio (`#[allow(dead_code)]`). API: `slot(mark, focused_and_visible, color)`, `CodeGolf::begin_frame(device_key, dt, active)`, `CodeGolf::draw(device, queue, pass, site)`; pipelines keyed by (mark, format), so Studio must hand out unique marks per visible slot; colour is sRGB with alpha.
 
-## Next steps (in order)
+## Original handoff plan (historical)
 
 1. Escape layering: in `main.rs::app_key`, call `AppState::studio_key` BEFORE the global Escape branch so Escape first collapses the composer/picker to the resting orb, and only then leaves Studio. Then add the composer/picker layer handling in `studio_key`.
 2. Add a `studio-solo-review` scene: one saved pane, `composer_open = false`, bundled provider/model fixture, to compare the resting orb and solo strip against `electron-studio-light.png`.
@@ -511,9 +531,9 @@ The pass-4 sheets below supersede the earlier Studio 12 comparisons. The orchest
 - New review sheets in `/workspace/rune-compare/box/studio-12/`: `studio-multi-review-{light,dark}-1802.png` (pane tops/Opening), `studio-caption-review-{light,dark}-1802.png`, `studio-nova-review-{light,dark}-1802.png`, `studio-composer-review-{light,dark}-1803.png`, `studio-border-review-{light,dark}-1803.png`, and `studio-tooltip-frames-{light,dark}-1743.png`.
 - Regenerated final sheets, Electron left / Rune right, original 2x pixels, both themes: `/workspace/rune-compare/box/studio-12/studio-final-{light,dark}-1803.png`, `studio-final-multi-{light,dark}-1803.png`, `studio-final-composer-{light,dark}-1803.png`. Native captures use 1280x840 / scale 2 without frame cropping or rescaling. A stalled capture attempt was discarded; the completed retry produced all six final images.
 - Validation after the baseline correction: `cargo fmt --check`, `LIBRARY_PATH=/tmp/kone-rune-libs cargo clippy -p kone-rune --all-targets -- -D warnings`, and `LIBRARY_PATH=/tmp/kone-rune-libs cargo test -p kone-rune` passed (83 unit + 11 integration = 94 tests). Both reference scripts passed `node --check`. The dependency's existing dead-code warnings remain.
-- Studio accepted as 1:1 after review of every studio-12 pass-5 sheet. Dark tooltip flat-background samples at 310/370/450 ms are Electron/Rune red-channel 24/24, 212/214, 244/244; at 50/150 ms after leave they are 47/41, 7/7. Text/icon rasterization, 1–2 unit intermediate tooltip composite samples, CodeGolf phase and the separately seeded assistant identity remain. The unverifiable limits listed in pass 4 remain limits, unchanged; Settings remains out of scope.
+- Studio's visual fixtures were accepted after review of every studio-12 pass-5 sheet. Dark tooltip flat-background samples at 310/370/450 ms are Electron/Rune red-channel 24/24, 212/214, 244/244; at 50/150 ms after leave they are 47/41, 7/7. Text/icon rasterization, 1–2 unit intermediate tooltip composite samples, CodeGolf phase and the separately seeded assistant identity remain. The unverifiable limits listed in pass 4 remain limits, unchanged; Settings remains out of scope.
 
-Visual port of launcher, projects list, Overview and Studio is complete, with the unverifiable limits kept as listed.
+This closed the visual review pass for the launcher, projects list, Overview and Studio fixtures, not the action-parity audit.
 
 ### actions-1 — project open, switch and back navigation (2026-11-17)
 
