@@ -3124,35 +3124,28 @@ fn studio_row(
                         .color(t.ink)
                         .on_edit(|s: &mut AppState| &mut s.studio.terminal_input)
                         .on_submit(AppState::submit_terminal_input)
-                        .on_key(|s: &mut AppState, ev, tx| {
-                            let sequence = match ev.key {
-                                rune::Key::Up => Some("\x1b[A"),
-                                rune::Key::Down => Some("\x1b[B"),
-                                rune::Key::Right => Some("\x1b[C"),
-                                rune::Key::Left => Some("\x1b[D"),
-                                rune::Key::Home => Some("\x1b[H"),
-                                rune::Key::End => Some("\x1b[F"),
-                                rune::Key::PageUp => Some("\x1b[5~"),
-                                rune::Key::PageDown => Some("\x1b[6~"),
-                                rune::Key::Tab => Some("\t"),
-                                rune::Key::Escape => Some("\x1b"),
-                                rune::Key::Delete => Some("\x1b[3~"),
-                                _ => None,
+                        // Every key goes to the PTY as it is typed, like xterm.js; Enter
+                        // flushes anything an IME left in the field first.
+                        .on_input_key(|s: &mut AppState, ev, tx| {
+                            if ev.key == rune::Key::Enter && !ev.mods.cmd {
+                                s.submit_terminal_input(tx);
+                                return true;
+                            }
+                            let app_cursor =
+                                crate::terminal::application_cursor(&s.studio.terminal_output);
+                            let Some(sequence) = crate::terminal::key_sequence(ev, app_cursor)
+                            else {
+                                return false;
                             };
-                            if let Some(sequence) = sequence {
-                                s.terminal_write(sequence.into());
-                                tx.live_only();
-                                return true;
-                            }
-                            if ev.mods.ctrl
-                                && let rune::Key::Text(text) = &ev.key
-                                && let Some(ch) = text.chars().next()
-                            {
-                                let control = (ch.to_ascii_lowercase() as u8 & 0x1f) as char;
-                                s.terminal_write(control.to_string());
-                                return true;
-                            }
-                            false
+                            s.terminal_write(sequence);
+                            tx.live_only();
+                            true
+                        })
+                        .on_input_paste(|s: &mut AppState, content, _| {
+                            s.terminal_write(
+                                content.text().replace("\r\n", "\r").replace('\n', "\r"),
+                            );
+                            true
                         })
                 } else {
                     el().w_full().h(40.0)
@@ -6069,6 +6062,61 @@ mod tests {
         press(&mut rt, rune::Key::Tab);
         assert!(rt.state.studio.picker_open, "Tab picks too");
         assert_eq!(rt.state.composer.text, "");
+    }
+
+    #[test]
+    fn the_focused_terminal_sends_each_key_to_the_pty() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        crate::studio_terminal_fixture(&mut state, false);
+        state.studio.terminal_output = "$ ".into();
+        if let Some(pane) = state.studio_threads.get_mut("review-one") {
+            pane.terminal_output = "$ ".into();
+        }
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let key = rt
+            .elements()
+            .iter()
+            .find_map(|el| el.key.clone().filter(|k| k.starts_with("terminal-input-")))
+            .expect("the live terminal has an input");
+        let (x, y) = rt.find(&key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(2.0 / 60.0);
+        rt.state.studio.terminal_session_id = Some("pty".into());
+        let mut t = 3.0;
+        for (key, ctrl) in [
+            (rune::Key::Text("l".into()), false),
+            (rune::Key::Up, false),
+            (rune::Key::Escape, false),
+            (rune::Key::Text("c".into()), true),
+        ] {
+            rt.state.studio.error = None;
+            rt.key(rune::KeyEvent {
+                key: key.clone(),
+                mods: rune::Mods {
+                    ctrl,
+                    ..rune::Mods::default()
+                },
+            });
+            rt.frame(t / 60.0);
+            t += 1.0;
+            // Without a sidecar the write reports the service as unavailable, which
+            // shows the key reached `terminal.write` instead of the field's editor.
+            assert!(rt.state.studio.error.is_some(), "{key:?} goes to the PTY");
+            assert_eq!(
+                rt.state.studio.terminal_input.text, "",
+                "{key:?} skips the field"
+            );
+        }
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|el| el.focused && el.key.as_deref() == Some(key.as_str())),
+            "Escape goes to the shell instead of blurring the terminal"
+        );
     }
 
     #[test]
