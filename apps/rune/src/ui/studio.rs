@@ -3145,7 +3145,7 @@ fn studio_row(
                         .on_input_change(|s: &mut AppState, _| s.flush_terminal_field())
                         .on_input_paste(|s: &mut AppState, content, _| {
                             let sequence = crate::terminal::paste_sequence(
-                                &content.text(),
+                                content.text(),
                                 &s.studio.terminal_output,
                             );
                             s.terminal_write(sequence);
