@@ -3211,8 +3211,16 @@ impl AppState {
                         .get(self.studio.provider_index)
                         .is_some_and(|active| active.id == provider)
                     {
+                        // A refresh keeps the model already chosen from the cached catalog.
+                        let chosen = self
+                            .studio
+                            .models
+                            .get(self.studio.model_index)
+                            .map(|m| m.id.clone());
+                        self.studio.model_index = chosen
+                            .and_then(|id| models.iter().position(|m| m.id == id))
+                            .unwrap_or(0);
                         self.studio.models = models;
-                        self.studio.model_index = 0;
                         self.apply_restore_model();
                     }
                 }
@@ -4454,7 +4462,7 @@ mod start_actions_tests {
         }}));
         assert_eq!(s.studio.provider_index, 0);
         assert_eq!(s.studio.models[s.studio.model_index].id, "inherited");
-        s.studio.restore_model = Some("inherited".into());
+        assert!(s.studio.restore_model.is_none());
         s.studio.models_request = Some(44);
         s.studio.model_catalog_requests.insert(44, "codex".into());
         s.studio_message(serde_json::json!({"id":44,"result":[
