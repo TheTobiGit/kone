@@ -106,7 +106,13 @@ pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<
         Key::Backspace if event.mods.ctrl => "\x08".into(),
         Key::Backspace => "\x7f".into(),
         // Windows reports AltGr as Ctrl+Alt; the character it typed is text, not a chord.
-        Key::Text(text) if cfg!(target_os = "windows") && event.mods.ctrl && event.mods.alt => {
+        // A Ctrl+Alt key that typed nothing arrives as a command and stays a control chord.
+        Key::Text(text)
+            if cfg!(target_os = "windows")
+                && event.mods.ctrl
+                && event.mods.alt
+                && matches!(event.key, Key::Text(_)) =>
+        {
             text.clone()
         }
         Key::Text(text) if event.mods.ctrl => {
@@ -653,6 +659,11 @@ mod tests {
                 enc(Key::Text("@".into()), altgr).as_deref(),
                 Some("@"),
                 "AltGr+Q"
+            );
+            assert_eq!(
+                enc(Key::Command('b'), altgr).as_deref(),
+                Some("\x02"),
+                "Ctrl+Alt+B on a US layout"
             );
         }
         assert_eq!(enc(Key::Enter, plain), None, "Enter flushes through submit");
