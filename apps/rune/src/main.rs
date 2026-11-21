@@ -1,6 +1,7 @@
 mod bridge;
 #[path = "art/codegolf.rs"]
 mod codegolf;
+mod composer_menu;
 mod launcher;
 mod plasma;
 mod project_state;
@@ -370,12 +371,16 @@ fn main() {
             ("studio-picker-slash", |s| {
                 studio_composer(s, "picker-slash");
                 s.composer.text = "/".into();
-                s.studio.composer_menu_marker = Some('/');
+                s.composer.focus = 1;
+                s.composer.anchor = 1;
+                s.studio.composer_menu_armed = true;
             }),
             ("studio-picker-mention", |s| {
                 studio_composer(s, "picker-mention");
                 s.composer.text = "@".into();
-                s.studio.composer_menu_marker = Some('@');
+                s.composer.focus = 1;
+                s.composer.anchor = 1;
+                s.studio.composer_menu_armed = true;
             }),
             ("studio-picker-mention-chip", |s| {
                 studio_composer(s, "picker-mention-chip");

@@ -303,7 +303,9 @@ pub struct StudioState {
     pub workspace_tray_open: bool,
     pub picker_open: bool,
     pub picker_opened_at: Option<std::time::Instant>,
-    pub composer_menu_marker: Option<char>,
+    /// The `@`/`/` menu shows for the trigger under the caret; Escape or a pick puts it away
+    /// until the next keystroke.
+    pub composer_menu_armed: bool,
     pub composer_menu_index: usize,
     pub effort_picker_open: bool,
     pub mode_picker_open: bool,
@@ -1584,132 +1586,32 @@ impl AppState {
                 return true;
             }
         }
-        if s.studio.composer_menu_marker.is_some() {
-            match event.key {
-                rune::Key::Escape => {
-                    s.studio.composer_menu_marker = None;
-                    s.studio.composer_menu_index = 0;
-                    return true;
-                }
-                rune::Key::Down | rune::Key::Up => {
-                    let marker = s.studio.composer_menu_marker.unwrap_or('/');
-                    let query = s
-                        .composer
-                        .text
-                        .trim_start_matches(marker)
-                        .trim()
-                        .to_lowercase();
-                    let count = if marker == '/' {
-                        [
-                            ("/model", "Open model picker"),
-                            ("/new", "Start a new thread"),
-                        ]
-                        .iter()
-                        .filter(|(name, detail)| {
-                            query.is_empty()
-                                || name.contains(&query)
-                                || detail.to_lowercase().contains(&query)
-                        })
-                        .count()
-                    } else {
-                        [
-                            "main.ts",
-                            "main.css",
-                            "AgentComposer.vue",
-                            "ConversationThread.vue",
-                            "useAgent.ts",
-                            "useGit.ts",
-                            "index.vue",
-                            "package.json",
-                        ]
-                        .iter()
-                        .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
-                        .count()
-                    };
-                    if count > 0 {
+        if let Some(trigger) = s.composer_trigger() {
+            let count = s.composer_menu_rows(&trigger).len();
+            if count > 0 {
+                match event.key {
+                    rune::Key::Escape => {
+                        s.studio.composer_menu_armed = false;
+                        s.studio.composer_menu_index = 0;
+                        return true;
+                    }
+                    rune::Key::Down | rune::Key::Up => {
+                        let index = s.studio.composer_menu_index.min(count - 1);
                         s.studio.composer_menu_index = if event.key == rune::Key::Down {
-                            (s.studio.composer_menu_index + 1) % count
+                            (index + 1) % count
                         } else {
-                            (s.studio.composer_menu_index + count - 1) % count
+                            (index + count - 1) % count
                         };
+                        return true;
                     }
-                    return true;
-                }
-                rune::Key::Enter | rune::Key::Tab => {
-                    let marker = s.studio.composer_menu_marker.take();
-                    let query = marker.map_or_else(String::new, |marker| {
-                        s.composer
-                            .text
-                            .trim_start_matches(marker)
-                            .trim()
-                            .to_lowercase()
-                    });
-                    let selected_command = if marker == Some('/') {
-                        ["/model", "/new"]
-                            .iter()
-                            .filter(|command| {
-                                let detail = if **command == "/model" {
-                                    "open model picker"
-                                } else {
-                                    "start a new thread"
-                                };
-                                query.is_empty()
-                                    || command.contains(query.as_str())
-                                    || detail.contains(query.as_str())
-                            })
-                            .nth(s.studio.composer_menu_index)
-                            .copied()
-                    } else {
-                        None
-                    };
-                    s.studio.composer_menu_index = 0;
-                    match marker {
-                        Some('/') if selected_command == Some("/model") => {
-                            s.composer.clear();
-                            s.studio.picker_open = true;
-                            s.studio.picker_opened_at = Some(std::time::Instant::now());
-                            s.studio.handoff_query.text.clear();
+                    rune::Key::Enter | rune::Key::Tab => {
+                        let index = s.studio.composer_menu_index.min(count - 1);
+                        if s.accept_composer_row(index) {
+                            return true;
                         }
-                        Some('/') if selected_command == Some("/new") => {
-                            s.composer.clear();
-                            s.new_studio_thread();
-                        }
-                        Some('@') => {
-                            let query = s
-                                .composer
-                                .text
-                                .trim_start_matches('@')
-                                .trim()
-                                .to_lowercase();
-                            let selected = s
-                                .composer_mention_files()
-                                .into_iter()
-                                .filter(|(name, parent)| {
-                                    query.is_empty()
-                                        || name.to_lowercase().contains(&query)
-                                        || parent.to_lowercase().contains(&query)
-                                })
-                                .nth(s.studio.composer_menu_index);
-                            if let Some((file, parent)) = selected {
-                                let path = if parent.is_empty() {
-                                    file
-                                } else {
-                                    format!("{parent}/{file}")
-                                };
-                                s.composer.text = format!("@{path} ");
-                                s.composer.focus = s.composer.text.len();
-                                s.composer.anchor = s.composer.focus;
-                            }
-                        }
-                        _ => {}
                     }
-                    return true;
+                    _ => {}
                 }
-                rune::Key::Backspace if s.composer.text.len() <= 1 => {
-                    s.studio.composer_menu_marker = None;
-                    s.studio.composer_menu_index = 0;
-                }
-                _ => {}
             }
         }
         if event.key == rune::Key::Escape {
@@ -2594,6 +2496,11 @@ impl AppState {
 
     pub fn send_studio(&mut self, tx: &mut rune::Tx) {
         let input = self.composer.text.trim().to_owned();
+        if let Some((name, _focus)) = crate::composer_menu::parse_leading_slash(&input)
+            && self.run_slash(&name, None)
+        {
+            return;
+        }
         self.send_studio_input(input, true, tx);
     }
 
@@ -4084,15 +3991,17 @@ mod start_actions_tests {
             ..Default::default()
         };
         s.studio.composer_open = true;
-        s.studio.composer_menu_marker = Some('@');
+        s.studio.composer_menu_armed = true;
+        s.studio.conversation_fixture = Some("composer-picker-mention".into());
         s.composer.text = "@main".into();
+        s.composer.focus = s.composer.text.len();
         let esc = rune::KeyEvent {
             key: rune::Key::Escape,
             mods: rune::Mods::default(),
         };
         let mut tx = rune::Tx::default();
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
-        assert_eq!(s.studio.composer_menu_marker, None);
+        assert!(!s.studio.composer_menu_armed);
         assert!(s.studio.composer_open);
         assert!(super::AppState::studio_key(&mut s, &esc, &mut tx));
         assert!(!s.studio.composer_open);

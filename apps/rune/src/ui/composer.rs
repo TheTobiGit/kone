@@ -25,16 +25,12 @@ static COMMAND_MODEL: Icon = Icon {
 };
 
 fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
-    let marker = s.studio.composer_menu_marker?;
-    if marker == '@' && s.studio.busy {
+    let trigger = s.composer_trigger()?;
+    let marker = trigger.marker;
+    let rows = s.composer_menu_rows(&trigger);
+    if rows.is_empty() {
         return None;
     }
-    let query = s
-        .composer
-        .text
-        .trim_start_matches(marker)
-        .trim()
-        .to_lowercase();
     let mut menu = col()
         .key("composer-trigger-menu")
         .w_full()
@@ -69,33 +65,10 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
             )
             .child(label(title, 11.5, 600.0, t.muted)),
     );
-    let rows = if marker == '/' {
-        [
-            ("/model", "Open model picker"),
-            ("/new", "Start a new thread"),
-        ]
-        .into_iter()
-        .filter(|(cmd, desc)| {
-            query.is_empty() || cmd.contains(&query) || desc.to_lowercase().contains(&query)
-        })
-        .map(|(name, detail)| (name.to_owned(), detail.to_owned()))
-        .collect::<Vec<_>>()
-    } else {
-        s.composer_mention_files()
-            .into_iter()
-            .filter(|(name, path)| {
-                query.is_empty()
-                    || name.to_lowercase().contains(&query)
-                    || path.to_lowercase().contains(&query)
-            })
-            .collect::<Vec<_>>()
-    };
-    if rows.is_empty() {
-        return None;
-    }
     let mut list = col().w_full().padding(6.0);
-    for (index, (name, detail)) in rows.iter().enumerate() {
-        let selected = index == s.studio.composer_menu_index;
+    for (index, menu_row) in rows.iter().enumerate() {
+        let (name, detail) = (&menu_row.name, &menu_row.detail);
+        let selected = index == s.studio.composer_menu_index.min(rows.len() - 1);
         let mut item = row()
             .key(format!("composer-menu-row-{index}"))
             .w_full()
@@ -126,44 +99,42 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
         } else {
             item = item
-                .child(if name == "/model" {
-                    icon(&COMMAND_MODEL, 15.0).color(if selected { t.ink } else { t.ink_soft })
+                .child(icon(slash_icon(name), 15.0).color(if selected {
+                    t.ink
                 } else {
-                    icon(&PLUS_SIGN, 15.0).color(if selected { t.ink } else { t.ink_soft })
-                })
-                .child(label(name.clone(), 13.0, 600.0, t.ink))
+                    t.ink_soft
+                }))
+                .child(label(format!("/{name}"), 13.0, 600.0, t.ink))
                 .child(label(detail.clone(), 11.0, 400.0, t.muted));
         }
-        let name = name.clone();
-        let detail = detail.clone();
         list = list.child(item.on_press(move |s: &mut AppState| {
-            s.studio.composer_menu_marker = None;
-            s.studio.composer_menu_index = 0;
-            if marker == '/' {
-                if name == "/model" {
-                    s.composer.clear();
-                    s.studio.picker_open = true;
-                    s.studio.picker_opened_at = Some(std::time::Instant::now());
-                    s.studio.handoff_query.text.clear();
-                } else if name == "/new" {
-                    s.composer.clear();
-                    s.new_studio_thread();
-                }
-            } else {
-                let path = if detail.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{detail}/{name}")
-                };
-                s.composer.text = format!("@{path} ");
-                s.composer.focus = s.composer.text.len();
-                s.composer.anchor = s.composer.focus;
-            }
+            s.accept_composer_row(index);
         }));
     }
     menu = menu.child(list).child(el().h(5.0));
     Some(menu)
 }
+
+fn slash_icon(name: &str) -> &'static Icon {
+    match name {
+        "agent" => &COMMAND_AGENT,
+        "compact" => &COMMAND_COMPACT,
+        "model" => &COMMAND_MODEL,
+        _ => &PLUS_SIGN,
+    }
+}
+
+static COMMAND_AGENT: Icon = Icon {
+    name: "composer-command-agent",
+    view: 24.0,
+    body: r#"<path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M14.75 9.5C14.75 11.0188 13.5188 12.25 12 12.25C10.4812 12.25 9.25 11.0188 9.25 9.5C9.25 7.98122 10.4812 6.75 12 6.75C13.5188 6.75 14.75 7.98122 14.75 9.5Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.49994 19.0001L6.06034 18.0194C6.95055 16.4616 8.60727 15.5001 10.4016 15.5001H13.5983C15.3926 15.5001 17.0493 16.4616 17.9395 18.0194L18.4999 19.0001" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static COMMAND_COMPACT: Icon = Icon {
+    name: "composer-command-compact",
+    view: 24.0,
+    body: r#"<path d="M2 12H4M8 12H10M14 12H16M20 12H22M12 17V22M15 19C15 19 12.8 16 12 16C11.2 16 9 19 9 19M12 7V2M15 5C15 5 12.8 8 12 8C11.2 8 9 5 9 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 
 static PLUS_SIGN: Icon = Icon {
     name: "composer-plus",
@@ -730,11 +701,11 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .on_edit(|s: &mut AppState| &mut s.composer)
         .on_submit(AppState::send_studio)
         .on_key(|s: &mut AppState, ev, tx| {
-            if s.studio.composer_menu_marker.is_none()
-                && let rune::Key::Text(text) = &ev.key
-                && (text == "/" || text == "@")
-            {
-                s.studio.composer_menu_marker = text.chars().next();
+            if matches!(
+                ev.key,
+                rune::Key::Text(_) | rune::Key::Backspace | rune::Key::Delete
+            ) {
+                s.studio.composer_menu_armed = true;
                 s.studio.composer_menu_index = 0;
             }
             AppState::studio_key(s, ev, tx)
@@ -1044,10 +1015,7 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
     if !closing && tray_alpha > 0.0 {
         dock = dock.child(context_tray(s, project_name, t).opacity(tray_alpha));
     }
-    if !closing
-        && s.studio.composer_menu_marker.is_some()
-        && let Some(menu) = composer_trigger_menu(s, t)
-    {
+    if !closing && let Some(menu) = composer_trigger_menu(s, t) {
         dock = dock.child(menu);
     }
     if let Some(top_tray) = status_tray(s, track_w, t).or_else(|| workspace_tray(s, track_w, t)) {
