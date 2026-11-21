@@ -5074,13 +5074,15 @@ fn focused_body(
                 let editable = s.studio.conversation_fixture.is_none()
                     && !item.text.is_empty()
                     && (item.block_id.is_some() || Some(index) == last_user);
+                let files = user_attachments(item, &t);
                 if editable {
                     col()
                         .w_full()
                         .child(bubble)
+                        .children(files)
                         .child(user_edit_footer(s, item, editing, &t))
                 } else {
-                    col().w_full().child(bubble)
+                    col().w_full().child(bubble).children(files)
                 }
             }
             "compaction" => row().w_full().justify_center().child(
@@ -6584,6 +6586,34 @@ mod handoff_picker_tests {
         assert!(rt.state.studio.handoff_picker);
         assert!(rt.state.studio.continuation_request.is_none());
     }
+}
+
+/// The files a request carried, as name chips under its bubble.
+fn user_attachments(item: &crate::state::StudioItem, t: &Palette) -> Option<El> {
+    if item.attachments.is_empty() {
+        return None;
+    }
+    let mut chips = row().w_full().wrap().justify_end().gap(6.0).pt(6.0);
+    for name in &item.attachments {
+        let ext = crate::composer_attachments::ext_badge(name);
+        chips = chips.child(
+            row()
+                .h(24.0)
+                .px(6.0)
+                .gap(5.0)
+                .center_y()
+                .radius(7.0)
+                .border(1.0, t.line)
+                .child(text(ext).font(TextStyle::new(8.5, 700.0)).color(t.ink_soft))
+                .child(
+                    text(name.clone())
+                        .font(TextStyle::new(11.5, 500.0))
+                        .color(t.ink)
+                        .max_w(200.0),
+                ),
+        );
+    }
+    Some(chips)
 }
 
 fn user_edit_footer(

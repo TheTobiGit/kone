@@ -1,6 +1,7 @@
 mod bridge;
 #[path = "art/codegolf.rs"]
 mod codegolf;
+mod composer_attachments;
 mod composer_menu;
 mod launcher;
 mod plasma;
@@ -374,6 +375,23 @@ fn main() {
                 s.composer.focus = 1;
                 s.composer.anchor = 1;
                 s.studio.composer_menu_armed = true;
+            }),
+            ("studio-composer-attachments", |s| {
+                studio_composer(s, "attachments");
+                for (id, name, size) in [(1, "screenshot.png", 182_000), (2, "spec.pdf", 940_000)] {
+                    let mime_type = composer_attachments::mime_type_for(name);
+                    s.studio
+                        .attachments
+                        .push(composer_attachments::PendingAttachment {
+                            id,
+                            path: name.into(),
+                            name: name.into(),
+                            mime_type: mime_type.into(),
+                            image: mime_type.starts_with("image/"),
+                            size_bytes: size,
+                            ext: composer_attachments::ext_badge(name),
+                        });
+                }
             }),
             ("studio-picker-mention", |s| {
                 studio_composer(s, "picker-mention");

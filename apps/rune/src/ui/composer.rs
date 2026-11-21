@@ -115,6 +115,70 @@ fn composer_trigger_menu(s: &AppState, t: Palette) -> Option<El> {
     Some(menu)
 }
 
+/// Electron's attachment chips: an extension badge, the name, and a remove button, with the
+/// latest notice (too many, too large) beside them.
+fn attachment_chips(s: &AppState, t: Palette) -> Option<El> {
+    let notice = s.studio.attachment_notice.as_ref().map(|n| n.0.clone());
+    if s.studio.attachments.is_empty() && notice.is_none() {
+        return None;
+    }
+    let mut chips = row()
+        .key("studio-attachments")
+        .w_full()
+        .wrap()
+        .gap(6.0)
+        .pt(12.0)
+        .px(14.0)
+        .center_y();
+    for at in &s.studio.attachments {
+        let id = at.id;
+        chips = chips.child(
+            row()
+                .key(format!("studio-attachment-{id}"))
+                .h(28.0)
+                .pl(6.0)
+                .pr(4.0)
+                .gap(6.0)
+                .center_y()
+                .radius(8.0)
+                .fill(t.ink.alpha(0.05))
+                .border(1.0, t.line)
+                .child(
+                    el().px(4.0)
+                        .h(16.0)
+                        .center()
+                        .radius(4.0)
+                        .fill(t.accent.alpha(0.14))
+                        .child(label(at.ext.clone(), 8.5, 700.0, t.ink_soft)),
+                )
+                .child(label(at.name.clone(), 12.0, 500.0, t.ink).max_w(180.0))
+                .child(
+                    el().key(format!("studio-attachment-remove-{id}"))
+                        .role("button")
+                        .label(format!("Remove {}", at.name))
+                        .w(20.0)
+                        .h(20.0)
+                        .center()
+                        .radius(6.0)
+                        .hover(t.hover)
+                        .cursor(Cursor::Pointer)
+                        .child(icon(&CHIP_REMOVE, 10.0).color(t.ink_soft))
+                        .on_press(move |s: &mut AppState| s.remove_attachment(id)),
+                ),
+        );
+    }
+    if let Some(notice) = notice {
+        chips = chips.child(label(notice, 11.5, 400.0, t.muted));
+    }
+    Some(chips)
+}
+
+static CHIP_REMOVE: Icon = Icon {
+    name: "composer-attachment-remove",
+    view: 12.0,
+    body: r#"<path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
+};
+
 fn slash_icon(name: &str) -> &'static Icon {
     match name {
         "agent" => &COMMAND_AGENT,
@@ -755,7 +819,10 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .hover(t.hover)
         .cursor(Cursor::Pointer)
         .opacity(0.78)
-        .child(icon(&PLUS_SIGN, 17.0).color(t.ink_soft));
+        .role("button")
+        .label("Attach files")
+        .child(icon(&PLUS_SIGN, 17.0).color(t.ink_soft))
+        .on_press_tx(|s: &mut AppState, tx: &mut rune::Tx| s.pick_attachment(tx));
 
     let mode_btn = row()
         .key("studio-mode-picker")
@@ -1002,14 +1069,27 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
                 .radius(corner_r)
                 .fill(t.field)
                 .clip_rounded(corner_r)
+                .children(attachment_chips(s, t))
                 .child(field_box)
                 .child(bar),
         )
         .child(
             el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                 .radius(corner_r)
-                .border(1.0, t.line),
-        );
+                .border(
+                    if s.studio.attachment_drag { 2.0 } else { 1.0 },
+                    if s.studio.attachment_drag {
+                        t.accent
+                    } else {
+                        t.line
+                    },
+                ),
+        )
+        .on_drop_files(|s: &mut AppState, files: &[std::path::PathBuf], _| {
+            s.studio.attachment_drag = false;
+            s.add_attachments(files);
+        })
+        .on_drop_hover(|s: &mut AppState, over, _| s.studio.attachment_drag = over);
 
     let mut dock = col().w(track_w).items_center().opacity(card_alpha);
     if !closing && tray_alpha > 0.0 {
