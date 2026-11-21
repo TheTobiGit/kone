@@ -116,10 +116,10 @@ impl AppState {
         self.studio.items.is_empty()
     }
 
-    /// Electron's slash gates. `/branch` opens the worktree picker, which Rune does not port.
+    /// Electron's slash gates. `/agent` picks from the saved agent roster and `/branch` opens
+    /// the worktree picker; Rune ports neither, so both stay hidden and inert.
     fn slash_allowed(&self, name: &str) -> bool {
         match name {
-            "agent" => self.studio_thread_blank(),
             "compact" => self.studio_compactable(),
             "model" => true,
             "new" => !self.studio_thread_blank(),
@@ -242,7 +242,7 @@ impl AppState {
         self.close_composer_menu();
         match name {
             "compact" => self.compact_studio(),
-            "agent" | "model" => {
+            "model" => {
                 self.studio.picker_open = true;
                 self.studio.picker_opened_at = Some(std::time::Instant::now());
                 self.studio.handoff_query.text.clear();
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn slash_rows_follow_electron_gates_and_prefix_match() {
         let blank = composer("/");
-        assert_eq!(names(&blank), ["agent", "model"]);
+        assert_eq!(names(&blank), ["model"]);
         let s = with_history(composer("/"));
         assert_eq!(names(&s), ["compact", "model", "new"]);
         let s = with_history(composer("/m"));
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_command_consumes_its_token_and_agent_keeps_the_draft() {
+    fn a_picked_command_consumes_its_token_and_unported_commands_stay_inert() {
         let mut s = with_history(composer("tidy this /comp"));
         assert!(s.accept_composer_row(0));
         assert_eq!(s.composer.text, "tidy this ");
@@ -378,9 +378,10 @@ mod tests {
         );
 
         let mut blank = composer("fix the login bug /ag");
-        assert!(blank.accept_composer_row(0));
+        assert!(!blank.accept_composer_row(0));
+        assert!(!blank.run_slash("agent", None));
         assert_eq!(blank.composer.text, "fix the login bug /ag");
-        assert!(blank.studio.picker_open);
+        assert!(!blank.studio.picker_open);
     }
 
     #[test]
