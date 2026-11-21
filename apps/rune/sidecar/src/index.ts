@@ -358,7 +358,8 @@ async function call(method: string, params: z.infer<typeof object>, requestId: s
     }
     case "agent.forkAtBlock": {
       const input = z.object({ sourceThreadId: z.string().min(1), blockId: z.string().min(1), editedText: z.string().trim().min(1) }).parse(params);
-      return dispatcher.forkThreadTurn({ requestId: randomUUID(), threadId: randomUUID(), ...input });
+      const created = await dispatcher.forkThreadTurn({ requestId: randomUUID(), threadId: randomUUID(), ...input });
+      return { ...created, running: service.isThreadBusy(created.threadId) };
     }
     case "agent.compact": return service.compactThread(thread.parse(params).threadId);
     case "agent.interrupt": return service.interruptTurn(thread.parse(params).threadId);
