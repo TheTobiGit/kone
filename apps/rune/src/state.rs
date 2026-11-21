@@ -321,6 +321,8 @@ pub struct StudioState {
     pub turn_title: String,
     pub pending_send: Option<String>,
     pub queued_turns: Vec<(String, String)>,
+    /// The transcript block id each queued turn's request is journaled under.
+    pub queued_blocks: std::collections::HashMap<String, String>,
     pub subagents: Vec<(String, String, String)>,
     pub subagents_expanded: bool,
     pub archive_notice: Option<String>,
@@ -3297,6 +3299,11 @@ impl AppState {
             }
             "turn.queued" => {
                 if let Some(id) = event["queueId"].as_str() {
+                    if let Some(block) = event["userBlockId"].as_str() {
+                        self.studio
+                            .queued_blocks
+                            .insert(id.to_owned(), block.to_owned());
+                    }
                     self.studio.queued_turns.retain(|row| row.0 != id);
                     self.studio.queued_turns.push((
                         id.to_owned(),
@@ -3308,8 +3315,26 @@ impl AppState {
                 }
             }
             "turn.promoted" | "turn.queued-cancelled" => {
-                if let Some(id) = event["queueId"].as_str() {
-                    self.studio.queued_turns.retain(|row| row.0 != id);
+                let Some(id) = event["queueId"].as_str() else {
+                    return;
+                };
+                let block = self.studio.queued_blocks.remove(id);
+                let row = self.studio.queued_turns.iter().position(|row| row.0 == id);
+                let Some(row) = row.map(|i| self.studio.queued_turns.remove(i)) else {
+                    return;
+                };
+                // A queued request only enters the transcript once it runs, at the tail so it
+                // precedes its reply, as Electron's session reducer rebuilds it on promotion.
+                if event["type"] == "turn.promoted" {
+                    let item_id = block.clone().unwrap_or_else(|| format!("queued-{id}"));
+                    self.studio.items.retain(|item| item.id != item_id);
+                    self.studio.items.push(StudioItem {
+                        id: item_id,
+                        block_id: block,
+                        kind: "user".into(),
+                        text: row.1,
+                        ..Default::default()
+                    });
                 }
             }
             "thread.state.changed" if event["state"] == "compacted" => {
@@ -3430,6 +3455,33 @@ impl AppState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_promoted_follow_up_joins_the_transcript_and_a_cancelled_one_does_not() {
+        let mut s = AppState::default();
+        s.studio.thread_id = "t".into();
+        let event = |body: serde_json::Value| {
+            let mut params = body;
+            params["threadId"] = "t".into();
+            json!({"method":"agent.event","params":params})
+        };
+        s.studio_message(event(
+            json!({"type":"turn.queued","queueId":"q1","userBlockId":"b1","input":"run the tests"}),
+        ));
+        s.studio_message(event(
+            json!({"type":"turn.queued","queueId":"q2","userBlockId":"b2","input":"never mind"}),
+        ));
+        assert!(s.studio.items.iter().all(|i| i.kind != "user"));
+        s.studio_message(event(
+            json!({"type":"turn.queued-cancelled","queueId":"q2"}),
+        ));
+        s.studio_message(event(json!({"type":"turn.promoted","queueId":"q1"})));
+        let users: Vec<_> = s.studio.items.iter().filter(|i| i.kind == "user").collect();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].text, "run the tests");
+        assert_eq!(users[0].block_id.as_deref(), Some("b1"));
+        assert!(s.studio.queued_turns.is_empty() && s.studio.queued_blocks.is_empty());
+    }
 
     #[test]
     fn tooltip_uses_css_delay_and_ease_on_both_edges() {
