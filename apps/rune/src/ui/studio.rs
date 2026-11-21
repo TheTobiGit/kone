@@ -4012,7 +4012,9 @@ fn parked_body(
     }
     let mut transcript = col().w_full().max_w(680.0).gap(34.0).self_center().py(34.0);
     for item in &state.items {
-        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
+        if item.kind == "connected"
+            || (item.text.is_empty() && item.name.is_empty() && item.attachments.is_empty())
+        {
             continue;
         }
         let value = if item.kind == "tool_call" {
@@ -4981,7 +4983,9 @@ fn focused_body(
         if activity_fixture && !s.studio.activity_open && item.kind == "tool_call" {
             continue;
         }
-        if item.kind == "connected" || (item.text.is_empty() && item.name.is_empty()) {
+        if item.kind == "connected"
+            || (item.text.is_empty() && item.name.is_empty() && item.attachments.is_empty())
+        {
             continue;
         }
         // Only the running turn's text folds into its activity; earlier replies stay.
@@ -5074,13 +5078,18 @@ fn focused_body(
                 let editable = s.studio.conversation_fixture.is_none()
                     && !item.text.is_empty()
                     && (item.block_id.is_some() || Some(index) == last_user);
+                let files = user_attachments(item, &t);
                 if editable {
                     col()
                         .w_full()
                         .child(bubble)
+                        .children(files)
                         .child(user_edit_footer(s, item, editing, &t))
+                } else if item.text.is_empty() && !editing {
+                    // A request of only files shows just their chips, no empty bubble.
+                    col().w_full().children(files)
                 } else {
-                    col().w_full().child(bubble)
+                    col().w_full().child(bubble).children(files)
                 }
             }
             "compaction" => row().w_full().justify_center().child(
@@ -5961,6 +5970,43 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn eight_attachment_chips_and_the_notice_fit_the_composer() {
+        let mut state = AppState::default();
+        crate::studio_composer(&mut state, "picker-slash");
+        for id in 1..=8 {
+            state
+                .studio
+                .attachments
+                .push(crate::composer_attachments::PendingAttachment {
+                    id,
+                    path: format!("{id}.txt").into(),
+                    name: format!("{id}.txt"),
+                    mime_type: "text/plain".into(),
+                    image: false,
+                    size_bytes: 1,
+                    ext: "TXT".into(),
+                });
+        }
+        state.studio.attachment_notice = Some((
+            "Up to 8 attachments per message.".into(),
+            std::time::Instant::now(),
+        ));
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let (row, _) = rt
+            .presented("studio-attachments")
+            .expect("the chip row shows");
+        for key in ["studio-attachment-8", "studio-attachment-notice"] {
+            let (r, _) = rt.presented(key).expect(key);
+            assert!(
+                r[0] >= row[0] && r[0] + r[2] <= row[0] + row[2] + 0.5,
+                "{key} stays inside the composer: {r:?} in {row:?}"
+            );
+        }
+    }
+
+    #[test]
     fn one_escape_in_the_request_editor_cancels_the_edit() {
         let mut state = AppState::default();
         crate::studio_column_head(&mut state);
@@ -6666,6 +6712,34 @@ mod handoff_picker_tests {
         assert!(rt.state.studio.handoff_picker);
         assert!(rt.state.studio.continuation_request.is_none());
     }
+}
+
+/// The files a request carried, as name chips under its bubble.
+fn user_attachments(item: &crate::state::StudioItem, t: &Palette) -> Option<El> {
+    if item.attachments.is_empty() {
+        return None;
+    }
+    let mut chips = row().w_full().flex_wrap().justify_end().gap(6.0).pt(6.0);
+    for name in &item.attachments {
+        let ext = crate::composer_attachments::ext_badge(name);
+        chips = chips.child(
+            row()
+                .h(24.0)
+                .px(6.0)
+                .gap(5.0)
+                .center_y()
+                .radius(7.0)
+                .border(1.0, t.line)
+                .child(text(ext).font(TextStyle::new(8.5, 700.0)).color(t.ink_soft))
+                .child(
+                    text(name.clone())
+                        .font(TextStyle::new(11.5, 500.0))
+                        .color(t.ink)
+                        .max_w(200.0),
+                ),
+        );
+    }
+    Some(chips)
 }
 
 fn user_edit_footer(
