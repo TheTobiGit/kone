@@ -6213,6 +6213,25 @@ mod tests {
     }
 
     #[test]
+    fn send_now_steers_a_promoted_follow_up_that_started_after_the_turn_ended() {
+        let mut rt = Runtime::new(
+            queue_state(false),
+            view,
+            (1280.0, 840.0),
+            Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|s, _| {
+            s.studio_message(json!({"method":"agent.event", "params":{"threadId":"t", "type":"turn.started", "turnId":"turn-2"}}));
+        });
+        assert!(rt.state.studio.busy);
+        rt.update(|s, tx| s.send_queued_now("q1", "run the tests".into(), tx));
+        let s = &rt.state;
+        assert!(s.studio.items.iter().all(|item| item.kind != "user"));
+        assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
     fn each_thread_mounts_its_own_transcript_viewport() {
         let mut s = queue_state(false);
         s.studio.queued_turns.clear();

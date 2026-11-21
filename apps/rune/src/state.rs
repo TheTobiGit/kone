@@ -3283,6 +3283,11 @@ impl AppState {
                 }
             }
             "user-input.resolved" => self.studio.question = None,
+            // A promoted follow-up starts its own turn after the last one completed.
+            "turn.started" => {
+                self.studio.busy = true;
+                self.studio.turn_interrupted = false;
+            }
             "turn.completed" | "turn.aborted" | "session.exited" => {
                 self.studio.turn_interrupted = event["type"] == "turn.aborted";
                 self.studio.busy = false;
