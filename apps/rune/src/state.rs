@@ -2393,6 +2393,12 @@ impl AppState {
         {
             return;
         }
+        self.show_provider(index);
+    }
+
+    /// Point the composer at a provider and load its models, without the picker's started guard:
+    /// a thread's own history says which provider it runs on.
+    fn show_provider(&mut self, index: usize) {
         self.studio.provider_index = index;
         let provider = self.studio.providers[index].id.clone();
         self.studio.models = self
@@ -2999,7 +3005,7 @@ impl AppState {
                 if let Some(provider) = result["provider"].as_str()
                     && let Some(index) = self.studio.providers.iter().position(|p| p.id == provider)
                 {
-                    self.select_provider(index);
+                    self.show_provider(index);
                 }
                 self.studio.items = history_items(result);
                 return;
@@ -4403,6 +4409,23 @@ mod start_actions_tests {
         s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":false}}));
         assert_eq!(s.studio.thread_id, "fork");
         assert!(!s.studio.busy && s.studio.started);
+    }
+
+    #[test]
+    fn an_edit_fork_takes_its_provider_from_history_though_started() {
+        let mut s = edit_state();
+        s.studio.providers.push(StudioProvider {
+            id: "claudeAgent".into(),
+            label: "Claude".into(),
+            supports_compaction: true,
+        });
+        s.studio.provider_index = 1;
+        s.studio.fork_running = true;
+        s.studio.continuation_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork","running":true}}));
+        s.studio.history_request = Some(43);
+        s.studio_message(serde_json::json!({"id":43,"result":{"provider":"codex","blocks":[]}}));
+        assert_eq!(s.studio.provider_index, 0);
     }
 
     #[test]
