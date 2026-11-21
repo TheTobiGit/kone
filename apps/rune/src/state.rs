@@ -259,6 +259,8 @@ pub struct StudioState {
     /// The user request being edited in place, by item id.
     pub user_edit: Option<String>,
     pub user_edit_draft: TextEdit,
+    /// The pending continuation is an edit fork, whose first turn is already running.
+    pub fork_running: bool,
     pub handoff_staged: bool,
     pub handoff_query: TextEdit,
     pub handoff_selection: Option<(usize, Vec<StudioModel>, usize, String)>,
@@ -2522,6 +2524,7 @@ impl AppState {
             return;
         }
         self.cancel_user_edit();
+        self.studio.fork_running = true;
         self.studio.continuation_request = self.request(
             "agent.forkAtBlock",
             serde_json::json!({"sourceThreadId": self.studio.thread_id, "blockId": block_id, "editedText": text}),
@@ -2928,6 +2931,7 @@ impl AppState {
             }
             if self.studio.continuation_request == Some(id) {
                 self.studio.continuation_request = None;
+                let forked = std::mem::take(&mut self.studio.fork_running);
                 if let Some(error) = message["error"]["message"].as_str() {
                     self.studio.error = Some(error.to_owned());
                     return;
@@ -2944,6 +2948,12 @@ impl AppState {
                         })
                         .map(|i| i + 1);
                     self.open_studio_thread(thread.to_owned());
+                    if forked {
+                        // The fork's first turn started before its pane existed.
+                        self.studio.started = true;
+                        self.studio.busy = true;
+                        self.studio.turn_started = Some(std::time::SystemTime::now());
+                    }
                     if let Some(at) = position {
                         if let Some(panes) = self.studio_layout["rows"]
                             .as_array_mut()
@@ -4360,6 +4370,25 @@ mod start_actions_tests {
             s.studio.error.as_deref(),
             Some("Agent service is unavailable")
         );
+    }
+
+    #[test]
+    fn an_edit_fork_opens_running_beside_its_source() {
+        let mut s = edit_state();
+        s.studio_layout = serde_json::json!({"version":2,"focusedRow":"/p","rows":[{
+            "projectPath":"/p","focusedId":"source","panes":[
+                {"id":"source","kind":"thread","anchor":{"kind":"thread","threadId":"source"}},
+                {"id":"other","kind":"thread","anchor":{"kind":"thread","threadId":"other"}}
+            ]
+        }]});
+        s.studio.fork_running = true;
+        s.studio.continuation_request = Some(42);
+        s.studio_message(serde_json::json!({"id":42,"result":{"threadId":"fork"}}));
+        assert_eq!(s.studio.thread_id, "fork");
+        assert!(s.studio.busy && s.studio.started);
+        let panes = s.studio_layout["rows"][0]["panes"].as_array().unwrap();
+        assert_eq!(panes[1]["anchor"]["threadId"], "fork");
+        assert!(!s.studio_threads["source"].fork_running);
     }
 
     #[test]
