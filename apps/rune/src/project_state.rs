@@ -392,14 +392,17 @@ impl AppState {
         self.project_request("projects.forget", json!({"path": path}), Pending::List);
     }
 
+    /// `useReveal`: shows the project in the file manager, quietly doing nothing when the path
+    /// is gone or the opener fails, as Electron does.
     pub fn reveal_project(&mut self, path: String) {
         self.project_data.menu_path = None;
-        if let Err(error) = std::process::Command::new("open")
-            .arg("-R")
-            .arg(path)
-            .spawn()
-        {
-            self.studio.error = Some(format!("Could not reveal project: {error}"));
+        let path = std::path::absolute(&path).unwrap_or_else(|_| path.into());
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return;
+        };
+        let (program, args) = reveal_command(&path, meta.is_dir(), std::env::consts::OS);
+        if let Ok(mut child) = std::process::Command::new(program).args(args).spawn() {
+            std::thread::spawn(move || child.wait());
         }
     }
 
@@ -690,10 +693,67 @@ fn sort_sessions(sessions: &mut [ProjectSession]) {
     });
 }
 
+/// `reveal.post.ts`: a folder opens in the file manager; a file is selected in its folder
+/// rather than launched (`xdg-open` has no select flag, so Linux opens the parent).
+fn reveal_command(
+    path: &std::path::Path,
+    dir: bool,
+    os: &str,
+) -> (&'static str, Vec<std::ffi::OsString>) {
+    let arg = path.as_os_str().to_owned();
+    match (os, dir) {
+        ("macos", true) => ("open", vec![arg]),
+        ("macos", false) => ("open", vec!["-R".into(), arg]),
+        ("windows", true) => ("explorer", vec![arg]),
+        ("windows", false) => ("explorer", vec!["/select,".into(), arg]),
+        (_, true) => ("xdg-open", vec![arg]),
+        (_, false) => (
+            "xdg-open",
+            vec![path.parent().map_or(arg, |p| p.as_os_str().to_owned())],
+        ),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reveal_opens_folders_and_selects_files_per_platform() {
+        let cmd = |p: &str, dir, os| {
+            let (program, args) = reveal_command(std::path::Path::new(p), dir, os);
+            let args: Vec<_> = args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            (program, args.join(" "))
+        };
+        assert_eq!(
+            cmd("/src/kone", true, "macos"),
+            ("open", "/src/kone".into())
+        );
+        assert_eq!(
+            cmd("/src/kone/a.rs", false, "macos"),
+            ("open", "-R /src/kone/a.rs".into())
+        );
+        assert_eq!(
+            cmd("/src/kone", true, "linux"),
+            ("xdg-open", "/src/kone".into())
+        );
+        assert_eq!(
+            cmd("/src/kone/a.rs", false, "linux"),
+            ("xdg-open", "/src/kone".into())
+        );
+        assert_eq!(
+            cmd("C:/kone", true, "windows"),
+            ("explorer", "C:/kone".into())
+        );
+        assert_eq!(
+            cmd("C:/kone/a.rs", false, "windows"),
+            ("explorer", "/select, C:/kone/a.rs".into())
+        );
+    }
 
     #[test]
     fn opening_a_project_paints_status_before_the_full_overview() {
