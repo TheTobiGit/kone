@@ -31,7 +31,7 @@ pub struct UploadTurn {
     pub input: String,
     pub item: Option<String>,
     pub requests: Vec<u64>,
-    pub uploaded: Vec<serde_json::Value>,
+    pub uploaded: Vec<(u64, serde_json::Value)>,
 }
 
 pub fn ext_badge(name: &str) -> String {
@@ -195,7 +195,9 @@ impl AppState {
         };
         turn.requests.remove(index);
         if message["result"]["id"].is_string() {
-            turn.uploaded.push(message["result"].clone());
+            // Request ids rise in pick order; keep that order however the replies land.
+            let at = turn.uploaded.partition_point(|(sent, _)| *sent < id);
+            turn.uploaded.insert(at, (id, message["result"].clone()));
         } else {
             let error = message["error"]["message"]
                 .as_str()
@@ -227,7 +229,7 @@ impl AppState {
             }
             return;
         }
-        self.studio.turn_attachments = turn.uploaded;
+        self.studio.turn_attachments = turn.uploaded.into_iter().map(|(_, a)| a).collect();
         self.continue_studio_send(turn.input);
     }
 }
@@ -326,6 +328,29 @@ mod tests {
             Some("Agent service is unavailable")
         );
         assert!(s.studio.turn_attachments.is_empty());
+    }
+
+    #[test]
+    fn uploads_keep_the_order_they_were_picked_in() {
+        let mut s = AppState::default();
+        s.studio.upload_turn = Some(UploadTurn {
+            input: "x".into(),
+            requests: vec![4, 5, 6],
+            ..Default::default()
+        });
+        let reply = |id: u64| json!({"id":id,"result":{"type":"file","id":format!("att_{id}"),"name":"f","mimeType":"text/plain","sizeBytes":1}});
+        assert!(s.upload_reply(6, &reply(6)));
+        assert!(s.upload_reply(4, &reply(4)));
+        let order: Vec<u64> = s
+            .studio
+            .upload_turn
+            .as_ref()
+            .unwrap()
+            .uploaded
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(order, [4, 6]);
     }
 
     #[test]
