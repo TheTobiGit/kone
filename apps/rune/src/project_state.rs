@@ -444,9 +444,13 @@ impl AppState {
         self.open_recent_session(id);
     }
 
+    /// A thread request lands zoomed in on its row, as Electron leaves the Studio overview
+    /// before the row takes a pending thread.
     pub fn open_recent_session(&mut self, id: String) {
+        self.studio.overview = false;
         self.enter_studio();
         self.open_studio_thread(id);
+        self.studio_scroll_row = Some(self.studio.project_path.clone());
     }
 
     /// Returns true when this response belongs to project state.
@@ -718,6 +722,23 @@ fn reveal_command(
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recent_session_opened_over_a_zoomed_out_studio_lands_on_its_row() {
+        let mut state = AppState::default();
+        crate::review::populate(&mut state, Page::Overview);
+        let id = state.project_data.sessions[0].id.clone();
+        state.studio.overview = true;
+        state.studio_scroll_row = None;
+        state.open_recent_session(id.clone());
+        assert_eq!(state.page, Page::Studio);
+        assert!(!state.studio.overview);
+        assert_eq!(state.studio.thread_id, id);
+        assert_eq!(
+            state.studio_scroll_row.as_deref(),
+            Some(state.studio.project_path.as_str())
+        );
+    }
 
     #[test]
     fn reveal_opens_folders_and_selects_files_per_platform() {
