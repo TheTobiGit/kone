@@ -105,6 +105,10 @@ pub fn key_sequence(event: &rune::KeyEvent, application_cursor: bool) -> Option<
         Key::Delete => "\x1b[3~".into(),
         Key::Backspace if event.mods.ctrl => "\x08".into(),
         Key::Backspace => "\x7f".into(),
+        // Windows reports AltGr as Ctrl+Alt; the character it typed is text, not a chord.
+        Key::Text(text) if cfg!(target_os = "windows") && event.mods.ctrl && event.mods.alt => {
+            text.clone()
+        }
         Key::Text(text) if event.mods.ctrl => {
             let ch = text.chars().next()?;
             match ch.to_ascii_lowercase() {
@@ -619,6 +623,19 @@ mod tests {
             None,
             "a bare command chord stays with the app"
         );
+        let altgr = Mods {
+            cmd: true,
+            ctrl: true,
+            alt: true,
+            ..Mods::default()
+        };
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                enc(Key::Text("@".into()), altgr).as_deref(),
+                Some("@"),
+                "AltGr+Q"
+            );
+        }
         assert_eq!(enc(Key::Enter, plain), None, "Enter flushes through submit");
     }
 
