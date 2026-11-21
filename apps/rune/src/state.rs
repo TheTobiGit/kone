@@ -2239,7 +2239,15 @@ impl AppState {
                 tx.copy(text);
                 true
             }
-            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'v') && focused_terminal => {
+            // A click on the output leaves nothing focused but keeps the terminal the
+            // target, as xterm.js does; another focused field keeps its own paste.
+            rune::Key::Command(c)
+                if c.eq_ignore_ascii_case(&'v')
+                    && (focused_terminal
+                        || (tx.focused().is_none()
+                            && !self.studio.overview
+                            && self.studio.terminal_command.is_some())) =>
+            {
                 tx.read_clipboard(|s: &mut AppState, content, _| {
                     if content.text().is_empty() {
                         return;
