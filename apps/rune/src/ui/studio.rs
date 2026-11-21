@@ -5038,7 +5038,7 @@ fn focused_body(
                         .color(t.ink)
                         .on_edit(|s: &mut AppState| &mut s.studio.user_edit_draft)
                         .on_submit(|s: &mut AppState, tx: &mut rune::Tx| s.save_user_edit(tx))
-                        .on_key(|s: &mut AppState, event, _| {
+                        .on_input_key(|s: &mut AppState, event, _| {
                             // The field would take Escape as a blur; Electron cancels the edit.
                             if event.key != rune::Key::Escape {
                                 return false;
@@ -5959,6 +5959,35 @@ mod tests {
     use crate::state::{Page, Project, StudioItem};
     use rune::{Env, Runtime};
     use serde_json::json;
+
+    #[test]
+    fn one_escape_in_the_request_editor_cancels_the_edit() {
+        let mut state = AppState::default();
+        crate::studio_column_head(&mut state);
+        state.studio.items.push(StudioItem {
+            id: "u1".into(),
+            block_id: Some("b1".into()),
+            kind: "user".into(),
+            text: "first request".into(),
+            ..Default::default()
+        });
+        state.start_user_edit("u1".into(), "first request".into());
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|el| el.focused && el.key.as_deref() == Some("studio-user-edit")),
+            "the request editor takes focus"
+        );
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        });
+        rt.frame(2.0 / 60.0);
+        assert!(rt.state.studio.user_edit.is_none());
+    }
 
     #[test]
     fn column_tools_are_reachable_after_the_title_by_keyboard() {
