@@ -1931,7 +1931,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     };
     let mut plane = col()
         .w_full()
-        .h_full()
         .gap(if multi_overview { 24.0 } else { 0.0 })
         .py(if multi_overview { 24.0 } else { 0.0 });
     let rows = s.studio_layout["rows"].as_array();
@@ -6104,6 +6103,51 @@ mod tests {
         assert_eq!(rt.state.studio.project_path, "/second");
         assert_eq!(rt.state.studio.thread_id, "b");
         assert_eq!(rt.state.studio_layout["focusedRow"], "/second");
+    }
+
+    #[test]
+    fn a_session_opened_from_overview_scrolls_studio_to_its_row() {
+        let mut s = AppState {
+            page: Page::Overview,
+            studio_layout_ready: true,
+            ..Default::default()
+        };
+        s.projects = vec![
+            Project {
+                name: "beta".into(),
+                path: "/beta".into(),
+            },
+            Project {
+                name: "alpha".into(),
+                path: "/alpha".into(),
+            },
+        ];
+        s.selected_project = Some(1);
+        s.studio.project_path = "/beta".into();
+        s.studio.thread_id = "beta-chat".into();
+        s.studio.thread_open = true;
+        s.studio_layout = json!({"version":2,"focusedRow":"/beta","rows":[
+            {"projectPath":"/beta","focusedId":"beta-chat","panes":[{"id":"beta-chat","anchor":{"threadId":"beta-chat"}}]},
+            {"projectPath":"/alpha","focusedId":"alpha-review","panes":[
+                {"id":"alpha-review","anchor":{"threadId":"alpha-review"}},
+                {"id":"alpha-planning","anchor":{"threadId":"alpha-planning"}}
+            ]}
+        ]});
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.update(|s, _| s.open_recent_session("alpha-planning".into()));
+        for i in 1..120 {
+            rt.frame(i as f64 / 60.0);
+        }
+        assert_eq!(rt.state.studio.project_path, "/alpha");
+        let (_, alpha_y) = rt.find("studio-row-slot-/alpha").unwrap();
+        assert!((0.0..840.0).contains(&alpha_y), "alpha row at {alpha_y}");
+        if let Some((_, beta_y)) = rt.find("studio-row-slot-/beta") {
+            assert!(
+                !(0.0..840.0).contains(&beta_y),
+                "beta row still at {beta_y}"
+            );
+        }
     }
 
     #[test]
