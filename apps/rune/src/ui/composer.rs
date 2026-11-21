@@ -700,16 +700,7 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
         .w_full()
         .on_edit(|s: &mut AppState| &mut s.composer)
         .on_submit(AppState::send_studio)
-        .on_key(|s: &mut AppState, ev, tx| {
-            if matches!(
-                ev.key,
-                rune::Key::Text(_) | rune::Key::Backspace | rune::Key::Delete
-            ) {
-                s.studio.composer_menu_armed = true;
-                s.studio.composer_menu_index = 0;
-            }
-            AppState::studio_key(s, ev, tx)
-        });
+        .on_input_key(|s: &mut AppState, ev, _| s.composer_menu_key(ev));
     let mut field_box = el()
         .w_full()
         .pt(16.0)

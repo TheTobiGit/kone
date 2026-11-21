@@ -5990,6 +5990,88 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_composer_opens_and_drives_the_slash_menu() {
+        let mut state = AppState::default();
+        crate::studio_composer(&mut state, "picker-slash");
+        state.composer.clear();
+        let mut rt = Runtime::new(state, view, (1292.0, 854.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let (x, y) = rt.find("studio-composer").expect("the composer is open");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        let clock = std::cell::Cell::new(2.0 / 60.0);
+        let tick = |rt: &mut Runtime<AppState>| {
+            rt.frame(clock.get());
+            clock.set(clock.get() + 1.0 / 60.0);
+        };
+        let press = |rt: &mut Runtime<AppState>, key: rune::Key| {
+            rt.key(rune::KeyEvent {
+                key,
+                mods: rune::Mods::default(),
+            });
+            tick(rt);
+        };
+        let focused = |rt: &Runtime<AppState>| {
+            rt.elements()
+                .iter()
+                .any(|el| el.focused && el.key.as_deref() == Some("studio-composer"))
+        };
+        let rows = |rt: &Runtime<AppState>| {
+            rt.state
+                .composer_trigger()
+                .map_or(0, |trigger| rt.state.composer_menu_rows(&trigger).len())
+        };
+        press(&mut rt, rune::Key::Text("/".into()));
+        assert!(focused(&rt), "typing keeps the composer focused");
+        assert_eq!(rt.state.composer.text, "/");
+        assert!(
+            rt.find("composer-trigger-menu").is_some(),
+            "`/` opens the menu"
+        );
+        let count = rows(&rt);
+        assert!(count > 1, "a thread with history offers several commands");
+
+        press(&mut rt, rune::Key::Down);
+        assert_eq!(rt.state.studio.composer_menu_index, 1);
+        press(&mut rt, rune::Key::Up);
+        press(&mut rt, rune::Key::Up);
+        assert_eq!(rt.state.studio.composer_menu_index, count - 1, "Up wraps");
+        assert_eq!(rt.state.composer.text, "/", "arrows never move the caret");
+
+        press(&mut rt, rune::Key::Escape);
+        assert!(
+            rt.find("composer-trigger-menu").is_none(),
+            "Escape dismisses"
+        );
+        assert!(focused(&rt), "and leaves the composer focused");
+        assert_eq!(rt.state.composer.text, "/");
+
+        press(&mut rt, rune::Key::Text("m".into()));
+        assert!(
+            rt.find("composer-trigger-menu").is_some(),
+            "the next keystroke reopens"
+        );
+        assert_eq!(rows(&rt), 1, "rows filter by prefix");
+        press(&mut rt, rune::Key::Enter);
+        assert!(rt.state.studio.picker_open, "Enter runs the picked command");
+        assert_eq!(rt.state.composer.text, "", "and sends nothing");
+        assert!(rt.state.studio.items.iter().all(|i| i.text != "/m"));
+
+        rt.state.studio.picker_open = false;
+        tick(&mut rt);
+        let (x, y) = rt.find("studio-composer").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        tick(&mut rt);
+        press(&mut rt, rune::Key::Text("/".into()));
+        press(&mut rt, rune::Key::Text("m".into()));
+        press(&mut rt, rune::Key::Tab);
+        assert!(rt.state.studio.picker_open, "Tab picks too");
+        assert_eq!(rt.state.composer.text, "");
+    }
+
+    #[test]
     fn column_tools_are_reachable_after_the_title_by_keyboard() {
         let mut state = AppState::default();
         crate::studio_overview_fixture(&mut state, 0);
