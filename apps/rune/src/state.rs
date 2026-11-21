@@ -66,6 +66,8 @@ impl Profile {
 #[derive(Default)]
 pub struct AppState {
     pub art_focused: bool,
+    /// The terminal output selected in any pane, for Ctrl+Shift+C off macOS.
+    pub terminal_selection: Option<String>,
     pub(crate) chooser_magnet: StartActionsState,
     pub profile: Profile,
     pub profile_hover: bool,
@@ -270,8 +272,6 @@ pub struct StudioState {
     pub terminal_command: Option<String>,
     pub terminal_session_id: Option<String>,
     pub terminal_output: String,
-    /// The terminal output the pointer last selected, for Ctrl+Shift+C off macOS.
-    pub terminal_selection: Option<String>,
     pub terminal_input: TextEdit,
     pub terminal_cursor_visible: bool,
     pub terminal_cursor_blink_at: Option<std::time::Instant>,
@@ -1248,7 +1248,7 @@ impl AppState {
         if s.page != Page::Studio {
             return false;
         }
-        if s.terminal_clipboard_chord(event, tx) {
+        if s.terminal_clipboard_chord(event, false, tx) {
             return true;
         }
         if event.is_command('o') && event.mods.shift {
@@ -2211,27 +2211,28 @@ impl AppState {
         self.persist_studio_layout();
     }
 
-    /// Off macOS, Ctrl+Shift+C copies the selected terminal output and Ctrl+Shift+V pastes
-    /// the clipboard into the PTY, as xterm.js terminals bind them. Plain Ctrl+C and Ctrl+V
-    /// stay with the shell and the field's paste.
-    pub fn terminal_clipboard_chord(&mut self, event: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+    /// Off macOS, Ctrl+Shift+C copies the selected output of any terminal pane, and from a
+    /// focused terminal field Ctrl+Shift+V pastes the clipboard into its PTY, as xterm.js
+    /// terminals bind them. Plain Ctrl+C and Ctrl+V stay with the shell and the field's paste.
+    pub fn terminal_clipboard_chord(
+        &mut self,
+        event: &rune::KeyEvent,
+        focused_terminal: bool,
+        tx: &mut rune::Tx,
+    ) -> bool {
         let m = event.mods;
-        if cfg!(target_os = "macos")
-            || !m.ctrl
-            || !m.shift
-            || m.alt
-            || self.studio.terminal_command.is_none()
-        {
+        if cfg!(target_os = "macos") || !m.ctrl || !m.shift || m.alt {
             return false;
         }
         match event.key {
             rune::Key::Command(c) if c.eq_ignore_ascii_case(&'c') => {
-                if let Some(text) = self.studio.terminal_selection.clone() {
-                    tx.copy(text);
-                }
+                let Some(text) = self.terminal_selection.clone() else {
+                    return false;
+                };
+                tx.copy(text);
                 true
             }
-            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'v') => {
+            rune::Key::Command(c) if c.eq_ignore_ascii_case(&'v') && focused_terminal => {
                 tx.read_clipboard(|s: &mut AppState, content, _| {
                     if content.text().is_empty() {
                         return;

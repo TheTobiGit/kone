@@ -3081,7 +3081,7 @@ fn studio_row(
                     .gap(0.0)
                     .selection_group(true)
                     .on_selection_change(|s: &mut AppState, change, _| {
-                        s.studio.terminal_selection = change
+                        s.terminal_selection = change
                             .selection()
                             .map(|selection| selection.text().to_owned())
                             .filter(|text| !text.is_empty());
@@ -3136,7 +3136,7 @@ fn studio_row(
                         // Every key goes to the PTY as it is typed, like xterm.js; text an
                         // IME commits into the field goes as soon as it lands.
                         .on_input_key(|s: &mut AppState, ev, tx| {
-                            if s.terminal_clipboard_chord(ev, tx) {
+                            if s.terminal_clipboard_chord(ev, true, tx) {
                                 return true;
                             }
                             if ev.key == rune::Key::Enter && !ev.mods.cmd {
@@ -6228,7 +6228,7 @@ mod tests {
             },
         };
 
-        rt.state.studio.terminal_selection = Some("total 0".into());
+        rt.state.terminal_selection = Some("total 0".into());
         rt.state.studio.error = None;
         rt.key(chord('c'));
         rt.frame(3.0 / 60.0);
