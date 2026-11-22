@@ -1775,8 +1775,9 @@ fn browser(s: &AppState, t: Palette) -> El {
                 true
             } else if event.key == Key::Down && !embedded && has_first_row {
                 // `FolderBrowser`'s ArrowDown on the field focuses the first row;
-                // Tab walks field → Cancel → the list's first row.
-                for _ in 0..2 {
+                // Tab walks field → Cancel → the list's first row. A shown
+                // completion eats one extra Tab accepting it first.
+                for _ in 0..2 + completion_shown(&s.launcher) as usize {
                     tx.send_key(rune::KeyEvent {
                         key: Key::Tab,
                         mods: rune::Mods::default(),
@@ -2328,6 +2329,17 @@ mod tests {
         rt.frame(7.0 / 60.0);
         assert!(rt.state.launcher.path.focused);
         assert_eq!(focused_key(&rt).as_deref(), Some("launcher-path"));
+        // A shown completion takes one Tab to accept before the walk continues.
+        let p = &mut rt.state.launcher.path;
+        p.text = "~/Desktop".into();
+        p.anchor = 3;
+        p.focus = p.text.len();
+        rt.state.launcher.completion_draft = "~/D".into();
+        rt.frame(8.0 / 60.0);
+        rt.key(key(rune::Key::Down));
+        rt.frame(9.0 / 60.0);
+        rt.frame(10.0 / 60.0);
+        assert_eq!(focused_key(&rt).as_deref(), Some("launcher-ascend"));
     }
     #[test]
     fn down_in_an_embedded_address_bar_stays_in_the_field() {
