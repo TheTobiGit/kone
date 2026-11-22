@@ -111,7 +111,7 @@ Related runtime gaps, not counted as action rows: the Rune sidecar uses `node-pt
 |---|---|
 | actions-1 — Project open, switch and back navigation | Landed. See [checkpoint evidence](CHECKPOINT.md#actions-1--project-open-switch-and-back-navigation-2026-11-17) for native tests and reference capture limits. |
 | actions-2 — Create project workflow | Landed in [#33](https://github.com/TheTobiGit/kone/pull/33). |
-| actions-3 — Open project picker and directory browser | Landed in [#34](https://github.com/TheTobiGit/kone/pull/34); the address-bar Down focus gap closed in a follow-up. |
+| actions-3 — Open project picker and directory browser | Landed in [#34](https://github.com/TheTobiGit/kone/pull/34); the address-bar Down focus gap closed in [#48](https://github.com/TheTobiGit/kone/pull/48). |
 | actions-4 — Clone workflow and cancellation | Landed in [#35](https://github.com/TheTobiGit/kone/pull/35). |
 
 ### Remaining work and verification
