@@ -42,7 +42,7 @@ The entries below record what was measured, known or planned at each milestone. 
   - Scrim: ground at 62% with a 4 pt backdrop blur, faded over 0.24 s (0.22,1,0.36,1).
   - Card: 448 pt, bottom-right with 24 pt inset. It is `--band` with a 14 pt-radius `--panel` body scooped into it, 18 pt corners, and a 1 pt ink 8% ring. The ring is a 1 pt wider tinted pill under the card, because Rune's box-shadow was clipped by `clip_rounded`.
   - Motion: enters on a spring (300, 22, mass 0.9) from opacity 0, y 12, scale 0.96. It exits for 240 ms (`EXIT`), then unmounts. The poll-clock `launcher::tick` drives this from `AppState::poll`.
-- Focus: a transparent card is inert, so it drops the open's focus request. `tick` asks for focus again when the card shows (Electron `autofocus`).
+- Focus: a transparent card is inert, so it drops the open's focus request and the modal's fallback takes the card. `tick` re-asks each frame until the flag survives one commit — the field then holds focus, as Electron `autofocus` lands on mount (the picker's address bar, Create's name field, Clone's URL field).
 - Linux text corrections (not applied on macOS):
   - `mono_nudge`: Liberation Mono sits 0.5 to 1 pt higher in Chrome's line boxes.
   - `ARROW_RISE`: the fallback "→" (Arimo at 104.755%) rides Geist's baseline, so it is raised 1 pt.

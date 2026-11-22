@@ -931,16 +931,19 @@ pub fn tick(s: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
             l.shown = true;
             l.shown_at = Some(clock);
             tx.wake_after(Duration::ZERO);
-            // A transparent card is inert, which dropped the open's focus request: ask again
-            // as it shows, as Electron's `autofocus` lands on mount.
-            match (mode, l.view) {
-                (LauncherMode::Create, View::Form) => l.name.focused = true,
-                (LauncherMode::Clone, View::Form) => l.url.focused = true,
-                _ => l.path.focused = true,
-            }
             return true;
         }
         tx.wake_after(Duration::ZERO);
+    }
+    // Electron's `autofocus` lands on mount. The card's first frames are transparent, so
+    // the field's request is dropped and the flag cleared by the modal's fallback focus;
+    // keep re-asking until the flag survives a frame (the field then holds focus).
+    if l.shown && l.shown_at.is_some_and(|at| clock - at < 0.1) {
+        match (mode, l.view) {
+            (LauncherMode::Create, View::Form) => l.name.focused = true,
+            (LauncherMode::Clone, View::Form) => l.url.focused = true,
+            _ => l.path.focused = true,
+        }
     }
     changed
 }
@@ -2489,13 +2492,49 @@ mod tests {
         tick(&mut s, 0.0, &mut tx);
         assert!(!s.launcher.shown);
         tick(&mut s, 0.016, &mut tx);
-        assert!(s.launcher.shown && s.launcher.name.focused);
+        assert!(s.launcher.shown);
+        tick(&mut s, 0.032, &mut tx);
+        assert!(s.launcher.name.focused);
         s.launcher.close();
         tick(&mut s, 0.1, &mut tx);
         tick(&mut s, 0.1 + EXIT / 2.0, &mut tx);
         assert!(s.launcher.mode.is_some());
         tick(&mut s, 0.1 + EXIT + 1e-6, &mut tx);
         assert!(s.launcher.mode.is_none() && !s.launcher.shown);
+    }
+    #[test]
+    fn the_standalone_picker_autofocuses_its_address_bar_on_mount() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        rt.poll = Some(AppState::poll);
+        for _ in 0..8 {
+            rt.frame(1.0 / 60.0);
+        }
+        let focused = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.focused)
+            .and_then(|e| e.key);
+        assert_eq!(focused.as_deref(), Some("launcher-path"));
+        assert!(rt.state.launcher.path.focused);
+    }
+    #[test]
+    fn the_create_card_autofocuses_its_name_field_on_mount() {
+        let mut state = AppState::default();
+        state.launcher.open(LauncherMode::Create);
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        rt.poll = Some(AppState::poll);
+        for _ in 0..8 {
+            rt.frame(1.0 / 60.0);
+        }
+        let focused = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.focused)
+            .and_then(|e| e.key);
+        assert_eq!(focused.as_deref(), Some("launcher-name"));
+        assert!(rt.state.launcher.name.focused);
     }
     #[test]
     fn create_options_follow_use_create_project() {
