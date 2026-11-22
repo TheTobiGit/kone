@@ -1,10 +1,10 @@
 # Current Rune port checkpoint
 
-## Current status (2026-11-21)
+## Current status (2026-11-22)
 
-Checked through Rune [`3b0e9f5a`](https://github.com/TheTobiGit/kone/commit/3b0e9f5a79a87c93461c12a60c394f2ac657c3c5) against Electron [`b6886c16`](https://github.com/TheTobiGit/kone/commit/b6886c166e591fb0d8c3f747ccee02e370dd5f6e). Scope is the empty launcher, projects list, project Overview and Studio. Git, Files, Space, Inbox, Bench and other portals are excluded; Settings needs separate approval.
+Checked through Rune [`c4778559`](https://github.com/TheTobiGit/kone/commit/c47785595ac48601cee770c2f947a4b0e41d86ee) against Electron [`b6886c16`](https://github.com/TheTobiGit/kone/commit/b6886c166e591fb0d8c3f747ccee02e370dd5f6e). Scope is the empty launcher, projects list, project Overview and Studio. Git, Files, Space, Inbox, Bench and other portals are excluded; Settings needs separate approval.
 
-The visual review covered the recorded fixtures, not full interaction parity or all of current Electron. The [actions audit](ACTIONS-AUDIT.md) tracks the remaining behavior gaps, including the browser's address-bar-to-row focus, session-action keyboard behavior and newer Studio changes. Live authenticated agent flows, restart persistence, native resize and live PTY remain outside the final Studio fixture review.
+The visual review covered the recorded fixtures, not full interaction parity or all of current Electron. The [actions audit](ACTIONS-AUDIT.md) tracks the remaining behavior gaps, including the browser's address-bar-to-row focus and the open Studio composer, selection, media and trace gaps. Live authenticated agent flows, restart persistence, native resize and live PTY remain outside the final Studio fixture review.
 
 ### Landed since the visual handoff
 
@@ -15,6 +15,14 @@ The visual review covered the recorded fixtures, not full interaction parity or 
 | actions-3 ([#34](https://github.com/TheTobiGit/kone/pull/34)) | Open and embedded folder browsers handle typed paths, completion, row navigation, Escape and Enter. The PR exercised Open against the real sidecar; Down from the address bar into the first row is still missing. |
 | actions-4 ([#35](https://github.com/TheTobiGit/kone/pull/35)) | Clone mirrors GitHub repo parsing, uses a destination separate from Create and closes immediately on cancel without opening a late result. The completed readout cannot be cancelled. |
 | Launcher and Overview follow-ups | The empty launcher uses 24 pt horizontal padding ([`f0ead152`](https://github.com/TheTobiGit/kone/commit/f0ead152)); the initial Open browser shows the home crumb ([`f7a1e97c`](https://github.com/TheTobiGit/kone/commit/f7a1e97c)). Overview renders cached project details in one fade ([`5c898f32`](https://github.com/TheTobiGit/kone/commit/5c898f32)) and uses a 1280 pt width fallback before the first layout measurement ([`196e9214`](https://github.com/TheTobiGit/kone/commit/196e9214)). |
+| actions-5 ([#37](https://github.com/TheTobiGit/kone/pull/37)) | Session hold-to-delete works from the keyboard (Space or Return held for 850 ms). Reveal runs the platform command: `open -R` on macOS, `explorer /select,` on Windows, `xdg-open` elsewhere. |
+| actions-6 ([#38](https://github.com/TheTobiGit/kone/pull/38)) | A session opened from Overview or the projects list over a zoomed-out Studio board lands zoomed in on its row. |
+| actions-7 ([#39](https://github.com/TheTobiGit/kone/pull/39), [#42](https://github.com/TheTobiGit/kone/pull/42)) | Send now on a queued follow-up steers a running turn or starts one on an idle thread, and the request shows once it runs. Each thread keeps its own transcript scroll. |
+| actions-8 ([#40](https://github.com/TheTobiGit/kone/pull/40)) | Close and archive act on the pane's own row, fall back right then left, drop an emptied row and leave the focused row alone. |
+| actions-9 ([#41](https://github.com/TheTobiGit/kone/pull/41)) | Editing an earlier request forks the thread through `agent.forkAtBlock`; editing the last one resends it. Not yet verified against a live sidecar. |
+| actions-10 ([#43](https://github.com/TheTobiGit/kone/pull/43), [#44](https://github.com/TheTobiGit/kone/pull/44)) | PARTIAL. The `@` and `/` menus follow Electron's trigger and command gates; the composer attaches files by dialog or drop and uploads them on send. Image thumbnails, attachments on queued follow-ups and inline mention chips past the first token remain. |
+| actions-11 ([#45](https://github.com/TheTobiGit/kone/pull/45)) | The focused terminal sends each key and paste to the PTY as xterm.js does. Not yet verified in the native UI. |
+| actions-12 ([#46](https://github.com/TheTobiGit/kone/pull/46)) | Type-to-compose plus the new-terminal, new-scratchpad and grow/shrink width chords. Send-selection-to-scratchpad and rebinding (Settings) are deferred. |
 
 ## Historical review and handoff notes
 
