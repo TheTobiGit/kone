@@ -1732,6 +1732,21 @@ fn browser(s: &AppState, t: Palette) -> El {
         let local = Easing::cubic(0.36, 0.07, 0.19, 0.97).eval(p * 5.0 - seg as f32);
         keys[seg] + (keys[seg + 1] - keys[seg]) * local
     });
+    // `FolderBrowser`'s ArrowDown focuses `rowEls[0]`: the ascend row when shown,
+    // else the first crumb, else the first entry.
+    let first_row = if l.parent_of_anchor().is_some() {
+        Some("launcher-ascend".to_owned())
+    } else {
+        l.crumbs()
+            .first()
+            .map(|(_, path)| format!("launcher-row:{path}"))
+            .or_else(|| {
+                l.entries
+                    .first()
+                    .map(|(_, path)| format!("launcher-row:{path}"))
+            })
+    };
+    let has_first_row = !l.read_error && first_row.is_some();
     let address = text_input(&l.path, mono(11.5, REGULAR))
         .key("launcher-path")
         .label("Directory path — edit and press Enter to go there")
@@ -1757,6 +1772,17 @@ fn browser(s: &AppState, t: Palette) -> El {
                 l.path.focus = l.path.text.len();
                 l.path.focused = false;
                 tx.blur();
+                true
+            } else if event.key == Key::Down && !embedded && has_first_row {
+                // `FolderBrowser`'s ArrowDown on the field focuses the first row;
+                // Tab walks field → Cancel → the list's first row. A shown
+                // completion eats one extra Tab accepting it first.
+                for _ in 0..2 + completion_shown(&s.launcher) as usize {
+                    tx.send_key(rune::KeyEvent {
+                        key: Key::Tab,
+                        mods: rune::Mods::default(),
+                    });
+                }
                 true
             } else if matches!(event.key, Key::Tab | Key::Right) && completion_shown(&s.launcher) {
                 s.launcher.path.anchor = s.launcher.path.focus.max(s.launcher.path.anchor);
@@ -1821,6 +1847,23 @@ fn browser(s: &AppState, t: Palette) -> El {
         .py(4.0)
         .role("list")
         .focus_group();
+    // `FolderBrowser`'s ArrowUp hands focus back to the address bar from the
+    // first row; other rows climb within the group.
+    let first_row_key = first_row.as_deref();
+    let up_to_field = move |row: El, key: &str| {
+        if !embedded && first_row_key == Some(key) {
+            row.on_key(|s: &mut AppState, event, _| {
+                if event.key == Key::Up {
+                    s.launcher.path.focused = true;
+                    true
+                } else {
+                    false
+                }
+            })
+        } else {
+            row
+        }
+    };
     if let Some(parent) = l.parent_of_anchor() {
         let label = if parent == "/" {
             "/".to_owned()
@@ -1828,14 +1871,17 @@ fn browser(s: &AppState, t: Palette) -> El {
             folder_name(&parent)
         };
         list = list.child(
-            picker_row(
-                t,
-                "launcher-ascend".into(),
-                &ARROW_UP,
-                0.55,
-                1.0,
-                label,
-                t.muted,
+            up_to_field(
+                picker_row(
+                    t,
+                    "launcher-ascend".into(),
+                    &ARROW_UP,
+                    0.55,
+                    1.0,
+                    label,
+                    t.muted,
+                ),
+                "launcher-ascend",
             )
             .on_press(move |s: &mut AppState| {
                 s.launcher.typed = false;
@@ -1849,14 +1895,17 @@ fn browser(s: &AppState, t: Palette) -> El {
         let is_current = i + 1 == depth;
         let key = format!("launcher-row:{path}");
         let p = path.clone();
-        let row = picker_row(
-            t,
-            key.clone(),
-            &ARROW_BACK,
-            0.55,
-            1.0,
-            crumb,
-            if is_current { t.ink_soft } else { t.muted },
+        let row = up_to_field(
+            picker_row(
+                t,
+                key.clone(),
+                &ARROW_BACK,
+                0.55,
+                1.0,
+                crumb,
+                if is_current { t.ink_soft } else { t.muted },
+            ),
+            &key,
         )
         .on_press(move |s: &mut AppState| {
             let l = &mut s.launcher;
@@ -1881,8 +1930,11 @@ fn browser(s: &AppState, t: Palette) -> El {
     for (name, path) in &l.entries {
         let key = format!("launcher-row:{path}");
         let p = path.clone();
-        let row = picker_row(t, key.clone(), &FOLDER_ROW, 0.45, 0.8, name.clone(), t.ink)
-            .on_press(move |s: &mut AppState| descend(s, p.clone()));
+        let row = up_to_field(
+            picker_row(t, key.clone(), &FOLDER_ROW, 0.45, 0.8, name.clone(), t.ink),
+            &key,
+        )
+        .on_press(move |s: &mut AppState| descend(s, p.clone()));
         list = list.child(
             magnet(pulled(&key, row), key)
                 .ml(indent(depth))
@@ -2244,6 +2296,74 @@ mod tests {
         rt.key(key(rune::Key::Escape));
         rt.frame(7.0 / 60.0);
         assert!(rt.state.launcher.view == View::Form);
+    }
+    #[test]
+    fn down_in_the_address_bar_focuses_the_first_row() {
+        let mut state = AppState::default();
+        state.launcher.fixture(LauncherMode::Open);
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        assert!(rt.state.launcher.path.focused);
+        let focused_key = |rt: &rune::Runtime<AppState>| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.focused)
+                .and_then(|e| e.key)
+        };
+        assert_eq!(focused_key(&rt).as_deref(), Some("launcher-path"));
+        rt.key(key(rune::Key::Down));
+        // The field routes the handoff as queued keys, so it takes an extra frame.
+        rt.frame(5.0 / 60.0);
+        rt.frame(6.0 / 60.0);
+        assert_eq!(focused_key(&rt).as_deref(), Some("launcher-ascend"));
+        assert!(!rt.state.launcher.path.focused);
+        // `FolderBrowser`'s ArrowUp hands focus back to the address bar.
+        rt.key(key(rune::Key::Up));
+        rt.frame(7.0 / 60.0);
+        assert!(rt.state.launcher.path.focused);
+        assert_eq!(focused_key(&rt).as_deref(), Some("launcher-path"));
+        // A shown completion takes one Tab to accept before the walk continues.
+        let p = &mut rt.state.launcher.path;
+        p.text = "~/Desktop".into();
+        p.anchor = 3;
+        p.focus = p.text.len();
+        rt.state.launcher.completion_draft = "~/D".into();
+        rt.frame(8.0 / 60.0);
+        rt.key(key(rune::Key::Down));
+        rt.frame(9.0 / 60.0);
+        rt.frame(10.0 / 60.0);
+        assert_eq!(focused_key(&rt).as_deref(), Some("launcher-ascend"));
+    }
+    #[test]
+    fn down_in_an_embedded_address_bar_stays_in_the_field() {
+        let mut state = AppState::default();
+        state.launcher.fixture_create_browser();
+        state.launcher.shown = true;
+        let mut rt = rune::Runtime::new(state, view, (1280.0, 840.0), rune::Env::default());
+        let key = |k: rune::Key| rune::KeyEvent {
+            key: k,
+            mods: rune::Mods::default(),
+        };
+        for i in 0..4 {
+            rt.frame(i as f64 / 60.0);
+        }
+        rt.state.launcher.path.focused = true;
+        rt.frame(4.0 / 60.0);
+        rt.key(key(rune::Key::Down));
+        rt.frame(5.0 / 60.0);
+        let focused = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.focused)
+            .and_then(|e| e.key);
+        assert_eq!(focused.as_deref(), Some("launcher-path"));
     }
     #[test]
     fn slash_over_a_selection_the_user_made_replaces_it() {

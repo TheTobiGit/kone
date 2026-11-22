@@ -8,7 +8,7 @@ Scope: launcher/start and Create/Open/Clone, projects list, project Overview, an
 
 | Screen | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-SCOPE | Total |
 |---|---:|---:|---:|---:|---:|
-| Launcher/start | 7 | 2 | 0 | 1 | 10 |
+| Launcher/start | 8 | 1 | 0 | 1 | 10 |
 | Projects list | 12 | 0 | 0 | 1 | 13 |
 | Project Overview | 7 | 3 | 0 | 5 | 15 |
 | Studio | 16 | 9 | 2 | 3 | 30 |
@@ -25,7 +25,7 @@ Scope: launcher/start and Create/Open/Clone, projects list, project Overview, an
 | Start magnet hover/press gestures: `HomeEmpty.vue`; `components/ui/start-actions/StartActions.vue` | IMPLEMENTED. Rune pointer handlers in `ui/empty.rs` stamp and animate these gestures. |
 | Global open Studio, conversation search, assistant, zoom, settings chords: `pages/index.vue:310-368`; shortcut definitions `composables/useShortcuts.ts:1-341` | PARTIAL (documented). Rune matches the in-scope chords: Cmd/Ctrl+B toggles Studio from any page, Cmd/Ctrl+F opens conversation search in Studio, Cmd/Ctrl+K focuses Projects search. Inbox (Cmd+I), Bench (Cmd+J), assistant (Cmd+E), Settings (Cmd+,) and the demo (Cmd+Shift+D) open excluded portals and stay unbound. Rune's `mod` is Command on macOS and Ctrl elsewhere, as Electron's. |
 | Settings/profile entry from launcher: `HomeRecent.vue:144,194`; `HomeGreeting.vue:254` | OUT-OF-SCOPE. Rune settings/profile control is inert or omitted. |
-| Native browser path selection, folder double-click and path completion: `CreateProjectModal.vue:315-399`; `ProjectPickerModal.vue`; `FolderBrowser.vue`; `useFolderPicker.ts` | PARTIAL ([#34](https://github.com/TheTobiGit/kone/pull/34)). `launcher.rs` normalizes typed paths, blurs on same-folder and successful jumps, shakes on empty or unreadable paths, and completes with Tab, Right or `/`. Escape restores changed text first and returns from an embedded browser to its parent form. The standalone picker supports typing from the browser body and Enter to open; Up/Down move between rows. The PR exercised these paths against the real sidecar. Down from the focused address bar still cannot focus the first row. |
+| Native browser path selection, folder double-click and path completion: `CreateProjectModal.vue:315-399`; `ProjectPickerModal.vue`; `FolderBrowser.vue`; `useFolderPicker.ts` | IMPLEMENTED ([#34](https://github.com/TheTobiGit/kone/pull/34)). `launcher.rs` normalizes typed paths, blurs on same-folder and successful jumps, shakes on empty or unreadable paths, and completes with Tab, Right or `/`. Escape restores changed text first and returns from an embedded browser to its parent form. The standalone picker supports typing from the browser body and Enter to open; Up/Down move between rows, and Down from the focused address bar focuses the first row (ascend, else first crumb, else first entry) while Up on it returns to the field, as `FolderBrowser.vue`'s standalone-only window keydown does. The PR exercised these paths against the real sidecar. |
 | Modal dismissal by scrim, close button and cancel: `CreateProjectModal.vue:98-101,261`; `ProjectPickerModal.vue:92-119,151` | IMPLEMENTED. `launcher.rs` closes/cancels the active request and invalidates stale browser replies. |
 
 ## Projects list
@@ -111,7 +111,7 @@ Related runtime gaps, not counted as action rows: the Rune sidecar uses `node-pt
 |---|---|
 | actions-1 — Project open, switch and back navigation | Landed. See [checkpoint evidence](CHECKPOINT.md#actions-1--project-open-switch-and-back-navigation-2026-11-17) for native tests and reference capture limits. |
 | actions-2 — Create project workflow | Landed in [#33](https://github.com/TheTobiGit/kone/pull/33). |
-| actions-3 — Open project picker and directory browser | Landed in [#34](https://github.com/TheTobiGit/kone/pull/34), with the address-bar Down focus gap. |
+| actions-3 — Open project picker and directory browser | Landed in [#34](https://github.com/TheTobiGit/kone/pull/34); the address-bar Down focus gap closed in [#48](https://github.com/TheTobiGit/kone/pull/48). |
 | actions-4 — Clone workflow and cancellation | Landed in [#35](https://github.com/TheTobiGit/kone/pull/35). |
 
 ### Remaining work and verification
