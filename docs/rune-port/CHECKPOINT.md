@@ -4,7 +4,7 @@
 
 Checked through Rune [`c4778559`](https://github.com/TheTobiGit/kone/commit/c47785595ac48601cee770c2f947a4b0e41d86ee) against Electron [`b6886c16`](https://github.com/TheTobiGit/kone/commit/b6886c166e591fb0d8c3f747ccee02e370dd5f6e). Scope is the empty launcher, projects list, project Overview and Studio. Git, Files, Space, Inbox, Bench and other portals are excluded; Settings needs separate approval.
 
-The visual review covered the recorded fixtures, not full interaction parity or all of current Electron. The [actions audit](ACTIONS-AUDIT.md) tracks the remaining behavior gaps, including the browser's address-bar-to-row focus and the open Studio composer, selection, media and trace gaps. Live authenticated agent flows, restart persistence, native resize and live PTY remain outside the final Studio fixture review.
+The visual review covered the recorded fixtures, not full interaction parity or all of current Electron. The [actions audit](ACTIONS-AUDIT.md) tracks the remaining behavior gaps: the open Studio composer, selection, media and trace gaps. Live authenticated agent flows, restart persistence, native resize and live PTY remain outside the final Studio fixture review.
 
 ### Landed since the visual handoff
 
@@ -12,7 +12,7 @@ The visual review covered the recorded fixtures, not full interaction parity or 
 |---|---|
 | actions-1 ([`fd7d95e0`](https://github.com/TheTobiGit/kone/commit/fd7d95e0)) | Project open, change and back navigation; Ctrl+Tab project cycling; Studio summon and layered Escape; opening the exact recent thread. See the [actions-1 evidence](#actions-1--project-open-switch-and-back-navigation-2026-11-17) below for capture limits. |
 | actions-2 ([#33](https://github.com/TheTobiGit/kone/pull/33)) | Create normalizes git/README/remote options, keeps the final progress readout before exiting, simplifies errors and no longer carries a GitHub remote into the next form. |
-| actions-3 ([#34](https://github.com/TheTobiGit/kone/pull/34)) | Open and embedded folder browsers handle typed paths, completion, row navigation, Escape and Enter. The PR exercised Open against the real sidecar; Down from the address bar into the first row is still missing. |
+| actions-3 ([#34](https://github.com/TheTobiGit/kone/pull/34)) | Open and embedded folder browsers handle typed paths, completion, row navigation, Escape and Enter. The PR exercised Open against the real sidecar. A follow-up added the standalone browser's address-bar Down/Up handoff to and from the first row. |
 | actions-4 ([#35](https://github.com/TheTobiGit/kone/pull/35)) | Clone mirrors GitHub repo parsing, uses a destination separate from Create and closes immediately on cancel without opening a late result. The completed readout cannot be cancelled. |
 | Launcher and Overview follow-ups | The empty launcher uses 24 pt horizontal padding ([`f0ead152`](https://github.com/TheTobiGit/kone/commit/f0ead152)); the initial Open browser shows the home crumb ([`f7a1e97c`](https://github.com/TheTobiGit/kone/commit/f7a1e97c)). Overview renders cached project details in one fade ([`5c898f32`](https://github.com/TheTobiGit/kone/commit/5c898f32)) and uses a 1280 pt width fallback before the first layout measurement ([`196e9214`](https://github.com/TheTobiGit/kone/commit/196e9214)). |
 | actions-5 ([#37](https://github.com/TheTobiGit/kone/pull/37)) | Session hold-to-delete works from the keyboard (Space or Return held for 850 ms). Reveal runs the platform command: `open -R` on macOS, `explorer /select,` on Windows, `xdg-open` elsewhere. |
