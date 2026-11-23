@@ -123,6 +123,50 @@ fn escape_html(s: &str, out: &mut String) {
     }
 }
 
+/// Escapes text for an HTML flow context, keeping whitespace `parse_html` would
+/// collapse: a space at line start or right after whitespace becomes `&nbsp;`,
+/// and a tab widens to four. `lead_ws` is whether the preceding character (or a
+/// line start) is already whitespace.
+fn escape_html_text(s: &str, lead_ws: bool, out: &mut String) {
+    let mut ws_run = lead_ws;
+    for ch in s.chars() {
+        match ch {
+            ' ' => {
+                if ws_run {
+                    out.push_str("&nbsp;");
+                } else {
+                    out.push(' ');
+                }
+                ws_run = true;
+            }
+            '\t' => {
+                out.push_str("&nbsp;&nbsp;&nbsp;&nbsp;");
+                ws_run = true;
+            }
+            '&' => {
+                out.push_str("&amp;");
+                ws_run = false;
+            }
+            '<' => {
+                out.push_str("&lt;");
+                ws_run = false;
+            }
+            '>' => {
+                out.push_str("&gt;");
+                ws_run = false;
+            }
+            '"' => {
+                out.push_str("&quot;");
+                ws_run = false;
+            }
+            _ => {
+                out.push(ch);
+                ws_run = ch.is_whitespace();
+            }
+        }
+    }
+}
+
 /// Extracts an HTML attribute's value from a tag tail (`href="..."`, `style='...'`, `href=foo`).
 fn extract_attr(attrs: &str, name: &str) -> Option<String> {
     let bytes = attrs.as_bytes();
@@ -953,7 +997,8 @@ fn serialize_marks(edit: &TextEdit, range: Range<usize>, out: &mut String) {
         .filter(|m| m.start < range.end && m.end > range.start && !m.mark.is_pill())
         .collect();
     if overlapping.is_empty() {
-        escape_html(&edit.text[range], out);
+        let lead_ws = range.start == 0 || edit.text[..range.start].ends_with(char::is_whitespace);
+        escape_html_text(&edit.text[range], lead_ws, out);
         return;
     }
     let mut bounds = vec![range.start, range.end];
@@ -1009,7 +1054,8 @@ fn serialize_marks(edit: &TextEdit, range: Range<usize>, out: &mut String) {
                 Mark::Pill(_) => {}
             }
         }
-        escape_html(&edit.text[a..b], out);
+        let lead_ws = a == 0 || edit.text[..a].ends_with(char::is_whitespace);
+        escape_html_text(&edit.text[a..b], lead_ws, out);
         for m in active.iter().rev() {
             match m {
                 Mark::Highlight(_) => out.push_str("</mark>"),
