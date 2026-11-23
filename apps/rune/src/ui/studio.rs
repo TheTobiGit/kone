@@ -6819,6 +6819,28 @@ mod tests {
     }
 
     #[test]
+    fn an_attachment_only_send_now_starts_a_turn() {
+        let mut s = queue_state(false);
+        s.studio.queued_turns = vec![(
+            "q1".into(),
+            String::new(),
+            vec![json!({"type": "image", "name": "shot.png"})],
+        )];
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", String::new(), tx));
+        let s = &rt.state;
+        let item = s
+            .studio
+            .items
+            .iter()
+            .find(|item| item.kind == "user")
+            .unwrap();
+        assert_eq!(item.attachments, ["shot.png"]);
+        assert_eq!(s.studio.turn_title, "shot.png");
+    }
+
+    #[test]
     fn a_running_follow_up_keeps_earlier_replies_visible() {
         let mut s = queue_state(true);
         s.studio.queued_turns.clear();

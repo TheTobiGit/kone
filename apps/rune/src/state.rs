@@ -2724,7 +2724,7 @@ impl AppState {
         let queued_attachments = std::mem::take(&mut self.studio.turn_attachments);
         let with_files = from_composer && !self.studio.attachments.is_empty();
         // A request is valid with text, attachments, or both.
-        if input.is_empty() && !with_files {
+        if input.is_empty() && !with_files && queued_attachments.is_empty() {
             return;
         }
         if with_files && self.studio.upload_turn.is_some() {
@@ -2781,9 +2781,15 @@ impl AppState {
             self.studio.turn_title = input.clone();
         }
         if self.studio.turn_title.is_empty()
-            && let Some(file) = self.studio.attachments.first().filter(|_| with_files)
+            && let Some(name) = self
+                .studio
+                .attachments
+                .first()
+                .filter(|_| with_files)
+                .map(|f| f.name.as_str())
+                .or_else(|| queued_attachments.first().and_then(|a| a["name"].as_str()))
         {
-            self.studio.turn_title = file.name.clone();
+            self.studio.turn_title = name.to_owned();
         }
         if from_composer {
             self.composer.clear();
