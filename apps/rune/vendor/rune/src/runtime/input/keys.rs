@@ -65,11 +65,16 @@ impl<S: 'static> Runtime<S> {
         if input_handles {
             let layout = self.focused_layout();
             // A rich field copies its selection's formatting too, read before a cut removes it.
+            // A plain field still copies HTML when the selection holds pills, so an app's own
+            // copy pastes them back as chips.
             let mut html = None;
             let copies = matches!(ev.edit_command(), Some('c' | 'x'));
             let handled = self.with_focused(|e| {
-                if copies && e.is_rich() && !e.is_secure() {
-                    html = Some(e.selected_html()).filter(|h| !h.is_empty());
+                if copies && !e.is_secure() {
+                    let selected = e.selected_html();
+                    if e.is_rich() || selected.contains("<span data-pill=") {
+                        html = Some(selected).filter(|h| !h.is_empty());
+                    }
                 }
                 e.key(ev, layout.as_deref())
             }, one);
