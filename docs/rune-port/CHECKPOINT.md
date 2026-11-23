@@ -23,6 +23,7 @@ The visual review covered the recorded fixtures, not full interaction parity or 
 | actions-10 ([#43](https://github.com/TheTobiGit/kone/pull/43), [#44](https://github.com/TheTobiGit/kone/pull/44)) | PARTIAL. The `@` and `/` menus follow Electron's trigger and command gates; the composer attaches files by dialog or drop and uploads them on send. Image thumbnails, attachments on queued follow-ups and inline mention chips past the first token remain. |
 | actions-11 ([#45](https://github.com/TheTobiGit/kone/pull/45)) | The focused terminal sends each key and paste to the PTY as xterm.js does. Not yet verified in the native UI. |
 | actions-12 ([#46](https://github.com/TheTobiGit/kone/pull/46)) | Type-to-compose plus the new-terminal, new-scratchpad and grow/shrink width chords. Send-selection-to-scratchpad and rebinding (Settings) are deferred. |
+| actions-13 ([#50](https://github.com/TheTobiGit/kone/pull/50)) | Composer finishers: image attachments preview as thumbnails in their chips; queued follow-ups keep their attachments (`first +N` label, send-now carries them, the promoted bubble names them); picked `@` mentions are atomic `Mark::Pill` chips anywhere in the draft, serialized back to `formatFileMention` at send. `/agent` and `/branch` remain for an agent roster and worktree picker. |
 
 ## Historical review and handoff notes
 
