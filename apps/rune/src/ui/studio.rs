@@ -4410,6 +4410,19 @@ fn dock_rail_tile(glyph: &'static str, count: &str, t: Palette) -> El {
         )
 }
 
+/// Electron's `queuedLabel`: the queued prompt's own words, or a compact
+/// attachment note for attachment-only follow-ups.
+fn queued_label(input: &str, attachments: &[serde_json::Value]) -> String {
+    if !input.is_empty() {
+        return input.to_owned();
+    }
+    match attachments.iter().find_map(|a| a["name"].as_str()) {
+        Some(first) if attachments.len() > 1 => format!("{first} +{}", attachments.len() - 1),
+        Some(first) => first.to_owned(),
+        None => "Queued message".into(),
+    }
+}
+
 fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
     let mut strip = col()
         .w((width - 26.0).max(0.0))
@@ -4419,12 +4432,13 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
         .radius(18.0)
         .fill(t.sunken)
         .gap(2.0);
-    for (index, (id, input)) in s.studio.queued_turns.iter().enumerate() {
+    for (index, (id, input, attachments)) in s.studio.queued_turns.iter().enumerate() {
         let cancel_id = id.clone();
         let edit_id = id.clone();
         let edit_input = input.clone();
         let send_now_id = id.clone();
         let send_now_input = input.clone();
+        let row_label = queued_label(input, attachments);
         strip = strip.child(
             row()
                 .key(format!("queue-{id}"))
@@ -4436,7 +4450,7 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .child(icon(&QUEUE_GRIP, 12.0).color(t.faint))
                 .child(el().w(18.0).h(18.0).center().radius(9.0).fill(t.ink.alpha(0.08))
                     .child(text((index + 1).to_string()).font(TextStyle::new(10.0, 700.0).mono()).color(t.muted)))
-                .child(label(input.clone(), 11.5, 400.0, t.ink).grow(1.0).shrink())
+                .child(label(row_label, 11.5, 400.0, t.ink).grow(1.0).shrink())
                 .child(label(if index == 0 { "After this turn" } else { "Waiting" }, 10.5, 400.0, t.faint))
                 .child(el().key(format!("queue-send-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
                     .w(75.328125).gap(3.5).child(icon(&QUEUE_SEND, 12.0).color(t.muted)).child(label("Send now", 10.5, 400.0, t.muted)).on_press_tx(move |s: &mut AppState, tx| {
@@ -4445,8 +4459,7 @@ fn queue_strip(s: &AppState, width: f32, t: Palette) -> El {
                 .child(el().ml(-4.0).key(format!("queue-edit-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
                     .w(45.921875).gap(3.5).child(icon(&QUEUE_EDIT, 12.0).color(t.muted)).child(label("Edit", 10.5, 400.0, t.muted)).on_press(move |s: &mut AppState| {
                         s.request("agent.queueCancel", serde_json::json!({"threadId": s.studio.thread_id, "queueId": edit_id}));
-                        s.composer.text = edit_input.clone();
-                        s.composer.focus = s.composer.text.len(); s.composer.anchor = s.composer.focus;
+                        crate::composer_menu::load_composer_text(&mut s.composer, &edit_input);
                         s.open_composer();
                     }))
                 .child(el().ml(-4.0).key(format!("queue-stop-{id}")).px(6.0).h(20.0).center().radius(5.0).fill(t.ink.alpha(0.06)).hover(t.hover)
@@ -6706,7 +6719,7 @@ mod tests {
             label: "Claude".into(),
             supports_compaction: false,
         }];
-        s.studio.queued_turns = vec![("q1".into(), "run the tests".into())];
+        s.studio.queued_turns = vec![("q1".into(), "run the tests".into(), Vec::new())];
         s.composer.text = "half-written draft".into();
         s
     }
@@ -6764,6 +6777,67 @@ mod tests {
         let s = &rt.state;
         assert!(s.studio.items.iter().all(|item| item.kind != "user"));
         assert!(s.studio.pending_send.is_none());
+    }
+
+    #[test]
+    fn a_queued_row_labels_and_promotes_its_attachments() {
+        let mut s = queue_state(false);
+        s.studio_message(json!({"method":"agent.event","params":{"threadId":"t","type":"turn.queued","queueId":"q2","input":"","attachmentsJson":"[{\"type\":\"file\",\"name\":\"spec.pdf\"},{\"type\":\"image\",\"name\":\"shot.png\"}]"}}));
+        // An attachment-only row labels `first +N`, as Electron's queuedLabel.
+        let row = s.studio.queued_turns.last().unwrap();
+        assert_eq!(row.0, "q2");
+        assert_eq!(queued_label(&row.1, &row.2), "spec.pdf +1");
+        s.studio_message(json!({"method":"agent.event","params":{"threadId":"t","type":"turn.promoted","queueId":"q2"}}));
+        let item = s
+            .studio
+            .items
+            .iter()
+            .find(|item| item.kind == "user")
+            .unwrap();
+        assert_eq!(item.attachments, ["spec.pdf", "shot.png"]);
+    }
+
+    #[test]
+    fn send_now_with_attachments_names_them_on_the_new_turn() {
+        let mut s = queue_state(false);
+        s.studio.queued_turns = vec![(
+            "q1".into(),
+            "look at this".into(),
+            vec![json!({"type": "image", "name": "shot.png"})],
+        )];
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", "look at this".into(), tx));
+        let s = &rt.state;
+        let item = s
+            .studio
+            .items
+            .iter()
+            .find(|item| item.kind == "user" && item.text == "look at this")
+            .unwrap();
+        assert_eq!(item.attachments, ["shot.png"]);
+    }
+
+    #[test]
+    fn an_attachment_only_send_now_starts_a_turn() {
+        let mut s = queue_state(false);
+        s.studio.queued_turns = vec![(
+            "q1".into(),
+            String::new(),
+            vec![json!({"type": "image", "name": "shot.png"})],
+        )];
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        rt.update(|s, tx| s.send_queued_now("q1", String::new(), tx));
+        let s = &rt.state;
+        let item = s
+            .studio
+            .items
+            .iter()
+            .find(|item| item.kind == "user")
+            .unwrap();
+        assert_eq!(item.attachments, ["shot.png"]);
+        assert_eq!(s.studio.turn_title, "shot.png");
     }
 
     #[test]

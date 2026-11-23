@@ -235,21 +235,22 @@ impl AppState {
             return self.run_slash(&row.name, Some((trigger.start, trigger.end)));
         }
         let path = if row.detail.is_empty() {
-            row.name
+            row.name.clone()
         } else {
             format!("{}/{}", row.detail, row.name)
         };
-        let mut mention = format_file_mention(&path);
-        let rest = &self.composer.text[trigger.end..];
-        if !rest.starts_with(' ') {
-            mention.push(' ');
-        }
-        let caret = trigger.start + mention.len() + usize::from(rest.starts_with(' '));
+        // A picked mention is one atomic chip, like Electron's MentionChip: it renders
+        // inline anywhere in the draft and serializes back to its `@path` at send.
         self.composer
-            .text
-            .replace_range(trigger.start..trigger.end, &mention);
-        self.composer.focus = caret;
-        self.composer.anchor = caret;
+            .replace_with_pill(trigger.start..trigger.end, path, &row.name);
+        // The chip is followed by one space and the caret lands after it.
+        let caret = self.composer.focus;
+        if self.composer.text[caret..].starts_with(|c: char| c.is_whitespace()) {
+            self.composer.set_caret(caret + 1);
+        } else {
+            self.composer.insert(" ");
+        }
+        self.composer.focused = true;
         self.close_composer_menu();
         true
     }
@@ -266,9 +267,10 @@ impl AppState {
         if !command.keep_draft {
             match token {
                 Some((start, end)) if !command.clears_all => {
-                    self.composer.text.replace_range(start..end, "");
-                    self.composer.focus = start;
-                    self.composer.anchor = start;
+                    // `insert` shifts marks; a raw `replace_range` leaves pill marks stale.
+                    self.composer.set_selection(start, end);
+                    self.composer.insert("");
+                    self.composer.set_caret(start);
                 }
                 _ => self.composer.clear(),
             }
@@ -286,6 +288,103 @@ impl AppState {
         }
         true
     }
+}
+
+/// The draft the agent sees: each mention chip serializes back to its `@path`,
+/// as Electron's `serializeEditor` writes `formatFileMention` for its chips.
+pub(crate) fn composer_serialized(edit: &rune::TextEdit) -> String {
+    let mut out = String::with_capacity(edit.text.len());
+    let mut cursor = 0;
+    for (range, id) in edit.pills() {
+        out.push_str(&edit.text[cursor..range.start]);
+        out.push_str(&format_file_mention(id));
+        cursor = range.end;
+    }
+    out.push_str(&edit.text[cursor..]);
+    out
+}
+
+/// Load text into the composer rebuilding chips for completed `@path` mentions,
+/// as Electron's `setEditorFromText` does for a draft or a queued prompt.
+pub(crate) fn load_composer_text(edit: &mut rune::TextEdit, text: &str) {
+    let mentions = mention_ranges(text);
+    edit.replace_text(text);
+    // Later tokens first: each pill replaces its token's text, so earlier spans
+    // must not see the positions of later ones shift.
+    for (start, end, path) in mentions.into_iter().rev() {
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        edit.replace_with_pill(start..end, path, &name);
+    }
+    let end = edit.text.len();
+    edit.set_caret(end);
+}
+
+/// Completed `@path` mentions in loaded text — Electron's `COMPLETED_MENTION_REGEX`
+/// `(^|\\s)@(?:"…"|[^\\s@"]+)(?=\\s)`. The trailing delimiter keeps a token the
+/// user is still typing from becoming a chip.
+fn mention_ranges(text: &str) -> Vec<(usize, usize, String)> {
+    const MAX_QUOTED: usize = 400;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (start, c) = chars[i];
+        if c != '@' || (i > 0 && !chars[i - 1].1.is_whitespace()) || i + 1 >= chars.len() {
+            i += 1;
+            continue;
+        }
+        // The token's end is the index of its last char; `path` is the resolved path.
+        let token = if chars[i + 1].1 == '"' {
+            let mut path = String::new();
+            let mut j = i + 2;
+            let mut closed = false;
+            while j < chars.len() {
+                match chars[j].1 {
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    '\\' if j + 1 < chars.len() => {
+                        // Quoted paths escape `\"` and `\\`; other escapes keep the slash.
+                        if matches!(chars[j + 1].1, '"' | '\\') {
+                            path.push(chars[j + 1].1);
+                        } else {
+                            path.push('\\');
+                            path.push(chars[j + 1].1);
+                        }
+                        j += 2;
+                    }
+                    ch => {
+                        if path.chars().count() >= MAX_QUOTED {
+                            break;
+                        }
+                        path.push(ch);
+                        j += 1;
+                    }
+                }
+            }
+            (closed && !path.is_empty()).then_some((j, path))
+        } else {
+            let mut j = i + 1;
+            while j < chars.len()
+                && !chars[j].1.is_whitespace()
+                && chars[j].1 != '@'
+                && chars[j].1 != '"'
+            {
+                j += 1;
+            }
+            (j > i + 1).then_some((j - 1, chars[i + 1..j].iter().map(|(_, c)| c).collect()))
+        };
+        match token {
+            Some((last, path)) if last + 1 < chars.len() && chars[last + 1].1.is_whitespace() => {
+                let end = chars[last].0 + chars[last].1.len_utf8();
+                spans.push((start, end, path));
+                i = last + 1;
+            }
+            _ => i += 1,
+        }
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -388,15 +487,54 @@ mod tests {
         s.studio.conversation_fixture = Some("composer-picker-mention".into());
         s.composer.focus = "look at @use".len();
         assert!(s.accept_composer_row(0));
+        // The token becomes one atomic chip showing the bare name, wherever the
+        // caret was — serialization restores the full `@path` for the agent.
+        assert_eq!(s.composer.text, "look at useAgent.ts and fix it");
+        assert_eq!(s.composer.focus, "look at useAgent.ts ".len());
+        let pills: Vec<(String, String)> = s
+            .composer
+            .pills()
+            .map(|(range, id)| (s.composer.text[range].to_owned(), id.to_owned()))
+            .collect();
         assert_eq!(
-            s.composer.text,
+            pills,
+            [(
+                "useAgent.ts".to_owned(),
+                "apps/web/app/composables/useAgent.ts".to_owned()
+            )]
+        );
+        assert_eq!(
+            composer_serialized(&s.composer),
             "look at @apps/web/app/composables/useAgent.ts and fix it"
         );
-        assert_eq!(
-            s.composer.focus,
-            "look at @apps/web/app/composables/useAgent.ts ".len()
-        );
         assert!(s.composer_trigger().is_none());
+    }
+
+    #[test]
+    fn loaded_text_rechips_completed_mentions() {
+        let mut edit = rune::TextEdit::default();
+        load_composer_text(
+            &mut edit,
+            "fix @apps/web/a.ts and @\"My Docs/b.rs\" then @open",
+        );
+        // `@open` has no trailing delimiter, so it stays text — like Electron, a
+        // mention only chips once it's completed.
+        assert_eq!(
+            edit.pills()
+                .map(|(_, id)| id.to_owned())
+                .collect::<Vec<_>>(),
+            ["apps/web/a.ts".to_owned(), "My Docs/b.rs".to_owned()]
+        );
+        assert_eq!(edit.text, "fix a.ts and b.rs then @open");
+        assert_eq!(
+            composer_serialized(&edit),
+            "fix @apps/web/a.ts and @\"My Docs/b.rs\" then @open"
+        );
+        assert_eq!(edit.focus, edit.text.len());
+
+        load_composer_text(&mut edit, "mail me@example.com or check src/a/b.rs");
+        assert_eq!(edit.pills().count(), 0);
+        assert_eq!(edit.text, "mail me@example.com or check src/a/b.rs");
     }
 
     #[test]
@@ -442,5 +580,16 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.starts_with("Studio is still loading"))
         );
+    }
+
+    #[test]
+    fn a_picked_command_keeps_a_later_mentions_pill() {
+        let mut s = composer("");
+        load_composer_text(&mut s.composer, "/model @src/main.rs fix");
+        assert!(s.run_slash("model", Some((0, 6))));
+        assert_eq!(s.composer.text, " main.rs fix");
+        // The pill moved with the text: serializing still emits the full path.
+        assert_eq!(s.composer.pills().count(), 1);
+        assert_eq!(composer_serialized(&s.composer), " @src/main.rs fix");
     }
 }
