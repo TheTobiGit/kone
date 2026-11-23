@@ -267,9 +267,10 @@ impl AppState {
         if !command.keep_draft {
             match token {
                 Some((start, end)) if !command.clears_all => {
-                    self.composer.text.replace_range(start..end, "");
-                    self.composer.focus = start;
-                    self.composer.anchor = start;
+                    // `insert` shifts marks; a raw `replace_range` leaves pill marks stale.
+                    self.composer.set_selection(start, end);
+                    self.composer.insert("");
+                    self.composer.set_caret(start);
                 }
                 _ => self.composer.clear(),
             }
@@ -579,5 +580,16 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.starts_with("Studio is still loading"))
         );
+    }
+
+    #[test]
+    fn a_picked_command_keeps_a_later_mentions_pill() {
+        let mut s = composer("");
+        load_composer_text(&mut s.composer, "/model @src/main.rs fix");
+        assert!(s.run_slash("model", Some((0, 6))));
+        assert_eq!(s.composer.text, " main.rs fix");
+        // The pill moved with the text: serializing still emits the full path.
+        assert_eq!(s.composer.pills().count(), 1);
+        assert_eq!(composer_serialized(&s.composer), " @src/main.rs fix");
     }
 }
