@@ -12,6 +12,10 @@ use rune::{
     row, text, text_input,
 };
 
+/// Attachment thumbnails decode here; a no-op waker is fine since `wait` drives
+/// the decode before the chip draws.
+static IMAGES: std::sync::OnceLock<rune::ImageCache> = std::sync::OnceLock::new();
+
 static MODEL_SEARCH: Icon = Icon {
     name: "composer-model-search",
     view: 24.0,
@@ -132,6 +136,18 @@ fn attachment_chips(s: &AppState, t: Palette) -> Option<El> {
         .center_y();
     for at in &s.studio.attachments {
         let id = at.id;
+        // Electron's `chip__thumb`: an image attachment previews itself; a decode
+        // failure or another file type keeps the extension badge.
+        let thumb = at
+            .image
+            .then(|| {
+                let cache =
+                    IMAGES.get_or_init(|| rune::ImageCache::new(std::sync::Arc::new(|| {})));
+                let image = cache.file(&at.path, 18.0, 2.0);
+                let _ = image.wait();
+                (image.error().is_none()).then_some(image)
+            })
+            .flatten();
         chips = chips.child(
             row()
                 .key(format!("studio-attachment-{id}"))
@@ -143,14 +159,20 @@ fn attachment_chips(s: &AppState, t: Palette) -> Option<El> {
                 .radius(8.0)
                 .fill(t.ink.alpha(0.05))
                 .border(1.0, t.line)
-                .child(
-                    el().px(4.0)
+                .child(match thumb {
+                    Some(image) => el()
+                        .w(18.0)
+                        .h(18.0)
+                        .clip_rounded(4.0)
+                        .pixels_fit(image.pixels(), rune::SurfaceFit::Fill),
+                    None => el()
+                        .px(4.0)
                         .h(16.0)
                         .center()
                         .radius(4.0)
                         .fill(t.accent.alpha(0.14))
                         .child(label(at.ext.clone(), 8.5, 700.0, t.ink_soft)),
-                )
+                })
                 .child(label(at.name.clone(), 12.0, 500.0, t.ink).max_w(180.0))
                 .child(
                     el().key(format!("studio-attachment-remove-{id}"))
@@ -756,49 +778,27 @@ pub(super) fn composer_dock(s: &AppState, project_name: &str, track_w: f32, t: P
     let corner_r = 27.5 - 1.5 * radius_p;
 
     let selection = hex("#d97757").unwrap().alpha(0.24);
+    // Mention chips (`Mark::Pill`) look like Electron's MentionChip: a file icon
+    // and the bare name on a tinted chip, anywhere in the draft.
     let field = text_input(&s.composer, TextStyle::new(14.0, 400.0).lh(22.0))
         .key("studio-composer")
         .placeholder("Ask anything…", t.placeholder)
         .color(t.ink)
         .caret(t.ink, selection)
         .w_full()
+        .pill_colors(t.accent.alpha(0.12), Some(mix_srgb(t.ink, t.accent, 0.62)))
+        .pill_icon(|id| Some(super::file_icons::for_path(id)))
         .on_edit(|s: &mut AppState| &mut s.composer)
         .on_submit(AppState::send_studio)
         .on_input_key(|s: &mut AppState, ev, tx| {
             s.studio_width_chord(ev, tx) || s.composer_menu_key(ev)
         });
-    let mut field_box = el()
+    let field_box = el()
         .w_full()
         .pt(16.0)
         .px(14.0)
         .pb(4.0)
         .child(auto_grow(field, 1, 11).min_h(50.0).max_h(260.0));
-    if let Some(path) = s.composer.text.strip_prefix('@').map(str::trim)
-        && !path.is_empty()
-        && !path.contains(char::is_whitespace)
-    {
-        let name = path.rsplit('/').next().unwrap_or(path);
-        let chip_color = mix_srgb(t.ink, t.accent, 0.62);
-        field_box = field_box
-            .child(
-                el().pin(Some(13.0), Some(15.0), None, None)
-                    .w(82.0)
-                    .h(24.0)
-                    .fill(t.field),
-            )
-            .child(
-                row()
-                    .pin(Some(14.0), Some(16.0), None, None)
-                    .h(21.0)
-                    .px(5.0)
-                    .gap(4.0)
-                    .center_y()
-                    .radius(6.0)
-                    .fill(t.accent.alpha(0.12))
-                    .child(label("TS", 8.0, 700.0, hex("#3182ce").unwrap()))
-                    .child(label(name, 11.5, 500.0, chip_color)),
-            );
-    }
 
     let (mode_label, mode_hue_hex, mode_icon) = mode_meta(s.studio.mode.as_str());
     let mode_hue = hex(mode_hue_hex).unwrap();

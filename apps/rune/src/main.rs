@@ -350,8 +350,13 @@ fn main() {
                     (
                         "queued-1".into(),
                         "Add keyboard shortcuts for approval.".into(),
+                        Vec::new(),
                     ),
-                    ("queued-2".into(), "Then verify the overlay stack.".into()),
+                    (
+                        "queued-2".into(),
+                        "Then verify the overlay stack.".into(),
+                        Vec::new(),
+                    ),
                 ];
             }),
             ("studio-dock-selection", |s| {

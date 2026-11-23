@@ -331,7 +331,7 @@ pub struct StudioState {
     pub upload_turn: Option<crate::composer_attachments::UploadTurn>,
     /// Uploaded attachments the next `agent.send` carries.
     pub turn_attachments: Vec<serde_json::Value>,
-    pub queued_turns: Vec<(String, String)>,
+    pub queued_turns: Vec<(String, String, Vec<serde_json::Value>)>,
     /// The transcript block id each queued turn's request is journaled under.
     pub queued_blocks: std::collections::HashMap<String, String>,
     pub subagents: Vec<(String, String, String)>,
@@ -2679,7 +2679,9 @@ impl AppState {
     }
 
     pub fn send_studio(&mut self, tx: &mut rune::Tx) {
-        let input = self.composer.text.trim().to_owned();
+        let input = crate::composer_menu::composer_serialized(&self.composer)
+            .trim()
+            .to_owned();
         if let Some((name, _focus)) = crate::composer_menu::parse_leading_slash(&input)
             && self.run_slash(&name, None)
         {
@@ -2691,21 +2693,35 @@ impl AppState {
     /// Electron's send-now: a queued follow-up steers a running turn and otherwise starts one,
     /// leaving the composer draft alone.
     pub fn send_queued_now(&mut self, queue_id: &str, input: String, tx: &mut rune::Tx) {
+        let attachments = self
+            .studio
+            .queued_turns
+            .iter()
+            .find(|row| row.0 == queue_id)
+            .map(|row| row.2.clone())
+            .unwrap_or_default();
         self.request(
             "agent.queueCancel",
             serde_json::json!({"threadId": self.studio.thread_id, "queueId": queue_id}),
         );
         if self.studio.busy {
-            self.request(
-                "agent.steer",
-                serde_json::json!({"threadId": self.studio.thread_id, "input": input, "dispatchMode": "steer"}),
-            );
+            let mut params = serde_json::json!({"threadId": self.studio.thread_id, "input": input, "dispatchMode": "steer"});
+            if !attachments.is_empty() {
+                params["attachments"] = attachments.into();
+            }
+            self.request("agent.steer", params);
         } else {
+            // An idle send-now starts a new turn: its attachments ride `turn_attachments`
+            // into `agent.send` like an upload's would.
+            self.studio.turn_attachments = attachments;
             self.send_studio_input(input, false, tx);
         }
     }
 
     fn send_studio_input(&mut self, input: String, from_composer: bool, tx: &mut rune::Tx) {
+        // Attachments a queued send-now left for dispatch; taking them keeps a bailed
+        // send from leaking them into a later turn.
+        let queued_attachments = std::mem::take(&mut self.studio.turn_attachments);
         let with_files = from_composer && !self.studio.attachments.is_empty();
         // A request is valid with text, attachments, or both.
         if input.is_empty() && !with_files {
@@ -2777,17 +2793,26 @@ impl AppState {
         } else {
             Vec::new()
         };
+        let names: Vec<String> = if files.is_empty() {
+            queued_attachments
+                .iter()
+                .filter_map(|a| a["name"].as_str().map(str::to_owned))
+                .collect()
+        } else {
+            files.iter().map(|f| f.name.clone()).collect()
+        };
         let item_id = format!("user-{}", self.studio.items.len());
         self.studio.items.push(StudioItem {
             id: item_id.clone(),
             kind: "user".into(),
             text: input.clone(),
             name: String::new(),
-            attachments: files.iter().map(|f| f.name.clone()).collect(),
+            attachments: names,
             ..Default::default()
         });
         tx.scroll_to_bottom(format!("studio-transcript-{}", self.studio.thread_id));
         if files.is_empty() {
+            self.studio.turn_attachments = queued_attachments;
             self.continue_studio_send(input);
         } else {
             self.upload_then_send(input, Some(item_id), files);
@@ -3450,12 +3475,14 @@ impl AppState {
                             .insert(id.to_owned(), block.to_owned());
                     }
                     self.studio.queued_turns.retain(|row| row.0 != id);
+                    let attachments = event["attachmentsJson"]
+                        .as_str()
+                        .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(json).ok())
+                        .unwrap_or_default();
                     self.studio.queued_turns.push((
                         id.to_owned(),
-                        event["input"]
-                            .as_str()
-                            .unwrap_or("Queued message")
-                            .to_owned(),
+                        event["input"].as_str().unwrap_or_default().to_owned(),
+                        attachments,
                     ));
                 }
             }
@@ -3493,6 +3520,11 @@ impl AppState {
                             block_id: block,
                             kind: "user".into(),
                             text: row.1,
+                            attachments: row
+                                .2
+                                .iter()
+                                .filter_map(|a| a["name"].as_str().map(str::to_owned))
+                                .collect(),
                             ..Default::default()
                         },
                     );
